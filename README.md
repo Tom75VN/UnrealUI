@@ -18,7 +18,7 @@ UnrealUI modernizes the information you use every minute while preserving the so
 
 ## Make Azeroth feel like your Azeroth
 
-Your interface should help you live the adventure—not fight for space on your screen. UnrealUI removes visual noise, brings essential information into focus and lets every important element sit where it feels natural to you.
+Your interface should help you live the adventure instead of making you fight for space on your screen. UnrealUI removes visual noise, brings essential information into focus and lets every important element sit where it feels natural to you.
 
 Whether you are questing through the world, reacting in the middle of combat or building the perfect action-bar layout, UnrealUI keeps what matters clear and close. The result is a calmer screen, faster decisions and a world that feels bigger because the interface finally gets out of your way.
 
