@@ -2,6 +2,13 @@
 
 **A cleaner, sharper and fully personal interface for Unreal Azeroth.**
 
+> [!IMPORTANT]
+> ## Install UnrealUI
+> 1. [Download the latest release](https://github.com/Tom75VN/UnrealUI/releases/latest/download/UnrealUI.zip).
+> 2. Extract the archive into `Azeroth\Interface\AddOns\`.
+> 3. Rename the extracted `unrealUI-master` folder to `unrealUI` by removing `-master`.
+> 4. Confirm that `unrealUI.toc` is directly inside the `unrealUI` folder, then launch the game or reload the interface.
+
 UnrealUI modernizes the information you use every minute while preserving the soul of the original game. Version **0.0.1** is built specifically for Unreal Azeroth / Emberveil.
 
 ![UnrealUI main interface](screenshots/main_overlay.png)
@@ -43,13 +50,6 @@ Install UnrealUI, shape it around the way you play and rediscover Azeroth throug
 ![UnrealUI Spellbook](screenshots/spell_book.png)
 
 ![UnrealUI Quest Log](screenshots/quest_log.png)
-
-## Installation
-
-1. Download the repository and extract it as an `unrealUI` folder.
-2. Place it in `Azeroth\Interface\AddOns\`.
-3. Confirm that `unrealUI.toc` is directly inside the `unrealUI` folder.
-4. Launch the game or reload the interface.
 
 Use `/uui` to open the settings and `/uui unlock` to arrange supported overlays.
 
