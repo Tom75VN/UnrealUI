@@ -353,8 +353,8 @@ local classificationOverride = nil
 -- ---------------------------------------------------------------------------
 -- Unit state
 --
--- One reusable table per frame; refreshing runs five times a second and should
--- not allocate.
+-- One reusable table per frame. Combat refreshes are bounded and should not
+-- allocate per event; the slower full fallback refreshes static identity data.
 -- ---------------------------------------------------------------------------
 -- Units whose UnitHealth/UnitHealthMax are real hit points rather than a
 -- percentage. Vanilla grants this to yourself, your pet and your party; every
@@ -365,7 +365,7 @@ local REAL_HEALTH_UNITS = {
   partypet1 = true, partypet2 = true, partypet3 = true, partypet4 = true,
 }
 
-local function ReadUnit(frame)
+local function ReadIdentity(frame)
   local unit = frame.unit
   local data = frame.data
 
@@ -385,7 +385,6 @@ local function ReadUnit(frame)
     data.classification = classificationOverride or
                           ApiString("UnitClassification", unit)
   end
-  data.isDead = ApiTruth("UnitIsDead", unit) or ApiTruth("UnitIsGhost", unit)
   -- An absent UnitIsConnected must read as connected, not as everyone offline.
   if ResolveApiFn("UnitIsConnected") then
     data.connected = ApiTruth("UnitIsConnected", unit)
@@ -394,12 +393,15 @@ local function ReadUnit(frame)
   end
   data.class = UnitClassToken(unit)
   data.reaction = ApiNumber("UnitReaction", unit, "player")
+end
+
+local function ReadHealth(frame)
+  local unit = frame.unit
+  local data = frame.data
 
   data.health = ApiNumber("UnitHealth", unit) or 0
   data.healthMax = ApiNumber("UnitHealthMax", unit) or 0
-  data.power = ApiNumber("UnitMana", unit) or 0
-  data.powerMax = ApiNumber("UnitManaMax", unit) or 0
-  data.powerType = ApiNumber("UnitPowerType", unit)
+  data.isDead = ApiTruth("UnitIsDead", unit) or ApiTruth("UnitIsGhost", unit)
 
   if data.healthMax > 0 then
     data.healthPercent = Clamp(data.health / data.healthMax)
@@ -416,8 +418,24 @@ local function ReadUnit(frame)
   -- dynamic text carries no extra information, so only the percentage is
   -- drawn.
   data.healthIsPercent = data.healthMax == 100 and not REAL_HEALTH_UNITS[unit]
+end
 
-  return data
+local function ReadPower(frame)
+  local unit = frame.unit
+  local data = frame.data
+
+  data.power = ApiNumber("UnitMana", unit) or 0
+  data.powerMax = ApiNumber("UnitManaMax", unit) or 0
+  data.powerType = ApiNumber("UnitPowerType", unit)
+end
+
+local function ReadUnit(frame)
+  ReadIdentity(frame)
+  ReadHealth(frame)
+  ReadPower(frame)
+  frame.data.initialised = true
+
+  return frame.data
 end
 
 -- The colour a unit's *name* is drawn in: class colour for players, reaction
@@ -524,6 +542,7 @@ end
 local frames = {}       -- id -> frame
 local frameOrder = {}
 local textCache = {}    -- fontstring -> last applied string
+local dirtyUnits = {}   -- unit token -> health | power | vitals | full
 
 local function SetLabelText(label, value)
   if not label then return end
@@ -726,6 +745,7 @@ local function BuildFrame(spec, parent)
   frame.values = values
 
   frame:Hide()
+  frame.uuiShown = false
   return frame
 end
 
@@ -830,8 +850,12 @@ local function SetBar(bar, value, maximum)
   value = tonumber(value) or 0
   if maximum <= 0 then maximum, value = 1, 0 end
 
-  pcall(bar.SetMinMaxValues, bar, 0, maximum)
-  pcall(bar.SetValue, bar, value)
+  if bar.uuiMin ~= 0 or bar.uuiMax ~= maximum then
+    pcall(bar.SetMinMaxValues, bar, 0, maximum)
+  end
+  if bar.uuiValue ~= value then
+    pcall(bar.SetValue, bar, value)
+  end
 end
 
 -- pfUI modern's health colouring: full health sits at the near-black custom
@@ -851,34 +875,63 @@ local function ApplyHealthColor(frame)
     b = cb * perc + b * (1 - perc)
   end
 
+  if frame.healthColorR == r and frame.healthColorG == g and
+     frame.healthColorB == b then return end
+  frame.healthColorR, frame.healthColorG, frame.healthColorB = r, g, b
   U.SetStatusBarColor(frame.health.bar, r, g, b, 1)
 end
 
 local function ApplyPowerColor(frame)
   if not frame.power then return end
   local color = M.power[frame.data.powerType] or M.power.fallback
-  U.SetStatusBarColor(frame.power.bar, M.Unpack(color))
+  local r, g, b, a = M.Unpack(color)
+  if frame.powerColorR == r and frame.powerColorG == g and
+     frame.powerColorB == b and frame.powerColorA == a then return end
+  frame.powerColorR, frame.powerColorG = r, g
+  frame.powerColorB, frame.powerColorA = b, a
+  U.SetStatusBarColor(frame.power.bar, r, g, b, a)
 end
 
-local function ApplyBarLabels(frame, box, labels)
+local function TokenNeedsRefresh(token, mode)
+  if mode == "full" then return true end
+  if token == "healthdyn" then
+    return mode == "health" or mode == "vitals"
+  end
+  if token == "powerdyn" then
+    return mode == "power" or mode == "vitals"
+  end
+  return false
+end
+
+local function ApplyBarLabels(frame, box, labels, mode)
   if not box or not labels then return end
-  if box.leftLabel then SetLabelText(box.leftLabel, StatusText(frame, labels.left)) end
-  if box.rightLabel then SetLabelText(box.rightLabel, StatusText(frame, labels.right)) end
+  if box.leftLabel and TokenNeedsRefresh(labels.left, mode) then
+    SetLabelText(box.leftLabel, StatusText(frame, labels.left))
+  end
+  if box.rightLabel and TokenNeedsRefresh(labels.right, mode) then
+    SetLabelText(box.rightLabel, StatusText(frame, labels.right))
+  end
 end
 
-local function ApplyTexts(frame)
-  if frame.health.label then
+local function ApplyTexts(frame, mode)
+  if frame.health.label and TokenNeedsRefresh(frame.spec.healthText, mode) then
     SetLabelText(frame.health.label, StatusText(frame, frame.spec.healthText))
   end
-  ApplyBarLabels(frame, frame.health, frame.spec.healthLabels)
-  ApplyBarLabels(frame, frame.power, frame.spec.powerLabels)
+  ApplyBarLabels(frame, frame.health, frame.spec.healthLabels, mode)
+  ApplyBarLabels(frame, frame.power, frame.spec.powerLabels, mode)
 
   local tokens = frame.spec.values or {}
   local v = frame.values
   if not v then return end
-  if v.left then SetLabelText(v.left, StatusText(frame, tokens.left)) end
-  if v.center then SetLabelText(v.center, StatusText(frame, tokens.center)) end
-  if v.right then SetLabelText(v.right, StatusText(frame, tokens.right)) end
+  if v.left and TokenNeedsRefresh(tokens.left, mode) then
+    SetLabelText(v.left, StatusText(frame, tokens.left))
+  end
+  if v.center and TokenNeedsRefresh(tokens.center, mode) then
+    SetLabelText(v.center, StatusText(frame, tokens.center))
+  end
+  if v.right and TokenNeedsRefresh(tokens.right, mode) then
+    SetLabelText(v.right, StatusText(frame, tokens.right))
+  end
 end
 
 local function ClearTexts(frame)
@@ -908,10 +961,7 @@ local function ApplyClassificationIcon(frame)
   local tint = ELITE_TINTS[class]
   local state = tint and class or false
 
-  -- The shared tick runs this five times a second for every frame, and
-  -- compat.native_suppression_pcall_burst_stutter is what a per-tick pcall
-  -- burst costs on this client. Nothing below needs to run again while the
-  -- classification has not changed.
+  -- Nothing below needs to run again while the classification has not changed.
   if frame.classIconState == state then return end
   frame.classIconState = state
 
@@ -930,73 +980,183 @@ local function HideClassificationIcon(frame)
   pcall(frame.classIcon.Hide, frame.classIcon)
 end
 
-local function RefreshFrame(frame, force)
+local function SetFrameShown(frame, shown)
+  if frame.uuiShown == shown then return end
+  frame.uuiShown = shown
+  if shown then frame:Show() else frame:Hide() end
+end
+
+local function ApplyConnectedAlpha(frame)
+  local alpha = frame.data.connected and 1 or 0.35
+  if frame.uuiAlpha == alpha then return end
+  if pcall(frame.SetAlpha, frame, alpha) then frame.uuiAlpha = alpha end
+end
+
+local function RefreshFrame(frame, mode)
   local exists = ApiTruth("UnitExists", frame.unit)
 
   if not exists then
+    frame.data.initialised = false
     HideClassificationIcon(frame)
     -- An empty shell stays on screen while the UI is unlocked, otherwise a
     -- frame with no unit could never be dragged into place.
     if U.IsUnlocked() then
-      frame:Show()
+      SetFrameShown(frame, true)
       SetBar(frame.health.bar, 0, 1)
       if frame.power then SetBar(frame.power.bar, 0, 1) end
-      U.SetStatusBarColor(frame.health.bar, M.Unpack(M.color.healthFull))
+      local r, g, b = M.Unpack(M.color.healthFull)
+      if frame.healthColorR ~= r or frame.healthColorG ~= g or
+         frame.healthColorB ~= b then
+        frame.healthColorR, frame.healthColorG, frame.healthColorB = r, g, b
+        U.SetStatusBarColor(frame.health.bar, r, g, b, 1)
+      end
       ClearTexts(frame)
     else
-      frame:Hide()
+      SetFrameShown(frame, false)
     end
     return false
   end
 
-  frame:Show()
+  SetFrameShown(frame, true)
 
-  local data = ReadUnit(frame)
-  SetBar(frame.health.bar, data.health, data.healthMax)
-  if frame.power then SetBar(frame.power.bar, data.power, data.powerMax) end
-  ApplyHealthColor(frame)
-  ApplyPowerColor(frame)
-  ApplyTexts(frame)
-  ApplyClassificationIcon(frame)
+  if not frame.data.initialised then mode = "full" end
+  if mode ~= "health" and mode ~= "power" and mode ~= "vitals" then
+    mode = "full"
+  end
+
+  local healthChanged = (mode == "full")
+  local powerChanged = (mode == "full")
+
+  if mode == "full" then
+    ReadUnit(frame)
+  else
+    if mode == "health" or mode == "vitals" then
+      local health, maximum, dead = frame.data.health,
+                                    frame.data.healthMax, frame.data.isDead
+      ReadHealth(frame)
+      healthChanged = health ~= frame.data.health or
+                      maximum ~= frame.data.healthMax or
+                      dead ~= frame.data.isDead
+    end
+    if mode == "power" or mode == "vitals" then
+      local power, maximum, powerType = frame.data.power,
+                                        frame.data.powerMax,
+                                        frame.data.powerType
+      ReadPower(frame)
+      powerChanged = power ~= frame.data.power or
+                     maximum ~= frame.data.powerMax or
+                     powerType ~= frame.data.powerType
+    end
+  end
+
+  if healthChanged then
+    SetBar(frame.health.bar, frame.data.health, frame.data.healthMax)
+    ApplyHealthColor(frame)
+  end
+  if frame.power and powerChanged then
+    SetBar(frame.power.bar, frame.data.power, frame.data.powerMax)
+    ApplyPowerColor(frame)
+  end
+
+  local textMode = nil
+  if mode == "full" then
+    textMode = "full"
+  elseif healthChanged and powerChanged then
+    textMode = "vitals"
+  elseif healthChanged then
+    textMode = "health"
+  elseif powerChanged then
+    textMode = "power"
+  end
+  if textMode then ApplyTexts(frame, textMode) end
+  if mode == "full" then ApplyClassificationIcon(frame) end
 
   -- Offline party members are dimmed rather than hidden, matching pfUI's
   -- alpha_offline treatment without importing its alpha config. Unverified on
   -- this client: rendering.parent_alpha_not_propagated says a parent's alpha
   -- does not reliably carry to its children, so this may end up a no-op. It is
   -- cosmetic either way, and the frame's own state stays correct.
-  if data.connected then
-    pcall(frame.SetAlpha, frame, 1)
-  else
-    pcall(frame.SetAlpha, frame, 0.35)
-  end
+  if mode == "full" then ApplyConnectedAlpha(frame) end
 
   return true
 end
 
-local function RefreshAll(force)
+local function RefreshAll()
   local i
   for i = 1, table.getn(frameOrder) do
-    RefreshFrame(frames[frameOrder[i]], force)
+    RefreshFrame(frames[frameOrder[i]], "full")
   end
 end
 
-local function RefreshUnitToken(token)
-  if type(token) ~= "string" then
+-- Combat can emit several health/power events for the same unit in one render
+-- interval. Refreshing synchronously in every handler multiplied the complete
+-- ReadUnit + texture-layout path by the number of attackers, which matches the
+-- reported party-only FPS collapse. Keep events as accelerators, but collapse
+-- each unit's burst to at most one refresh per short update interval.
+local function QueueUnitToken(token, mode)
+  if type(token) ~= "string" or not frames[token] then return end
+  if mode ~= "health" and mode ~= "power" and mode ~= "vitals" then
+    mode = "full"
+  end
+
+  local current = dirtyUnits[token]
+  if current == "full" or current == mode then return end
+  if mode == "full" or not current then
+    dirtyUnits[token] = mode
+  else
+    dirtyUnits[token] = "vitals"
+  end
+end
+
+local function FlushDirtyUnits()
+  local i
+  for i = 1, table.getn(frameOrder) do
+    local id = frameOrder[i]
+    local mode = dirtyUnits[id]
+    if mode then
+      dirtyUnits[id] = nil
+      RefreshFrame(frames[id], mode)
+    end
+  end
+end
+
+-- One scheduler owns every recurring unit-frame read. Four cycles use cheap
+-- vitals-only party reads plus queued event work; the fifth performs the full
+-- identity/roster fallback required by this client's unobserved party event.
+-- Keeping these in one callback prevents separate timers from stacking their
+-- work on the same render tick once per second.
+local refreshCycle = 0
+local function RefreshScheduledUnits()
+  refreshCycle = refreshCycle + 1
+  if refreshCycle >= 5 then
+    refreshCycle = 0
+    local i
+    for i = 1, table.getn(frameOrder) do
+      dirtyUnits[frameOrder[i]] = nil
+    end
     RefreshAll()
     return
   end
 
+  -- Party events are not load-bearing: sample existence, health and power at
+  -- the established 0.2s cadence even when PARTY_MEMBERS_CHANGED never emits.
   local i
-  for i = 1, table.getn(frameOrder) do
-    local frame = frames[frameOrder[i]]
-    if frame.unit == token then RefreshFrame(frame) end
+  for i = 1, PARTY_COUNT do
+    local id = "party" .. i
+    local mode = dirtyUnits[id]
+    dirtyUnits[id] = nil
+    if mode == "full" then
+      RefreshFrame(frames[id], "full")
+    else
+      RefreshFrame(frames[id], "vitals")
+    end
   end
 
-  -- target-of-target is derived from the target, so a target update is also a
-  -- target-of-target update.
-  if token == "target" and frames.targettarget then
-    RefreshFrame(frames.targettarget)
-  end
+  -- Target-of-target has no observed event. It changes independently of the
+  -- player's target, so it keeps the same bounded polling cadence.
+  dirtyUnits.targettarget = nil
+  RefreshFrame(frames.targettarget, "full")
+  FlushDirtyUnits()
 end
 
 UF.Refresh = RefreshAll
@@ -1124,6 +1284,18 @@ local UNIT_EVENTS = {
   "UNIT_NAME_UPDATE",
 }
 
+local HEALTH_EVENTS = {
+  UNIT_HEALTH = true, UNIT_MAXHEALTH = true,
+}
+
+local POWER_EVENTS = {
+  UNIT_MANA = true, UNIT_MAXMANA = true,
+  UNIT_RAGE = true, UNIT_MAXRAGE = true,
+  UNIT_ENERGY = true, UNIT_MAXENERGY = true,
+  UNIT_FOCUS = true, UNIT_MAXFOCUS = true,
+  UNIT_DISPLAYPOWER = true,
+}
+
 local GROUP_EVENTS = {
   "PARTY_MEMBERS_CHANGED", "PARTY_LEADER_CHANGED", "RAID_ROSTER_UPDATE",
 }
@@ -1132,7 +1304,13 @@ local function RegisterEvents()
   local i
   for i = 1, table.getn(UNIT_EVENTS) do
     U.RegisterEvent(UNIT_EVENTS[i], function(event, unit)
-      RefreshUnitToken(unit)
+      local mode = "full"
+      if HEALTH_EVENTS[event] then
+        mode = "health"
+      elseif POWER_EVENTS[event] then
+        mode = "power"
+      end
+      QueueUnitToken(unit, mode)
     end)
   end
 
@@ -1140,14 +1318,14 @@ local function RegisterEvents()
     U.RegisterEvent(GROUP_EVENTS[i], function()
       local n
       for n = 1, PARTY_COUNT do
-        RefreshFrame(frames["party" .. n], true)
+        QueueUnitToken("party" .. n, "full")
       end
     end)
   end
 
   U.RegisterEvent("PLAYER_TARGET_CHANGED", function()
-    RefreshFrame(frames.target, true)
-    RefreshFrame(frames.targettarget, true)
+    QueueUnitToken("target", "full")
+    QueueUnitToken("targettarget", "full")
   end)
 end
 
@@ -1223,13 +1401,11 @@ function UF:OnEnable()
     RefreshComboPoints()
   end
 
-  -- The one refresh path everything else only accelerates. 0.2s is pfUI's own
-  -- polling tick for units without events (targettarget), and it is the only
-  -- thing keeping target-of-target and party membership current on a client
-  -- where PARTY_MEMBERS_CHANGED has never been observed firing.
-  U.RegisterUpdate("unitframes.refresh", 0.2, function() RefreshAll() end)
+  -- One bounded scheduler coalesces event bursts, polls party vitals and
+  -- target-of-target at 0.2s, and performs a full fallback once per second.
+  U.RegisterUpdate("unitframes.refresh", 0.2, RefreshScheduledUnits)
 
-  RefreshAll(true)
+  RefreshAll()
   U.Debug("unit frames built: " .. table.getn(frameOrder))
 end
 
@@ -1329,7 +1505,7 @@ local function ApplyEliteIconSettings()
       end
     end
   end
-  RefreshAll(true)
+  RefreshAll()
 end
 
 -- Returns ok, override. "normal" is a real value rather than an alias for off:
@@ -1344,7 +1520,7 @@ function U.SetUnitClassificationOverride(value)
     return false, classificationOverride
   end
 
-  RefreshAll(true)
+  RefreshAll()
   return true, classificationOverride
 end
 

@@ -115,6 +115,65 @@ local function BuildBarPage(parent, bar)
   return widgets, Refresh
 end
 
+local function BuildReservedBarPage(parent, bar, reason)
+  local widgets = {}
+
+  local header = U.CreateSectionHeader(parent, {
+    text = "Bar " .. bar,
+    width = PAGE_WIDTH,
+    y = -4,
+  })
+  table.insert(widgets, header)
+
+  local status = U.CreateSettingsLabel(parent, {
+    size = M.fontSize.normal,
+    color = M.color.textDim,
+    inherits = "GameFontNormal",
+    justify = "LEFT",
+    height = 22,
+  })
+  if status then
+    status:SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -38)
+    status:SetText("Reserved for " .. reason)
+    table.insert(widgets, status)
+  end
+
+  local explanation = U.CreateSettingsLabel(parent, {
+    size = M.fontSize.small,
+    color = M.color.textDim,
+    inherits = "GameFontNormalSmall",
+    justify = "LEFT",
+    height = 88,
+  })
+  if explanation then
+    explanation:SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -72)
+    explanation:SetText(
+      "This action page is used automatically by Bar 1 while " .. reason ..
+      " is active. Showing it as another physical bar would expose the same " ..
+      "action slots twice, so its layout controls are locked on this character."
+    )
+    table.insert(widgets, explanation)
+  end
+
+  local saved = U.CreateSettingsLabel(parent, {
+    size = M.fontSize.tiny,
+    color = M.color.textDim,
+    inherits = "GameFontNormalSmall",
+    justify = "LEFT",
+    height = 48,
+  })
+  if saved then
+    saved:SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -170)
+    saved:SetText(
+      "Account-wide settings for this page are preserved. They remain " ..
+      "available on characters whose class does not reserve it."
+    )
+    table.insert(widgets, saved)
+  end
+
+  return widgets
+end
+
 -- ---------------------------------------------------------------------------
 -- General options
 --
@@ -166,8 +225,8 @@ local function BuildGeneralPage(parent)
   })
   if hint then
     hint:SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -34 - table.getn(GLOBALS) * 26 - 8)
-    hint:SetText("Pick a bar on the left to enable it and set its layout. " ..
-                 "Bars are placed with Move UI.")
+    hint:SetText(tostring(U.ActionBarCount()) .. " independent bars are available. " ..
+                 "Pages used by this class's forms are shown only on Bar 1.")
     table.insert(widgets, hint)
   end
 
@@ -198,11 +257,27 @@ function ABC:OnInit()
   U.RegisterSettingsTab(GROUP .. ".general", "General Options", BuildGeneralPage,
                         { parent = GROUP })
 
+  local total = type(U.ActionBarTotal) == "function" and U.ActionBarTotal() or
+                U.ActionBarCount()
   local i
-  for i = 1, U.ActionBarCount() do
+  for i = 1, total do
     local bar = i
-    U.RegisterSettingsTab(GROUP .. ".bar" .. i, "Bar " .. i, function(parent)
-      return BuildBarPage(parent, bar)
-    end, { parent = GROUP })
+    local reservation = type(U.ActionBarReservation) == "function" and
+                        U.ActionBarReservation(bar) or nil
+    if reservation then
+      local tooltip = "Reserved for " .. reservation ..
+                      ". Bar 1 uses this page automatically."
+      U.RegisterSettingsTab(GROUP .. ".bar" .. bar, "Bar " .. bar,
+        function(parent)
+          return BuildReservedBarPage(parent, bar, reservation)
+        end,
+        { parent = GROUP, muted = true, tooltip = tooltip })
+    else
+      U.RegisterSettingsTab(GROUP .. ".bar" .. bar, "Bar " .. bar,
+        function(parent)
+          return BuildBarPage(parent, bar)
+        end,
+        { parent = GROUP })
+    end
   end
 end

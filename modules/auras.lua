@@ -71,6 +71,7 @@ local CONFIG = "auras"
 local defaults = {
   playerEnabled = true,
   targetEnabled = true,
+  belowFrame    = false,
   size          = 20,
   perRow        = 8,
   maxIcons      = 16,
@@ -87,21 +88,6 @@ local defaults = {
 
 local function Config()
   return U.ModuleConfig(CONFIG, defaults)
-end
-
--- Slider bounds, shared by the settings page so the page cannot offer a value
--- the layout will not honour.
-local LIMITS = {
-  size     = { 10, 36, 1 },
-  perRow   = { 1, 16, 1 },
-  maxIcons = { 1, 24, 1 },
-  spacing  = { 0, 8, 1 },
-}
-
-function U.AuraLimits(key)
-  local limit = LIMITS[key]
-  if not limit then return 0, 1, 1 end
-  return limit[1], limit[2], limit[3]
 end
 
 function U.GetAuraSetting(key)
@@ -182,6 +168,10 @@ end
 local MAX_SCAN = 24
 local EMPTY_STOP = 2
 
+-- Gap between the row and the unit frame edge it is anchored to, on either
+-- side (above or below).
+local ROW_GAP = 4
+
 local rows = {}   -- unit id -> row frame
 
 local function CreateIcon(row, index)
@@ -218,17 +208,36 @@ local function CreateIcon(row, index)
   return icon
 end
 
--- Places one icon in the grid. Row 0 sits directly above the unit frame and
--- further rows stack upward, so the frame's own top edge stays put no matter
--- how many debuffs are up.
-local function PlaceIcon(row, icon, slot, size, spacing, perRow)
+-- Places one icon in the grid. The near row always sits against the frame
+-- edge closest to it (top edge when shown above, bottom edge when shown
+-- below) and further rows stack away from the frame, so that edge stays put
+-- no matter how many debuffs are up.
+local function PlaceIcon(row, icon, slot, size, spacing, perRow, below)
   local column = math.mod(slot - 1, perRow)
   local line = math.floor((slot - 1) / perRow)
 
   icon:ClearAllPoints()
-  icon:SetPoint("BOTTOMLEFT", row, "BOTTOMLEFT",
-                column * (size + spacing),
-                line * (size + spacing))
+  if below then
+    icon:SetPoint("TOPLEFT", row, "TOPLEFT",
+                  column * (size + spacing),
+                  -line * (size + spacing))
+  else
+    icon:SetPoint("BOTTOMLEFT", row, "BOTTOMLEFT",
+                  column * (size + spacing),
+                  line * (size + spacing))
+  end
+end
+
+-- Anchors the row itself to the frame edge matching the current position
+-- setting. Re-run every refresh (cheap, same pattern as the geometry reads
+-- below) so a mid-session setting change takes effect without a reload.
+local function PositionRow(row, below)
+  row:ClearAllPoints()
+  if below then
+    row:SetPoint("TOPLEFT", row.anchor, "BOTTOMLEFT", 0, -ROW_GAP)
+  else
+    row:SetPoint("BOTTOMLEFT", row.anchor, "TOPLEFT", 0, ROW_GAP)
+  end
 end
 
 local function ApplyIcon(icon, texture, count, debuffType, size)
@@ -280,6 +289,9 @@ local function RefreshRow(row)
   local spacing = U.GetAuraSetting("spacing")
   local perRow = U.GetAuraSetting("perRow")
   local maxIcons = U.GetAuraSetting("maxIcons")
+  local below = U.GetAuraSetting("belowFrame")
+
+  PositionRow(row, below)
 
   local shown, empty, index = 0, 0, nil
   for index = 1, MAX_SCAN do
@@ -293,7 +305,7 @@ local function RefreshRow(row)
       if PassesFilter(debuffType) then
         shown = shown + 1
         local icon = row.icons[shown] or CreateIcon(row, shown)
-        PlaceIcon(row, icon, shown, size, spacing, perRow)
+        PlaceIcon(row, icon, shown, size, spacing, perRow, below)
         ApplyIcon(icon, texture, count, debuffType, size)
         if shown >= maxIcons then break end
       end
@@ -337,8 +349,6 @@ end
 -- ---------------------------------------------------------------------------
 -- Build
 -- ---------------------------------------------------------------------------
-local ROW_GAP = 4
-
 local function BuildRow(id, unit)
   local anchor = U.GetUnitFrame(id)
   if not anchor then
@@ -350,9 +360,10 @@ local function BuildRow(id, unit)
   -- rides the unit frame's mover rather than owning one of its own, so the
   -- icons cannot drift away from the frame they describe.
   local row = CreateFrame("Frame", "UnrealUIAuraRow" .. id, anchor)
-  row:SetPoint("BOTTOMLEFT", anchor, "TOPLEFT", 0, ROW_GAP)
+  row.anchor = anchor
   row:SetWidth(1)
   row:SetHeight(1)
+  PositionRow(row, U.GetAuraSetting("belowFrame"))
 
   row.id = id
   row.unit = unit
@@ -367,34 +378,30 @@ end
 -- Settings page
 --
 -- One top-level "Unit Frames" page, per request. It is not a config framework:
--- the checkboxes and sliders read and write the module's own settings table
--- directly, the same way modules/actionbarconfig.lua does.
+-- the checkboxes read and write the module's own settings table directly, the
+-- same way modules/actionbarconfig.lua does.
+--
+-- Icon size/per-row/max-icons/spacing are deliberately not exposed here --
+-- there is no user-facing control for them, only the fixed defaults above.
 -- ---------------------------------------------------------------------------
 local PAGE_WIDTH = 484
-local COLUMN_X = 258
-local SLIDER_WIDTH = 200
+local FILTER_COLUMN_X = 200
 
 local TOGGLES = {
-  { key = "playerEnabled", text = "Show debuffs above the player frame" },
-  { key = "targetEnabled", text = "Show debuffs above the target frame" },
+  { key = "playerEnabled", text = "Show player frame debuffs" },
+  { key = "targetEnabled", text = "Show target frame debuffs" },
+  { key = "belowFrame",    text = "Show debuffs below the frame instead of above" },
 }
 
+-- Laid out 2 per row (column, row) so the list reads as a table instead of a
+-- single tall column.
 local FILTERS = {
-  { key = "showMagic",   text = "Magic" },
-  { key = "showCurse",   text = "Curse" },
-  { key = "showPoison",  text = "Poison" },
-  { key = "showDisease", text = "Disease" },
-  { key = "showOther",   text = "Physical / other" },
+  { key = "showMagic",   text = "Magic",           column = 0, row = 0 },
+  { key = "showCurse",   text = "Curse",           column = 1, row = 0 },
+  { key = "showPoison",  text = "Poison",          column = 0, row = 1 },
+  { key = "showDisease", text = "Disease",         column = 1, row = 1 },
+  { key = "showOther",   text = "Physical / other", column = 0, row = 2 },
 }
-
-local SLIDERS = {
-  { key = "size",     text = "Icon Size",     column = 0, row = 0 },
-  { key = "perRow",   text = "Icons Per Row", column = 1, row = 0 },
-  { key = "maxIcons", text = "Max Icons",     column = 0, row = 1 },
-  { key = "spacing",  text = "Icon Spacing",  column = 1, row = 1 },
-}
-
-local SLIDER_ROW_Y = { -286, -362 }
 
 local function BuildSettingsPage(parent)
   local widgets = {}
@@ -427,7 +434,7 @@ local function BuildSettingsPage(parent)
   local filterHeader = U.CreateSectionHeader(parent, {
     text = "Show By Dispel Type",
     width = PAGE_WIDTH,
-    y = -100,
+    y = -128,
   })
   table.insert(widgets, filterHeader)
 
@@ -436,13 +443,15 @@ local function BuildSettingsPage(parent)
     local check = U.CreateCheckbox(parent, {
       name = "UnrealUIAuraFilter" .. spec.key,
       text = spec.text,
+      textWidth = FILTER_COLUMN_X - 26,
       value = U.GetAuraSetting(spec.key),
       onChange = function(value)
         Config()[spec.key] = value
         U.ApplyAuras()
       end,
     })
-    check.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -130 - (i - 1) * 26)
+    check.SetPoint("TOPLEFT", parent, "TOPLEFT",
+                   spec.column * FILTER_COLUMN_X, -158 - spec.row * 26)
     controls[spec.key] = check
     table.insert(widgets, check)
   end
@@ -458,35 +467,11 @@ local function BuildSettingsPage(parent)
     height = 40,
   })
   if hint then
-    hint:SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -264)
+    hint:SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -244)
     hint:SetText("This client reports only icon, stack count and dispel type " ..
                  "per debuff -- no duration and no caster -- so debuffs are " ..
                  "filtered by dispel type and shown without timers.")
     table.insert(widgets, hint)
-  end
-
-  for i = 1, table.getn(SLIDERS) do
-    local spec = SLIDERS[i]
-    local min, max, step = U.AuraLimits(spec.key)
-
-    local slider = U.CreateSlider(parent, {
-      name = "UnrealUIAuraSlider" .. spec.key,
-      text = spec.text,
-      width = SLIDER_WIDTH,
-      min = min,
-      max = max,
-      step = step,
-      value = U.GetAuraSetting(spec.key),
-      onChange = function(value)
-        Config()[spec.key] = value
-        U.ApplyAuras()
-      end,
-    })
-    slider.SetPoint("TOPLEFT", parent, "TOPLEFT",
-                    spec.column * COLUMN_X, SLIDER_ROW_Y[spec.row + 1])
-
-    controls[spec.key] = slider
-    table.insert(widgets, slider)
   end
 
   local function Refresh()

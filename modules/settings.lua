@@ -33,6 +33,8 @@ local panel, sidebar, content
 local entries = {}     -- ordered: { kind, id, label, build, parent, expanded, ... }
 local rows = {}        -- sidebar row button pool
 local activePage       -- entry currently shown in the content area
+local focusedId        -- id of the single row (page or expanded group, at any
+                        -- depth) currently carrying the accent highlight
 
 local RenderSidebar    -- forward declarations; rows and pages call each other
 local SelectPage
@@ -105,7 +107,9 @@ end
 -- build    build(content) -> widgets[, refresh]
 --          widgets is the array of regions shown with the page; refresh, when
 --          returned, runs every time the page is opened.
--- options  { parent = "<group id>" } to nest the page under a group.
+-- options  { parent = "<group id>", muted = true, tooltip = "..." }.
+--          Muted pages remain selectable so they can explain why their normal
+--          controls are unavailable; only their sidebar presentation changes.
 function U.RegisterSettingsTab(id, label, build, options)
   if type(id) ~= "string" or type(build) ~= "function" then
     U.Error("RegisterSettingsTab requires an id and a build function")
@@ -124,6 +128,8 @@ function U.RegisterSettingsTab(id, label, build, options)
     label = label or id,
     build = build,
     parent = options.parent,
+    muted = options.muted and true or false,
+    tooltip = options.tooltip,
   }
   table.insert(entries, entry)
 
@@ -155,21 +161,44 @@ local function VisibleEntries()
   return visible
 end
 
+-- Accordion behaviour: only one group (at any depth) stays expanded at a
+-- time. Collapses every group except keepId, which future nested submenus
+-- get for free since it only checks entry.kind, not depth or identity.
+local function CollapseOtherGroups(keepId)
+  local i
+  for i = 1, table.getn(entries) do
+    local entry = entries[i]
+    if entry.kind == "group" and entry.id ~= keepId and entry.expanded then
+      entry.expanded = false
+      if focusedId == entry.id then focusedId = nil end
+    end
+  end
+end
+
 local function StyleRow(row, entry, selected)
   local text = entry.label
   local color = M.color.text
 
   if entry.kind == "group" then
-    -- Groups read as headings: accent text plus the expand indicator on the
-    -- right, which is the only thing in the list that is not a page.
-    color = M.color.accent
+    -- Groups read as headings: white text plus the expand indicator on the
+    -- right, which is the only thing in the list that is not a page. Like a
+    -- selected page, a focused (expanded) group switches to accent text.
+    color = selected and M.color.accent or M.color.text
     if row.indicator then
       row.indicator:SetText(entry.expanded and "-" or "+")
       row.indicator:Show()
     end
   else
-    if row.indicator then row.indicator:Hide() end
-    if selected then color = M.color.accent end
+    if entry.muted then
+      color = M.color.textDim
+      if row.indicator then
+        row.indicator:SetText("x")
+        row.indicator:Show()
+      end
+    else
+      if row.indicator then row.indicator:Hide() end
+      if selected then color = M.color.accent end
+    end
   end
 
   if row.label then
@@ -216,9 +245,21 @@ local function CreateRow(index)
   -- fill. The selected row keeps its accent fill and ignores hover.
   row:SetScript("OnEnter", function()
     if not row.selected then U.SetBackgroundColor(row, 1, 1, 1, 0.07) end
+
+    local entry = row.entry
+    if not entry or type(entry.tooltip) ~= "string" or entry.tooltip == "" then
+      return
+    end
+    local tooltip = U.G("GameTooltip")
+    if not tooltip then return end
+    pcall(tooltip.SetOwner, tooltip, row, "ANCHOR_RIGHT")
+    pcall(tooltip.SetText, tooltip, entry.tooltip)
+    pcall(tooltip.Show, tooltip)
   end)
   row:SetScript("OnLeave", function()
     if not row.selected then U.SetBackgroundColor(row, 0, 0, 0, 0) end
+    local tooltip = U.G("GameTooltip")
+    if tooltip then pcall(tooltip.Hide, tooltip) end
   end)
 
   rows[index] = row
@@ -255,13 +296,19 @@ RenderSidebar = function()
 
       if target.kind == "group" then
         target.expanded = not target.expanded
+        if target.expanded then CollapseOtherGroups(target.id) end
+        -- Only one row is ever highlighted: expanding a group claims the
+        -- highlight, collapsing it releases the highlight (rather than
+        -- falling back to whatever page used to hold it), and this holds at
+        -- any depth for any future nested submenu.
+        focusedId = target.expanded and target.id or nil
         RenderSidebar()
       else
         SelectPage(target)
       end
     end)
 
-    StyleRow(row, entry, activePage and activePage.id == entry.id)
+    StyleRow(row, entry, focusedId ~= nil and focusedId == entry.id)
 
     row:Show()
     if row.label then row.label:Show() end
@@ -284,6 +331,10 @@ end
 SelectPage = function(entry)
   if not entry or entry.kind ~= "page" then return end
 
+  -- Picking a page outside the open group (or a top-level page while any
+  -- group is open) collapses that group, same as clicking another group.
+  CollapseOtherGroups(entry.parent)
+
   local i
   for i = 1, table.getn(entries) do
     local other = entries[i]
@@ -300,6 +351,7 @@ SelectPage = function(entry)
   if type(entry.refresh) == "function" then entry.refresh() end
 
   activePage = entry
+  focusedId = entry.id
   RenderSidebar()
 end
 
@@ -568,9 +620,25 @@ local function BuildGeneralPage(parent)
   reputation.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -196)
   table.insert(widgets, reputation)
 
+  -- The minimap settings button (modules/minimap.lua) is the normal way to
+  -- reach this window, so hiding it does not lock the player out: the /uui
+  -- slash command still opens settings.
+  local minimapButton = U.CreateCheckbox(parent, {
+    name = "UnrealUISettingsMinimapButton",
+    text = "Show minimap settings button",
+    value = U.ModuleConfig("minimap", { enabled = true }).enabled,
+    onChange = function(value)
+      U.ModuleConfig("minimap", { enabled = true }).enabled = value
+      if type(U.ApplyMinimapButton) == "function" then U.ApplyMinimapButton() end
+    end,
+  })
+  minimapButton.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -228)
+  table.insert(widgets, minimapButton)
+
   local function Refresh()
     microbar.SetValue(U.ModuleConfig("microbar", { enabled = true }).enabled)
     reputation.SetValue(U.ModuleConfig("xpbar", { repEnabled = true }).repEnabled)
+    minimapButton.SetValue(U.ModuleConfig("minimap", { enabled = true }).enabled)
   end
 
   return widgets, Refresh

@@ -214,8 +214,11 @@ local function UpdateStatusBarFill(bar)
 end
 
 local function BarSetMinMaxValues(self, minimum, maximum)
-  self.uuiMin = tonumber(minimum) or 0
-  self.uuiMax = tonumber(maximum) or 0
+  minimum = tonumber(minimum) or 0
+  maximum = tonumber(maximum) or 0
+  if self.uuiMin == minimum and self.uuiMax == maximum then return end
+  self.uuiMin = minimum
+  self.uuiMax = maximum
   UpdateStatusBarFill(self)
 end
 
@@ -224,7 +227,9 @@ local function BarGetMinMaxValues(self)
 end
 
 local function BarSetValue(self, value)
-  self.uuiValue = tonumber(value) or 0
+  value = tonumber(value) or 0
+  if self.uuiValue == value then return end
+  self.uuiValue = value
   UpdateStatusBarFill(self)
 end
 
@@ -233,7 +238,9 @@ local function BarGetValue(self)
 end
 
 local function BarSetOrientation(self, mode)
-  self.uuiVertical = (type(mode) == "string" and string.upper(mode) == "VERTICAL")
+  local vertical = (type(mode) == "string" and string.upper(mode) == "VERTICAL")
+  if self.uuiVertical == vertical then return end
+  self.uuiVertical = vertical
   UpdateStatusBarFill(self)
 end
 

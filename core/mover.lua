@@ -5,8 +5,10 @@
 --
 -- Deliberately small. This is not pfUI's mover/config framework: there are no
 -- grids, snapping, nudge keys, per-frame scale editing or profile machinery.
--- Only intended unrealUI elements are ever registered, and the native minimap
--- is never registered even though unrealUI attaches a button beside it.
+-- Only intended unrealUI elements are ever registered. modules/minimap.lua is
+-- the one exception that registers a native frame (MinimapCluster) rather than
+-- an unrealUI-owned one: the map itself is still never reskinned or replaced,
+-- it is just given a drag handle like everything else here.
 
 local U = UnrealUI
 local M = U.media

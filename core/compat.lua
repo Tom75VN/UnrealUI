@@ -192,6 +192,10 @@ end
 --
 -- Coerce on the way in and cache what was applied so callers have a readback.
 -- ---------------------------------------------------------------------------
+local textureColors = {}
+local function MirrorTextureColor(texture, cached) texture.uuiColor = cached end
+local function ReadTextureColor(texture) return texture.uuiColor end
+
 function U.SetColor(texture, r, g, b, a)
   if not texture or not texture.SetVertexColor then return false end
 
@@ -200,20 +204,33 @@ function U.SetColor(texture, r, g, b, a)
   b = tonumber(b) or 0
   a = tonumber(a) or 1
 
+  local cached = textureColors[texture]
+  if cached and cached[1] == r and cached[2] == g and
+     cached[3] == b and cached[4] == a then return true end
+
   local ok = pcall(texture.SetVertexColor, texture, r, g, b, a)
   if ok then
+    if cached then
+      cached[1], cached[2], cached[3], cached[4] = r, g, b, a
+    else
+      cached = { r, g, b, a }
+      textureColors[texture] = cached
+    end
     -- Frames on this client behave as tables, but texture regions are not
-    -- guaranteed to accept an arbitrary field, so the cache write is optional.
-    pcall(function() texture.uuiColor = { r, g, b, a } end)
+    -- guaranteed to accept an arbitrary field, so this compatibility mirror
+    -- is optional. The side table above is the allocation-free primary cache.
+    pcall(MirrorTextureColor, texture, cached)
   end
   return ok
 end
 
 function U.GetColor(texture)
   if not texture then return nil end
-  local ok, cached = pcall(function() return texture.uuiColor end)
-  if not ok or type(cached) ~= "table" then return nil end
-  return cached[1], cached[2], cached[3], cached[4]
+  local cached = textureColors[texture]
+  if cached then return cached[1], cached[2], cached[3], cached[4] end
+  local ok, fallback = pcall(ReadTextureColor, texture)
+  if not ok or type(fallback) ~= "table" then return nil end
+  return fallback[1], fallback[2], fallback[3], fallback[4]
 end
 
 -- ---------------------------------------------------------------------------
@@ -269,6 +286,8 @@ local suppressedNames = {}
 -- note below.
 local suppressedGroups = {}
 local suppressionArmed = false
+local suppressionCursor = 1
+local SUPPRESSION_BATCH_SIZE = 60
 
 -- knowledge.json / compat.native_suppression_pcall_burst_stutter: this sweep
 -- used to resolve every name through U.G (its own pcall) and then run the full
@@ -294,14 +313,13 @@ local suppressionArmed = false
 -- object. The pcall boundaries themselves are unchanged -- each step still
 -- fails independently.
 local resolvedNative = {}   -- name -> object | false
+local suppressedObjects = {} -- object -> true; avoids a protected field read
 
 -- Hoisted pcall bodies. These were anonymous closures built fresh for every
 -- object on every sweep; as named upvalues they allocate nothing and keep the
 -- one-pcall-per-step failure isolation the closures had.
 local function NoOpShow() return end
 
-local function ReadSuppressedFlag(object) return object.uuiSuppressed end
-local function MarkSuppressed(object) object.uuiSuppressed = true end
 local function NeutraliseShow(object)
   if object.Show then object.Show = NoOpShow end
 end
@@ -330,15 +348,10 @@ local function ResolveNativeObject(name)
   return object
 end
 
-local function IsAlreadySuppressed(object)
-  local ok, value = pcall(ReadSuppressedFlag, object)
-  return ok and value and true or false
-end
-
 local function KillNativeObject(object)
   if not object then return end
 
-  local alreadyMarked = IsAlreadySuppressed(object)
+  local alreadyMarked = suppressedObjects[object] and true or false
 
   -- Steady-state fast path: once an object is marked, the common case on every
   -- later pass is that it is still exactly where this adapter left it. A
@@ -357,7 +370,7 @@ local function KillNativeObject(object)
   -- One shared no-op serves every object: nothing compares these by identity.
   if not alreadyMarked then
     pcall(NeutraliseShow, object)
-    pcall(MarkSuppressed, object)
+    suppressedObjects[object] = true
   end
 
   pcall(HideObject, object)
@@ -373,15 +386,47 @@ local function SweepNames(names)
   end
 end
 
+local function SweepNameRange(names, first, last)
+  if not names then return end
+  local count = table.getn(names)
+  if last > count then last = count end
+  local i
+  for i = first, last do
+    KillNativeObject(ResolveNativeObject(names[i]))
+  end
+end
+
 local function ApplyNativeSuppression()
   SweepNames(suppressedNames)
 end
 
+-- The periodic guarantee used to inspect the complete ~1150-name list inside
+-- one updater callback. Even its hidden-object fast path needs an IsShown
+-- pcall per resolved object, so that retained a large once-per-second burst
+-- after the
+-- earlier suppression fixes. Walk one bounded slice per tick instead: at 60
+-- names every 0.05s the complete list is still covered about once per second,
+-- but no render tick inherits the whole scan.
+local function ApplyNativeSuppressionBatch()
+  local count = table.getn(suppressedNames)
+  if count == 0 then return end
+
+  local limit = SUPPRESSION_BATCH_SIZE
+  if count < limit then limit = count end
+
+  local processed = 0
+  while processed < limit do
+    if suppressionCursor > count then suppressionCursor = 1 end
+    KillNativeObject(ResolveNativeObject(suppressedNames[suppressionCursor]))
+    suppressionCursor = suppressionCursor + 1
+    processed = processed + 1
+  end
+end
+
 -- Returns a handler that sweeps one group only. An event that cannot bring a
--- family of frames back has no reason to walk it; the one-second full sweep
+-- family of frames back has no reason to walk it; the bounded periodic scan
 -- above stays the guarantee for everything, so the worst case for a name in
--- the wrong group is that it is re-hidden up to a second later instead of
--- immediately.
+-- the wrong group is that it is re-hidden after the next complete scan.
 local function GroupSweeper(group)
   return function()
     SweepNames(suppressedGroups[group])
@@ -426,7 +471,7 @@ end
 -- frames this client re-shows when the target changes, "party" for the roster
 -- frames, and the default "static" for everything the periodic sweep alone can
 -- cover. Passing nothing is always safe -- it only means the frame waits for
--- the one-second sweep rather than being re-hidden the instant an event fires.
+-- the bounded periodic scan rather than being re-hidden when an event fires.
 function U.SuppressNativeFrame(names, group)
   if type(names) == "string" then names = { names } end
   if type(names) ~= "table" then return end
@@ -434,6 +479,7 @@ function U.SuppressNativeFrame(names, group)
   if type(group) ~= "string" then group = "static" end
   if not suppressedGroups[group] then suppressedGroups[group] = {} end
   local bucket = suppressedGroups[group]
+  local firstNew = table.getn(bucket) + 1
 
   local i
   for i = 1, table.getn(names) do
@@ -445,17 +491,16 @@ function U.SuppressNativeFrame(names, group)
     end
   end
 
-  -- Only this group needs the immediate pass. Names other callers registered
-  -- were already suppressed by their own call, and re-walking this bucket's
-  -- earlier entries costs one IsShown readback each.
-  SweepNames(bucket)
+  -- Suppress only the names this call added. Earlier calls already handled the
+  -- front of this bucket; re-walking it made party-frame startup quadratic.
+  SweepNameRange(bucket, firstNew, table.getn(bucket))
 
   if not suppressionArmed then
     suppressionArmed = true
 
     -- PLAYER_TARGET_CHANGED is the one of these observed firing on this client
     -- (events.json, 7 captures); the others are registered but unobserved, so
-    -- the one-second sweep is the actual guarantee rather than a backstop.
+    -- the bounded periodic scan is the actual guarantee rather than a backstop.
     --
     -- Because it is the one that fires, it is also the one whose cost is felt:
     -- it gets the "target" bucket only, not the whole list. PLAYER_ENTERING_WORLD
@@ -464,7 +509,8 @@ function U.SuppressNativeFrame(names, group)
     U.RegisterEvent("PLAYER_ENTERING_WORLD", ApplyNativeSuppression)
     U.RegisterEvent("PLAYER_TARGET_CHANGED", GroupSweeper("target"))
     U.RegisterEvent("PARTY_MEMBERS_CHANGED", GroupSweeper("party"))
-    U.RegisterUpdate("compat.native-suppression", 1, ApplyNativeSuppression)
+    U.RegisterUpdate("compat.native-suppression", 0.05,
+                     ApplyNativeSuppressionBatch)
   end
 end
 

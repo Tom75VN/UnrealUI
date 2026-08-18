@@ -1,13 +1,14 @@
 -- unrealUI :: modules/actionbar.lua
 --
--- Ten action bars in the pfUI modern style: flat near-black square buttons with
+-- Up to ten action bars in the pfUI modern style: flat near-black square buttons with
 -- one thin outline, the icon inset inside it, the keybind top-right, the item
 -- count bottom-right and the macro name bottom-left.
 --
 -- Only the look and the call shapes are taken from pfUI. None of its bar
 -- architecture is reproduced: no config schema, no secure/TBC state driver, no
--- hoverbind, no reagent counter, no animations, no stance/pet bars. Stance and
--- pet bars are separate scope; this file owns the ten 12-slot action bars only.
+-- hoverbind, no reagent counter, no animations, no stance/pet bars. A page
+-- owned by this character's class/stance is reached only by paging Bar 1 and
+-- is omitted from the independent static bars.
 --
 -- Compatibility notes that shaped this file:
 --
@@ -42,31 +43,47 @@ local AB = U.RegisterModule("actionbar")
 -- ---------------------------------------------------------------------------
 -- Layout model
 --
--- Vanilla's 120-slot flat action space is NOT sequential by bar: only the six
--- page blocks (1-72) are contiguous, and the four real multibars sit after
--- them in a fixed, non-adjacent order (BottomLeft, BottomRight, Right, Left).
--- Bar 1 is the paged bar and resolves its slots from the active page instead
--- (see ActivePage/SlotFor). Bar 2 and bars 7-10 are the remaining five page
--- blocks (2-6) exposed as static bars; bars 3-6 are MultiBarRight,
--- MultiBarLeft, MultiBarBottomRight and MultiBarBottomLeft respectively, per
--- BAR_SLOT_BASE below. This mapping must stay in sync with BINDING_PREFIX --
--- a bar's slot base and its binding prefix have to name the same real bar.
+-- Bar 1 is paged and may temporarily resolve to a class-owned stance page (see
+-- ActivePage/SlotFor). That exact page must not also be exposed as a static
+-- bar or editing a stance action necessarily edits the duplicate. Other pages
+-- remain available; for a Rogue page 7 is reserved, leaving Bars 1-6 and 8-10.
+-- The four native multibar commands address bars 3-6 / slots 25-72.
 -- ---------------------------------------------------------------------------
 local BAR_COUNT = 10
 local SLOTS_PER_BAR = 12
+
+-- Measured on this client: Rogue Stealth uses bonus offset 1 / page 7. The
+-- Warrior and Druid sets follow UnrealPfUI's working Vanilla path and the
+-- client-standard bonus offsets; they remain WORKING_SOURCE until captured on
+-- those classes. Unknown classes own no bonus page in the 1-10 range.
+local CLASS_RESERVED_PAGES = {
+  ROGUE   = { [7] = true },
+  WARRIOR = { [7] = true, [8] = true, [9] = true },
+  DRUID   = { [7] = true, [9] = true, [10] = true },
+}
+
+local CLASS_RESERVED_REASON = {
+  ROGUE = "Rogue Stealth",
+  WARRIOR = "Warrior stances",
+  DRUID = "Druid forms",
+}
+
+local reservedPages = {}
+local availableBars = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 }
+local playerClass
 
 -- Slot base per bar (SlotFor adds 1..12 on top). Bar 1 is omitted: it is
 -- paged and resolved dynamically in SlotFor instead of through this table.
 local BAR_SLOT_BASE = {
   [2]  = 12,  -- page 2:                13-24
-  [3]  = 96,  -- MultiBarRight:         97-108
-  [4]  = 108, -- MultiBarLeft:          109-120
-  [5]  = 84,  -- MultiBarBottomRight:   85-96
-  [6]  = 72,  -- MultiBarBottomLeft:    73-84
-  [7]  = 24,  -- page 3:                25-36
-  [8]  = 36,  -- page 4:                37-48
-  [9]  = 48,  -- page 5:                49-60
-  [10] = 60,  -- page 6:                61-72
+  [3]  = 24,  -- MultiBarRight:         25-36
+  [4]  = 36,  -- MultiBarLeft:          37-48
+  [5]  = 48,  -- MultiBarBottomRight:   49-60
+  [6]  = 60,  -- MultiBarBottomLeft:    61-72
+  [7]  = 72,  -- bonus/stance page 1:   73-84
+  [8]  = 84,  -- bonus/stance page 2:   85-96
+  [9]  = 96,  -- bonus/stance page 3:   97-108
+  [10] = 108, -- bonus/stance page 4:   109-120
 }
 
 -- Keyed by the same names the settings tab and the config keys use, so one
@@ -89,9 +106,9 @@ local GLOBAL_DEFAULTS = {
   showCooldown = true,
 }
 
--- Vanilla binding names for the slot ranges the stock UI owns. Bars 2 and 7-10
--- are page-only in Vanilla and have no binding of their own, so their buttons
--- simply show no key.
+-- Native binding names for the slot ranges the stock UI owns. Bar 2 and any
+-- class-available pages among 7-10 have no dedicated binding command, so
+-- UnrealUI neither displays nor installs a key route for those buttons.
 local BINDING_PREFIX = {
   [1] = "ACTIONBUTTON",
   [3] = "MULTIACTIONBAR3BUTTON",
@@ -101,6 +118,7 @@ local BINDING_PREFIX = {
 }
 
 local ICON_INSET = 2
+local PRESS_FLASH_DURATION = 0.16
 
 local COLOR = {
   usable    = { 1.00, 1.00, 1.00, 1.00 },
@@ -135,8 +153,10 @@ local GCD_THRESHOLD = 2
 local CD_TICK = 0.1
 
 local bars = {}         -- bar index -> { frame, buttons, mover }
+local pressedButtons = {}
 local cfg               -- module settings table (flat; see BuildDefaults)
 local classColor = { 0.5, 0.5, 1.0 }
+local bindingsDirty = false
 
 -- ---------------------------------------------------------------------------
 -- Config
@@ -188,6 +208,7 @@ local function Number(bar, name)
 end
 
 local function IsEnabled(bar)
+  if reservedPages[bar] then return false end
   return Get(bar, "Enabled") and true or false
 end
 
@@ -207,6 +228,23 @@ end
 
 local function Has(name)
   return type(U.G(name)) == "function"
+end
+
+local function ConfigureBarOwnership()
+  local _, class = Call("UnitClass", "player")
+  playerClass = class
+  local classPages = CLASS_RESERVED_PAGES[class] or {}
+  reservedPages = {}
+  availableBars = {}
+
+  local bar
+  for bar = 1, BAR_COUNT do
+    if classPages[bar] then
+      reservedPages[bar] = true
+    else
+      table.insert(availableBars, bar)
+    end
+  end
 end
 
 -- Bar 1 follows the client's page and bonus bar. GetActiveBar in UnrealPfUI's
@@ -293,6 +331,62 @@ local function BindingFor(bar, index)
   return CompactBinding(Call("GetBindingKey", prefix .. index))
 end
 
+-- Make the executable key route match the label route exactly. Suppressing the
+-- stock buttons only hides them; it does not remove their native binding
+-- commands. Each rebuild first clears this addon's old overrides, then installs
+-- only the keys currently returned for that exact button command. A removed or
+-- unassigned key therefore cannot remain attached to a stale UnrealUI slot.
+--
+-- SetOverrideBindingClick has no compact runtime record, so this mirrors the
+-- narrow working UnrealPfUI path. The corrected sequential slot table remains a
+-- safe native-binding fallback if either override call is unavailable/rejected.
+local function ApplyOverrideBindings()
+  local clear = U.G("ClearOverrideBindings")
+  local bind = U.G("SetOverrideBindingClick")
+  local bar, index
+
+  -- Never create overrides that cannot later be cleared. With either half of
+  -- the API absent, the corrected native slot mapping is the complete fallback.
+  if type(clear) ~= "function" or type(bind) ~= "function" then
+    bindingsDirty = false
+    return false
+  end
+
+  local clean = true
+
+  for bar = 1, BAR_COUNT do
+    local entry = bars[bar]
+    if entry then
+      for index = 1, table.getn(entry.buttons) do
+        local button = entry.buttons[index]
+        local cleared = pcall(clear, button)
+
+        local prefix = BINDING_PREFIX[bar]
+        if not cleared then
+          -- Protected binding calls may be rejected during combat. Do not layer
+          -- new keys over an override set that could not first be made clean.
+          clean = false
+        elseif prefix then
+          local key1, key2 = Call("GetBindingKey", prefix .. index)
+          if type(key1) == "string" and key1 ~= "" then
+            if not pcall(bind, button, false, key1, button.uuiName, "LeftButton") then
+              clean = false
+            end
+          end
+          if type(key2) == "string" and key2 ~= "" and key2 ~= key1 then
+            if not pcall(bind, button, false, key2, button.uuiName, "LeftButton") then
+              clean = false
+            end
+          end
+        end
+      end
+    end
+  end
+
+  bindingsDirty = not clean
+  return clean
+end
+
 -- ---------------------------------------------------------------------------
 -- Cursor state
 --
@@ -322,7 +416,163 @@ local function ButtonSlot(button)
   return SlotFor(button.uuiBar, button.uuiIndex)
 end
 
-local function OnButtonClick(button)
+local function ApplyButtonBorder(button)
+  if button.uuiPressedShown then
+    U.SetBorderColor(button, 1, 1, 1, 1)
+  elseif button.uuiActive then
+    U.SetBorderColor(button, classColor[1], classColor[2], classColor[3], 1)
+  elseif button.uuiHover then
+    U.SetBorderColor(button, 0.55, 0.55, 0.55, 1)
+  else
+    U.SetBorderColor(button, M.Unpack(M.color.border))
+  end
+end
+
+-- SetOverrideBindingClick targets the named UnrealUI button, so keyboard and
+-- mouse activation both arrive through OnButtonClick. Flash that exact button;
+-- this is also a visible confirmation that a key was routed to the right slot.
+local function ShowButtonPress(button, held)
+  if not button.uuiPressed then return end
+
+  local now = tonumber(Call("GetTime"))
+  button.uuiPressedUntil = now and (now + PRESS_FLASH_DURATION) or nil
+  button.uuiPressedHeld = held and true or nil
+  button.uuiPressedShown = true
+  button.uuiPressed:Show()
+  ApplyButtonBorder(button)
+
+  if not button.uuiPressedTracked then
+    button.uuiPressedTracked = true
+    table.insert(pressedButtons, button)
+  end
+end
+
+local function ReleaseButtonPress(button)
+  if button then button.uuiPressedHeld = nil end
+end
+
+local function RefreshPressedButtons()
+  if table.getn(pressedButtons) == 0 then return end
+
+  local now = tonumber(Call("GetTime"))
+  local i
+  for i = table.getn(pressedButtons), 1, -1 do
+    local button = pressedButtons[i]
+    if not button.uuiPressedHeld and
+       (not now or not button.uuiPressedUntil or now >= button.uuiPressedUntil) then
+      if button.uuiPressed then button.uuiPressed:Hide() end
+      button.uuiPressedUntil = nil
+      button.uuiPressedTracked = nil
+      button.uuiPressedShown = nil
+      ApplyButtonBorder(button)
+      table.remove(pressedButtons, i)
+    end
+  end
+end
+
+-- Build 5875 uses the Vanilla binding-function path. Those commands call the
+-- native ActionButtonDown/Up and MultiActionButtonDown/Up globals directly, so
+-- a successful action does not imply that UnrealUI's OnClick ran. Post-hook the
+-- native functions for visual state only; their original action execution and
+-- return values remain untouched inside U.PostHookGlobal.
+local NATIVE_BINDING_BAR = {
+  MultiBarRight = 3,
+  MultiBarLeft = 4,
+  MultiBarBottomRight = 5,
+  MultiBarBottomLeft = 6,
+}
+local nativeBindingHooksInstalled = false
+local legacyMainBindingInstalled = false
+local OnButtonClick
+
+local function BoundButton(bar, index)
+  bar = tonumber(bar)
+  index = tonumber(index)
+  if not bar or not index or index < 1 then return nil end
+
+  local row = math.floor((index - 1) / SLOTS_PER_BAR)
+  index = index - row * SLOTS_PER_BAR
+  local entry = bars[bar]
+  return entry and entry.buttons[index] or nil
+end
+
+local function HookNativeBindingHighlights()
+  if nativeBindingHooksInstalled or type(U.PostHookGlobal) ~= "function" then return end
+
+  local installed = false
+  local mainHasUp = U.PostHookGlobal("ActionButtonUp", function(index)
+    ReleaseButtonPress(BoundButton(1, index))
+  end)
+  local multiHasUp = U.PostHookGlobal("MultiActionButtonUp", function(name, index)
+    ReleaseButtonPress(BoundButton(NATIVE_BINDING_BAR[name], index))
+  end)
+  if mainHasUp or multiHasUp then installed = true end
+
+  if U.PostHookGlobal("ActionButtonDown", function(index)
+    local button = BoundButton(1, index)
+    if button then ShowButtonPress(button, mainHasUp) end
+  end) then installed = true end
+  if U.PostHookGlobal("MultiActionButtonDown", function(name, index)
+    local button = BoundButton(NATIVE_BINDING_BAR[name], index)
+    if button then ShowButtonPress(button, multiHasUp) end
+  end) then installed = true end
+
+  nativeBindingHooksInstalled = installed
+end
+
+-- Vanilla binding commands call the stock ActionButtonDown/Up globals instead
+-- of clicking a named button. When the later override-binding API is absent,
+-- letting those globals continue into the hidden stock ActionButton would bind
+-- the key to that frame's fixed/native action rather than to UnrealUI's
+-- currently paged main-bar button. Route only that legacy main-bar path to the
+-- visible physical button: Down owns pressed state, Up clicks the button and
+-- therefore resolves ButtonSlot at the current page/stance at activation time.
+--
+-- UnrealPfUI uses this route through build 11200; compact environment evidence
+-- identifies this client as build 5875. API existence alone is not accepted as
+-- proof of later override behavior, so the measured build wins when available.
+-- An unknown/later build retains its native globals when both override calls
+-- exist and uses the named-button route above.
+local function InstallLegacyMainBindingRoute()
+  if legacyMainBindingInstalled then return true end
+  local _, build = Call("GetBuildInfo")
+  build = tonumber(build)
+  if (not build or build > 11200) and
+     Has("ClearOverrideBindings") and Has("SetOverrideBindingClick") then
+    return false
+  end
+
+  local originalDown = U.G("ActionButtonDown")
+  local originalUp = U.G("ActionButtonUp")
+  if type(originalDown) ~= "function" or type(originalUp) ~= "function" then
+    return false
+  end
+
+  local down = function(index)
+    local button = BoundButton(1, index)
+    if button then ShowButtonPress(button, true) end
+  end
+  local up = function(index)
+    local button = BoundButton(1, index)
+    if button then OnButtonClick(button) end
+  end
+
+  U.SetG("ActionButtonDown", down)
+  if U.G("ActionButtonDown") ~= down then return false end
+
+  U.SetG("ActionButtonUp", up)
+  if U.G("ActionButtonUp") ~= up then
+    U.SetG("ActionButtonDown", originalDown)
+    return false
+  end
+
+  legacyMainBindingInstalled = true
+  return true
+end
+
+OnButtonClick = function(button)
+  ShowButtonPress(button, false)
+
   -- UnrealPfUI's working path: while the cursor carries an action, a click
   -- swaps it with the slot instead of using it.
   if CursorHoldsAction() then
@@ -365,6 +615,7 @@ local function CreateButton(bar, index)
 
   button.uuiBar = bar
   button.uuiIndex = index
+  button.uuiName = name
 
   U.CreateBackdrop(button, {})
   pcall(button.EnableMouse, button, true)
@@ -425,6 +676,16 @@ local function CreateButton(bar, index)
   end
   button.uuiCooldownLayer = textLayer
 
+  -- A raised translucent fill stays visible above the icon and cooldown swipe
+  -- while leaving the key/count/macro labels readable. It is driven by the
+  -- shared updater rather than an unreliable child-frame OnUpdate.
+  local pressed = textLayer:CreateTexture(nil, "ARTWORK")
+  pcall(pressed.SetAllPoints, pressed, textLayer)
+  pcall(pressed.SetTexture, pressed, M.texture.plain)
+  U.SetColor(pressed, 1, 1, 1, 0.28)
+  pressed:Hide()
+  button.uuiPressed = pressed
+
   button.uuiCooldownText = U.CreateLabel(textLayer, {
     size = M.fontSize.normal, color = CD_COLOR.normal,
     inherits = "GameFontNormal",
@@ -441,16 +702,12 @@ local function CreateButton(bar, index)
   button:SetScript("OnReceiveDrag", function() OnButtonReceiveDrag(button) end)
   button:SetScript("OnEnter", function()
     button.uuiHover = true
-    if not button.uuiActive then
-      U.SetBorderColor(button, 0.55, 0.55, 0.55, 1)
-    end
+    ApplyButtonBorder(button)
     ShowTooltip(button)
   end)
   button:SetScript("OnLeave", function()
     button.uuiHover = false
-    if not button.uuiActive then
-      U.SetBorderColor(button, M.Unpack(M.color.border))
-    end
+    ApplyButtonBorder(button)
     HideTooltip()
   end)
 
@@ -509,6 +766,7 @@ local function HideButton(button)
   ShowRegion(button.uuiCount, false)
   ShowRegion(button.uuiMacro, false)
   ShowRegion(button.uuiCooldownText, false)
+  ShowRegion(button.uuiPressed, false)
   button.uuiCdActive = false
   button.uuiCdShown = false
   if button.uuiCooldown then pcall(button.uuiCooldown.Hide, button.uuiCooldown) end
@@ -630,14 +888,7 @@ local function UpdateActive(button)
 
   if active == button.uuiActive then return end
   button.uuiActive = active
-
-  if active then
-    U.SetBorderColor(button, classColor[1], classColor[2], classColor[3], 1)
-  elseif button.uuiHover then
-    U.SetBorderColor(button, 0.55, 0.55, 0.55, 1)
-  else
-    U.SetBorderColor(button, M.Unpack(M.color.border))
-  end
+  ApplyButtonBorder(button)
 end
 
 -- ---------------------------------------------------------------------------
@@ -807,11 +1058,19 @@ end
 local function DefaultPosition(bar)
   -- Bars stack upward from the bottom centre. Only the first placement is ours;
   -- after that the mover store owns the position.
+  local rank = bar
+  local i
+  for i = 1, table.getn(availableBars) do
+    if availableBars[i] == bar then
+      rank = i
+      break
+    end
+  end
   return {
     point = "BOTTOM",
     relativePoint = "BOTTOM",
     x = 0,
-    y = 20 + (bar - 1) * 40,
+    y = 20 + (rank - 1) * 40,
   }
 end
 
@@ -905,7 +1164,25 @@ end
 -- four functions and holds no state of its own.
 -- ---------------------------------------------------------------------------
 function U.ActionBarCount()
+  return table.getn(availableBars)
+end
+
+function U.ActionBarTotal()
   return BAR_COUNT
+end
+
+function U.ActionBarReservation(bar)
+  bar = tonumber(bar)
+  if not bar or not reservedPages[bar] then return nil end
+  return CLASS_RESERVED_REASON[playerClass] or "class/form paging"
+end
+
+function U.ActionBarIDs()
+  local result, i = {}, nil
+  for i = 1, table.getn(availableBars) do
+    result[i] = availableBars[i]
+  end
+  return result
 end
 
 function U.ActionBarLimits(name)
@@ -930,7 +1207,8 @@ end
 
 function U.GetActionBarSetting(bar, name)
   bar = tonumber(bar)
-  if not bar or bar < 1 or bar > BAR_COUNT or not cfg then return nil end
+  if not bar or bar < 1 or bar > BAR_COUNT or reservedPages[bar] or
+     not cfg then return nil end
   if name == "Enabled" then return IsEnabled(bar) end
   return Number(bar, name)
 end
@@ -939,7 +1217,8 @@ end
 -- was actually stored after clamping.
 function U.SetActionBarSetting(bar, name, value)
   bar = tonumber(bar)
-  if not bar or bar < 1 or bar > BAR_COUNT or not cfg then return nil end
+  if not bar or bar < 1 or bar > BAR_COUNT or reservedPages[bar] or
+     not cfg then return nil end
 
   if name == "Enabled" then
     cfg[Key(bar, "Enabled")] = value and true or false
@@ -1014,7 +1293,7 @@ end
 -- ---------------------------------------------------------------------------
 local SLOT_EVENTS = {
   "ACTIONBAR_SLOT_CHANGED", "ACTIONBAR_PAGE_CHANGED", "UPDATE_BONUS_ACTIONBAR",
-  "UPDATE_BINDINGS", "PLAYER_ENTERING_WORLD", "BAG_UPDATE",
+  "BAG_UPDATE",
   "ACTIONBAR_UPDATE_STATE", "ACTIONBAR_UPDATE_USABLE",
   "ACTIONBAR_UPDATE_COOLDOWN", "PLAYER_ENTER_COMBAT", "PLAYER_LEAVE_COMBAT",
   "START_AUTOREPEAT_SPELL", "STOP_AUTOREPEAT_SPELL", "UNIT_INVENTORY_CHANGED",
@@ -1051,9 +1330,20 @@ local function RegisterEvents()
   U.RegisterEvent("ACTIONBAR_HIDEGRID", function()
     gridActive = false
   end)
+
+  local function RefreshBindings()
+    ApplyOverrideBindings()
+    RefreshSlots()
+  end
+  U.RegisterEvent("UPDATE_BINDINGS", RefreshBindings)
+  U.RegisterEvent("PLAYER_ENTERING_WORLD", RefreshBindings)
+  U.RegisterEvent("PLAYER_LEAVE_COMBAT", function()
+    if bindingsDirty then ApplyOverrideBindings() end
+  end)
 end
 
 function AB:OnInit()
+  ConfigureBarOwnership()
   cfg = U.ModuleConfig("actionbar", BuildDefaults())
 
   -- The shipped button spacing changed from 4 to 2. A database written by the
@@ -1077,12 +1367,18 @@ function AB:OnEnable()
 
   SuppressNativeBars()
   ApplyAll()
+  ApplyOverrideBindings()
+  InstallLegacyMainBindingRoute()
+  -- Keep the visual-only hooks for the static multibars too. On the legacy
+  -- main route they wrap UnrealUI's replacement, never the hidden stock path.
+  HookNativeBindingHighlights()
   RegisterEvents()
 
   -- Three rates: slot contents change rarely and cost the most calls, usable/
   -- active/cooldown state is what the eye tracks, and the countdown itself only
   -- re-reads the clock, so it can tick fastest for the least work.
   U.RegisterUpdate("actionbar.cooldown", CD_TICK, RefreshCooldownTimers)
+  U.RegisterUpdate("actionbar.pressed", 0, RefreshPressedButtons)
   U.RegisterUpdate("actionbar.state", 0.2, RefreshState)
   U.RegisterUpdate("actionbar.slots", 1, RefreshSlots)
 end
@@ -1094,6 +1390,7 @@ function U.ActionBarReport()
     local entry = bars[i]
     table.insert(report, {
       bar = i,
+      reserved = reservedPages[i] and true or false,
       enabled = IsEnabled(i),
       created = entry and true or false,
       buttons = Number(i, "Buttons"),
