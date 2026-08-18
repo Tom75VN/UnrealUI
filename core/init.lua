@@ -9,7 +9,7 @@ UnrealUI = {}
 local U = UnrealUI
 
 U.name      = "unrealUI"
-U.version   = "0.0.2"
+U.version   = "0.0.3"
 U.modules   = {}       -- name -> module table
 U.moduleOrder = {}     -- load/enable order, registration order
 U.ready     = false    -- set once PLAYER_LOGIN work has run
@@ -232,7 +232,44 @@ end
 local updaters = {}
 U.ticks = 0
 
+-- knowledge.json / scripts.onupdate_elapsed_only_via_arg1: this client passes
+-- NO arguments to an OnUpdate handler at all -- a focused probe measured
+-- a=nil, b=nil on 804 of 804 consecutive ticks, with the frame delta available
+-- only through the legacy global arg1. arg1 is also the shared event-argument
+-- global that every OnEvent dispatch overwrites, so resolving elapsed from it
+-- couples every throttled refresh in the addon to whatever the last event left
+-- behind. A non-numeric arg1 (any CHAT_MSG_* payload is a string) resolves to
+-- 0, and because the accumulator only ever advances by that value, a run of
+-- those stalls every interval > 0 updater indefinitely -- the action bar range
+-- tint, the cooldown countdown and the slot sweep all freeze while interval 0
+-- updaters keep running. A stale numeric arg1 is just as wrong in the other
+-- direction (ACTIONBAR_SLOT_CHANGED delivered 12 in a probe run).
+--
+-- GetTime is the client's own monotonic clock (api.json / core.time.v1) and is
+-- already what the cooldown maths in modules/actionbar.lua is measured against;
+-- the same probe read it 804 times across 6.007s and its deltas summed to the
+-- wall time exactly. The driver therefore derives elapsed from successive
+-- GetTime readings and does not consult arg1 at all. The argument and arg1
+-- paths are kept only as fallbacks for a client that supplies them while
+-- lacking GetTime.
+local _GetTime = GetTime
+local lastTickAt
+
 local function ResolveElapsed(a, b)
+  if type(_GetTime) == "function" then
+    local ok, now = pcall(_GetTime)
+    if ok and type(now) == "number" then
+      local delta = 0
+      if lastTickAt then delta = now - lastTickAt end
+      lastTickAt = now
+      -- The clock restarts across a reload and the client can hitch, so a
+      -- backwards step contributes nothing and a long stall is capped rather
+      -- than dumped into every accumulator at once.
+      if delta < 0 then delta = 0 end
+      if delta > 1 then delta = 1 end
+      return delta
+    end
+  end
   if type(a) == "number" then return a end
   if type(b) == "number" then return b end
   local legacy = U.G("arg1")

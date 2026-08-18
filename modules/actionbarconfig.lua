@@ -118,14 +118,15 @@ end
 -- ---------------------------------------------------------------------------
 -- General options
 --
--- The three label toggles apply to every bar at once, which is what makes them
+-- The label toggles apply to every bar at once, which is what makes them
 -- general rather than per-bar. Nothing else in this file is global, and no
 -- option is listed here that unrealUI does not actually implement.
 -- ---------------------------------------------------------------------------
 local GLOBALS = {
-  { key = "showKeybind", text = "Show keybinds" },
-  { key = "showMacro",   text = "Show macro names" },
-  { key = "showCount",   text = "Show item counts" },
+  { key = "showKeybind",  text = "Show keybinds" },
+  { key = "showMacro",    text = "Show macro names" },
+  { key = "showCount",    text = "Show item counts" },
+  { key = "showCooldown", text = "Show cooldown timers" },
 }
 
 local function BuildGeneralPage(parent)

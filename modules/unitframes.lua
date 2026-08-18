@@ -135,15 +135,19 @@ local PRIMARY_WIDTH = 180
 local SPECS = {
   {
     -- health raised from 26 to 34 (+30%) by request.
+    -- No values strip: text lives on the health/power bars themselves --
+    -- level+health on the health bar, power on the power bar, by request.
     id = "player", unit = "player", name = "Player", label = "Player",
-    width = PRIMARY_WIDTH, health = 34, power = 10, valuesHeight = 14, gap = 0,
-    values = { left = "unit", center = "healthdyn", right = "powerdyn" },
+    width = PRIMARY_WIDTH, health = 34, power = 10, gap = 0,
+    healthLabels = { left = "level", right = "healthdyn" },
+    powerLabels = { right = "powerdyn" },
     default = { point = "BOTTOMRIGHT", relativePoint = "BOTTOM", x = -75, y = 125 },
   },
   {
     id = "target", unit = "target", name = "Target", label = "Target",
-    width = PRIMARY_WIDTH, health = 34, power = 10, valuesHeight = 14, gap = 0,
-    values = { left = "unit", center = "healthdyn", right = "powerdyn" },
+    width = PRIMARY_WIDTH, health = 34, power = 10, gap = 0,
+    healthLabels = { left = "healthdyn", right = "unitrev" },
+    powerLabels = { left = "powerdyn" },
     default = { point = "BOTTOMLEFT", relativePoint = "BOTTOM", x = 75, y = 125 },
   },
   {
@@ -196,17 +200,19 @@ local function SuppressStockFrames()
       "GroupIndicatorMiddle", "GroupIndicatorRight", "GroupIndicatorText" }))
   U.SuppressNativeFrame("PlayerPortrait")
 
+  -- Tagged "target": these are the frames this client actually brings back on
+  -- PLAYER_TARGET_CHANGED, so they are the only ones that event needs to sweep.
   U.SuppressNativeFrame(U.NativeFrameParts("TargetFrame",
     { "Texture", "TextureFrame", "Background", "NameBackground", "HealthBar",
       "HealthBarText", "ManaBar", "ManaBarText", "Name", "Level", "Portrait" },
-    { { "Buff", 5 }, { "Debuff", 16 } }))
-  U.SuppressNativeFrame("TargetPortrait")
+    { { "Buff", 5 }, { "Debuff", 16 } }), "target")
+  U.SuppressNativeFrame("TargetPortrait", "target")
 
   U.SuppressNativeFrame(U.NativeFrameParts("TargetofTarget",
     { "Frame", "Texture", "TextureFrame", "Background", "HealthBar",
-      "ManaBar", "Portrait", "Name", "DeadText" }))
+      "ManaBar", "Portrait", "Name", "DeadText" }), "target")
   U.SuppressNativeFrame(U.NativeFrameParts("TargetofTargetFrame",
-    {}, { { "Debuff", 4 } }))
+    {}, { { "Debuff", 4 } }), "target")
 
   local i
   for i = 1, PARTY_COUNT do
@@ -217,9 +223,9 @@ local function SuppressStockFrames()
         "LeaderIcon", "MasterIcon", "PVPIcon",
         "PetFrame", "PetFrameTexture", "PetFrameHealthBar",
         "PetFramePortrait", "PetFrameName" },
-      { { "Debuff", 4 } }))
+      { { "Debuff", 4 } }), "party")
     U.SuppressNativeFrame(U.NativeFrameParts(root .. "PetFrame",
-      {}, { { "Debuff", 4 } }))
+      {}, { { "Debuff", 4 } }), "party")
   end
 end
 
@@ -298,19 +304,87 @@ local function Abbreviate(value)
 end
 
 -- ---------------------------------------------------------------------------
+-- Classification icon
+--
+-- The elite/rare dragon drawn beside a unit's health bar. Two things behind it
+-- are unverified on this client:
+--
+--   * query_compat.py has no record for UnitClassification's return values
+--     (the only unitframe record, unitframes.core_unit_api_contract_partial,
+--     is INCONCLUSIVE and does not cover it), and UnrealPfUI never draws an
+--     icon for classification either -- it only appends the "+"/"R+" level
+--     suffix LevelString already reproduces -- so there is no WORKING_SOURCE
+--     reference for the artwork.
+--   * knowledge.json / textures.separate_coin_paths_not_rendered is a
+--     confirmed case of stock Blizzard texture paths that exist in Vanilla and
+--     simply do not render here; it was only closed by trying paths in game.
+--
+-- That is why the texture, size and crop are runtime variables rather than
+-- literals: /uui elite tex|size|coord answers both questions in one session
+-- instead of an edit/reload cycle per candidate. Nothing here is persisted --
+-- config.savedvariables_backslash_corruption means paths are never written to
+-- SavedVariables, so a candidate that works gets baked into the default below.
+--
+-- The default path is the nameplate emblem, the one piece of classification art
+-- this client is known to draw somewhere: modules/nameplates.lua reads a stock
+-- plate texture region whose path contains "Elite"/"Rare".
+-- ---------------------------------------------------------------------------
+local ELITE_TEXTURE_DEFAULT = "Interface\\Tooltips\\EliteNameplateIcon"
+
+local eliteTexture = ELITE_TEXTURE_DEFAULT
+local eliteWidth, eliteHeight = 18, 18
+local eliteCoords = nil       -- { left, right, top, bottom }; nil = whole file
+
+-- Every classification but plain "normal" gets the icon, tinted per tier so
+-- the same texture still reads as the right one at a glance -- rare gets its
+-- own silver-grey rather than rareelite's silver-blue, so the two stay
+-- distinguishable even though they share the "silver" family.
+local ELITE_TINTS = {
+  elite     = { 1.00, 0.82, 0.20 },
+  rareelite = { 0.72, 0.82, 1.00 },
+  worldboss = { 1.00, 0.45, 0.35 },
+  rare      = { 0.80, 0.80, 0.80 },
+}
+
+-- /uui elite's test override. Forces the classification every frame reads, so
+-- any mob can stand in for an elite instead of hunting one of each tier down.
+local classificationOverride = nil
+
+-- ---------------------------------------------------------------------------
 -- Unit state
 --
 -- One reusable table per frame; refreshing runs five times a second and should
 -- not allocate.
 -- ---------------------------------------------------------------------------
+-- Units whose UnitHealth/UnitHealthMax are real hit points rather than a
+-- percentage. Vanilla grants this to yourself, your pet and your party; every
+-- other unit is percent-scaled.
+local REAL_HEALTH_UNITS = {
+  player = true, pet = true,
+  party1 = true, party2 = true, party3 = true, party4 = true,
+  partypet1 = true, partypet2 = true, partypet3 = true, partypet4 = true,
+}
+
 local function ReadUnit(frame)
   local unit = frame.unit
   local data = frame.data
 
   data.name = ApiString("UnitName", unit)
   data.level = ApiNumber("UnitLevel", unit)
-  data.classification = ApiString("UnitClassification", unit)
   data.isPlayer = ApiTruth("UnitIsPlayer", unit)
+
+  -- Classification is an NPC concept: a player-controlled unit is never
+  -- elite/rare/worldboss, on any frame (player, party, or a target that
+  -- happens to be another player). Reading it as nil here, ahead of both the
+  -- level-text "+"/"R+" suffix and the icon, is what keeps the /uui elite
+  -- test override -- which forces every frame at once -- from leaking onto a
+  -- player-controlled frame through either of those two paths.
+  if data.isPlayer then
+    data.classification = nil
+  else
+    data.classification = classificationOverride or
+                          ApiString("UnitClassification", unit)
+  end
   data.isDead = ApiTruth("UnitIsDead", unit) or ApiTruth("UnitIsGhost", unit)
   -- An absent UnitIsConnected must read as connected, not as everyone offline.
   if ResolveApiFn("UnitIsConnected") then
@@ -332,6 +406,16 @@ local function ReadUnit(frame)
   else
     data.healthPercent = 0
   end
+
+  -- This client keeps the Vanilla rule that only units you are grouped with
+  -- report real hit points: everything else returns health on a 0-100 scale
+  -- with UnitHealthMax fixed at 100. Measured on mouseover world units by the
+  -- tooltip probe (behavior.json, probeVersion 1.9.0: 96/100, 97/100, 91/100)
+  -- and confirmed in game on the target frame, where "84 - 84%" printed the
+  -- same number twice. When health *is* the percentage, the value half of the
+  -- dynamic text carries no extra information, so only the percentage is
+  -- drawn.
+  data.healthIsPercent = data.healthMax == 100 and not REAL_HEALTH_UNITS[unit]
 
   return data
 end
@@ -381,6 +465,11 @@ local function StatusText(frame, token)
     return data.name or U.G("UNKNOWN") or "Unknown"
   end
 
+  if token == "level" then
+    local lr, lg, lb = PastelText(DifficultyColor(data.level))
+    return Hex(lr, lg, lb) .. LevelString(data)
+  end
+
   if token == "unit" or token == "unitrev" or token == "name" then
     local name = data.name or U.G("UNKNOWN") or "Unknown"
     local nr, ng, nb = PastelText(UnitNameColor(data))
@@ -401,9 +490,15 @@ local function StatusText(frame, token)
 
     if data.isDead then return prefix .. (U.G("DEAD") or "Dead") end
     if data.health ~= data.healthMax and data.healthMax > 0 then
+      if data.healthIsPercent then
+        return prefix .. math.ceil(data.healthPercent * 100) .. "%"
+      end
       return prefix .. Abbreviate(data.health) .. " - " ..
              math.ceil(data.healthPercent * 100) .. "%"
     end
+    -- Full health on a percent-scaled unit still reads as a percentage, so it
+    -- keeps the "%" rather than printing a bare 100.
+    if data.healthIsPercent then return prefix .. "100%" end
     return prefix .. Abbreviate(data.health)
   end
 
@@ -459,7 +554,7 @@ local function CreateBarBox(parent, width, height, border, color)
   return box
 end
 
-local function CreateBarLabel(parent, anchor, target, offset)
+local function CreateBarLabel(parent, anchor, target, offset, yOffset)
   local label = U.CreateLabel(parent, {
     size = M.fontSize.normal,
     color = M.color.text,
@@ -468,8 +563,42 @@ local function CreateBarLabel(parent, anchor, target, offset)
   if not label then return nil end
 
   -- Single-edge anchor, per fonts.stretched_justification_ignored.
-  label:SetPoint(anchor, target, anchor, offset, 0)
+  label:SetPoint(anchor, target, anchor, offset, yOffset or 0)
   return label
+end
+
+-- Left/right margin for text drawn directly on a health or power bar (player
+-- and target, by request -- no separate values strip under those two).
+local BAR_LABEL_MARGIN = 4
+-- Nudges that text 2px down from dead-center for better vertical alignment
+-- against the bar, by request. The power bar's text sits 1px higher than
+-- health's (net -1), by a follow-up request.
+local BAR_LABEL_Y_OFFSET = -2
+local POWER_LABEL_Y_OFFSET = -1
+
+-- Puts up to a left- and a right-anchored label directly on a bar box (health
+-- or power), on the same raised-child-layer trick as the targettarget name:
+-- the fill is a sibling texture whose width changes every refresh, and text
+-- on the same layer can end up behind it.
+local function BuildBarLabels(box, labels, yOffset)
+  if not labels then return end
+  yOffset = yOffset or BAR_LABEL_Y_OFFSET
+
+  box.textLayer = CreateFrame("Frame", nil, box)
+  box.textLayer:SetAllPoints(box)
+  local levelOk, level = pcall(box.GetFrameLevel, box)
+  if levelOk and tonumber(level) then
+    pcall(box.textLayer.SetFrameLevel, box.textLayer, level + 10)
+  end
+
+  if labels.left then
+    box.leftLabel = CreateBarLabel(box.textLayer, "LEFT", box.textLayer,
+                                    BAR_LABEL_MARGIN, yOffset)
+  end
+  if labels.right then
+    box.rightLabel = CreateBarLabel(box.textLayer, "RIGHT", box.textLayer,
+                                     -BAR_LABEL_MARGIN, yOffset)
+  end
 end
 
 -- The third bar: no fill, no value, just a bordered strip carrying up to three
@@ -509,6 +638,36 @@ local function FrameWidth(spec)
   return spec.width + 2 * U.BorderSize()
 end
 
+-- The icon gets its own raised child layer, the same trick the targettarget
+-- name and the combo pips use: the bar's fill is a sibling texture whose width
+-- changes on every refresh, and art on the same layer can end up behind it.
+local function BuildClassificationIcon(frame, health)
+  if type(health.CreateTexture) ~= "function" then return end
+  -- The player is never an elite, so the player frame never needs the slot at
+  -- all. ApplyClassificationIcon still gates on UnitIsPlayer for the frames
+  -- that can hold either kind of unit; this is the one that cannot.
+  if frame.unit == "player" then return end
+
+  local layer = CreateFrame("Frame", nil, health)
+  layer:SetAllPoints(health)
+  local levelOk, level = pcall(health.GetFrameLevel, health)
+  if levelOk and tonumber(level) then
+    pcall(layer.SetFrameLevel, layer, level + 10)
+  end
+
+  local icon = layer:CreateTexture(nil, "OVERLAY")
+  icon:SetWidth(eliteWidth)
+  icon:SetHeight(eliteHeight)
+  -- Just outside the bar's right edge rather than over it: the health bar
+  -- already carries the combo pips on the player frame and the strip below
+  -- carries text, and neither should have artwork laid on top of it.
+  icon:SetPoint("LEFT", health, "RIGHT", 3, 0)
+  pcall(icon.SetTexture, icon, eliteTexture)
+  pcall(icon.Hide, icon)
+
+  frame.classIcon = icon
+end
+
 local function BuildFrame(spec, parent)
   local border = U.BorderSize()
 
@@ -537,7 +696,11 @@ local function BuildFrame(spec, parent)
       pcall(health.textLayer.SetFrameLevel, health.textLayer, level + 10)
     end
     health.label = CreateBarLabel(health.textLayer, "CENTER", health.textLayer, 0)
+  elseif spec.healthLabels then
+    BuildBarLabels(health, spec.healthLabels)
   end
+
+  BuildClassificationIcon(frame, health)
 
   local previous = health
   local power = nil
@@ -546,6 +709,9 @@ local function BuildFrame(spec, parent)
                          M.power.fallback)
     power:SetPoint("TOPLEFT", previous, "BOTTOMLEFT", 0, -spec.gap)
     previous = power
+    if spec.powerLabels then
+      BuildBarLabels(power, spec.powerLabels, POWER_LABEL_Y_OFFSET)
+    end
   end
 
   local values = nil
@@ -561,6 +727,98 @@ local function BuildFrame(spec, parent)
 
   frame:Hide()
   return frame
+end
+
+-- ---------------------------------------------------------------------------
+-- Rogue combo points
+--
+-- query_compat.py has no record at all for GetComboPoints or any combo-point
+-- event (api/events/behavior/knowledge all came back empty), so this follows
+-- UnrealPfUI's demonstrated shape (modules/combopoints.lua) as WORKING_SOURCE
+-- evidence, not runtime verification: GetComboPoints("target") plus
+-- UNIT_COMBO_POINTS / PLAYER_COMBO_POINTS / PLAYER_TARGET_CHANGED /
+-- PLAYER_ENTERING_WORLD. Rogue only, per request -- the pfUI reference also
+-- drives a druid combo variant and a separate paladin "reck" tracker that
+-- unrealUI does not reproduce here.
+--
+-- Flat modern design, not pfUI's red/yellow/green tiered pips: five equal
+-- segments in a single hue (rogue class colour when filled, the same empty
+-- bar tone the health/power bars use when not), overlaid on a raised child
+-- layer across the top of the player health bar so the frame's own geometry
+-- and mover position are untouched.
+-- ---------------------------------------------------------------------------
+local COMBO_MAX = 5
+local COMBO_GAP = 2
+local COMBO_HEIGHT = 4
+-- Brighter than M.color.healthBg (the bar's own empty tone) on purpose: an
+-- empty pip needs to read as a visible slot against the near-black health
+-- bar, not blend into it.
+local COMBO_EMPTY = { 0.24, 0.24, 0.24, 1.00 }
+
+local comboPips = nil
+
+local function BuildComboPoints(playerFrame)
+  local health = playerFrame and playerFrame.health
+  if not health then return end
+
+  local border = U.BorderSize()
+  local width = playerFrame.spec.width
+  local pipWidth = (width - (COMBO_MAX - 1) * COMBO_GAP) / COMBO_MAX
+
+  -- Same raised-child-layer trick as the targettarget health label: sits above
+  -- the bar fill so the fill's width changes can never cover the pips.
+  local layer = CreateFrame("Frame", nil, health)
+  layer:SetAllPoints(health)
+  local levelOk, level = pcall(health.GetFrameLevel, health)
+  if levelOk and tonumber(level) then
+    pcall(layer.SetFrameLevel, layer, level + 10)
+  end
+
+  comboPips = {}
+  local i
+  for i = 1, COMBO_MAX do
+    local pip = CreateFrame("Frame", nil, layer)
+    pip:SetWidth(pipWidth)
+    pip:SetHeight(COMBO_HEIGHT)
+    pip:SetPoint("TOPLEFT", layer, "TOPLEFT",
+                border + (i - 1) * (pipWidth + COMBO_GAP), -border)
+    U.CreateBackdrop(pip, { border = false, background = COMBO_EMPTY })
+    comboPips[i] = pip
+  end
+end
+
+local function SetComboPoints(count)
+  if not comboPips then return end
+  count = tonumber(count) or 0
+
+  local i
+  for i = 1, COMBO_MAX do
+    if i <= count then
+      U.SetBackgroundColor(comboPips[i], M.Unpack(M.class.ROGUE))
+    else
+      U.SetBackgroundColor(comboPips[i], M.Unpack(COMBO_EMPTY))
+    end
+  end
+end
+
+local function RefreshComboPoints()
+  if not comboPips then return end
+  local get = ResolveApiFn("GetComboPoints")
+  if not get then return end
+  local ok, value = pcall(get, "target")
+  SetComboPoints(ok and value or 0)
+end
+
+local COMBO_EVENTS = {
+  "UNIT_COMBO_POINTS", "PLAYER_COMBO_POINTS",
+  "PLAYER_TARGET_CHANGED", "PLAYER_ENTERING_WORLD",
+}
+
+local function RegisterComboEvents()
+  local i
+  for i = 1, table.getn(COMBO_EVENTS) do
+    U.RegisterEvent(COMBO_EVENTS[i], RefreshComboPoints)
+  end
 end
 
 -- ---------------------------------------------------------------------------
@@ -602,10 +860,18 @@ local function ApplyPowerColor(frame)
   U.SetStatusBarColor(frame.power.bar, M.Unpack(color))
 end
 
+local function ApplyBarLabels(frame, box, labels)
+  if not box or not labels then return end
+  if box.leftLabel then SetLabelText(box.leftLabel, StatusText(frame, labels.left)) end
+  if box.rightLabel then SetLabelText(box.rightLabel, StatusText(frame, labels.right)) end
+end
+
 local function ApplyTexts(frame)
   if frame.health.label then
     SetLabelText(frame.health.label, StatusText(frame, frame.spec.healthText))
   end
+  ApplyBarLabels(frame, frame.health, frame.spec.healthLabels)
+  ApplyBarLabels(frame, frame.power, frame.spec.powerLabels)
 
   local tokens = frame.spec.values or {}
   local v = frame.values
@@ -617,6 +883,12 @@ end
 
 local function ClearTexts(frame)
   SetLabelText(frame.health.label, "")
+  SetLabelText(frame.health.leftLabel, "")
+  SetLabelText(frame.health.rightLabel, "")
+  if frame.power then
+    SetLabelText(frame.power.leftLabel, "")
+    SetLabelText(frame.power.rightLabel, "")
+  end
 
   local v = frame.values
   if not v then return end
@@ -625,10 +897,44 @@ local function ClearTexts(frame)
   SetLabelText(v.right, "")
 end
 
+-- SetColor caches the tint it applied (core/compat.lua) because this client has
+-- no GetVertexColor to read one back with, so /uui elite status can still
+-- report what the icon was actually told to be.
+local function ApplyClassificationIcon(frame)
+  local icon = frame.classIcon
+  if not icon then return end
+
+  local class = frame.data.classification or ""
+  local tint = ELITE_TINTS[class]
+  local state = tint and class or false
+
+  -- The shared tick runs this five times a second for every frame, and
+  -- compat.native_suppression_pcall_burst_stutter is what a per-tick pcall
+  -- burst costs on this client. Nothing below needs to run again while the
+  -- classification has not changed.
+  if frame.classIconState == state then return end
+  frame.classIconState = state
+
+  if not tint then
+    pcall(icon.Hide, icon)
+    return
+  end
+
+  U.SetColor(icon, tint[1], tint[2], tint[3], 1)
+  pcall(icon.Show, icon)
+end
+
+local function HideClassificationIcon(frame)
+  if not frame.classIcon or frame.classIconState == false then return end
+  frame.classIconState = false
+  pcall(frame.classIcon.Hide, frame.classIcon)
+end
+
 local function RefreshFrame(frame, force)
   local exists = ApiTruth("UnitExists", frame.unit)
 
   if not exists then
+    HideClassificationIcon(frame)
     -- An empty shell stays on screen while the UI is unlocked, otherwise a
     -- frame with no unit could never be dragged into place.
     if U.IsUnlocked() then
@@ -651,6 +957,7 @@ local function RefreshFrame(frame, force)
   ApplyHealthColor(frame)
   ApplyPowerColor(frame)
   ApplyTexts(frame)
+  ApplyClassificationIcon(frame)
 
   -- Offline party members are dimmed rather than hidden, matching pfUI's
   -- alpha_offline treatment without importing its alpha config. Unverified on
@@ -693,6 +1000,15 @@ local function RefreshUnitToken(token)
 end
 
 UF.Refresh = RefreshAll
+
+-- Anchor lookup for overlays that ride a unit frame without owning one.
+-- modules/auras.lua attaches its debuff row to the top of the player and target
+-- frames this way, so it never has to know the generated frame names or
+-- duplicate the mover wiring. Returns nil before OnEnable has built the frames.
+function U.GetUnitFrame(id)
+  if type(id) ~= "string" then return nil end
+  return frames[id]
+end
 
 -- ---------------------------------------------------------------------------
 -- Mouse
@@ -901,6 +1217,12 @@ function UF:OnEnable()
 
   RegisterEvents()
 
+  if frames.player and UnitClassToken("player") == "ROGUE" then
+    BuildComboPoints(frames.player)
+    RegisterComboEvents()
+    RefreshComboPoints()
+  end
+
   -- The one refresh path everything else only accelerates. 0.2s is pfUI's own
   -- polling tick for units without events (targettarget), and it is the only
   -- thing keeping target-of-target and party membership current on a client
@@ -931,6 +1253,7 @@ function U.UnitFrameReport()
       line.powerType = data.powerType
       line.class = data.class or "-"
       line.reaction = data.reaction
+      line.classification = data.classification or "-"
     end
 
     local shownOk, shown = pcall(frame.IsShown, frame)
@@ -972,6 +1295,134 @@ function U.UnitFrameReport()
     end
 
     table.insert(report, line)
+  end
+
+  return report
+end
+
+
+-- ---------------------------------------------------------------------------
+-- Elite icon test surface (/uui elite)
+--
+-- Everything here is transient session state, not config: the override is a
+-- test aid, and the texture/size/crop exist to find a path this client renders
+-- without an edit/reload cycle per candidate. Nothing is written to
+-- SavedVariables.
+-- ---------------------------------------------------------------------------
+local OVERRIDE_VALUES = {
+  elite = true, rareelite = true, worldboss = true, rare = true, normal = true,
+}
+
+local function ApplyEliteIconSettings()
+  local i
+  for i = 1, table.getn(frameOrder) do
+    local icon = frames[frameOrder[i]].classIcon
+    if icon then
+      pcall(icon.SetTexture, icon, eliteTexture)
+      pcall(icon.SetWidth, icon, eliteWidth)
+      pcall(icon.SetHeight, icon, eliteHeight)
+      if eliteCoords then
+        pcall(icon.SetTexCoord, icon, eliteCoords[1], eliteCoords[2],
+              eliteCoords[3], eliteCoords[4])
+      else
+        pcall(icon.SetTexCoord, icon, 0, 1, 0, 1)
+      end
+    end
+  end
+  RefreshAll(true)
+end
+
+-- Returns ok, override. "normal" is a real value rather than an alias for off:
+-- it proves the icon *hides* on a unit that has one, which is the other half of
+-- the test.
+function U.SetUnitClassificationOverride(value)
+  if value == nil or value == "" or value == "off" or value == "none" then
+    classificationOverride = nil
+  elseif OVERRIDE_VALUES[value] then
+    classificationOverride = value
+  else
+    return false, classificationOverride
+  end
+
+  RefreshAll(true)
+  return true, classificationOverride
+end
+
+function U.SetEliteIconTexture(path)
+  if type(path) ~= "string" or path == "" or path == "default" then
+    eliteTexture = ELITE_TEXTURE_DEFAULT
+  else
+    eliteTexture = path
+  end
+  ApplyEliteIconSettings()
+  return eliteTexture
+end
+
+function U.SetEliteIconSize(width, height)
+  eliteWidth = tonumber(width) or eliteWidth
+  eliteHeight = tonumber(height) or eliteWidth
+  ApplyEliteIconSettings()
+  return eliteWidth, eliteHeight
+end
+
+-- Four numbers set a crop, anything else clears it back to the whole file.
+function U.SetEliteIconCoords(left, right, top, bottom)
+  left, right = tonumber(left), tonumber(right)
+  top, bottom = tonumber(top), tonumber(bottom)
+
+  if left and right and top and bottom then
+    eliteCoords = { left, right, top, bottom }
+  else
+    eliteCoords = nil
+  end
+
+  ApplyEliteIconSettings()
+  return eliteCoords
+end
+
+function U.EliteIconReport()
+  local report = {
+    override = classificationOverride or "off",
+    texture = eliteTexture,
+    width = eliteWidth,
+    height = eliteHeight,
+    units = {},
+  }
+
+  if eliteCoords then
+    report.coords = table.concat({ eliteCoords[1], eliteCoords[2],
+                                   eliteCoords[3], eliteCoords[4] }, " ")
+  end
+
+  local i
+  for i = 1, table.getn(frameOrder) do
+    local frame = frames[frameOrder[i]]
+    if ApiTruth("UnitExists", frame.unit) then
+      local line = { id = frameOrder[i], unit = frame.unit }
+
+      -- The raw API value next to the value the frame actually drew: with an
+      -- override active these differ, and without one they must not.
+      line.classification = ApiString("UnitClassification", frame.unit) or "nil"
+      line.effective = frame.data.classification or "nil"
+
+      local icon = frame.classIcon
+      if not icon then
+        line.shown = "no icon built"
+      else
+        local ok, shown = pcall(icon.IsShown, icon)
+        if ok then line.shown = shown and true or false else line.shown = "?" end
+
+        -- Readback of what the client kept: a path it rejected outright shows
+        -- up here, though a path it accepts but cannot render will not.
+        local okPath, path = pcall(icon.GetTexture, icon)
+        if okPath and type(path) == "string" then line.path = path end
+
+        local r, g, b = U.GetColor(icon)
+        if r then line.tint = string.format("%.2f,%.2f,%.2f", r, g, b) end
+      end
+
+      table.insert(report.units, line)
+    end
   end
 
   return report

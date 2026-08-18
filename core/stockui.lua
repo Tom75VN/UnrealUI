@@ -332,17 +332,50 @@ end
 -- Quest rows use their normal texture to communicate header expand/collapse.
 -- Replace only that picture with a small +/- box while leaving row scripts and
 -- click behavior native.
+--
+-- Two Unreal-specific behaviours shape this, both USER_CONFIRMED_INGAME:
+--
+--  * UnrealPfUI's SkinCollapseButton (WORKING_SOURCE) drives icon visibility by
+--    intercepting SetNormalTexture and calls SetNormalTexture(button, nil) once
+--    to clear the stock picture. On this client that single nil call does not
+--    remove it -- the red native +/- kept drawing on quest rows -- so the
+--    underlying Texture object is cleared directly as well, and
+--    SetNormalTexture is then made a permanent no-op so native refreshes can
+--    never bring it back. Icon state is not inferred from texture calls at all:
+--    the caller drives it from real quest data each refresh.
+--
+--  * mover.lua / CreateHandle established that a Button is the widget type this
+--    client reliably delivers mouse input to. The stock row Button's own
+--    OnClick did not collapse a quest header here, while the All button's did,
+--    so the icon is a Button and carries the click itself. `uuiCollapseClick`
+--    lets the caller own the action; with no override the click forwards to the
+--    parent's native OnClick, which is what keeps the All button native.
+local collapseIconCount = 0
+
 function U.StyleStockCollapseButton(button, expandedSize)
   if not button or button.uuiCollapseStyled then return button end
   button.uuiCollapseStyled = true
 
   local size = expandedSize and 14 or 10
-  local icon = U.CreatePanel(button, {
-    width = size,
-    height = size,
-    background = { 0.03, 0.03, 0.03, 0.90 },
-  })
+  collapseIconCount = collapseIconCount + 1
+
+  local created, icon = pcall(CreateFrame, "Button",
+    "UnrealUICollapseIcon" .. collapseIconCount, button)
+  if not created or not icon then return button end
+
+  icon:SetWidth(size)
+  icon:SetHeight(size)
   icon:SetPoint("LEFT", button, "LEFT", 2, 1)
+  U.CreateBackdrop(icon, { background = { 0.03, 0.03, 0.03, 0.90 } })
+
+  local levelOk, level = pcall(button.GetFrameLevel, button)
+  if levelOk and tonumber(level) then
+    pcall(icon.SetFrameLevel, icon, level + 2)
+  end
+
+  -- knowledge.json / buttons.plain_settext_no_fontstring: an untemplated Button
+  -- accepts SetText without ever showing a FontString, so the +/- glyph has to
+  -- be a FontString unrealUI creates and owns.
   icon.text = U.CreateLabel(icon, {
     size = M.fontSize.small,
     color = M.color.text,
@@ -352,21 +385,36 @@ function U.StyleStockCollapseButton(button, expandedSize)
     icon.text:SetPoint("CENTER", icon, "CENTER", 0, 0)
     icon.text:SetText("-")
   end
+
+  icon:SetScript("OnClick", function()
+    if type(button.uuiCollapseClick) == "function" then
+      local ok, err = pcall(button.uuiCollapseClick, button)
+      if not ok then U.Error("collapse click: " .. tostring(err)) end
+      return
+    end
+    -- No override: hand the click straight back to the stock button so a
+    -- control that already works natively keeps working.
+    if button.GetScript then
+      local scriptOk, native = pcall(button.GetScript, button, "OnClick")
+      if scriptOk and native then pcall(native, button) end
+    end
+  end)
+
+  icon:Hide()
   button.uuiCollapseIcon = icon
 
+  if button.GetNormalTexture then
+    local ok, native = pcall(button.GetNormalTexture, button)
+    if ok and native then
+      pcall(native.SetTexture, native, nil)
+      pcall(native.SetAlpha, native, 0)
+      pcall(native.Hide, native)
+    end
+  end
   local nativeSetNormal = button.SetNormalTexture
   if type(nativeSetNormal) == "function" then
     pcall(nativeSetNormal, button, nil)
-    button.SetNormalTexture = function(self, texture)
-      if not texture or texture == "" then
-        icon:Hide()
-      else
-        local minus = type(texture) == "string" and
-                      string.find(texture, "MinusButton", 1, true)
-        if icon.text then icon.text:SetText(minus and "-" or "+") end
-        icon:Show()
-      end
-    end
+    button.SetNormalTexture = function() end
   end
 
   local name
@@ -376,4 +424,20 @@ function U.StyleStockCollapseButton(button, expandedSize)
   end
   if name then U.HideRegion(U.G(name .. "Highlight")) end
   return button
+end
+
+-- Sets a styled collapse icon's state. `nil` shown hides it entirely, which is
+-- how non-header quest rows end up with no icon at all.
+function U.SetStockCollapseState(button, shown, collapsed)
+  local icon = button and button.uuiCollapseIcon
+  if not icon then return false end
+
+  if not shown then
+    icon:Hide()
+    return true
+  end
+
+  if icon.text then icon.text:SetText(collapsed and "+" or "-") end
+  icon:Show()
+  return true
 end

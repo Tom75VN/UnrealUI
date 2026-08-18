@@ -98,6 +98,46 @@ local function SanitizePositions(positions)
   return clean
 end
 
+local function SanitizeScalar(target, key, value)
+  local t = type(value)
+  if t == "number" or t == "boolean" then
+    target[key] = value
+    return true
+  elseif t == "string" and IsSafeString(value) then
+    target[key] = value
+    return true
+  end
+  return false
+end
+
+-- One level of nesting inside a module's settings.
+--
+-- Module settings used to be scalars only, and every nested table was dropped
+-- silently on load. That is what made the Quest Log's remembered tracked-quest
+-- titles (questlog.trackedQuests) reset on every /reload: the module wrote them,
+-- the writer stored them, and this sanitizer deleted them on the way back in.
+--
+-- Nested keys are validated, not just values: unlike a module's own scalar keys,
+-- which are identifiers written in unrealUI source, these keys are game data
+-- (quest titles) and so are exactly the sort of string
+-- config.savedvariables_backslash_corruption warns about. Entries are capped so
+-- a module cannot grow the saved file without bound, and nesting stops at one
+-- level so this stays a set/lookup store rather than an arbitrary object graph.
+local MAX_MODULE_TABLE_ENTRIES = 200
+
+local function SanitizeModuleTable(source)
+  local clean, count, key, value = {}, 0, nil, nil
+  for key, value in pairs(source) do
+    if count >= MAX_MODULE_TABLE_ENTRIES then break end
+    local keyOk = type(key) == "number" or
+                  (type(key) == "string" and IsSafeString(key))
+    if keyOk and SanitizeScalar(clean, key, value) then
+      count = count + 1
+    end
+  end
+  return clean
+end
+
 local function SanitizeModules(modules)
   if type(modules) ~= "table" then return {} end
 
@@ -107,11 +147,10 @@ local function SanitizeModules(modules)
     if IsSafeString(name) and type(settings) == "table" then
       local entry, key, value = {}, nil, nil
       for key, value in pairs(settings) do
-        local t = type(value)
-        if t == "number" or t == "boolean" then
-          entry[key] = value
-        elseif t == "string" and IsSafeString(value) then
-          entry[key] = value
+        if type(value) == "table" then
+          entry[key] = SanitizeModuleTable(value)
+        else
+          SanitizeScalar(entry, key, value)
         end
       end
       clean[name] = entry

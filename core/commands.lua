@@ -52,6 +52,7 @@ local function ShowHelp()
   U.Print("  |cffffff00/uui lock|r - lock frames")
   U.Print("  |cffffff00/uui reset|r - reset all frame positions")
   U.Print("  |cffffff00/uui check|r - runtime self-check")
+  U.Print("  |cffffff00/uui elite|r - cycle the classification icon test")
   U.Print("  |cffffff00/uui np|r - dump WorldFrame children (nameplates)")
   U.Print("  |cffffff00/uui movertest|r - foundation mover smoke test")
   U.Print("  |cffffff00/uui debug|r - toggle debug output")
@@ -84,7 +85,8 @@ local function ShowUnitFrameCheck()
               tostring(line.powerMax) ..
               " type " .. tostring(line.powerType))
       U.Print("    class " .. tostring(line.class) ..
-              ", reaction " .. tostring(line.reaction))
+              ", reaction " .. tostring(line.reaction) ..
+              ", classification " .. tostring(line.classification))
     end
 
     -- Bar state, printed for every frame including empty ones: a bar that draws
@@ -173,6 +175,129 @@ local function ShowNameplateDump()
           "WTF/Account/<account>/SavedVariables/unrealUI.lua to read it")
 end
 
+-- Elite/classification icon test.
+--
+-- Two unknowns, both exercised without leaving the spot you are standing on:
+-- whether UnitClassification returns Vanilla's tokens on this client, and
+-- whether the icon's texture path renders at all -- knowledge.json /
+-- textures.separate_coin_paths_not_rendered is a confirmed case of stock paths
+-- that do not. The override forces the classification every unit frame reads,
+-- so any mob stands in for an elite.
+local ELITE_CYCLE = { "elite", "rareelite", "worldboss", "rare", "normal", "off" }
+
+local ELITE_USAGE = "usage: |cffffff00/uui elite|r " ..
+  "[elite|rareelite|worldboss|rare|normal|off] | tex <path> | " ..
+  "size <w> <h> | coord <l> <r> <t> <b> | status"
+
+-- Split() only cuts the first token off; this walks the rest of the line.
+local function Numbers(text)
+  local values, rest, count = {}, Trim(text or ""), 0
+
+  -- Indexed rather than table.insert'd: a non-numeric token has to leave a hole
+  -- in place instead of shifting the values after it into the wrong argument.
+  while rest ~= "" do
+    local token
+    token, rest = Split(rest)
+    count = count + 1
+    values[count] = tonumber(token)
+  end
+
+  return values
+end
+
+local function ShowEliteReport()
+  local report = U.EliteIconReport()
+
+  U.Print("elite icon: override " .. tostring(report.override) ..
+          ", size " .. tostring(report.width) .. "x" .. tostring(report.height) ..
+          (report.coords and (", coords " .. report.coords) or ""))
+  U.Print("  texture " .. tostring(report.texture))
+
+  local i
+  for i = 1, table.getn(report.units) do
+    local u = report.units[i]
+    U.Print("  " .. u.id .. " (" .. u.unit .. "): api " ..
+            tostring(u.classification) .. ", drawn as " ..
+            tostring(u.effective) .. ", icon shown " .. tostring(u.shown) ..
+            (u.tint and (", tint " .. u.tint) or ""))
+    if u.path and u.path ~= report.texture then
+      U.Print("    readback " .. tostring(u.path))
+    end
+  end
+
+  if table.getn(report.units) == 0 then
+    U.Print("  no unit on any frame - target something first")
+  end
+end
+
+local function NextOverride(current)
+  local total = table.getn(ELITE_CYCLE)
+  local i
+  for i = 1, total do
+    if ELITE_CYCLE[i] == current then
+      if i >= total then return ELITE_CYCLE[1] end
+      return ELITE_CYCLE[i + 1]
+    end
+  end
+  return ELITE_CYCLE[1]
+end
+
+local function HandleElite(rest)
+  if type(U.SetUnitClassificationOverride) ~= "function" then
+    U.Print("unit frames are not loaded")
+    return
+  end
+
+  local sub, arg = Split(Trim(rest or ""))
+
+  if sub == "status" then
+    ShowEliteReport()
+    return
+  end
+
+  -- The path keeps its original case: Split() only lowercases the token it
+  -- cuts off, never the remainder.
+  if sub == "tex" or sub == "texture" then
+    U.Print("elite icon texture: " .. tostring(U.SetEliteIconTexture(arg)))
+    U.Print("  no icon at all means the path does not render here - try " ..
+            "another, |cffffff00/uui elite tex default|r restores the built-in")
+    return
+  end
+
+  if sub == "size" then
+    local values = Numbers(arg)
+    local width, height = U.SetEliteIconSize(values[1], values[2])
+    U.Print("elite icon size: " .. tostring(width) .. "x" .. tostring(height))
+    return
+  end
+
+  if sub == "coord" or sub == "coords" then
+    local values = Numbers(arg)
+    local coords = U.SetEliteIconCoords(values[1], values[2], values[3],
+                                        values[4])
+    if coords then
+      U.Print("elite icon crop: " .. table.concat(coords, " "))
+    else
+      U.Print("elite icon crop cleared - drawing the whole texture")
+    end
+    return
+  end
+
+  local value = sub
+  if value == "" then value = NextOverride(U.EliteIconReport().override) end
+
+  local ok, override = U.SetUnitClassificationOverride(value)
+  if not ok then
+    U.Print("unknown classification: " .. tostring(sub))
+    U.Print(ELITE_USAGE)
+    return
+  end
+
+  U.Print("classification override: |cffffff00" .. (override or "off") ..
+          "|r - target any mob; |cffffff00/uui elite|r again for the next one")
+  ShowEliteReport()
+end
+
 -- Reports what this client actually did with the calls unrealUI depends on.
 -- The point is to turn the foundation's compatibility assumptions into
 -- observed results that can be fed back into the evidence workflow.
@@ -247,6 +372,22 @@ local function ShowSelfCheck()
             tostring(chat.savedBottom))
   end
 
+  -- Quest header collapsing has no compact-DB record and the stock row click
+  -- does not do it on this client, so the first header click is the only thing
+  -- that says which entry point actually exists. Read this after clicking one.
+  if type(U.QuestLogCollapseReport) == "function" then
+    local q = U.QuestLogCollapseReport()
+    U.Print("  quest collapse: CollapseQuestHeader " .. tostring(q.collapse) ..
+            ", ExpandQuestHeader " .. tostring(q.expand) ..
+            ", row OnClick " .. tostring(q.nativeClick))
+  end
+
+  if type(U.QuestLogTrackReport) == "function" then
+    local t = U.QuestLogTrackReport()
+    U.Print("  quest tracking: source " .. tostring(t.source) ..
+            ", rows marked " .. tostring(t.marked))
+  end
+
   ShowUnitFrameCheck()
   ShowNameplateCheck()
 end
@@ -296,6 +437,7 @@ handlers["check"]  = function() ShowSelfCheck() end
 handlers["help"]   = function() ShowHelp() end
 handlers["movertest"] = function() ShowMoverTest() end
 handlers["np"] = function() ShowNameplateDump() end
+handlers["elite"] = function(rest) HandleElite(rest) end
 
 handlers["debug"] = function()
   if not U.db then

@@ -28,7 +28,9 @@
 --     suppressed explicitly and re-applied; U.SuppressNativeFrame does exactly
 --     that and owns the re-apply sweep.
 --   * knowledge.json / scripts.child_onupdate_unreliable: no button owns an
---     OnUpdate. Refreshes run on the shared driver.
+--     OnUpdate. Refreshes run on the shared driver -- including the cooldown
+--     countdown, which is why there is no per-button cooldown OnUpdate here
+--     even though UnrealPfUI's own cooldown module uses one.
 --   * knowledge.json / rendering.parent_alpha_not_propagated: every child
 --     region is shown and hidden explicitly, never via its parent.
 
@@ -40,13 +42,32 @@ local AB = U.RegisterModule("actionbar")
 -- ---------------------------------------------------------------------------
 -- Layout model
 --
--- Bar N owns slots (N-1)*12+1 .. N*12, which is Vanilla's flat 120-slot space:
--- bar 3 is MultiBarRight, 4 is MultiBarLeft, 5 is MultiBarBottomRight and 6 is
--- MultiBarBottomLeft. Bar 1 is the paged bar and resolves its slots from the
--- active page instead (see SlotFor).
+-- Vanilla's 120-slot flat action space is NOT sequential by bar: only the six
+-- page blocks (1-72) are contiguous, and the four real multibars sit after
+-- them in a fixed, non-adjacent order (BottomLeft, BottomRight, Right, Left).
+-- Bar 1 is the paged bar and resolves its slots from the active page instead
+-- (see ActivePage/SlotFor). Bar 2 and bars 7-10 are the remaining five page
+-- blocks (2-6) exposed as static bars; bars 3-6 are MultiBarRight,
+-- MultiBarLeft, MultiBarBottomRight and MultiBarBottomLeft respectively, per
+-- BAR_SLOT_BASE below. This mapping must stay in sync with BINDING_PREFIX --
+-- a bar's slot base and its binding prefix have to name the same real bar.
 -- ---------------------------------------------------------------------------
 local BAR_COUNT = 10
 local SLOTS_PER_BAR = 12
+
+-- Slot base per bar (SlotFor adds 1..12 on top). Bar 1 is omitted: it is
+-- paged and resolved dynamically in SlotFor instead of through this table.
+local BAR_SLOT_BASE = {
+  [2]  = 12,  -- page 2:                13-24
+  [3]  = 96,  -- MultiBarRight:         97-108
+  [4]  = 108, -- MultiBarLeft:          109-120
+  [5]  = 84,  -- MultiBarBottomRight:   85-96
+  [6]  = 72,  -- MultiBarBottomLeft:    73-84
+  [7]  = 24,  -- page 3:                25-36
+  [8]  = 36,  -- page 4:                37-48
+  [9]  = 48,  -- page 5:                49-60
+  [10] = 60,  -- page 6:                61-72
+}
 
 -- Keyed by the same names the settings tab and the config keys use, so one
 -- string identifies a setting everywhere: bar3Size, LIMITS.Size, "Size".
@@ -62,9 +83,10 @@ local LIMITS = {
 -- Label toggles that apply to every bar at once. Kept flat and separate from
 -- the per-bar keys so the General Options page has something real to drive.
 local GLOBAL_DEFAULTS = {
-  showKeybind = true,
-  showMacro   = true,
-  showCount   = true,
+  showKeybind  = true,
+  showMacro    = true,
+  showCount    = true,
+  showCooldown = true,
 }
 
 -- Vanilla binding names for the slot ranges the stock UI owns. Bars 2 and 7-10
@@ -84,11 +106,33 @@ local COLOR = {
   usable    = { 1.00, 1.00, 1.00, 1.00 },
   oom       = { 0.40, 0.40, 1.00, 1.00 },
   unusable  = { 0.35, 0.35, 0.35, 1.00 },
-  outOfRange= { 0.90, 0.25, 0.25, 1.00 },
+  outOfRange= { 1.00, 0.10, 0.10, 1.00 },
+  cooldown  = { 1.00, 0.20, 0.20, 1.00 },
   keybind   = { 0.85, 0.85, 0.85, 1.00 },
   count     = { 1.00, 1.00, 1.00, 1.00 },
   macro     = { 0.70, 0.70, 0.70, 1.00 },
 }
+
+-- Cooldown countdown colours and unit thresholds. Both are pfUI-modern's own
+-- cd defaults (appearance.cd lowcolor/normalcolor/minutecolor/hourcolor/
+-- daycolor and the unit switch points in its GetColoredTimeString), which is
+-- the visual baseline this module follows.
+local CD_COLOR = {
+  low    = { 1.00, 0.20, 0.20, 1.00 },   -- last five seconds
+  normal = { 1.00, 1.00, 1.00, 1.00 },
+  minute = { 0.20, 1.00, 1.00, 1.00 },
+  hour   = { 0.20, 0.50, 1.00, 1.00 },
+  day    = { 0.20, 0.20, 1.00, 1.00 },
+}
+
+-- A cooldown shorter than this is the global cooldown, and a 1.5s number on
+-- every button on every cast is noise rather than information. 2 is pfUI's own
+-- appearance.cd.threshold default; it also absorbs a GCD inflated by latency.
+local GCD_THRESHOLD = 2
+
+-- The countdown is re-read from the clock this often. Fast enough that the
+-- tenths shown in the last five seconds actually count down.
+local CD_TICK = 0.1
 
 local bars = {}         -- bar index -> { frame, buttons, mover }
 local cfg               -- module settings table (flat; see BuildDefaults)
@@ -181,7 +225,7 @@ local function SlotFor(bar, index)
   if bar == 1 then
     return (ActivePage() - 1) * SLOTS_PER_BAR + index
   end
-  return (bar - 1) * SLOTS_PER_BAR + index
+  return (BAR_SLOT_BASE[bar] or (bar - 1) * SLOTS_PER_BAR) + index
 end
 
 -- knowledge.json / actionbars.binding_text_engine_key_names: this client can
@@ -210,8 +254,11 @@ local KEY_LABEL = {
 local AZERTY_NUMBER_LABEL = {
   ["&"] = "1", ["AMPERSAND"] = "1",
   ["é"] = "2", ["E_ACUTE"] = "2", ["EACUTE"] = "2", ["E_ACCENTAIGU"] = "2",
-  ["\""] = "3", ["QUOTEDBL"] = "3", ["DOUBLEQUOTE"] = "3",
-  ["'"] = "4", ["QUOTE"] = "4", ["APOSTROPHE"] = "4",
+  -- knowledge.json / actionbars.quote_identifier_swapped: on this client
+  -- "QUOTE" is the engine name for the double-quote key (button 3), not the
+  -- apostrophe -- the raw apostrophe key comes back as the literal character.
+  ["\""] = "3", ["QUOTEDBL"] = "3", ["DOUBLEQUOTE"] = "3", ["QUOTE"] = "3",
+  ["'"] = "4", ["APOSTROPHE"] = "4",
   ["("] = "5", ["LEFTPARENTHESIS"] = "5", ["LEFTPARENTHESES"] = "5",
   ["LEFTPARANTHESES"] = "5",
   ["-"] = "6", ["MINUS"] = "6", ["HYPHEN"] = "6", ["NEGATIVE"] = "6",
@@ -342,10 +389,21 @@ local function CreateButton(bar, index)
     size = M.fontSize.tiny, color = COLOR.macro, inherits = "GameFontNormalSmall",
   })
 
-  -- Cooldown swipe. CreateFrame("Model", ..., "CooldownFrameTemplate") is the
-  -- Vanilla shape UnrealPfUI uses on this client (COOLDOWN_FRAME_TYPE in
-  -- compat/vanilla.lua), but neither the type nor the template has a compact
-  -- record, so a failure here just means the numeric fallback text is used.
+  -- Cooldown swipe -- the radial wipe animation, driven natively rather than
+  -- drawn by hand. CreateFrame("Model", ..., "CooldownFrameTemplate") is the
+  -- Vanilla shape UnrealPfUI uses for it on this client (COOLDOWN_FRAME_TYPE in
+  -- compat/vanilla.lua, and the same call shape modules/actionbar.lua,
+  -- bags.lua, nameplates.lua, totems.lua and unitframes.lua all use there): in
+  -- 1.12-shaped clients the cooldown swipe is itself a Model-type frame, not a
+  -- dedicated Cooldown widget, so this is not a synthetic reimplementation --
+  -- it is the same primitive Blizzard's own action buttons animate with.
+  -- Distinct from unitframes.portrait_model_crash (BROKEN): that record is the
+  -- full PlayerModel character-rendering chain (SetModel/SetUnit/
+  -- SetModelScale), a different call sequence on the same frame type. Neither
+  -- the frame type nor the template has its own compact record here, so
+  -- failure is still a real possibility -- if this swipe stays invisible in
+  -- game, that means Has("CooldownFrame_SetTimer") read false or the client
+  -- rejected the template, and the numeric countdown is the fallback.
   local ok, cooldown = pcall(CreateFrame, "Model", name .. "Cooldown", button,
                              "CooldownFrameTemplate")
   if ok and cooldown and Has("CooldownFrame_SetTimer") then
@@ -353,12 +411,26 @@ local function CreateButton(bar, index)
     button.uuiCooldown = cooldown
   end
 
-  button.uuiCooldownText = U.CreateLabel(button, {
-    size = M.fontSize.normal, color = { 1.0, 0.85, 0.3, 1.0 },
+  -- The swipe above is a Model child of the button, so a fontstring living on
+  -- the button's own OVERLAY layer can be drawn underneath it. The countdown
+  -- therefore sits on a raised child frame -- the same raised-layer trick the
+  -- unit frames use for bar labels, and what UnrealPfUI does for its cooldown
+  -- text (modules/cooldown.lua parents it to the button at a higher level).
+  -- The layer takes no mouse input, so clicks and drags still reach the button.
+  local textLayer = CreateFrame("Frame", nil, button)
+  pcall(textLayer.SetAllPoints, textLayer, button)
+  local levelOk, level = pcall(button.GetFrameLevel, button)
+  if levelOk and tonumber(level) then
+    pcall(textLayer.SetFrameLevel, textLayer, level + 10)
+  end
+  button.uuiCooldownLayer = textLayer
+
+  button.uuiCooldownText = U.CreateLabel(textLayer, {
+    size = M.fontSize.normal, color = CD_COLOR.normal,
     inherits = "GameFontNormal",
   })
   if button.uuiCooldownText then
-    button.uuiCooldownText:SetPoint("CENTER", button, "CENTER", 0, 0)
+    button.uuiCooldownText:SetPoint("CENTER", textLayer, "CENTER", 0, 0)
     button.uuiCooldownText:Hide()
   end
 
@@ -419,7 +491,13 @@ local function SizeButton(button, size)
     U.SetFont(button.uuiMacro, small)
   end
   if button.uuiCooldownText then
-    U.SetFont(button.uuiCooldownText, small + 2)
+    -- The countdown is the readout, not a corner label, so it scales off the
+    -- button rather than off the small-label size. pfUI's dynamic cooldown font
+    -- uses height * .64; half the button is the same idea, one step calmer.
+    local cdSize = math.floor(size * 0.5)
+    if cdSize < 10 then cdSize = 10 end
+    if cdSize > 24 then cdSize = 24 end
+    U.SetFont(button.uuiCooldownText, cdSize)
   end
 end
 
@@ -431,6 +509,8 @@ local function HideButton(button)
   ShowRegion(button.uuiCount, false)
   ShowRegion(button.uuiMacro, false)
   ShowRegion(button.uuiCooldownText, false)
+  button.uuiCdActive = false
+  button.uuiCdShown = false
   if button.uuiCooldown then pcall(button.uuiCooldown.Hide, button.uuiCooldown) end
   button:Hide()
 end
@@ -447,10 +527,16 @@ local function UpdateSlot(button)
     U.SetColor(button.uuiIcon, 1, 1, 1, 1)
     button.uuiIcon:Show()
     button.uuiEmpty = false
+    -- The white write above is the tint, so the cache has to agree with it.
+    -- Without this the next UpdateUsable sees its own stale colour and skips
+    -- the re-apply, which left an out-of-range button white until its state
+    -- changed to something else and back.
+    button.uuiTint = COLOR.usable
   else
     pcall(button.uuiIcon.SetTexture, button.uuiIcon, nil)
     button.uuiIcon:Hide()
     button.uuiEmpty = true
+    button.uuiTint = nil
   end
 
   -- Counts: consumables report a stack, everything else reports nothing.
@@ -490,19 +576,44 @@ local function UpdateUsable(button)
 
   local color = COLOR.usable
 
-  -- Range is checked first so an out-of-range spell reads as red rather than as
-  -- merely usable. Both range calls are unrecorded here and may be absent.
-  if Call("ActionHasRange", slot) then
-    local inRange = Call("IsActionInRange", slot)
-    if inRange == 0 then color = COLOR.outOfRange end
-  end
+  -- On cooldown outranks everything else here: it is the state that actually
+  -- gates the button, so range/oom/unusable would just be noise under it.
+  -- Reads button.uuiCdActive, which UpdateCooldown must therefore set before
+  -- this runs -- see the call order in FullUpdate/RefreshState below. GCD-only
+  -- cooldowns are excluded the same way the countdown number excludes them
+  -- (button.uuiCdActive is false for those), so the icon does not flash red on
+  -- every global-cooldown press.
+  if button.uuiCdActive then
+    color = COLOR.cooldown
+  else
+    -- Range is checked first so an out-of-range spell reads as red rather than
+    -- as merely usable. Neither call has a compact record; the call shape
+    -- follows UnrealPfUI's working implementation (WORKING_SOURCE, not
+    -- runtime-verified).
+    --
+    -- ActionHasRange is only a gate there, so it is applied only when this
+    -- client actually provides it -- IsActionInRange answers on its own,
+    -- reporting 0 solely for a slot that has a range and is out of it, and nil
+    -- for one that has no range or no target. A booleanised false is read the
+    -- same way as 0.
+    local hasRange = true
+    if Has("ActionHasRange") then
+      hasRange = Call("ActionHasRange", slot) and true or false
+    end
+    if hasRange then
+      local inRange = Call("IsActionInRange", slot)
+      if tonumber(inRange) == 0 or inRange == false then
+        color = COLOR.outOfRange
+      end
+    end
 
-  if color == COLOR.usable then
-    local usable, oom = Call("IsUsableAction", slot)
-    if oom and oom ~= 0 then
-      color = COLOR.oom
-    elseif usable ~= nil and (usable == false or usable == 0) then
-      color = COLOR.unusable
+    if color == COLOR.usable then
+      local usable, oom = Call("IsUsableAction", slot)
+      if oom and oom ~= 0 then
+        color = COLOR.oom
+      elseif usable ~= nil and (usable == false or usable == 0) then
+        color = COLOR.unusable
+      end
     end
   end
 
@@ -529,50 +640,152 @@ local function UpdateActive(button)
   end
 end
 
+-- ---------------------------------------------------------------------------
+-- Cooldown countdown
+--
+-- The swipe only darkens the icon, so the number is what actually tells the
+-- player when the spell is back. It is measured, never estimated: the timer is
+-- always the client's own (start, duration) pair re-evaluated against the
+-- client's own clock on every tick, so it stays right across a reload, a
+-- /reload mid-cooldown, a cooldown started before login and a cooldown reset
+-- early by the server -- all of which move the pair and none of which a
+-- locally counted-down number would follow.
+--
+-- Evidence behind the two calls:
+--   * api.json / actionbars.action_cooldown_1.v1: GetActionCooldown(slot)
+--     returned exactly three numbers here (0, 0, 1 for an idle slot 1), which
+--     is Vanilla's (start, duration, enable) shape. BEHAVIOR_PARTIALLY_TESTED
+--     -- the idle triple is measured, a running cooldown is not, so every
+--     component is coerced and the display is gated on start > 0.
+--   * api.json / core.time.v1: GetTime() returned a plain rising number of
+--     seconds (852.623). Same clock GetActionCooldown stamps start with.
+-- ---------------------------------------------------------------------------
+local function Round(value)
+  return math.floor(value + 0.5)
+end
+
+-- Only needed by the wrap correction below, and only if this client wraps at
+-- all. Each source is optional and guarded.
+local function EpochSeconds()
+  local value = tonumber(Call("time"))
+  if value then return value end
+
+  value = tonumber(Call("GetServerTime"))
+  if value then return value end
+
+  local fn = U.G("date")
+  if type(fn) == "function" then
+    local ok, text = pcall(fn, "%s")
+    value = ok and tonumber(text) or nil
+    if value then return value end
+  end
+  return nil
+end
+
+-- Seconds left on (start, duration), or nil when it cannot be established.
+local function CooldownRemaining(start, duration)
+  local now = tonumber(Call("GetTime")) or 0
+
+  if start <= now then
+    return duration - (now - start)
+  end
+
+  -- A start stamped ahead of the current time means the client's 32-bit
+  -- millisecond uptime counter wrapped and the stamp belongs to the previous
+  -- cycle, so the plain subtraction would read as a cooldown days long.
+  -- UnrealPfUI corrects it by rebasing both onto wall-clock seconds
+  -- (modules/cooldown.lua); the arithmetic here is that working implementation,
+  -- so it is WORKING_SOURCE evidence and not verified on this client. It only
+  -- runs in a case the plain path is already wrong in.
+  local epoch = EpochSeconds()
+  if not epoch then return nil end
+
+  local startupTime = epoch - now
+  local cdTime = (2 ^ 32) / 1000 - start
+  return (startupTime - cdTime + duration) - epoch
+end
+
+-- pfUI-modern's unit switch points: days above 99 hours, hours above 99
+-- minutes, minutes above 99 seconds, and tenths over the last five seconds.
+local function FormatCooldown(remaining)
+  if remaining > 356400 then
+    return Round(remaining / 86400) .. "d", CD_COLOR.day
+  elseif remaining > 5940 then
+    return Round(remaining / 3600) .. "h", CD_COLOR.hour
+  elseif remaining > 99 then
+    return Round(remaining / 60) .. "m", CD_COLOR.minute
+  elseif remaining <= 5 then
+    return string.format("%.1f", remaining), CD_COLOR.low
+  end
+  return tostring(Round(remaining)), CD_COLOR.normal
+end
+
+-- Redraws one button's number from its cached pair. Cheap on purpose: this is
+-- what runs at CD_TICK, so it re-reads the clock but not the action API.
+local function RefreshCooldownText(button)
+  local label = button.uuiCooldownText
+  if not label then return end
+
+  local remaining = nil
+  if button.uuiCdActive and cfg and cfg.showCooldown then
+    remaining = CooldownRemaining(button.uuiCdStart, button.uuiCdDuration)
+  end
+
+  if not remaining or remaining <= 0 then
+    if remaining and remaining <= 0 then button.uuiCdActive = false end
+    if button.uuiCdShown then
+      button.uuiCdShown = false
+      button.uuiCdColor = nil
+      label:SetText("")
+      label:Hide()
+    end
+    return
+  end
+
+  local text, color = FormatCooldown(remaining)
+  label:SetText(text)
+
+  if button.uuiCdColor ~= color then
+    button.uuiCdColor = color
+    pcall(label.SetTextColor, label, color[1], color[2], color[3], color[4])
+  end
+  if not button.uuiCdShown then
+    button.uuiCdShown = true
+    label:Show()
+  end
+end
+
+-- Re-reads the slot's cooldown pair and drives both the swipe and the number.
 local function UpdateCooldown(button)
   local slot = ButtonSlot(button)
   local start, duration, enable = Call("GetActionCooldown", slot)
 
   start = tonumber(start) or 0
   duration = tonumber(duration) or 0
+  enable = tonumber(enable)
 
   if button.uuiCooldown then
     local fn = U.G("CooldownFrame_SetTimer")
     if type(fn) == "function" then
       pcall(fn, button.uuiCooldown, start, duration, enable or 1)
-      return
     end
   end
 
-  -- Fallback: no usable swipe frame, so show the remaining whole seconds. The
-  -- global cooldown is deliberately skipped -- a 1.5s number on every button on
-  -- every cast is noise, not information.
-  local label = button.uuiCooldownText
-  if not label then return end
+  -- enable == 0 is Vanilla's "this slot has a cooldown but must not display
+  -- one" flag; a missing value is read as enabled, the way pfUI reads it.
+  button.uuiCdStart = start
+  button.uuiCdDuration = duration
+  button.uuiCdActive = (start > 0 and duration >= GCD_THRESHOLD
+                        and (enable == nil or enable > 0)) and true or false
 
-  if start > 0 and duration > 1.5 then
-    local now = tonumber(Call("GetTime")) or 0
-    local remaining = start + duration - now
-    if remaining > 0 then
-      if remaining >= 60 then
-        label:SetText(tostring(math.floor(remaining / 60 + 0.5)) .. "m")
-      else
-        label:SetText(tostring(math.floor(remaining + 0.5)))
-      end
-      label:Show()
-      return
-    end
-  end
-
-  label:SetText("")
-  label:Hide()
+  RefreshCooldownText(button)
 end
 
 local function FullUpdate(button)
   UpdateSlot(button)
+  UpdateCooldown(button)
   UpdateUsable(button)
   UpdateActive(button)
-  UpdateCooldown(button)
 end
 
 local function ForEachVisibleButton(callback)
@@ -811,11 +1024,18 @@ local function RefreshSlots()
   ForEachVisibleButton(FullUpdate)
 end
 
+-- Only the number, from the cached pair. The pair itself is refreshed by the
+-- state sweep and by ACTIONBAR_UPDATE_COOLDOWN; this is what makes the digits
+-- move between those.
+local function RefreshCooldownTimers()
+  ForEachVisibleButton(RefreshCooldownText)
+end
+
 local function RefreshState()
   ForEachVisibleButton(function(button)
+    UpdateCooldown(button)
     UpdateUsable(button)
     UpdateActive(button)
-    UpdateCooldown(button)
   end)
 end
 
@@ -859,8 +1079,10 @@ function AB:OnEnable()
   ApplyAll()
   RegisterEvents()
 
-  -- Two rates: slot contents change rarely and cost the most calls, while
-  -- cooldown/usable/active state is what the eye actually tracks.
+  -- Three rates: slot contents change rarely and cost the most calls, usable/
+  -- active/cooldown state is what the eye tracks, and the countdown itself only
+  -- re-reads the clock, so it can tick fastest for the least work.
+  U.RegisterUpdate("actionbar.cooldown", CD_TICK, RefreshCooldownTimers)
   U.RegisterUpdate("actionbar.state", 0.2, RefreshState)
   U.RegisterUpdate("actionbar.slots", 1, RefreshSlots)
 end
@@ -881,6 +1103,8 @@ function U.ActionBarReport()
       page = (i == 1) and ActivePage() or nil,
       cooldownFrame = (entry and entry.buttons[1] and
                        entry.buttons[1].uuiCooldown) and true or false,
+      cooldownText = (entry and entry.buttons[1] and
+                      entry.buttons[1].uuiCooldownText) and true or false,
     })
   end
   return report

@@ -14,7 +14,52 @@ local QUEST_BRIGHT = { 0.92, 0.92, 0.92, 1 }
 local QUEST_WHITE = { 1.00, 1.00, 1.00, 1 }
 
 local config
-local frame, detail, listScroll, detailPanel
+local frame, detail, listScroll, detailPanel, collapseAllButton
+
+-- Filled by the first header click attempt so /uui check can report which of
+-- the collapse entry points this client actually provides.
+local collapseReport = { collapse = "untested", expand = "untested",
+                         nativeClick = "untested" }
+
+-- Which signal the tracked-quest mark ended up using, and how many rows it
+-- marked on the last refresh. Turns "the mark does not show" into something
+-- specific: no source means the client offers neither signal.
+local trackReport = { source = "none", marked = 0 }
+
+-- Reload-time re-tracking.
+--
+-- questlog.isquestwatched_resets_to_zero_across_reload (knowledge.json):
+-- IsQuestWatched genuinely reports 0 tracked quests after /reload -- the
+-- watch list itself does not survive on this client, unlike Vanilla where
+-- it is engine-side state independent of the Lua environment. The
+-- questtrack probe (USER_CONFIRMED_INGAME) confirmed AddQuestWatch(index)/
+-- RemoveQuestWatch(index) both exist and round-trip correctly against
+-- IsQuestWatched(index) using the same raw GetQuestLogTitle index -- no
+-- separate "quest-only" index space, that was a probe bug, not client
+-- behaviour. So unrealUI can re-establish tracking itself: remember which
+-- quest titles the player tracked (title, not index -- the index shifts
+-- every time a quest is turned in or the log re-sorts) and call
+-- AddQuestWatch again for any of them found untracked after login/reload.
+-- Defined here, ahead of UpdateRows, because a later `local function` of the
+-- same name would not be visible as an upvalue inside a function textually
+-- defined before it -- Lua locals only scope forward from their declaration.
+--
+-- trackingRestored gates *forgetting* a quest. BuildFrame runs UpdateRows
+-- before OnEnable reaches RestoreTrackedQuests, and straight after a reload
+-- the client reports every quest unwatched -- so without this gate that first
+-- pass would erase the very memory the restore is about to read, and the
+-- feature would silently defeat itself. Remembering is never gated; only
+-- removal waits until the restore has had its turn.
+local trackingRestored = false
+
+local function SyncTrackedQuestMemory(title, watched)
+  if not config or not title or title == "" then return end
+  if watched then
+    config.trackedQuests[title] = true
+  elseif trackingRestored and config.trackedQuests[title] then
+    config.trackedQuests[title] = nil
+  end
+end
 
 local function G(name)
   return U.G(name)
@@ -108,6 +153,110 @@ local function BuildQuestLevelToggle(collapseAll)
   end)
 end
 
+-- Header expand/collapse.
+--
+-- The stock row Button's own OnClick does not collapse a header on this client
+-- (USER_CONFIRMED_INGAME: clicking "Northshire Valley" did nothing, while the
+-- All button worked), and query_compat.py has no record for CollapseQuestHeader,
+-- ExpandQuestHeader or the row click handler. Rather than guess at one of them,
+-- this tries the documented Vanilla entry points in order and records what was
+-- actually available, so /uui check turns the first click into evidence instead
+-- of another round of blind iteration.
+local function ToggleHeader(row)
+  local index = row and row.uuiQuestIndex
+  if not index then return end
+
+  local collapsed = row.uuiCollapsed
+  local name = collapsed and "ExpandQuestHeader" or "CollapseQuestHeader"
+  local key = collapsed and "expand" or "collapse"
+  local fn = G(name)
+
+  if type(fn) == "function" then
+    local ok, err = pcall(fn, index)
+    collapseReport[key] = ok and "ok" or ("error: " .. tostring(err))
+    if ok then
+      local update = G("QuestLog_Update")
+      if type(update) == "function" then pcall(update) end
+      return
+    end
+  else
+    collapseReport[key] = "missing"
+  end
+
+  -- Fall back to the row's own handler in case this client routes collapsing
+  -- through the click path rather than the standalone globals.
+  if row.GetScript then
+    local scriptOk, native = pcall(row.GetScript, row, "OnClick")
+    if scriptOk and native then
+      collapseReport.nativeClick = "present"
+      pcall(native, row)
+      return
+    end
+  end
+  collapseReport.nativeClick = "missing"
+  U.Error("questlog: no working header collapse call (" .. name .. " missing)")
+end
+
+function U.QuestLogCollapseReport()
+  return collapseReport
+end
+
+function U.QuestLogTrackReport()
+  return trackReport
+end
+
+-- Tracked-quest ("followed") mark.
+--
+-- The stock mark is QuestLogTitleNCheck, a Texture region on the row. Simply
+-- re-anchoring it the way UnrealPfUI does (RIGHT to the row's LEFT +24) left
+-- only a thin sliver visible on this client (USER_CONFIRMED_INGAME, twice):
+-- the stock texture is wider than the 24-unit gutter it was moved into, so most
+-- of it lands left of the list's left edge, and a Texture region cannot be
+-- raised above whatever is drawn there -- draw layers only order regions within
+-- one frame, so there is no z-order fix available for it from an AddOn.
+--
+-- So unrealUI stops trying to place the native texture and owns the mark: a
+-- small accent bar, a real Frame parented to the row, explicitly raised above
+-- the row and above the list panel. It is a Frame, not a Button, precisely so
+-- it cannot swallow the shift+click that toggles tracking. The native Check is
+-- stripped, but its shown state is still read as the tracking signal, so the
+-- client keeps deciding what is tracked and unrealUI only renders it.
+local TRACK_MARK_WIDTH = 4
+
+local function BuildTrackMark(row)
+  if not row or row.uuiTrackMark then return row.uuiTrackMark end
+
+  local heightOk, height = pcall(row.GetHeight, row)
+  local barHeight = heightOk and tonumber(height) and math.max(height - 6, 6) or 10
+
+  -- M.color.accent, not the local QUEST_ACCENT teal used for quest log text --
+  -- that constant predates this module's use of the real addon accent and
+  -- only ever matched quest log headings by coincidence, not by design.
+  -- USER_CONFIRMED_INGAME: the mark needs unrealUI's actual chrome colour
+  -- (#f5ae0a) to read as an addon element instead of an off-palette accent.
+  local mark = U.CreatePanel(row, {
+    width = TRACK_MARK_WIDTH,
+    height = barHeight,
+    background = M.color.accent,
+    border = false,
+  })
+  if not mark then return nil end
+
+  mark:SetPoint("LEFT", row, "LEFT", 4, 0)
+  pcall(mark.EnableMouse, mark, false)
+
+  -- The list panel is a sibling created after the rows, so the mark is raised
+  -- explicitly rather than trusting creation order to keep it on top.
+  local levelOk, level = pcall(row.GetFrameLevel, row)
+  if levelOk and tonumber(level) then
+    pcall(mark.SetFrameLevel, mark, level + 4)
+  end
+
+  mark:Hide()
+  row.uuiTrackMark = mark
+  return mark
+end
+
 local function BuildRows()
   local first = G("QuestLogTitle1")
   if not first or not listScroll then return end
@@ -138,7 +287,12 @@ local function BuildRows()
   end
 
   for i = 1, QUEST_ROWS do
-    U.StyleStockCollapseButton(G("QuestLogTitle" .. i))
+    local row = G("QuestLogTitle" .. i)
+    if row then
+      row.uuiCollapseClick = ToggleHeader
+      U.StyleStockCollapseButton(row)
+      BuildTrackMark(row)
+    end
   end
 end
 
@@ -162,28 +316,90 @@ local function UpdateRows()
   end
 
   local i
+  local headers, collapsedHeaders = 0, 0
+
+  local isWatched = G("IsQuestWatched")
+  trackReport.marked = 0
+
   for i = 1, QUEST_ROWS do
     local row = G("QuestLogTitle" .. i)
     local check = G("QuestLogTitle" .. i .. "Check")
-    if row and check then
-      pcall(function()
-        check:ClearAllPoints()
-        check:SetPoint("RIGHT", row, "LEFT", 24, 0)
-      end)
+
+    -- Read the native mark's state before neutralising its artwork: Show/Hide
+    -- still tracks correctly after the texture is blanked, so this keeps the
+    -- client in charge of what counts as tracked.
+    local nativeShown
+    if check then
+      local shownOk, shown = pcall(check.IsShown, check)
+      if shownOk then nativeShown = shown and true or false end
+      U.HideRegion(check)
     end
 
-    if config.showQuestLevels and row then
-      local questIndex = i + offset
-      if questIndex <= numEntries then
-        local titleOk, text, level, questTag, isHeader =
-          pcall(getTitle, questIndex)
-        if titleOk and not isHeader and type(text) == "string" then
-          local shownLevel = tostring(level or "?") .. (questTag and "+" or "")
-          pcall(row.SetText, row, " [" .. shownLevel .. "] " .. text)
+    local questIndex = i + offset
+    local titleOk, text, level, questTag, isHeader, isCollapsed
+    if row and questIndex <= numEntries then
+      titleOk, text, level, questTag, isHeader, isCollapsed = pcall(getTitle, questIndex)
+      titleOk = titleOk and type(text) == "string"
+    end
+
+    if row then
+      -- The row's collapse action needs the quest index the row is currently
+      -- showing, which only exists here: the scroll offset moves it.
+      row.uuiQuestIndex = titleOk and isHeader and questIndex or nil
+      row.uuiCollapsed = isCollapsed and true or false
+      U.SetStockCollapseState(row, titleOk and isHeader, isCollapsed)
+
+      -- Tracking state, preferring the API over the stripped native texture.
+      -- Which one answers is recorded so /uui check can say whether the mark is
+      -- driven by IsQuestWatched or by the stock Check region on this client.
+      local watched
+      if type(isWatched) == "function" and titleOk and not isHeader then
+        local watchOk, value = pcall(isWatched, questIndex)
+        if watchOk then
+          watched = value and true or false
+          trackReport.source = "IsQuestWatched"
+        else
+          trackReport.source = "IsQuestWatched error"
+        end
+      end
+      if watched == nil then
+        watched = nativeShown and true or false
+        if type(isWatched) ~= "function" then
+          trackReport.source = "native Check"
+        end
+      end
+      if watched then trackReport.marked = trackReport.marked + 1 end
+      if titleOk and not isHeader then SyncTrackedQuestMemory(text, watched) end
+
+      local mark = row.uuiTrackMark
+      if mark then
+        if titleOk and not isHeader and watched then
+          mark:Show()
+        else
+          mark:Hide()
         end
       end
     end
+
+    if config.showQuestLevels and row and titleOk and not isHeader then
+      local shownLevel = tostring(level or "?") .. (questTag and "+" or "")
+      pcall(row.SetText, row, " [" .. shownLevel .. "] " .. text)
+    end
   end
+
+  -- The All button keeps its native click; only its icon is unrealUI's, so its
+  -- state is derived from the log itself rather than read from a native flag.
+  -- This walks every entry, not just the rows on screen: the visible window is
+  -- a scrolled slice and would report the wrong answer once the list is long.
+  for i = 1, numEntries do
+    local titleOk, _, _, _, isHeader, isCollapsed = pcall(getTitle, i)
+    if titleOk and isHeader then
+      headers = headers + 1
+      if isCollapsed then collapsedHeaders = collapsedHeaders + 1 end
+    end
+  end
+  U.SetStockCollapseState(collapseAllButton, true,
+                          headers > 0 and collapsedHeaders == headers)
 end
 
 local function StyleQuestItems()
@@ -214,6 +430,33 @@ local function StyleQuestItems()
           icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
           icon:Show()
           icon:SetAlpha(1)
+        end)
+      end
+
+      -- The reward name keeps its native anchor, which was measured against the
+      -- stock cell -- so after the cell is narrowed by 12 and the icon is moved
+      -- and resized, the name is left sitting at the bottom of the cell and
+      -- running past its right edge (USER_CONFIRMED_INGAME). Anchoring both
+      -- corners boxes the FontString inside the remaining space, so a long
+      -- reward name wraps within the cell instead of escaping it. The stock
+      -- ScrollFrame does not clip its children, so an overflowing name is drawn
+      -- outside the pane entirely rather than being cut off.
+      local title = G(name .. "Name")
+      if title and icon then
+        pcall(function()
+          title:ClearAllPoints()
+          title:SetPoint("TOPLEFT", icon, "TOPRIGHT", 5, 0)
+          title:SetPoint("BOTTOMRIGHT", item, "BOTTOMRIGHT", -5, 4)
+          title:SetJustifyH("LEFT")
+          title:SetJustifyV("MIDDLE")
+        end)
+      end
+
+      local count = G(name .. "Count")
+      if count and icon then
+        pcall(function()
+          count:ClearAllPoints()
+          count:SetPoint("BOTTOMRIGHT", icon, "BOTTOMRIGHT", -1, 1)
         end)
       end
     end
@@ -341,8 +584,12 @@ local function BuildFrame()
   end)
 
   local collapseAll = G("QuestLogCollapseAllButton")
+  collapseAllButton = collapseAll
   U.StripStockTextures(G("QuestLogExpandButtonFrame"))
+  -- No uuiCollapseClick override: the All button's native OnClick already works
+  -- on this client, so its icon just forwards the click back to it.
   U.StyleStockCollapseButton(collapseAll, true)
+  U.SetStockCollapseState(collapseAll, true, false)
   if collapseAll and G("QuestLogTitle1") then
     pcall(function()
       collapseAll:ClearAllPoints()
@@ -438,21 +685,117 @@ local function BuildFrame()
 
   local empty = G("EmptyQuestLogFrame")
   if empty then
-    U.PostHookScript(empty, "OnShow", function()
+    -- The empty frame owns the native spiderweb/parchment artwork visible
+    -- beneath its message. Keep the FontString but remove that stock art so
+    -- the normal unrealUI list panel remains the only empty-state surface.
+    StripDecorations(empty)
+
+    local function ApplyEmptyState()
       SetDetailVisible(false)
       pcall(expand.Disable, expand)
-    end)
+    end
+
+    U.PostHookScript(empty, "OnShow", ApplyEmptyState)
     U.PostHookScript(empty, "OnHide", function() pcall(expand.Enable, expand) end)
+
+    -- EmptyQuestLogFrame can already be shown when the addon is initialized
+    -- (notably after /reload with the log open), so OnShow is not guaranteed
+    -- to run after the hooks above are installed.
+    if IsShown(empty) then ApplyEmptyState() end
   end
 
-  if IsShown(frame) then ReapplyNativeStrip() end
+  -- QuestLog_OnShow only fires when the frame transitions from hidden to
+  -- shown. If /reload happens while the log is already open, the frame's
+  -- Shown state carries straight through reload and OnShow never re-fires --
+  -- so QuestLog_Update never runs and the collapse icons and tracked-quest
+  -- marks stay at their just-built, all-hidden state until something else
+  -- (scrolling, closing/reopening) forces a refresh (USER_CONFIRMED_INGAME:
+  -- reported as the tracked mark "not saved" across reload). Call UpdateRows
+  -- directly here to cover that case; it starts with ReapplyNativeStrip so
+  -- this replaces that call rather than needing both.
+  if IsShown(frame) then UpdateRows() end
   return true
 end
 
+-- Returns true when the restore is finished and should not be retried.
+--
+-- The quest log is not guaranteed to be populated at OnEnable: this client's
+-- load-order for quest data is not in the compact evidence, and a restore that
+-- runs against an empty log would quietly do nothing. So an empty log is
+-- treated as "not ready yet" and retried on the shared update driver (verified
+-- machinery -- core/init.lua's own bootstrap fallback uses it) rather than
+-- depending on QUEST_LOG_UPDATE, which has no compact-DB record on this client.
+local RESTORE_MAX_ATTEMPTS = 20
+local restoreAttempts = 0
+
+local function RestoreTrackedQuests()
+  if not config or not next(config.trackedQuests) then return true end
+
+  local getCount = G("GetNumQuestLogEntries")
+  local getTitle = G("GetQuestLogTitle")
+  local isWatched = G("IsQuestWatched")
+  local addWatch = G("AddQuestWatch")
+  if type(getCount) ~= "function" or type(getTitle) ~= "function" or
+     type(addWatch) ~= "function" then
+    U.Debug("questlog: quest watch API unavailable; tracking cannot be restored")
+    return true
+  end
+
+  restoreAttempts = restoreAttempts + 1
+
+  local ok, numEntries = pcall(getCount)
+  numEntries = (ok and tonumber(numEntries)) or 0
+  if numEntries <= 0 then
+    return restoreAttempts >= RESTORE_MAX_ATTEMPTS
+  end
+
+  local i, restored = nil, 0
+  for i = 1, numEntries do
+    local titleOk, text, level, questTag, isHeader = pcall(getTitle, i)
+    if titleOk and type(text) == "string" and not isHeader and
+       config.trackedQuests[text] then
+      local watchedNow = false
+      if type(isWatched) == "function" then
+        local watchedOk, value = pcall(isWatched, i)
+        watchedNow = watchedOk and value and true or false
+      end
+      if not watchedNow then
+        local addOk = pcall(addWatch, i)
+        if addOk then restored = restored + 1 end
+      end
+    end
+  end
+
+  U.Debug("questlog: restored " .. restored .. " tracked quest(s) after reload")
+
+  -- Repaint so the marks match the state that was just re-established.
+  if type(G("QuestLog_Update")) == "function" then pcall(G("QuestLog_Update")) end
+  return true
+end
+
+local function BeginTrackingRestore()
+  local function Finish()
+    trackingRestored = true
+  end
+
+  if RestoreTrackedQuests() then
+    Finish()
+    return
+  end
+
+  U.RegisterUpdate("questlog.restore-tracking", 1, function()
+    if RestoreTrackedQuests() then
+      U.UnregisterUpdate("questlog.restore-tracking")
+      Finish()
+    end
+  end)
+end
+
 function QL:OnInit()
-  config = U.ModuleConfig("questlog", { showQuestLevels = false })
+  config = U.ModuleConfig("questlog", { showQuestLevels = false, trackedQuests = {} })
 end
 
 function QL:OnEnable()
   BuildFrame()
+  BeginTrackingRestore()
 end

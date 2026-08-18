@@ -9,7 +9,7 @@
 > 3. Rename the extracted `unrealUI-master` folder to `unrealUI` by removing `-master`.
 > 4. Confirm that `unrealUI.toc` is directly inside the `unrealUI` folder, then launch the game or reload the interface.
 
-UnrealUI modernizes the information you use every minute while preserving the soul of the original game. Version **0.0.2** is built specifically for Unreal Azeroth / Emberveil.
+UnrealUI modernizes the information you use every minute while preserving the soul of the original game. Version **0.0.3** is built specifically for Unreal Azeroth / Emberveil.
 
 ![UnrealUI main interface](screenshots/main_overlay.png)
 
@@ -55,4 +55,4 @@ Use `/uui` to open the settings and `/uui unlock` to arrange supported overlays.
 
 ## Version
 
-Current release: **0.0.2**
+Current release: **0.0.3**

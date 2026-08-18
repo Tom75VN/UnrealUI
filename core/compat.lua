@@ -263,6 +263,11 @@ end
 -- ---------------------------------------------------------------------------
 local suppressedSeen = {}
 local suppressedNames = {}
+-- group -> array of names. The full list above still drives the periodic sweep
+-- and the count readout; the groups exist so an event that can only resurrect
+-- one family of frames does not have to walk all of them. See the sweep-cost
+-- note below.
+local suppressedGroups = {}
 local suppressionArmed = false
 
 -- knowledge.json / compat.native_suppression_pcall_burst_stutter: this sweep
@@ -274,7 +279,44 @@ local suppressionArmed = false
 -- with the unit frame feature. Two independent fixes below remove it:
 -- memoizing the name -> object resolution, and skipping the teardown entirely
 -- once an object is confirmed already hidden.
+--
+-- Second round, same record: the sweep was still bound to
+-- PLAYER_TARGET_CHANGED as a whole-list re-apply, so changing target walked
+-- every registered name -- around 1150 once action bars (809) joined unit
+-- frames (340) and bags (5) -- in the same frame the target changed, and did
+-- it on top of whatever the one-second sweep had just done. Target change is
+-- also the worst case for the fast path: it is exactly when this client brings
+-- TargetFrame and its children back, so those ~120 objects fail the IsShown
+-- check and take the full teardown. Reported in game as a micro freeze on
+-- target change. Two more fixes: bucket the names by group so an event sweeps
+-- only what it can actually resurrect, and hoist every per-object pcall body
+-- out of an anonymous closure so a sweep stops allocating one closure per
+-- object. The pcall boundaries themselves are unchanged -- each step still
+-- fails independently.
 local resolvedNative = {}   -- name -> object | false
+
+-- Hoisted pcall bodies. These were anonymous closures built fresh for every
+-- object on every sweep; as named upvalues they allocate nothing and keep the
+-- one-pcall-per-step failure isolation the closures had.
+local function NoOpShow() return end
+
+local function ReadSuppressedFlag(object) return object.uuiSuppressed end
+local function MarkSuppressed(object) object.uuiSuppressed = true end
+local function NeutraliseShow(object)
+  if object.Show then object.Show = NoOpShow end
+end
+local function DropNativeEvents(object)
+  if object.UnregisterAllEvents then object:UnregisterAllEvents() end
+end
+local function HideObject(object)
+  if object.Hide then object:Hide() end
+end
+local function ZeroAlpha(object)
+  if object.SetAlpha then object:SetAlpha(0) end
+end
+local function DropMouse(object)
+  if object.EnableMouse then object:EnableMouse(false) end
+end
 
 local function ResolveNativeObject(name)
   local cached = resolvedNative[name]
@@ -289,7 +331,7 @@ local function ResolveNativeObject(name)
 end
 
 local function IsAlreadySuppressed(object)
-  local ok, value = pcall(function() return object.uuiSuppressed end)
+  local ok, value = pcall(ReadSuppressedFlag, object)
   return ok and value and true or false
 end
 
@@ -308,28 +350,41 @@ local function KillNativeObject(object)
     if shownOk and not shown then return end
   end
 
-  pcall(function()
-    if object.UnregisterAllEvents then object:UnregisterAllEvents() end
-  end)
+  pcall(DropNativeEvents, object)
 
   -- Wrapping an already-replaced Show would nest the no-op inside itself on
   -- every re-apply pass, so the swap happens once and is then remembered.
+  -- One shared no-op serves every object: nothing compares these by identity.
   if not alreadyMarked then
-    pcall(function()
-      if object.Show then object.Show = function() return end end
-    end)
-    pcall(function() object.uuiSuppressed = true end)
+    pcall(NeutraliseShow, object)
+    pcall(MarkSuppressed, object)
   end
 
-  pcall(function() if object.Hide then object:Hide() end end)
-  pcall(function() if object.SetAlpha then object:SetAlpha(0) end end)
-  pcall(function() if object.EnableMouse then object:EnableMouse(false) end end)
+  pcall(HideObject, object)
+  pcall(ZeroAlpha, object)
+  pcall(DropMouse, object)
+end
+
+local function SweepNames(names)
+  if not names then return end
+  local i
+  for i = 1, table.getn(names) do
+    KillNativeObject(ResolveNativeObject(names[i]))
+  end
 end
 
 local function ApplyNativeSuppression()
-  local i
-  for i = 1, table.getn(suppressedNames) do
-    KillNativeObject(ResolveNativeObject(suppressedNames[i]))
+  SweepNames(suppressedNames)
+end
+
+-- Returns a handler that sweeps one group only. An event that cannot bring a
+-- family of frames back has no reason to walk it; the one-second full sweep
+-- above stays the guarantee for everything, so the worst case for a name in
+-- the wrong group is that it is re-hidden up to a second later instead of
+-- immediately.
+local function GroupSweeper(group)
+  return function()
+    SweepNames(suppressedGroups[group])
   end
 end
 
@@ -366,9 +421,19 @@ end
 -- names may be a single global name or an array of them. A name that does not
 -- resolve is simply skipped on every pass, so an absent stock frame costs
 -- nothing and never errors.
-function U.SuppressNativeFrame(names)
+--
+-- group names which event-driven re-apply this family belongs to: "target" for
+-- frames this client re-shows when the target changes, "party" for the roster
+-- frames, and the default "static" for everything the periodic sweep alone can
+-- cover. Passing nothing is always safe -- it only means the frame waits for
+-- the one-second sweep rather than being re-hidden the instant an event fires.
+function U.SuppressNativeFrame(names, group)
   if type(names) == "string" then names = { names } end
   if type(names) ~= "table" then return end
+
+  if type(group) ~= "string" then group = "static" end
+  if not suppressedGroups[group] then suppressedGroups[group] = {} end
+  local bucket = suppressedGroups[group]
 
   local i
   for i = 1, table.getn(names) do
@@ -376,10 +441,14 @@ function U.SuppressNativeFrame(names)
     if type(name) == "string" and not suppressedSeen[name] then
       suppressedSeen[name] = true
       table.insert(suppressedNames, name)
+      table.insert(bucket, name)
     end
   end
 
-  ApplyNativeSuppression()
+  -- Only this group needs the immediate pass. Names other callers registered
+  -- were already suppressed by their own call, and re-walking this bucket's
+  -- earlier entries costs one IsShown readback each.
+  SweepNames(bucket)
 
   if not suppressionArmed then
     suppressionArmed = true
@@ -387,9 +456,14 @@ function U.SuppressNativeFrame(names)
     -- PLAYER_TARGET_CHANGED is the one of these observed firing on this client
     -- (events.json, 7 captures); the others are registered but unobserved, so
     -- the one-second sweep is the actual guarantee rather than a backstop.
+    --
+    -- Because it is the one that fires, it is also the one whose cost is felt:
+    -- it gets the "target" bucket only, not the whole list. PLAYER_ENTERING_WORLD
+    -- keeps the full sweep -- it is rare, and a zone-in is when the client is
+    -- most likely to have rebuilt anything.
     U.RegisterEvent("PLAYER_ENTERING_WORLD", ApplyNativeSuppression)
-    U.RegisterEvent("PLAYER_TARGET_CHANGED", ApplyNativeSuppression)
-    U.RegisterEvent("PARTY_MEMBERS_CHANGED", ApplyNativeSuppression)
+    U.RegisterEvent("PLAYER_TARGET_CHANGED", GroupSweeper("target"))
+    U.RegisterEvent("PARTY_MEMBERS_CHANGED", GroupSweeper("party"))
     U.RegisterUpdate("compat.native-suppression", 1, ApplyNativeSuppression)
   end
 end

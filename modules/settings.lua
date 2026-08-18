@@ -554,8 +554,23 @@ local function BuildGeneralPage(parent)
     table.insert(widgets, microbarHint)
   end
 
+  -- The reputation bar (modules/xpbar.lua) is the only other single-setting
+  -- overlay; the XP bar itself is required scope and has no toggle.
+  local reputation = U.CreateCheckbox(parent, {
+    name = "UnrealUISettingsReputationBar",
+    text = "Show reputation bar",
+    value = U.ModuleConfig("xpbar", { repEnabled = true }).repEnabled,
+    onChange = function(value)
+      U.ModuleConfig("xpbar", { repEnabled = true }).repEnabled = value
+      if type(U.ApplyXPBar) == "function" then U.ApplyXPBar() end
+    end,
+  })
+  reputation.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -196)
+  table.insert(widgets, reputation)
+
   local function Refresh()
     microbar.SetValue(U.ModuleConfig("microbar", { enabled = true }).enabled)
+    reputation.SetValue(U.ModuleConfig("xpbar", { repEnabled = true }).repEnabled)
   end
 
   return widgets, Refresh
