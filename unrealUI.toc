@@ -1,0 +1,47 @@
+## Interface: 11200
+## Title: |cffffffffUnreal |cfff5ae0aUI
+## Notes: Unreal Azeroth native UI addon.
+## Author: unrealUI
+## Version: 0.1.0
+## SavedVariables: UnrealUIDB, UnrealUIDiagDB
+
+core\init.lua
+core\perf.lua
+core\media.lua
+core\compat.lua
+core\config.lua
+core\style.lua
+core\widgets.lua
+core\stockui.lua
+core\dropdown.lua
+core\mover.lua
+core\windowdrag.lua
+core\commands.lua
+
+modules\settings.lua
+modules\gamemenu.lua
+modules\logout.lua
+modules\minimap.lua
+modules\microbar.lua
+modules\xpbar.lua
+modules\chat.lua
+modules\unitframes.lua
+modules\auras.lua
+modules\nameplates.lua
+modules\tooltip.lua
+modules\castbar.lua
+modules\actionbar.lua
+modules\actionbarconfig.lua
+modules\quickbind.lua
+modules\petbar.lua
+modules\bags.lua
+modules\status.lua
+modules\questlog.lua
+modules\spellbook.lua
+modules\character.lua
+modules\friends.lua
+modules\merchant.lua
+modules\trainer.lua
+modules\gossip.lua
+modules\quest.lua
+modules\windowmove.lua
