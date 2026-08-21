@@ -332,6 +332,8 @@ local function FullUpdate(button)
 end
 
 local function ForEachButton(callback)
+  -- /uui perf petbar. Both recurring sweeps walk the buttons through here.
+  if U.PerfDisabled and U.PerfDisabled("petbar") then return end
   if not shown then return end
   local i
   for i = 1, table.getn(buttons) do callback(buttons[i]) end
@@ -342,6 +344,9 @@ end
 -- ---------------------------------------------------------------------------
 local function CreateBar()
   frame = CreateFrame("Frame", "UnrealUIPetBar", UIParent)
+  -- Match the main action bars: the persistent pet HUD must stay below
+  -- overlapping native interface windows.
+  pcall(frame.SetFrameStrata, frame, "LOW")
   frame:SetWidth(100)
   frame:SetHeight(30)
 

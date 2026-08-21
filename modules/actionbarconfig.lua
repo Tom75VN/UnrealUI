@@ -197,6 +197,7 @@ local GLOBALS = {
   { key = "showMacro",    text = "Show macro names" },
   { key = "showCount",    text = "Show item counts" },
   { key = "showCooldown", text = "Show cooldown timers" },
+  { key = "showGCD",      text = "Show global cooldown wipe" },
 }
 
 local function BuildGeneralPage(parent)

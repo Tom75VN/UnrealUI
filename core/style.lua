@@ -309,6 +309,241 @@ function U.SetStatusBarColor(bar, r, g, b, a)
 end
 
 -- ---------------------------------------------------------------------------
+-- Radial wipe
+--
+-- The clock wipe: a dark quarter that starts covering the whole square and is
+-- eaten away clockwise from twelve, clearing exactly at 100%. It is the shared
+-- primitive behind the action bar's global-cooldown feedback.
+--
+-- It is drawn by hand because this client renders nothing from the native
+-- shape. knowledge.json / cooldown.model_swipe_not_rendered: CreateFrame(
+-- "Model", name, button, "CooldownFrameTemplate") driven by
+-- CooldownFrame_SetTimer -- UnrealPfUI's vanilla branch, COOLDOWN_FRAME_TYPE in
+-- compat/vanilla.lua -- produces a frame but no wipe, USER_CONFIRMED_INGAME on
+-- a live spell cooldown. The client's own action bar does wipe, so it draws
+-- that internally rather than through a widget an addon can create.
+--
+-- The shape: at any moment at most one quadrant is being crossed. The quadrants
+-- the sweep has already passed are clear, the ones ahead of it are one flat
+-- quad each, and only the quadrant under the leading edge needs detail. That
+-- one is filled with a stack of horizontal strips whose widths follow the
+-- boundary ray -- the standard way to raise a triangle out of axis-aligned
+-- quads, which is all this client gives us: no Cooldown widget, and a wedge
+-- needs either a triangular mark or a rotated quad.
+--
+-- Strips are sized against the quadrant, not the whole square, so a 30-unit
+-- button lands near 1.5 units per step: at that size the staircase is finer
+-- than the boundary it approximates and reads as a straight edge.
+-- ---------------------------------------------------------------------------
+local WIPE_STRIP_MAX = 14
+local WIPE_STRIP_UNITS = 1.5
+local WIPE_RADIANS = math.pi / 180
+
+-- Clockwise from twelve. Per quadrant: the corner its flat fill sits in, the
+-- strip's own anchor corner, the frame point the strip stack hangs off, and the
+-- sign and index shift of that stack's vertical offsets.
+--
+-- Quadrants 2 and 4 are the mirrored pair. In those the leading edge travels
+-- away from the centre, so a strip's dark run is measured from the centre line
+-- outwards and its local angle counts down; in 1 and 3 the edge travels towards
+-- the centre and both are the other way round. That single flag is the only
+-- difference between the four cases.
+local WIPE_QUADS = {
+  { "TOPRIGHT",    "TOPRIGHT", "RIGHT",   1, 0 },
+  { "BOTTOMRIGHT", "TOPLEFT",  "CENTER", -1, 1 },
+  { "BOTTOMLEFT",  "TOPLEFT",  "LEFT",   -1, 1 },
+  { "TOPLEFT",     "TOPRIGHT", "CENTER",  1, 0 },
+}
+
+local function WipeMirrored(quadrant)
+  return quadrant == 2 or quadrant == 4
+end
+
+-- Re-anchors the strip stack into the quadrant now being crossed. Runs four
+-- times per wipe, not once per redraw: within a quadrant the strips keep their
+-- rows and only their widths move.
+local function MoveWipeStrips(wipe, quadrant)
+  if wipe.quadrant == quadrant then return end
+  wipe.quadrant = quadrant
+
+  local shape = WIPE_QUADS[quadrant]
+  local i
+  for i = 1, wipe.stripCount do
+    local strip = wipe.strips[i]
+    strip:ClearAllPoints()
+    strip:SetPoint(shape[2], wipe.frame, shape[3], 0,
+                   shape[4] * (i - shape[5]) * wipe.stripHeight)
+    wipe.drawn[i] = nil
+  end
+end
+
+-- Rebuilds the geometry for a square of `size`. Strips are created on demand so
+-- a button that is never shown never pays for them.
+function U.SizeRadialWipe(wipe, size)
+  if not wipe then return end
+
+  size = tonumber(size) or 0
+  if size <= 0 then return end
+
+  local half = size / 2
+  local count = U.Round(half / WIPE_STRIP_UNITS)
+  if count < 4 then count = 4 end
+  if count > WIPE_STRIP_MAX then count = WIPE_STRIP_MAX end
+
+  wipe.size, wipe.half = size, half
+  wipe.stripCount = count
+  wipe.stripHeight = half / count
+
+  local i
+  for i = 1, 4 do
+    wipe.quads[i]:SetWidth(half)
+    wipe.quads[i]:SetHeight(half)
+  end
+
+  for i = 1, count do
+    if not wipe.strips[i] then
+      local strip = wipe.frame:CreateTexture(nil, wipe.layer)
+      strip:SetTexture(M.texture.plain)
+      U.SetColor(strip, M.Unpack(wipe.color))
+      strip:Hide()
+      wipe.strips[i] = strip
+    end
+    wipe.strips[i]:SetHeight(wipe.stripHeight)
+    wipe.drawn[i] = nil
+  end
+  -- A strip left over from a larger size must not keep drawing at the new one.
+  for i = count + 1, table.getn(wipe.strips) do
+    wipe.strips[i]:Hide()
+    wipe.shown[i] = nil
+  end
+
+  -- Force the next redraw to re-anchor: the rows moved with the size.
+  wipe.quadrant = nil
+end
+
+function U.CreateRadialWipe(frame, options)
+  if not frame or not frame.CreateTexture then return nil end
+  options = options or {}
+
+  local wipe = {
+    frame = frame,
+    layer = options.layer or "BACKGROUND",
+    color = options.color or M.color.cooldownWipe,
+    quads = {}, strips = {}, drawn = {}, shown = {}, quadShown = {},
+    stripCount = 0, stripHeight = 0, size = 0, half = 0,
+  }
+
+  local i
+  for i = 1, 4 do
+    local quad = frame:CreateTexture(nil, wipe.layer)
+    quad:SetTexture(M.texture.plain)
+    U.SetColor(quad, M.Unpack(wipe.color))
+    quad:SetPoint(WIPE_QUADS[i][1], frame, WIPE_QUADS[i][1], 0, 0)
+    quad:Hide()
+    wipe.quads[i] = quad
+  end
+
+  local okWidth, width = pcall(frame.GetWidth, frame)
+  U.SizeRadialWipe(wipe, okWidth and width or options.size)
+  return wipe
+end
+
+function U.HideRadialWipe(wipe)
+  if not wipe then return end
+  local i
+  for i = 1, 4 do
+    if wipe.quadShown[i] then
+      wipe.quads[i]:Hide()
+      wipe.quadShown[i] = nil
+    end
+  end
+  for i = 1, table.getn(wipe.strips) do
+    if wipe.shown[i] then
+      wipe.strips[i]:Hide()
+      wipe.shown[i] = nil
+    end
+  end
+end
+
+function U.SetRadialWipeColor(wipe, r, g, b, a)
+  if not wipe then return end
+  local i
+  for i = 1, 4 do U.SetColor(wipe.quads[i], r, g, b, a) end
+  for i = 1, table.getn(wipe.strips) do U.SetColor(wipe.strips[i], r, g, b, a) end
+end
+
+local function ShowWipeQuad(wipe, index, show)
+  if show then
+    if not wipe.quadShown[index] then
+      wipe.quads[index]:Show()
+      wipe.quadShown[index] = true
+    end
+  elseif wipe.quadShown[index] then
+    wipe.quads[index]:Hide()
+    wipe.quadShown[index] = nil
+  end
+end
+
+-- progress is 0..1 of the way through the cooldown, so the dark area is what is
+-- left: 0 covers the square, 1 clears it. Widths are rounded to whole draw units
+-- and cached -- the sub-unit request that makes fractional borders vanish (see
+-- the Borders note at the top of this file) would make the edge flicker, and the
+-- cache means a strip the boundary has already left writes nothing at all.
+function U.SetRadialWipeProgress(wipe, progress)
+  if not wipe or wipe.size <= 0 then return end
+
+  progress = tonumber(progress) or 0
+  if progress >= 1 then U.HideRadialWipe(wipe) return end
+  if progress < 0 then progress = 0 end
+
+  local degrees = progress * 360
+  local quadrant = math.floor(degrees / 90) + 1
+  if quadrant > 4 then quadrant = 4 end
+
+  local i
+  for i = 1, 4 do
+    -- Passed quadrants are clear, later ones are solid, and the one under the
+    -- leading edge is left to the strips.
+    ShowWipeQuad(wipe, i, i > quadrant)
+  end
+
+  MoveWipeStrips(wipe, quadrant)
+
+  local mirrored = WipeMirrored(quadrant)
+  local phase = degrees - (quadrant - 1) * 90
+  if mirrored then phase = 90 - phase end
+  local slope = math.tan(phase * WIPE_RADIANS)
+
+  local half = wipe.half
+  for i = 1, wipe.stripCount do
+    -- How far the boundary ray has reached across this strip's own midline,
+    -- which is what its dark run is measured against.
+    local reach = (i - 0.5) * wipe.stripHeight * slope
+    if reach > half then reach = half end
+    if reach < 0 then reach = 0 end
+
+    local width = mirrored and reach or (half - reach)
+    width = math.floor(width + 0.5)
+
+    if width < 1 then
+      if wipe.shown[i] then
+        wipe.strips[i]:Hide()
+        wipe.shown[i] = nil
+      end
+    else
+      if wipe.drawn[i] ~= width then
+        wipe.drawn[i] = width
+        wipe.strips[i]:SetWidth(width)
+      end
+      if not wipe.shown[i] then
+        wipe.strips[i]:Show()
+        wipe.shown[i] = true
+      end
+    end
+  end
+end
+
+-- ---------------------------------------------------------------------------
 -- Text
 --
 -- knowledge.json / fonts.stretched_justification_ignored: horizontal

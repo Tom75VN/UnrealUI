@@ -74,6 +74,12 @@ M.color = {
   accentDim  = { 0.55, 0.39, 0.03, 1.00 },
   accentFill = { 0.96, 0.68, 0.04, 0.22 },
 
+  -- The scrim the cooldown wipe is drawn from. Neutral black rather than an
+  -- accent: it is a shade over game content, not unrealUI chrome, and it has to
+  -- read the same over a bright icon and a dark one. Alpha is the trade between
+  -- the wipe being legible and the icon under it staying recognisable.
+  cooldownWipe = { 0.00, 0.00, 0.00, 0.60 },
+
   text       = { 0.90, 0.90, 0.90, 1.00 },
   textDim    = { 0.60, 0.60, 0.60, 1.00 },
   textAccent = { 0.96, 0.68, 0.04, 1.00 },

@@ -717,6 +717,8 @@ local function LayoutSlots()
 end
 
 local function ProcessDirty()
+  if U.PerfDisabled and U.PerfDisabled("bags") then return end
+
   if layoutDirty then
     layoutDirty = false
     LayoutSlots()

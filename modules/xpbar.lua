@@ -279,6 +279,7 @@ function XP:OnEnable()
   -- Neither event list is confirmed in the compact evidence; polling keeps
   -- both bars correct even when one does not arrive.
   U.RegisterUpdate("xpbar.refresh", 2, function()
+    if U.PerfDisabled and U.PerfDisabled("xpbar") then return end
     RefreshXP()
     RefreshReputation()
   end)

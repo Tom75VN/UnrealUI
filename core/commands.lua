@@ -17,7 +17,17 @@ local U = UnrealUI
 -- used only as a write-out target for /uui commands -- never read back by the
 -- addon itself, so none of config.lua's validation/whitelisting applies here.
 -- A command writes into it and prints one short line; the full data is read
--- afterwards straight out of the WTF file.
+-- afterwards straight out of the SavedVariables file.
+--
+-- That file is NOT under the game install. This client keeps addon
+-- SavedVariables in the Unreal save tree, the same place
+-- .claude-shared/unreal-azeroth-runtime.md records for the probe:
+--
+--   %AppData%\..\Local\Azeroth\Saved\Account\<account>\SavedVariables\unrealUI.lua
+--
+-- There is no WTF folder on this client. Earlier revisions of these commands
+-- printed the Vanilla WTF path, which sent readers to a directory that does
+-- not exist and cost a later session real time.
 -- ---------------------------------------------------------------------------
 local function SaveDiagnostic(key, data)
   if type(UnrealUIDiagDB) ~= "table" then UnrealUIDiagDB = {} end
@@ -29,6 +39,35 @@ local function SaveDiagnostic(key, data)
     if ok and type(formatted) == "string" then stamp = formatted end
   end
   UnrealUIDiagDB[key .. "_savedAt"] = stamp
+end
+
+-- Shared with core/perf.lua: the perf recorder's report is numeric/table data
+-- with nothing UI-only about it, so it writes into the same diagnostic store
+-- other /uui commands use rather than only ever printing to a chat frame the
+-- player would otherwise have to screenshot.
+U.SaveDiagnostic = SaveDiagnostic
+
+-- One place that knows where SavedVariables actually live, so no command can
+-- print a path that does not exist again.
+function U.SavedVariablesHint()
+  return "AppData/Local/Azeroth/Saved/Account/<account>/SavedVariables/unrealUI.lua"
+end
+
+-- Appends rather than overwrites, so several runs survive in one session.
+-- SaveDiagnostic keys are single-slot: a second /uui perf replaced the first,
+-- which forced a /reload between every A/B comparison and made two runs
+-- impossible to take under the same conditions. Capped so a long session cannot
+-- grow the SavedVariables file without bound.
+local APPEND_LIMIT = 12
+
+function U.AppendDiagnostic(key, data)
+  if type(UnrealUIDiagDB) ~= "table" then UnrealUIDiagDB = {} end
+  if type(UnrealUIDiagDB[key]) ~= "table" then UnrealUIDiagDB[key] = {} end
+
+  local list = UnrealUIDiagDB[key]
+  table.insert(list, data)
+  while table.getn(list) > APPEND_LIMIT do table.remove(list, 1) end
+  return table.getn(list)
 end
 
 local function Trim(text)
@@ -59,6 +98,8 @@ local function ShowHelp()
   U.Print("  |cffffff00/uui np|r - dump WorldFrame children (nameplates)")
   U.Print("  |cffffff00/uui movertest|r - foundation mover smoke test")
   U.Print("  |cffffff00/uui perf|r - record frame time around target changes")
+  U.Print("  |cffffff00/uui nosuppress|r - skip native frame suppression (needs /reload)")
+  U.Print("  |cffffff00/uui suppress <0-4>|r - bisect the suppression recipe (needs /reload)")
   U.Print("  |cffffff00/uui debug|r - toggle debug output")
 end
 
@@ -153,7 +194,8 @@ end
 -- assuming Vanilla's. The full readout (detector, reject reasons, min/max
 -- WorldFrame child count, one sample plate) is long enough to flood the chat
 -- frame past what is copyable, so it is written to UnrealUIDiagDB.nameplates
--- instead -- readable straight out of the WTF file after a reload -- and only
+-- instead -- readable straight out of the SavedVariables file after a reload
+-- and only
 -- a one-line summary prints in chat.
 local function ShowNameplateCheck()
   if type(U.NameplateReport) ~= "function" then return end
@@ -169,7 +211,7 @@ local function ShowNameplateCheck()
           tostring(report.maxChildren) ..
           (changed and "" or " |cffff5555(never changed)|r"))
   U.Print("  saved to UnrealUIDiagDB.nameplates - |cffffff00/reload|r then " ..
-          "open WTF/.../SavedVariables/unrealUI.lua to read it")
+          "open " .. U.SavedVariablesHint() .. " to read it")
 end
 
 -- Raw WorldFrame child dump, one line per child.
@@ -192,7 +234,7 @@ local function ShowNameplateDump()
   U.Print("WorldFrame children: " .. tostring(total) ..
           " - saved to UnrealUIDiagDB.nameplateDump")
   U.Print("  |cffffff00/reload|r then open " ..
-          "WTF/Account/<account>/SavedVariables/unrealUI.lua to read it")
+          U.SavedVariablesHint() .. " to read it")
 end
 
 -- Elite/classification icon test.
@@ -765,6 +807,74 @@ handlers["perf"] = function(rest)
     return
   end
   U.PerfCommand(rest)
+end
+
+-- Skips core/compat.lua's native-frame suppression on the next load.
+--
+-- Why this needs its own command rather than a /uui perf switch: the perf
+-- switches all gate recurring *work*, and can be flipped live. Suppression is
+-- not recurring work -- it is a one-off state change applied to ~1275 stock
+-- objects at OnEnable, and it is irreversible in-session because the original
+-- Show is discarded and UnregisterAllEvents cannot be undone. So it can only
+-- be skipped, and only from the very start, which means a persisted flag and
+-- a reload.
+handlers["nosuppress"] = function()
+  if not U.db then
+    U.Print("config not loaded yet")
+    return
+  end
+  U.db.noSuppress = not U.db.noSuppress
+  if U.db.noSuppress then
+    U.Print("native frame suppression |cffff5555OFF|r on next load - " ..
+            "|cffffff00/reload|r to apply")
+    U.Print("  the stock unit frames and action bars will be visible on top " ..
+            "of unrealUI; that is expected, it is what suppression normally hides")
+  else
+    U.Print("native frame suppression |cff55ff55ON|r again - " ..
+            "|cffffff00/reload|r to apply")
+  end
+end
+
+-- Bisects the suppression recipe rather than switching it wholesale. Measured
+-- (see knowledge.json / compat.native_suppression_pcall_burst_stutter): the
+-- recipe's permanent state, not its sweep, is what costs -- +2.66ms/frame and a
+-- 9ms -> 159ms target-change peak. This narrows that to a step.
+local SUPPRESS_LEVELS = {
+  "0 - off, stock frames fully intact",
+  "1 - Hide() only",
+  "2 - + SetAlpha(0)",
+  "3 - + EnableMouse(false) and the Show() neutraliser",
+  "4 - + UnregisterAllEvents and the periodic re-apply (shipped default)",
+}
+
+handlers["suppress"] = function(rest)
+  if not U.db then
+    U.Print("config not loaded yet")
+    return
+  end
+
+  local level = tonumber(rest)
+  if not level then
+    U.Print("suppression level: |cffffff00" ..
+            tostring(U.db.suppressLevel or 4) .. "|r" ..
+            (U.db.noSuppress and "  |cffff5555(nosuppress also on)|r" or ""))
+    local i
+    for i = 1, table.getn(SUPPRESS_LEVELS) do
+      U.Print("  |cffffff00/uui suppress " .. SUPPRESS_LEVELS[i])
+    end
+    U.Print("  lowering a level needs |cffffff00/reload|r to take full effect: " ..
+            "what was already applied to a stock frame cannot be undone in-session")
+    return
+  end
+
+  if level < 0 then level = 0 end
+  if level > 4 then level = 4 end
+  U.db.suppressLevel = level
+  -- The two settings would otherwise fight: noSuppress forces level 0.
+  if level > 0 then U.db.noSuppress = false end
+
+  U.Print("suppression level |cffffff00" .. tostring(level) .. "|r - " ..
+          "|cffffff00/reload|r to apply")
 end
 
 handlers["debug"] = function()

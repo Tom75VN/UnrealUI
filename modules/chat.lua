@@ -81,6 +81,8 @@ local function SetGripShown(show)
 end
 
 local function UpdateLockVisibility()
+  if U.PerfDisabled and U.PerfDisabled("chat") then return end
+
   -- A menu cannot normally change the lock during a drag. If it somehow does,
   -- finish the current interaction first rather than hiding its active Button.
   if dragging then return end
@@ -209,6 +211,8 @@ local function GeometryAtGrip(gripLeft, gripBottom)
 end
 
 local function UpdateLiveGeometry()
+  if U.PerfDisabled and U.PerfDisabled("chat") then return end
+
   if not dragging then return end
 
   local gripLeft = ReadNumber(grip, "GetLeft")

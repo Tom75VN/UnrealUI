@@ -314,6 +314,22 @@ local SUPPRESSION_BATCH_SIZE = 60
 -- fails independently.
 local resolvedNative = {}   -- name -> object | false
 local suppressedObjects = {} -- object -> true; avoids a protected field read
+-- Target widgets are owned by native code on this client. Two sustained target
+-- storms ended at the 2,162,688-UObject ceiling after the client had fallen to
+-- 1 fps. Preserving this family's event/Show lifecycle while only making its
+-- named visuals transparent removed the freeze under the same Tab-spam test,
+-- USER_CONFIRMED_INGAME. The exact native UObject creator is not exposed to
+-- Lua, so retain the lifecycle-preserving recipe; see KillNativeObject.
+local visualOnlyNames = {}
+local visualOnlyKinds = {}
+local visualObjectEpoch = {}
+local targetVisualEpoch = 0
+-- TargetFrameLevel is rewritten a few render ticks after the target event on
+-- this client. Retry only this text for a short bounded window; keeping the
+-- target frame lifecycle intact remains mandatory for the confirmed Tab-spam
+-- stability fix.
+local TARGET_LEVEL_RETRY_PASSES = 12
+local targetLevelRetryPasses = 0
 
 -- Hoisted pcall bodies. These were anonymous closures built fresh for every
 -- object on every sweep; as named upvalues they allocate nothing and keep the
@@ -335,6 +351,44 @@ end
 local function DropMouse(object)
   if object.EnableMouse then object:EnableMouse(false) end
 end
+local function ClearBarPart(part)
+  if not part then return end
+  -- The native renderer can ignore both widget alpha and its assigned texture,
+  -- but it still lays the green fill out from the StatusBar value. Zero that
+  -- first, then clear every visual representation the bridge exposes.
+  if part.SetValue then part:SetValue(0) end
+  if part.SetStatusBarTexture then part:SetStatusBarTexture(nil) end
+  if part.SetStatusBarColor then part:SetStatusBarColor(0, 0, 0, 0) end
+  if part.SetTexture then part:SetTexture(nil) end
+  if part.SetTexCoord then part:SetTexCoord(0, 0, 0, 0) end
+  if part.SetAlpha then part:SetAlpha(0) end
+end
+
+local function ClearBarVisual(object)
+  ClearBarPart(object)
+
+  -- This client may expose the rendered fill as either a region or a child
+  -- widget, depending on which native TargetFrame object the global resolves
+  -- to. Cover both shapes, bounded to this one known bar and one child level.
+  local regions = object.GetRegions and { object:GetRegions() } or {}
+  local children = object.GetChildren and { object:GetChildren() } or {}
+  local i
+  for i = 1, table.getn(regions) do ClearBarPart(regions[i]) end
+  for i = 1, table.getn(children) do
+    local child = children[i]
+    ClearBarPart(child)
+    local childRegions = child and child.GetRegions and
+                         { child:GetRegions() } or {}
+    local j
+    for j = 1, table.getn(childRegions) do ClearBarPart(childRegions[j]) end
+  end
+end
+local function ClearTextureVisual(object)
+  if object.SetTexture then object:SetTexture(nil) end
+end
+local function ClearTextVisual(object)
+  if object.SetText then object:SetText("") end
+end
 
 -- The steady-state readback. This used to be `pcall(object.IsShown, object)`,
 -- which *throws* for any object that has no IsShown method: the index yields
@@ -347,12 +401,20 @@ end
 -- answer". Only the first may skip the teardown; an object that cannot answer
 -- keeps taking the full re-apply exactly as it did before.
 local shownKnown, shownAnswer
+local alphaKnown, alphaAnswer
 
 local function ReadShown(object)
   local fn = object.IsShown
   if not fn then return end
   shownAnswer = fn(object) and true or false
   shownKnown = true
+end
+
+local function ReadAlpha(object)
+  local fn = object.GetAlpha
+  if not fn then return end
+  alphaAnswer = tonumber(fn(object))
+  alphaKnown = alphaAnswer ~= nil
 end
 
 local function ResolveNativeObject(name)
@@ -367,10 +429,127 @@ local function ResolveNativeObject(name)
   return object
 end
 
-local function KillNativeObject(object)
+-- Work counters. Two integer adds per object, always on: without an intra-frame
+-- profiler (documentation.json / global:Helpers:debugprofilestop is a no-op
+-- here) the only way to attribute the target-change cost is to count the work
+-- rather than time it. statTornDown is the decisive number -- it says how many
+-- objects the client actually brought back and therefore took the full
+-- ~4-native-call teardown, as opposed to being confirmed already hidden.
+local statVisited, statTornDown = 0, 0
+local lastTargetVisited, lastTargetTornDown = 0, 0
+-- ---------------------------------------------------------------------------
+-- When the recipe is applied, and why it is not applied at load
+--
+-- knowledge.json / compat.native_suppression_state_is_the_target_change_freeze:
+-- the target-change freeze is not caused by *what* this adapter does to the
+-- stock frames, but by *when*. Measured in game, identical recipe and identical
+-- ~1275 objects, tab-spamming under the same conditions:
+--
+--   applied live, ~30s after login : 7.04ms/frame (142fps), mean target-change
+--                                    peak 7.8ms, worst 22.6ms
+--   applied at OnEnable, at load   : 10.54ms/frame (95fps), mean peak 132.9ms,
+--                                    worst 224.9ms -- a 17x worse peak, felt in
+--                                    game as a hard freeze down to ~8fps
+--
+-- Applying the full teardown while the client is still bringing its own UI up
+-- leaves something in a state it never recovers from for the rest of the
+-- session. The exact native mechanism is NOT established -- no probe can see
+-- inside the client's own frame setup -- so this is a measured behaviour with
+-- an unproven cause, and the fix is scheduling rather than a changed recipe.
+--
+-- Two synchronous things were still in the load path after the first attempt,
+-- and halving the cost (133ms -> 78ms mean peak) rather than removing it is
+-- what showed they mattered: an immediate whole-list Hide() pass, and -- much
+-- larger -- a
+-- SYNCHRONOUS sweep of every registered name inside U.SuppressNativeFrame, i.e.
+-- roughly 1275 objects mutated in a single frame while the client was still
+-- starting up. Neither survives now:
+--
+--   * nothing is applied synchronously at registration at all; at load level 0
+--     the bounded 0.05s batch also remains inert until settle;
+--   * the batch starts at LOAD_LEVEL and is only allowed past it once the
+--     client has actually settled, measured rather than guessed -- a minimum
+--     delay AND a run of frames short enough to mean the client is no longer
+--     hitching, with a hard cap so it always applies eventually.
+--
+-- LOAD_LEVEL 1 was tried as a compromise after repeated login crashes were
+-- reported with the native UI visible. It removed the crash in one login but
+-- USER_CONFIRMED_INGAME brought the target-change freeze back. The same build
+-- also removed a recursive UIParent error-dialog scanner that ran throughout
+-- the unstable login window, so that scanner -- not level 0 -- remains a viable
+-- explanation for the crashes. Keep the only freeze-free configuration here
+-- while leaving the failed scanner removed.
+-- ---------------------------------------------------------------------------
+local LOAD_LEVEL = 0          -- no native-frame mutation until client settle
+local SETTLE_MIN_SECONDS = 3  -- never upgrade before this
+local SETTLE_MAX_SECONDS = 20 -- ...and never wait longer than this
+local SETTLE_QUIET_FRAMES = 90
+local SETTLE_QUIET_MS = 20    -- a frame longer than this means "still busy"
+local settled = false
+
+-- 0..4; see core/config.lua's suppressLevel. Read once per call rather than
+-- cached, so /uui suppress takes effect on the next sweep without a reload for
+-- the levels that can be lowered live.
+local function SuppressLevel()
+  if U.db and U.db.noSuppress then return 0 end
+  local level = U.db and tonumber(U.db.suppressLevel)
+  if not level then level = 4 end
+  if level < 0 then level = 0 end
+  if level > 4 then level = 4 end
+  -- Before the client has settled, cap the recipe rather than skip it.
+  if not settled and level > LOAD_LEVEL then return LOAD_LEVEL end
+  return level
+end
+
+-- Set for the duration of one deliberate re-apply. The steady-state fast path
+-- below skips any object already confirmed hidden, which is right in normal
+-- operation but wrong when the recipe itself has just changed: an object hidden
+-- at level 1 would never receive level 2's SetAlpha(0).
+local forceFullApply = false
+
+local function KillNativeObject(object, visualOnly, visualKind)
   if not object then return end
 
+  local level = SuppressLevel()
+  if level <= 0 then return end
+
+  statVisited = statVisited + 1
+
   local alreadyMarked = suppressedObjects[object] and true or false
+  if forceFullApply then alreadyMarked = false end
+
+  -- The target family keeps its native lifecycle intact. Unregistering its
+  -- events, replacing Show(), and repeatedly hiding it were the difference
+  -- between the reproducible 1-fps collapse and a user-confirmed stable run;
+  -- the native mechanism behind that difference remains opaque to Lua.
+  -- Alpha is applied to every named child because this client does not
+  -- propagate parent alpha. Mouse input is dropped once, but the widget stays
+  -- shown and subscribed so native code can recycle it normally. Some native
+  -- StatusBar/FontString/Texture renderers ignore UIObject alpha, so their
+  -- content is cleared once per target-change epoch without touching lifecycle.
+  if visualOnly then
+    local contentCurrent = (not visualKind or
+                            visualObjectEpoch[object] == targetVisualEpoch)
+    if alreadyMarked then
+      alphaKnown, alphaAnswer = false, nil
+      pcall(ReadAlpha, object)
+      if alphaKnown and alphaAnswer == 0 and contentCurrent then return end
+    end
+
+    statTornDown = statTornDown + 1
+    suppressedObjects[object] = true
+    pcall(ZeroAlpha, object)
+    if not alreadyMarked then pcall(DropMouse, object) end
+    if visualKind == "bar" then
+      pcall(ClearBarVisual, object)
+    elseif visualKind == "texture" then
+      pcall(ClearTextureVisual, object)
+    elseif visualKind == "text" then
+      pcall(ClearTextVisual, object)
+    end
+    if visualKind then visualObjectEpoch[object] = targetVisualEpoch end
+    return
+  end
 
   -- Steady-state fast path: once an object is marked, the common case on every
   -- later pass is that it is still exactly where this adapter left it. A
@@ -383,26 +562,30 @@ local function KillNativeObject(object)
     if shownKnown and not shownAnswer then return end
   end
 
-  pcall(DropNativeEvents, object)
+  statTornDown = statTornDown + 1
+
+  if level >= 4 then pcall(DropNativeEvents, object) end
 
   -- Wrapping an already-replaced Show would nest the no-op inside itself on
   -- every re-apply pass, so the swap happens once and is then remembered.
   -- One shared no-op serves every object: nothing compares these by identity.
   if not alreadyMarked then
-    pcall(NeutraliseShow, object)
+    if level >= 3 then pcall(NeutraliseShow, object) end
     suppressedObjects[object] = true
   end
 
   pcall(HideObject, object)
-  pcall(ZeroAlpha, object)
-  pcall(DropMouse, object)
+  if level >= 2 then pcall(ZeroAlpha, object) end
+  if level >= 3 then pcall(DropMouse, object) end
 end
 
 local function SweepNames(names)
   if not names then return end
   local i
   for i = 1, table.getn(names) do
-    KillNativeObject(ResolveNativeObject(names[i]))
+    local name = names[i]
+    KillNativeObject(ResolveNativeObject(name), visualOnlyNames[name],
+                     visualOnlyKinds[name])
   end
 end
 
@@ -412,7 +595,9 @@ local function SweepNameRange(names, first, last)
   if last > count then last = count end
   local i
   for i = first, last do
-    KillNativeObject(ResolveNativeObject(names[i]))
+    local name = names[i]
+    KillNativeObject(ResolveNativeObject(name), visualOnlyNames[name],
+                     visualOnlyKinds[name])
   end
 end
 
@@ -429,6 +614,20 @@ end
 -- but no render tick inherits the whole scan.
 local function ApplyNativeSuppressionBatch()
   if U.PerfDisabled and U.PerfDisabled("sweep") then return end
+  if SuppressLevel() <= 0 then return end
+
+  -- PLAYER_TARGET_CHANGED can precede the native level renderer's final write.
+  -- One deferred sweep was therefore early enough for the yellow number to
+  -- return. Clear just that FontString across a bounded 0.6s window (at the
+  -- normal 0.05s cadence), without Hide, event removal, or Show replacement.
+  if targetLevelRetryPasses > 0 then
+    local levelText = ResolveNativeObject("TargetFrameLevel")
+    if levelText then
+      pcall(ZeroAlpha, levelText)
+      pcall(ClearTextVisual, levelText)
+    end
+    targetLevelRetryPasses = targetLevelRetryPasses - 1
+  end
 
   local count = table.getn(suppressedNames)
   if count == 0 then return end
@@ -439,7 +638,9 @@ local function ApplyNativeSuppressionBatch()
   local processed = 0
   while processed < limit do
     if suppressionCursor > count then suppressionCursor = 1 end
-    KillNativeObject(ResolveNativeObject(suppressedNames[suppressionCursor]))
+    local name = suppressedNames[suppressionCursor]
+    KillNativeObject(ResolveNativeObject(name), visualOnlyNames[name],
+                     visualOnlyKinds[name])
     suppressionCursor = suppressionCursor + 1
     processed = processed + 1
   end
@@ -451,9 +652,8 @@ end
 -- the wrong group is that it is re-hidden after the next complete scan.
 local function GroupSweeper(group)
   return function()
-    -- /uui perf sweep. The stock frames come back while it is off; that is the
-    -- point -- it is the only way to price this adapter against a live frame.
     if U.PerfDisabled and U.PerfDisabled("sweep") then return end
+    if SuppressLevel() < 4 then return end
     SweepNames(suppressedGroups[group])
   end
 end
@@ -498,6 +698,10 @@ end
 -- cover. Passing nothing is always safe -- it only means the frame waits for
 -- the bounded periodic scan rather than being re-hidden when an event fires.
 function U.SuppressNativeFrame(names, group)
+  -- Note the level is NOT checked here. The name lists are always built, even
+  -- at level 0 where nothing is applied: KillNativeObject is what honours the
+  -- level, and registering regardless is what makes /uui perf levels possible --
+  -- raising the level mid-session has to have a list to sweep.
   if type(names) == "string" then names = { names } end
   if type(names) ~= "table" then return end
 
@@ -509,6 +713,26 @@ function U.SuppressNativeFrame(names, group)
   local i
   for i = 1, table.getn(names) do
     local name = names[i]
+    if group == "target" and type(name) == "string" then
+      visualOnlyNames[name] = true
+      if string.find(name, "HealthBar$") or
+         string.find(name, "ManaBar$") then
+        visualOnlyKinds[name] = "bar"
+      elseif string.find(name, "HealthBarText$") or
+             string.find(name, "ManaBarText$") or
+             string.find(name, "Name$") or
+             string.find(name, "Level$") or
+             string.find(name, "DeadText$") or
+             string.find(name, "Count$") then
+        visualOnlyKinds[name] = "text"
+      elseif string.find(name, "Texture$") or
+             string.find(name, "Background$") or
+             string.find(name, "Portrait$") or
+             string.find(name, "Icon$") or
+             string.find(name, "Border$") then
+        visualOnlyKinds[name] = "texture"
+      end
+    end
     if type(name) == "string" and not suppressedSeen[name] then
       suppressedSeen[name] = true
       table.insert(suppressedNames, name)
@@ -516,9 +740,11 @@ function U.SuppressNativeFrame(names, group)
     end
   end
 
-  -- Suppress only the names this call added. Earlier calls already handled the
-  -- front of this bucket; re-walking it made party-frame startup quadratic.
-  SweepNameRange(bucket, firstNew, table.getn(bucket))
+  -- Deliberately no sweep here. This used to call
+  -- SweepNameRange(bucket, firstNew, ...) so a module's frames were suppressed
+  -- the instant it registered them; across every module that is ~1275 objects
+  -- mutated during load, which is half the measured freeze. The bounded batch
+  -- picks them up within about a second instead.
 
   if not suppressionArmed then
     suppressionArmed = true
@@ -528,19 +754,130 @@ function U.SuppressNativeFrame(names, group)
     -- the bounded periodic scan is the actual guarantee rather than a backstop.
     --
     -- Because it is the one that fires, it is also the one whose cost is felt:
-    -- it gets the "target" bucket only, not the whole list. PLAYER_ENTERING_WORLD
-    -- keeps the full sweep -- it is rare, and a zone-in is when the client is
-    -- most likely to have rebuilt anything.
-    U.RegisterEvent("PLAYER_ENTERING_WORLD", ApplyNativeSuppression)
-    U.RegisterEvent("PLAYER_TARGET_CHANGED", GroupSweeper("target"))
+    -- it gets the "target" bucket only, not the whole list. Once settled,
+    -- PLAYER_ENTERING_WORLD keeps the full sweep -- it is rare, and a zone-in
+    -- is when the client is most likely to have rebuilt anything.
+    U.RegisterEvent("PLAYER_ENTERING_WORLD", function()
+      -- At load level 1 the bounded batch is deliberately the only start-up
+      -- writer. A full event sweep here would put all ~1275 Hide() calls back
+      -- into one frame and defeat the progressive start-up path.
+      if not settled then return end
+      ApplyNativeSuppression()
+    end)
+
+    -- round 3: this used to run GroupSweeper("target") inline, in the same
+    -- frame PLAYER_TARGET_CHANGED fires in. That is also the frame this
+    -- client re-shows TargetFrame in -- the whole reason the sweep exists --
+    -- so the ~122 objects that fail the IsShown fast path and take the full
+    -- ~5-pcall teardown were doing it stacked on top of whatever native work
+    -- the client's own target-acquisition path does in that same frame.
+    -- U.DeferOnce moves the sweep one driver tick later instead, so the two
+    -- no longer compete for the same frame; a second target change before the
+    -- deferred sweep runs replaces the pending one rather than queuing both,
+    -- which is the right outcome for the fast-tabbing case.
+    local targetSweep = GroupSweeper("target")
+    U.RegisterEvent("PLAYER_TARGET_CHANGED", function()
+      targetVisualEpoch = targetVisualEpoch + 1
+      targetLevelRetryPasses = TARGET_LEVEL_RETRY_PASSES
+      U.DeferOnce("compat.target-sweep", function()
+        -- Bracket the sweep so the counters below describe one target-change
+        -- sweep specifically, separated from the 0.05s periodic batch that is
+        -- also incrementing the same totals.
+        local visited, torn = statVisited, statTornDown
+        targetSweep()
+        lastTargetVisited = statVisited - visited
+        lastTargetTornDown = statTornDown - torn
+      end)
+    end)
     U.RegisterEvent("PARTY_MEMBERS_CHANGED", GroupSweeper("party"))
     U.RegisterUpdate("compat.native-suppression", 0.05,
                      ApplyNativeSuppressionBatch)
+
+    -- Waits for the client to actually be idle rather than for a guessed
+    -- number of seconds. A fixed 2s delay measurably was not enough, and the
+    -- cost fell off with how long we waited, so what matters is that start-up
+    -- is genuinely over -- which the frame times themselves report.
+    --
+    -- Frame delta comes from GetTime, not from the updater's interval: the
+    -- interval is what was asked for, not what the frame took, and
+    -- knowledge.json / scripts.onupdate_elapsed_only_via_arg1 rules out reading
+    -- it from the handler's arguments on this client.
+    local settleStart, settleLast, quiet = nil, nil, 0
+
+    U.RegisterUpdate("compat.suppression-settle", 0, function()
+      local now
+      local ok, value = pcall(GetTime)
+      if ok and type(value) == "number" then now = value end
+      if not now then
+        -- No clock: fall back to upgrading immediately rather than never.
+        quiet = SETTLE_QUIET_FRAMES
+        settleStart = -SETTLE_MAX_SECONDS
+        now = 0
+      end
+
+      if not settleStart then settleStart = now end
+      local waited = now - settleStart
+
+      if settleLast then
+        local ms = (now - settleLast) * 1000
+        if ms > 0 and ms < SETTLE_QUIET_MS then
+          quiet = quiet + 1
+        else
+          quiet = 0
+        end
+      end
+      settleLast = now
+
+      local calm = (waited >= SETTLE_MIN_SECONDS and quiet >= SETTLE_QUIET_FRAMES)
+      if not calm and waited < SETTLE_MAX_SECONDS then return end
+
+      U.UnregisterUpdate("compat.suppression-settle")
+      settled = true
+      targetLevelRetryPasses = TARGET_LEVEL_RETRY_PASSES
+      if type(U.ReapplyNativeSuppression) == "function" then
+        U.ReapplyNativeSuppression()
+      end
+      U.Debug("native suppression settled after " ..
+              string.format("%.1f", waited) .. "s (" .. tostring(quiet) ..
+              " quiet frames), level " .. tostring(SuppressLevel()))
+    end)
   end
+end
+
+-- Re-applies the whole registered list at the CURRENT level, ignoring the
+-- steady-state fast path. Used by /uui perf levels, which raises the level in
+-- place so the whole recipe can be bisected in one session instead of one
+-- reload per step. Raising works live; lowering still needs a reload, because
+-- what has been applied to a stock frame cannot be taken back.
+function U.ReapplyNativeSuppression()
+  forceFullApply = true
+  local ok = pcall(ApplyNativeSuppression)
+  forceFullApply = false
+  return ok
 end
 
 function U.SuppressedFrameCount()
   return table.getn(suppressedNames)
+end
+
+-- Read by core/perf.lua's export. visited/tornDown are session totals across
+-- every sweep; lastTarget* describe only the most recent target-change sweep,
+-- which is the one the micro freeze is being attributed to.
+--
+-- tornDown vs visited is the whole question: if lastTargetTornDown is close to
+-- lastTargetVisited then this client really does re-show TargetFrame's entire
+-- region tree on every target change and the adapter is paying ~4 native widget
+-- mutations for each one, synchronously. If it is near zero, the sweep is not
+-- the cost and the search moves elsewhere.
+function U.SuppressionStats()
+  return {
+    visited = statVisited,
+    tornDown = statTornDown,
+    lastTargetVisited = lastTargetVisited,
+    lastTargetTornDown = lastTargetTornDown,
+    registeredNames = table.getn(suppressedNames),
+    targetGroupNames = table.getn(suppressedGroups["target"] or {}),
+  }
 end
 
 -- ---------------------------------------------------------------------------

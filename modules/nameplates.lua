@@ -289,7 +289,15 @@ end
 
 -- Sorts a plate's regions and children into the parts unrealUI needs. Returns
 -- nil when the frame does not look like a nameplate at all.
+-- Work counters, same purpose as core/compat.lua's: this client has no
+-- intra-frame profiler, so the only way to attribute a spike to a subsystem is
+-- to count what it did. classified is the expensive one -- ClassifyPlate walks
+-- every region and child of a WorldFrame child, and a *rejected* child is never
+-- cached, so it is re-classified in full on every rescan.
+local statScans, statRescans, statClassified, statRefreshed = 0, 0, 0, 0
+
 local function ClassifyPlate(frame)
+  statClassified = statClassified + 1
   -- The object type is recorded, not gated on. Measured: gating on
   -- Button/Frame plus "plates are anonymous" rejected all 28 WorldFrame
   -- children on this client -- and this runtime auto-names objects
@@ -509,8 +517,13 @@ local function ScanWorldFrame()
 
   -- Vanilla never destroys a plate, but a shrinking count would leave the
   -- cursor past the end, so fall back to a full re-scan instead of trusting it.
-  if count < scannedChildren then scannedChildren = 0 end
+  if count < scannedChildren then
+    scannedChildren = 0
+    statRescans = statRescans + 1
+  end
   if count == scannedChildren then return end
+
+  statScans = statScans + 1
 
   local ok, kids = pcall(function() return { worldFrame:GetChildren() } end)
   if not ok or type(kids) ~= "table" then return end
@@ -680,6 +693,7 @@ local function RefreshPlate(overlay)
 end
 
 local function RefreshAll()
+  statRefreshed = statRefreshed + 1
   local i
   for i = 1, table.getn(plateOrder) do
     local overlay = plateOrder[i]
@@ -696,6 +710,20 @@ end
 -- The detection path above is WORKING_SOURCE, not measured. This is what turns
 -- one in-game run into the evidence that closes the gap.
 -- ---------------------------------------------------------------------------
+-- Read by core/perf.lua's export alongside U.SuppressionStats.
+function U.NameplateStats()
+  return {
+    scans = statScans,
+    rescans = statRescans,
+    classified = statClassified,
+    refreshPasses = statRefreshed,
+    plates = plateCount,
+    worldChildren = stats.worldChildren,
+    minChildren = stats.minChildren,
+    maxChildren = stats.maxChildren,
+  }
+end
+
 function U.NameplateReport()
   local report = {
     enabled = cfg.enabled,
@@ -845,9 +873,6 @@ function NP:OnEnable()
   -- refresh tick. 0.1s keeps a new plate from lagging visibly behind the stock
   -- one it replaces.
   U.RegisterUpdate("nameplates.scan", 0.1, function()
-    -- /uui perf plates: this is the addon's largest recurring read (every
-    -- WorldFrame child, every plate, five times a second), so it is the first
-    -- thing to take out of the picture when a frame spike is being attributed.
     if U.PerfDisabled and U.PerfDisabled("plates") then return end
     ScanWorldFrame()
     RefreshAll()

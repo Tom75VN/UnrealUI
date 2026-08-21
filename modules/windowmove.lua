@@ -7,8 +7,9 @@
 -- room on the right than the restyled 17px close buttons in questlog.lua /
 -- spellbook.lua need.
 --
--- WorldMapFrame is deliberately not registered: it opens fullscreen, so a
--- header drag handle would have nothing meaningful to reposition it against.
+-- WorldMapFrame is not registered here: it needs the fullscreen panel layout
+-- undone before a header drag means anything, so modules/worldmap.lua owns
+-- both that and its own U.MakeWindowDraggable call.
 
 local U = UnrealUI
 local WM = U.RegisterModule("windowmove")

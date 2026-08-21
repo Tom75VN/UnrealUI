@@ -11,6 +11,24 @@
 -- GetFramerate/GetNetStats, GetMoney/PLAYER_MONEY, and an off-screen
 -- GameTooltip scanner over equipped inventory slots, respectively. This is
 -- WORKING_SOURCE evidence, not runtime verification.
+--
+-- A second overlay reads total server population from /who. SendWho,
+-- SetWhoToUI, and GetNumWhoResults's second return (the server-reported total
+-- match count) are OFFICIAL_CLIENT_DOCUMENTATION, DOCUMENTED_NOT_RUNTIME_
+-- VERIFIED; the query sequence (SetWhoToUI(1), SendWho, wait for
+-- WHO_LIST_UPDATE, restore SetWhoToUI(0), and suppress FriendsFrame_OnEvent
+-- while pending so the native Who UI does not react) follows UnrealPfUI's
+-- modules/chat.lua ScanWhoName, WORKING_SOURCE evidence, not runtime
+-- verification either. /who sends only a single request per
+-- POP_REFRESH_INTERVAL, capping the addon at one SendWho call per interval.
+--
+-- RUNTIME_FAILURE_CONFIRMED (in-game, 2026-08-21): a per-zone reading taken
+-- with SendWho('z-"<GetRealZoneText()>"') came back higher than the
+-- unfiltered total-online reading taken a minute earlier (167 vs 165) --
+-- impossible for a real zone subset of the server total. This server's /who
+-- does not honour the z- zone tag (it silently returns the unfiltered
+-- result), so the zone breakdown was removed; only the total online count
+-- is queried.
 
 local U = UnrealUI
 local M = U.media
@@ -23,6 +41,11 @@ local MODULE_GAP = 14
 local COIN_GAP = 1
 local HORIZONTAL_PADDING = 6
 local INVENTORY_SLOTS = { 1, 3, 5, 6, 7, 8, 9, 10, 16, 17, 18 }
+
+local POP_WIDTH = 120
+-- One /who request per interval, so the addon never sends more than one
+-- SendWho call per POP_REFRESH_INTERVAL.
+local POP_REFRESH_INTERVAL = 60
 
 local COLOR_GOOD = { 0.33, 0.93, 0.33, 1.00 }
 local COLOR_WARN = { 0.96, 0.68, 0.04, 1.00 }
@@ -40,6 +63,11 @@ local display
 local scanner
 local durabilityPattern
 local durabilityAge = 0
+
+local popAnchor
+local popDisplay
+local popPending -- true while a /who request is in flight
+local popOriginalFriendsFrameOnEvent
 
 local function SetLabel(label, text, color)
   if not label then return end
@@ -175,6 +203,104 @@ local function Build()
   })
 end
 
+local function UpdatePopulationWidth()
+  if not popAnchor or not popDisplay then return end
+
+  local width = HORIZONTAL_PADDING
+  width = width + LabelWidth(popDisplay.serverCaption) + 2 + LabelWidth(popDisplay.serverValue)
+  width = width + HORIZONTAL_PADDING
+  popAnchor:SetWidth(width)
+end
+
+local function BuildPopulation()
+  popAnchor = CreateFrame("Frame", "UnrealUIPopulationAnchor", UIParent)
+  popAnchor:SetWidth(POP_WIDTH)
+  popAnchor:SetHeight(HEIGHT)
+  U.CreateBackdrop(popAnchor, {
+    background = { 0.035, 0.035, 0.035, 0.20 },
+    border = false,
+  })
+
+  popDisplay = {}
+  popDisplay.serverCaption = U.CreateLabel(popAnchor, {
+    size = M.fontSize.normal, inherits = "GameFontNormal", color = M.color.text,
+  })
+  popDisplay.serverCaption:SetPoint("LEFT", popAnchor, "LEFT", HORIZONTAL_PADDING, 0)
+  popDisplay.serverCaption:SetText("Online:")
+
+  popDisplay.serverValue = U.CreateLabel(popAnchor, {
+    size = M.fontSize.normal, inherits = "GameFontNormal", color = M.color.text,
+  })
+  popDisplay.serverValue:SetPoint("LEFT", popDisplay.serverCaption, "RIGHT", 2, 0)
+  popDisplay.serverValue:SetText("--")
+
+  U.RegisterMover("status.population", popAnchor, {
+    label = "Online Count Overlay",
+    default = { point = "BOTTOMLEFT", relativePoint = "BOTTOMLEFT", x = 20, y = 20 + HEIGHT + 6 },
+  })
+
+  UpdatePopulationWidth()
+end
+
+-- Marks a /who request in flight and suppresses the native Friends/Who frame
+-- for its duration so a background population poll cannot pop or repaint it
+-- (the UnrealPfUI recipe this follows: FriendsFrame_OnEvent is swapped for a
+-- no-op while SetWhoToUI(1) targets the Who UI, then restored on completion).
+local function RequestWho()
+  if popPending then return end
+
+  local setWhoToUI = U.G("SetWhoToUI")
+  local sendWho = U.G("SendWho")
+  if type(setWhoToUI) ~= "function" or type(sendWho) ~= "function" then return end
+
+  local originalHandler = U.G("FriendsFrame_OnEvent")
+  if type(originalHandler) == "function" then
+    popOriginalFriendsFrameOnEvent = originalHandler
+    U.SetG("FriendsFrame_OnEvent", function() end)
+  else
+    popOriginalFriendsFrameOnEvent = nil
+  end
+
+  popPending = true
+  pcall(setWhoToUI, 1)
+  pcall(sendWho, "")
+end
+
+local function FinishWho()
+  if popOriginalFriendsFrameOnEvent then
+    U.SetG("FriendsFrame_OnEvent", popOriginalFriendsFrameOnEvent)
+    popOriginalFriendsFrameOnEvent = nil
+  end
+  local setWhoToUI = U.G("SetWhoToUI")
+  if type(setWhoToUI) == "function" then pcall(setWhoToUI, 0) end
+  popPending = nil
+end
+
+local function OnWhoListUpdate()
+  if not popPending then return end
+
+  local getNumWhoResults = U.G("GetNumWhoResults")
+  local total
+  if type(getNumWhoResults) == "function" then
+    local ok, _, serverTotal = pcall(getNumWhoResults)
+    if ok then total = tonumber(serverTotal) end
+  end
+
+  FinishWho()
+
+  if not popDisplay then return end
+  SetLabel(popDisplay.serverValue, total and tostring(total) or "--", M.color.text)
+  UpdatePopulationWidth()
+end
+
+-- Ticks once per POP_REFRESH_INTERVAL; caps the addon at one SendWho call
+-- per interval.
+local function RefreshPopulation()
+  if U.PerfDisabled and U.PerfDisabled("status") then return end
+  if popPending then return end -- previous request never resolved; skip this tick
+  RequestWho()
+end
+
 local function RefreshPerformance()
   if not display then return end
 
@@ -284,6 +410,12 @@ function S:OnEnable()
   if anchor then return end
   Build()
   BuildScanner()
+  BuildPopulation()
+
+  U.RegisterEvent("WHO_LIST_UPDATE", OnWhoListUpdate)
+  -- Interval-only: population must not also refresh on PLAYER_ENTERING_WORLD,
+  -- which can fire repeatedly during zoning and would burst /who requests.
+  U.RegisterUpdate("status.population.refresh", POP_REFRESH_INTERVAL, RefreshPopulation)
 
   U.RegisterEvent("PLAYER_MONEY", RefreshMoney)
   U.RegisterEvent("UPDATE_INVENTORY_DURABILITY", RefreshDurability)
@@ -300,6 +432,7 @@ function S:OnEnable()
   -- compact evidence. Polling keeps the overlay useful even when one does not
   -- arrive; the comparatively expensive tooltip scan is limited to five seconds.
   U.RegisterUpdate("status.refresh", 1, function()
+    if U.PerfDisabled and U.PerfDisabled("status") then return end
     RefreshPerformance()
     RefreshMoney()
     durabilityAge = durabilityAge + 1

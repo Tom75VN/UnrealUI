@@ -174,6 +174,19 @@ local ROW_GAP = 4
 
 local rows = {}   -- unit id -> row frame
 
+-- Work counters; see core/compat.lua's for why counting substitutes for timing
+-- on this client. Declared here because ApplyIcon, further down, writes to them.
+local statRows, statScans, statApplied, statTextures = 0, 0, 0, 0
+
+function U.AuraStats()
+  return {
+    rowRefreshes = statRows,
+    debuffReads = statScans,
+    iconsApplied = statApplied,
+    texturesSet = statTextures,
+  }
+end
+
 local function CreateIcon(row, index)
   local size = U.GetAuraSetting("size")
 
@@ -252,6 +265,7 @@ end
 -- It matters most on target change: only the icons whose debuff genuinely
 -- differs from the previous target's now touch a texture at all.
 local function ApplyIcon(icon, texture, count, debuffType, size)
+  statApplied = statApplied + 1
   if icon.uuiSize ~= size then
     icon.uuiSize = size
     icon:SetWidth(size)
@@ -260,6 +274,7 @@ local function ApplyIcon(icon, texture, count, debuffType, size)
 
   if icon.uuiTexture ~= texture then
     icon.uuiTexture = texture
+    statTextures = statTextures + 1
     pcall(icon.texture.SetTexture, icon.texture, texture)
   end
 
@@ -301,9 +316,8 @@ end
 -- Refresh
 -- ---------------------------------------------------------------------------
 local function RefreshRow(row)
+  statRows = statRows + 1
   if not row then return end
-  -- /uui perf auras. Every refresh path in this module funnels through here,
-  -- so one guard silences the whole subsystem for a bisect run.
   if U.PerfDisabled and U.PerfDisabled("auras") then return end
 
   local settings = Config()
@@ -334,6 +348,7 @@ local function RefreshRow(row)
 
   local shown, empty, index = 0, 0, nil
   for index = 1, MAX_SCAN do
+    statScans = statScans + 1
     local texture, count, debuffType = ReadDebuff(row.unit, index)
 
     if not texture then
@@ -560,7 +575,13 @@ function A:OnEnable()
   -- registered as a free accelerator rather than relied on.
   U.RegisterEvent("UNIT_AURA", function(event, unit) RefreshUnitToken(unit) end)
   U.RegisterEvent("PLAYER_AURAS_CHANGED", function() RefreshAll() end)
-  U.RegisterEvent("PLAYER_TARGET_CHANGED", function() RefreshRow(rows.target) end)
+  -- round 3: deferred one driver tick, same reasoning as
+  -- core/compat.lua's target-group sweep -- this used to scan up to 24 debuff
+  -- indices and lay out icon geometry synchronously inside the same frame the
+  -- client re-shows the native TargetFrame in.
+  U.RegisterEvent("PLAYER_TARGET_CHANGED", function()
+    U.DeferOnce("auras.target-refresh", function() RefreshRow(rows.target) end)
+  end)
   U.RegisterEvent("PLAYER_ENTERING_WORLD", function() RefreshAll() end)
 
   -- The mechanism, not an optimisation: with no duration return there is

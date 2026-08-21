@@ -244,6 +244,12 @@ local styledFor
 -- below pass it so a freshly populated tooltip is flattened in the same frame
 -- it appears, instead of waiting for the next poll.
 local function RefreshTooltip(force)
+  -- /uui perf tooltip. Every styling path in this module funnels through here,
+  -- including the OnShow/OnSizeChanged hooks, so one guard silences the whole
+  -- subsystem -- and specifically silences the Restyle -> StyleFrame ->
+  -- OnSizeChanged -> Restyle path, which has no re-entrancy guard of its own.
+  if U.PerfDisabled and U.PerfDisabled("tooltip") then return end
+
   local tooltip = U.G("GameTooltip")
   if not tooltip or not tooltip.IsShown then return end
 

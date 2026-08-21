@@ -16,6 +16,17 @@
 -- the sibling record covering why a target castbar built the same way pfUI
 -- builds one is not attempted here).
 --
+-- Channelled casts (fishing among them) are handled the same way, but on
+-- WORKING_SOURCE evidence rather than a runtime capture: query_compat.py has
+-- no record at all of SPELLCAST_CHANNEL_START firing on this client (an
+-- evidence gap, not a contradiction), so per .claude/rules/unreal-pfui.md this
+-- defaults to what UnrealPfUI's libs/libcast.lua demonstrably does with it
+-- (libcast.lua:219) -- arg1=castTimeMs, arg2=name, the reverse order from
+-- SPELLCAST_START. That reversal lines up with this client's already-confirmed
+-- non-standard SPELLCAST_START shape, which is why it's taken as the default
+-- rather than the vanilla (duration-only, no name) contract. Unconfirmed until
+-- tested against an actual channelled cast (e.g. fishing) in game.
+--
 -- Two pieces of this bar rest on WORKING_SOURCE evidence, not on measured
 -- runtime evidence, because query_compat.py returns no match at all for either
 -- (api.json only covers the `core` and `actionbars` groups):
@@ -40,11 +51,6 @@
 --     castbar.pushback_delay_event_unconfirmed.
 --
 -- Scope this module still does not cover, and why:
---   * Channelled casts. SPELLCAST_CHANNEL_START has never been observed firing
---     at all (events.json has no capture for it). A channel is not
---     distinguished from an ordinary cast here; if one ever occurs the bar
---     will just run to its computed duration and then time out. Extending this
---     needs a focused probe against a channelled spell, not a guess.
 --   * A target castbar. The only known implementation strategy (pfUI's) polls
 --     UnitCastingInfo/UnitChannelInfo per unit, and that contract is
 --     INCONCLUSIVE on this client. Left out until it is confirmed.
@@ -206,14 +212,30 @@ local function SpellIcon(name)
   return texture
 end
 
+-- A spellbook miss (Hearthstone, a quest item, any other non-spell cast) used
+-- to fall back to the question-mark placeholder texture; that read as a wrong
+-- icon rather than an honest "no icon available", so a miss now hides the
+-- whole icon cell instead (via widget.showIcon, see SetWidgetCellsShown) --
+-- not just the texture, so its flat background/border don't hang around as an
+-- empty box either. FALLBACK_ICON is still used for the idle placeholder
+-- (ApplyIdlePlaceholder), which is a different case -- there's no cast at all
+-- to have an icon for.
 local function ApplyIcon(name)
   if not bar.icon then return end
 
   local texture = SpellIcon(name)
-  lastIconSource = texture and "spellbook" or "fallback"
+  lastIconSource = texture and "spellbook" or "none"
 
-  if not pcall(bar.icon.SetTexture, bar.icon, texture or FALLBACK_ICON) then
+  if not texture then
+    bar.showIcon = false
+    return
+  end
+
+  if pcall(bar.icon.SetTexture, bar.icon, texture) then
+    bar.showIcon = true
+  else
     lastIconSource = "failed"
+    bar.showIcon = false
   end
 end
 
@@ -232,11 +254,20 @@ end
 -- knowledge.json / rendering.parent_alpha_not_propagated: the cells are shown
 -- and hidden explicitly rather than left to the container, on the same
 -- reasoning the rest of unrealUI uses for composite frames.
+--
+-- The icon cell is additionally gated by widget.showIcon: when a cast has no
+-- resolved icon (see ApplyIcon), the whole cell -- its flat background and
+-- border, not just the texture -- is hidden instead of leaving an empty box
+-- with nothing in it.
 local function SetWidgetCellsShown(widget, shown)
   local i
   for i = 1, table.getn(widget.uuiCells) do
     local cell = widget.uuiCells[i]
-    if shown then
+    local cellShown = shown
+    if cell == widget.iconCell and not widget.showIcon then
+      cellShown = false
+    end
+    if cellShown then
       if not cell:IsShown() then cell:Show() end
     else
       if cell:IsShown() then cell:Hide() end
@@ -271,6 +302,11 @@ local function ApplyIdlePlaceholder()
   pcall(bar.bar.SetValue, bar.bar, 0.4)
   if bar.name then bar.name:SetText("Cast bar") end
   if bar.icon then pcall(bar.icon.SetTexture, bar.icon, FALLBACK_ICON) end
+  bar.showIcon = true
+  -- Applied immediately rather than waiting for the next Tick's
+  -- UpdateVisibility: a cast that just ended with no icon left the cell
+  -- hidden, and it would otherwise stay hidden for one extra frame.
+  SetCellsShown(true)
   lastTimeText = nil
   if bar.time then bar.time:SetText("0.0") end
 end
@@ -336,6 +372,8 @@ local function StopCast()
 end
 
 local function Tick()
+  if U.PerfDisabled and U.PerfDisabled("castbar") then return end
+
   UpdateVisibility()
   UpdateTargetVisibility()
 
@@ -391,6 +429,8 @@ local function BuildBarWidget(frameName)
   pcall(icon.SetTexCoord, icon, 0.08, 0.92, 0.08, 0.92)
   pcall(icon.SetTexture, icon, FALLBACK_ICON)
   widget.icon = icon
+  widget.iconCell = iconCell
+  widget.showIcon = true
 
   -- Right cell: the progress bar, flush against the icon and filling the rest
   -- of the width to the right edge, with the spell name and the timer both
@@ -477,6 +517,13 @@ function CB:OnEnable()
   SuppressNativeCastbar()
 
   U.RegisterEvent("SPELLCAST_START", function(event, name, castTimeMs)
+    StartCast(name, castTimeMs)
+  end)
+
+  -- Reversed argument order from SPELLCAST_START -- see the header note on
+  -- the channelled-cast evidence gap (castTimeMs first, name second, per
+  -- UnrealPfUI's libcast.lua:219).
+  U.RegisterEvent("SPELLCAST_CHANNEL_START", function(event, castTimeMs, name)
     StartCast(name, castTimeMs)
   end)
 

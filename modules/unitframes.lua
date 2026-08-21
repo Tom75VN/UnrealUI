@@ -162,6 +162,18 @@ local SPECS = {
     anchorPoint = "TOP", anchorRelativePoint = "BOTTOM",
     anchorOffsetX = 0, anchorOffsetY = 1,
   },
+  {
+    -- Hunter (or warlock) pet frame: portrait to the left, health/power
+    -- stacked to its right. Only built and shown while a pet is actually out
+    -- -- RefreshFrame's existing UnitExists gate already hides any frame with
+    -- no unit, so this needs no pet-specific visibility logic of its own.
+    id = "pet", unit = "pet", name = "Pet", label = "Pet",
+    width = 120, health = 20, power = 8, gap = 0,
+    healthLabels = { left = "unit", right = "healthdyn" },
+    powerLabels = { right = "powerdyn" },
+    portrait = true,
+    default = { point = "BOTTOMRIGHT", relativePoint = "BOTTOM", x = -75, y = 90 },
+  },
 }
 
 local PARTY_COUNT = 4
@@ -213,6 +225,15 @@ local function SuppressStockFrames()
       "ManaBar", "Portrait", "Name", "DeadText" }), "target")
   U.SuppressNativeFrame(U.NativeFrameParts("TargetofTargetFrame",
     {}, { { "Debuff", 4 } }), "target")
+
+  -- Standalone player pet frame (as opposed to a party member's nested
+  -- PartyMemberFrame%dPetFrame, already covered below). No event re-shows it
+  -- on this client, so it stays in the default "static" group and relies on
+  -- the periodic sweep alone, same as everything else in that group.
+  U.SuppressNativeFrame(U.NativeFrameParts("PetFrame",
+    { "Texture", "Background", "HealthBar", "HealthBarText", "ManaBar",
+      "ManaBarText", "Portrait", "Name", "Happiness" },
+    { { "Debuff", 4 } }))
 
   local i
   for i = 1, PARTY_COUNT do
@@ -686,6 +707,41 @@ local function CreateValuesStrip(parent, width, height, border, tokens)
   return strip
 end
 
+-- ---------------------------------------------------------------------------
+-- Portrait (pet frame only)
+--
+-- knowledge.json / unitframes.portrait_model_crash (RUNTIME_FAILURE_CONFIRMED):
+-- a live 3D PlayerModel portrait crashed this client. The confirmed-working
+-- replacement is a 2D Texture painted through SetPortraitTexture(texture,
+-- unit) -- no PlayerModel frame is ever created here. Per that record's
+-- solution, the call is guarded on existing at all; a client without it drops
+-- the portrait rather than guessing at an alternative.
+-- ---------------------------------------------------------------------------
+local PORTRAIT_GAP = 6
+
+local function BuildPortraitBox(parent, size, border)
+  local box = CreateFrame("Frame", nil, parent)
+  box:SetWidth(size)
+  box:SetHeight(size)
+  U.CreateBackdrop(box)
+
+  local icon = box:CreateTexture(nil, "ARTWORK")
+  icon:SetPoint("TOPLEFT", box, "TOPLEFT", border, -border)
+  icon:SetPoint("BOTTOMRIGHT", box, "BOTTOMRIGHT", -border, border)
+
+  box.icon = icon
+  return box
+end
+
+local function RefreshPortrait(frame)
+  local box = frame.portrait
+  if not box or not box.icon then return end
+
+  local setPortrait = ResolveApiFn("SetPortraitTexture")
+  if not setPortrait then return end
+  pcall(setPortrait, box.icon, frame.unit)
+end
+
 local function FrameHeight(spec)
   local border = U.BorderSize()
   local height = spec.health + 2 * border
@@ -741,17 +797,33 @@ local function BuildFrame(spec, parent)
   -- keep them below native windows such as the help and GM-assistance panels;
   -- SetFrameStrata also carries this layer to the frame's bar children.
   frame:SetFrameStrata("LOW")
-  frame:SetWidth(FrameWidth(spec))
+
+  -- The portrait sits to the left of the bar stack on its own square, sized to
+  -- match the stack's full height, and widens the frame by that square plus a
+  -- fixed gap. hasPortrait can still be false with spec.portrait set: per
+  -- knowledge.json / unitframes.portrait_model_crash, a client without
+  -- SetPortraitTexture drops the portrait rather than guessing at a
+  -- replacement, and the frame is simply bars-only in that case.
+  local portraitSize = FrameHeight(spec)
+  local hasPortrait = spec.portrait and ResolveApiFn("SetPortraitTexture") ~= nil
+  local barOffsetX = hasPortrait and (portraitSize + PORTRAIT_GAP) or 0
+
+  frame:SetWidth(FrameWidth(spec) + barOffsetX)
   frame:SetHeight(FrameHeight(spec))
   frame.unit = spec.unit
   frame.spec = spec
   frame.data = {}
 
+  if hasPortrait then
+    frame.portrait = BuildPortraitBox(frame, portraitSize, border)
+    frame.portrait:SetPoint("TOPLEFT", frame, "TOPLEFT", 0, 0)
+  end
+
   -- Each bar starts on the colour it will normally carry, so a frame is never
   -- briefly drawn in another bar's colour before the first refresh.
   local health = CreateBarBox(frame, spec.width, spec.health, border,
                               M.color.healthFull)
-  health:SetPoint("TOPLEFT", frame, "TOPLEFT", 0, 0)
+  health:SetPoint("TOPLEFT", frame, "TOPLEFT", barOffsetX, 0)
   if spec.healthText then
     -- The status fill is its own child frame. Put the name on a higher child
     -- layer so the changing fill can never cover it.
@@ -823,6 +895,33 @@ local COMBO_HEIGHT = 4
 local COMBO_EMPTY = { 0.24, 0.24, 0.24, 1.00 }
 
 local comboPips = nil
+
+-- The stock combo display is its own global family, not a TargetFrame child
+-- name, so the suppression list above never touched it: ComboFrame plus
+-- ComboPoint1..5 and their Highlight/Shine regions (all sixteen names are in
+-- this client's global table -- 2026-08-16 probe capture). The target family is
+-- suppressed visual-only, alpha 0 with no Hide, and this client does not
+-- propagate parent alpha, so the native gems stayed fully drawn at TargetFrame's
+-- stock position on top of an otherwise invisible frame -- visible to any rogue
+-- who gained a combo point, next to unrealUI's own pips.
+--
+-- Registered in the default "static" group, i.e. the full teardown: hide,
+-- neutralise Show, drop native events. That is what UnrealPfUI's
+-- modules/combopoints.lua does on this same client (ComboFrame:Hide() plus
+-- ComboFrame:UnregisterAllEvents()) -- WORKING_SOURCE evidence, not runtime
+-- verification. Only registered for the class unrealUI actually replaces the
+-- display for; a druid keeps the native gems rather than losing combo points
+-- to a frame that draws nothing for it.
+local function SuppressStockComboFrame()
+  local names = { "ComboFrame" }
+  local i
+  for i = 1, COMBO_MAX do
+    table.insert(names, "ComboPoint" .. i)
+    table.insert(names, "ComboPoint" .. i .. "Highlight")
+    table.insert(names, "ComboPoint" .. i .. "Shine")
+  end
+  U.SuppressNativeFrame(names)
+end
 
 local function BuildComboPoints(playerFrame)
   local health = playerFrame and playerFrame.health
@@ -1123,7 +1222,19 @@ local function ApplyConnectedAlpha(frame)
   if pcall(frame.SetAlpha, frame, alpha) then frame.uuiAlpha = alpha end
 end
 
+local statFrameRefreshes, statFullRefreshes = 0, 0
+
+function U.UnitFrameStats()
+  return {
+    frameRefreshes = statFrameRefreshes,
+    fullRefreshes = statFullRefreshes,
+  }
+end
+
 local function RefreshFrame(frame, mode)
+  statFrameRefreshes = statFrameRefreshes + 1
+  if mode == "full" then statFullRefreshes = statFullRefreshes + 1 end
+
   local exists = ApiTruth("UnitExists", frame.unit)
 
   if not exists then
@@ -1201,6 +1312,7 @@ local function RefreshFrame(frame, mode)
   end
   if textMode then ApplyTexts(frame, textMode) end
   if mode == "full" then ApplyClassificationIcon(frame) end
+  if mode == "full" then RefreshPortrait(frame) end
 
   -- Offline party members are dimmed rather than hidden, matching pfUI's
   -- alpha_offline treatment without importing its alpha config. Unverified on
@@ -1481,8 +1593,6 @@ end
 -- work on the same render tick once per second.
 local refreshCycle = 0
 local function RefreshScheduledUnits()
-  -- /uui perf frames: takes the whole unit frame refresh cost out of the
-  -- picture so a target-change spike can be attributed or ruled out.
   if U.PerfDisabled and U.PerfDisabled("frames") then return end
 
   refreshCycle = refreshCycle + 1
@@ -1520,6 +1630,14 @@ local function RefreshScheduledUnits()
   -- player's target, so it keeps the same bounded polling cadence.
   dirtyUnits.targettarget = nil
   RefreshFrame(frames.targettarget, "full")
+
+  -- Pet summon/dismiss has no observed event either (query_compat.py has no
+  -- events.json record for any pet unit token), so it follows the same
+  -- bounded polling cadence rather than waiting on UNIT_HEALTH/UNIT_MANA to
+  -- fire for "pet" -- events remain an accelerator on top of this, not the
+  -- mechanism the frame depends on.
+  dirtyUnits.pet = nil
+  RefreshFrame(frames.pet, "full")
   FlushDirtyUnits()
 end
 
@@ -1872,6 +1990,7 @@ function UF:OnEnable()
   RegisterEvents()
 
   if frames.player and UnitClassToken("player") == "ROGUE" then
+    SuppressStockComboFrame()
     BuildComboPoints(frames.player)
     RegisterComboEvents()
     RefreshComboPoints()

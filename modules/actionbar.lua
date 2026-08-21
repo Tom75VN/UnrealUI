@@ -108,6 +108,7 @@ local GLOBAL_DEFAULTS = {
   showMacro    = true,
   showCount    = true,
   showCooldown = true,
+  showGCD      = true,
 }
 
 -- Native binding names for the slot ranges the stock UI owns. Bar 6 and any
@@ -182,6 +183,9 @@ local pressedButtons = {}
 local cfg               -- module settings table (flat; see BuildDefaults)
 local classColor = { 0.5, 0.5, 1.0 }
 local bindingsDirty = false
+
+-- The global cooldown currently running, shared by every button. See NoteGCD.
+local gcdStart, gcdDuration, gcdProgress
 
 -- ---------------------------------------------------------------------------
 -- Config
@@ -689,11 +693,60 @@ local function InstallLegacyMainBindingRoute()
     return false
   end
 
+  -- This build calls ActionButtonDown/Up off the raw physical key, not the
+  -- exact modifier chord: a plain key bound to ACTIONBUTTON<index> still
+  -- fires here while a modifier is held, even when that exact chord (e.g.
+  -- ALT-C) is separately bound to an unrelated command (e.g. the character
+  -- panel). Stock Blizzard's own ActionButtonDown/Up apparently absorbs this
+  -- at the Lua layer before it reaches UseAction; replacing those globals
+  -- drops that guard, so it is rebuilt here. Same modifier-prefix order as
+  -- quickbind.lua's Prefix().
+  local function StolenByModifiedChord(index)
+    local prefix = ""
+    if Call("IsAltKeyDown") then prefix = prefix .. "ALT-" end
+    if Call("IsControlKeyDown") then prefix = prefix .. "CTRL-" end
+    if Call("IsShiftKeyDown") then prefix = prefix .. "SHIFT-" end
+    if prefix == "" then return false end
+
+    local command = "ACTIONBUTTON" .. index
+    local key1, key2 = Call("GetBindingKey", command)
+    local keys = { key1, key2 }
+    local i
+    for i = 1, 2 do
+      local key = keys[i]
+      -- A bare key (no modifier already baked in) is the one this build's
+      -- native dispatch will fire regardless of the held modifier.
+      if type(key) == "string" and key ~= "" and not string.find(key, "-", 1, true) then
+        local action = Call("GetBindingAction", prefix .. key)
+        if type(action) == "string" and action ~= "" and action ~= command then
+          return true
+        end
+      end
+    end
+    return false
+  end
+
+  -- The legacy binding globals are invoked even while a native chat EditBox
+  -- owns text input. Match the declared-binding path below: typed keys must
+  -- never produce an action-bar press or activation.
+  local function ChatEditBoxIsOpen()
+    local edit = U.G("ChatFrameEditBox")
+    if edit and edit.IsShown then
+      local ok, shown = pcall(edit.IsShown, edit)
+      return ok and shown and true or false
+    end
+    return false
+  end
+
   local down = function(index)
+    if ChatEditBoxIsOpen() then return end
+    if StolenByModifiedChord(index) then return end
     local button = BoundButton(1, index)
     if button then ShowButtonPress(button, true) end
   end
   local up = function(index)
+    if ChatEditBoxIsOpen() then return end
+    if StolenByModifiedChord(index) then return end
     local button = BoundButton(1, index)
     if button then OnButtonClick(button) end
   end
@@ -870,6 +923,14 @@ local function CreateButton(bar, index)
   pressed:Hide()
   button.uuiPressed = pressed
 
+  -- Global-cooldown feedback: the clock wipe, drawn by hand because the
+  -- Model/CooldownFrameTemplate shape above renders nothing here (see the
+  -- Radial wipe note in core/style.lua). It goes on the raised layer so it
+  -- covers the icon, at BACKGROUND within that layer so the press flash and the
+  -- countdown number stay on top of it. Sized by SizeButton, driven by
+  -- RefreshGCDSweep.
+  button.uuiGcd = U.CreateRadialWipe(textLayer)
+
   button.uuiCooldownText = U.CreateLabel(textLayer, {
     size = M.fontSize.normal, color = CD_COLOR.normal,
     inherits = "GameFontNormal",
@@ -931,6 +992,8 @@ local function SizeButton(button, size)
     button.uuiMacro:SetWidth(size - 6)
     U.SetFont(button.uuiMacro, small)
   end
+  U.SizeRadialWipe(button.uuiGcd, size)
+
   if button.uuiCooldownText then
     -- The countdown is the readout, not a corner label, so it scales off the
     -- button rather than off the small-label size. pfUI's dynamic cooldown font
@@ -954,6 +1017,7 @@ local function HideButton(button)
   button.uuiCdActive = false
   button.uuiCdShown = false
   if button.uuiCooldown then pcall(button.uuiCooldown.Hide, button.uuiCooldown) end
+  U.HideRadialWipe(button.uuiGcd)
   button:Hide()
 end
 
@@ -1190,6 +1254,33 @@ local function RefreshCooldownText(button)
   end
 end
 
+-- The global cooldown is never reported as a value of its own. It arrives as an
+-- ordinary sub-threshold cooldown pair on every slot that is not already on a
+-- longer cooldown of its own, which is why GCD_THRESHOLD exists in the first
+-- place -- the countdown text uses it to *reject* these pairs. The same test
+-- read the other way round is the detector: the first sub-threshold pair seen
+-- during a sweep is this cast's global cooldown.
+--
+-- One pair is then shared by every button rather than each button reading its
+-- own, so a slot sitting on a 30s cooldown still sweeps with the rest of the
+-- bar instead of showing nothing -- the global cooldown is a player state, not
+-- a per-slot one, and that is what the feedback is for.
+local function NoteGCD(start, duration)
+  if not (cfg and cfg.showGCD) then return end
+  if start <= 0 or duration <= 0 or duration >= GCD_THRESHOLD then return end
+  if gcdStart == start and gcdDuration == duration then return end
+
+  local now = tonumber(Call("GetTime"))
+  if not now then return end
+  -- A stamp ahead of the clock is the 32-bit uptime wrap CooldownRemaining
+  -- rebases for. Rebasing is not worth it across a 1.5s sweep: skip that one
+  -- global cooldown rather than draw it from a stamp days out.
+  if start > now then return end
+  if start + duration <= now then return end
+
+  gcdStart, gcdDuration = start, duration
+end
+
 -- Re-reads the slot's cooldown pair and drives both the swipe and the number.
 local function UpdateCooldown(button)
   local slot = ButtonSlot(button)
@@ -1211,6 +1302,8 @@ local function UpdateCooldown(button)
 
   -- enable == 0 is Vanilla's "this slot has a cooldown but must not display
   -- one" flag; a missing value is read as enabled, the way pfUI reads it.
+  if enable == nil or enable > 0 then NoteGCD(start, duration) end
+
   button.uuiCdStart = start
   button.uuiCdDuration = duration
   button.uuiCdActive = (start > 0 and duration >= GCD_THRESHOLD
@@ -1246,10 +1339,22 @@ local function FullUpdate(button)
   UpdateActive(button)
 end
 
+-- Work counters. buttonVisits is the scale figure: every recurring action bar
+-- read funnels through ForEachVisibleButton, so it counts every per-button
+-- callback the module ran. slotSweeps vs stateSweeps says which of the two
+-- costs is being paid -- a slot sweep is the full rebuild, a state sweep is the
+-- cheap one.
+local statSlotSweeps, statStateSweeps, statButtonVisits = 0, 0, 0
+
+function U.ActionBarStats()
+  return {
+    slotSweeps = statSlotSweeps,
+    stateSweeps = statStateSweeps,
+    buttonVisits = statButtonVisits,
+  }
+end
+
 local function ForEachVisibleButton(callback)
-  -- /uui perf bars. Every recurring action bar read goes through this walk --
-  -- the per-slot sweep, the state sweep, the cooldown countdown and every
-  -- event-driven refresh -- so one guard prices the whole subsystem.
   if U.PerfDisabled and U.PerfDisabled("bars") then return end
 
   local bar, i
@@ -1258,10 +1363,50 @@ local function ForEachVisibleButton(callback)
     if entry and entry.shown then
       for i = 1, table.getn(entry.buttons) do
         local button = entry.buttons[i]
-        if button.uuiShown then callback(button) end
+        if button.uuiShown then
+          statButtonVisits = statButtonVisits + 1
+          callback(button)
+        end
       end
     end
   end
+end
+
+-- ---------------------------------------------------------------------------
+-- Global cooldown sweep
+-- ---------------------------------------------------------------------------
+local function HideGCDSweep(button)
+  U.HideRadialWipe(button.uuiGcd)
+end
+
+local function ApplyGCDSweep(button)
+  -- An empty slot has nothing to become ready, so it stays quiet. Everything
+  -- else on screen sweeps together, which is the whole point of the readout.
+  if button.uuiEmpty then return end
+  U.SetRadialWipeProgress(button.uuiGcd, gcdProgress)
+end
+
+local function ClearGCD()
+  gcdStart, gcdDuration, gcdProgress = nil, nil, nil
+  ForEachVisibleButton(HideGCDSweep)
+end
+
+-- One clock read for the whole action bar, then at most one size write per
+-- button. Outside a global cooldown the cost is the nil check on the first
+-- line, which is why this can tick faster than the state sweep: a 1.5s sweep
+-- redrawn five times a second would step rather than travel.
+local function RefreshGCDSweep()
+  if not gcdStart then return end
+  if not (cfg and cfg.showGCD) then ClearGCD() return end
+
+  local now = tonumber(Call("GetTime"))
+  if not now then ClearGCD() return end
+
+  local elapsed = now - gcdStart
+  if elapsed < 0 or elapsed >= gcdDuration then ClearGCD() return end
+
+  gcdProgress = elapsed / gcdDuration
+  ForEachVisibleButton(ApplyGCDSweep)
 end
 
 -- ---------------------------------------------------------------------------
@@ -1288,6 +1433,10 @@ end
 
 local function CreateBar(bar)
   local frame = CreateFrame("Frame", "UnrealUIActionBar" .. bar, UIParent)
+  -- Action bars are part of the persistent HUD.  Keep them below native
+  -- interface windows (character, bags, spellbook, etc.) when those windows
+  -- overlap the HUD.
+  pcall(frame.SetFrameStrata, frame, "LOW")
   frame:SetWidth(100)
   frame:SetHeight(30)
 
@@ -1534,6 +1683,7 @@ local STATE_EVENTS = {
 }
 
 local function RefreshSlots()
+  statSlotSweeps = statSlotSweeps + 1
   ForEachVisibleButton(FullUpdate)
 end
 
@@ -1553,6 +1703,7 @@ local function UpdateButtonState(button)
 end
 
 local function RefreshState()
+  statStateSweeps = statStateSweeps + 1
   ForEachVisibleButton(UpdateButtonState)
 end
 
@@ -1770,6 +1921,11 @@ function AB:OnEnable()
   -- nil check per tick when nothing is pending, the same shape as
   -- RefreshPressedButtons' empty-list return.
   U.RegisterUpdate("actionbar.flush", 0, FlushPendingRefresh)
+  -- Faster than the state sweep on purpose: the whole animation is over in
+  -- about 1.5 seconds, and at the state sweep's 0.2s it would step through four
+  -- positions rather than travel. 0.04 is 25 redraws across the wipe, and only
+  -- the strips the leading edge actually crossed are written on each one.
+  U.RegisterUpdate("actionbar.gcd", 0.04, RefreshGCDSweep)
   U.RegisterUpdate("actionbar.state", 0.2, RefreshState)
   U.RegisterUpdate("actionbar.slots", 1, RefreshSlots)
 end
@@ -1793,6 +1949,8 @@ function U.ActionBarReport()
                        entry.buttons[1].uuiCooldown) and true or false,
       cooldownText = (entry and entry.buttons[1] and
                       entry.buttons[1].uuiCooldownText) and true or false,
+      gcdSweep = (entry and entry.buttons[1] and
+                  entry.buttons[1].uuiGcd) and true or false,
     })
   end
   return report

@@ -476,6 +476,11 @@ local function RegisterQuestWatchMover()
     return false
   end
 
+  -- The tracker is persistent HUD, like the action bars.  Its native frame
+  -- otherwise inherits UIParent's default layer and can cover open interface
+  -- windows where the two overlap.
+  pcall(watch.SetFrameStrata, watch, "LOW")
+
   U.RegisterMover("questwatch.frame", watch, {
     label = "Quest Tracker",
   })

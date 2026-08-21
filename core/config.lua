@@ -27,6 +27,26 @@ local VALID_POINTS = {
 local defaults = {
   version   = CONFIG_VERSION,
   debug     = false,
+  -- Diagnostic only, set by /uui nosuppress. core/compat.lua's native-frame
+  -- suppression is applied once at OnEnable and is irreversible within a
+  -- session -- Show is replaced by a no-op whose original is not kept, and
+  -- UnregisterAllEvents cannot be undone -- so the only way to measure
+  -- unrealUI *without* it is to skip it at load. Persisted because the skip
+  -- has to survive the /reload that applies it.
+  noSuppress = false,
+  -- Diagnostic bisect of the suppression *recipe*, not just on/off. Measured:
+  -- the recipe's permanent state costs +2.66ms/frame (142 -> 103fps) and turns
+  -- a 9ms target-change peak into 159ms, while its periodic sweep only costs a
+  -- further +1.55ms. So the expensive part is what is done to the ~1275 stock
+  -- objects, and this picks how much of it to do:
+  --   0  nothing (same as noSuppress)
+  --   1  Hide() only
+  --   2  + SetAlpha(0)
+  --   3  + EnableMouse(false) and the Show() neutraliser
+  --   4  + UnregisterAllEvents and the periodic/event re-apply  (shipped behaviour)
+  -- A number, not a string: knowledge.json / config.savedvariables_backslash
+  -- _corruption means only numbers and booleans are safe to persist here.
+  suppressLevel = 4,
   locked    = true,     -- mover mode state; see core/mover.lua
   positions = {},       -- mover id -> { point, relativePoint, x, y }
   modules   = {},       -- module name -> { enabled = true }

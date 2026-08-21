@@ -2,7 +2,8 @@
 ## Title: |cffffffffUnreal |cfff5ae0aUI
 ## Notes: Unreal Azeroth native UI addon.
 ## Author: unrealUI
-## Version: 0.1.0
+## Version: 0.1.1
+## X-License: MIT
 ## SavedVariables: UnrealUIDB, UnrealUIDiagDB
 
 core\init.lua
