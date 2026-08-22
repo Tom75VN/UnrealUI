@@ -12,9 +12,13 @@ local menuHooked = false
 local textHooked = false
 local selectedIdHooked = false
 
--- 20% shorter than the component's previous 17-unit height, as requested.
-local CONTROL_HEIGHT = 14
-local CONTROL_TEXT_Y = -5
+-- Doubled from the previous 14-unit height, as requested.
+local CONTROL_HEIGHT = 28
+-- The -5 riding-high nudge was tuned for the old 14-unit box; at the doubled
+-- height the clamped SetHeight + explicit CENTER justify below already lands
+-- the glyph on the control's true centre. USER_CONFIRMED_INGAME: still 1px
+-- high at that centre, so a small residual nudge remains.
+local CONTROL_TEXT_Y = -1
 
 -- Compact tick box for list rows. Native rows are 16 high, so this is smaller
 -- than the 14-unit settings checkbox and uses a matching smaller accent mark.
@@ -89,9 +93,28 @@ local function LayoutText(dropdown, button)
   end)
 end
 
+-- The native control owns its own template height and puts it back from paths
+-- unrealUI does not drive: the show/update pass already needed the reassert in
+-- StyleStock, and USER_CONFIRMED_INGAME opening the menu snapped the control
+-- back to the taller stock size and left it there. Replacing the frame's own
+-- SetHeight makes every later Lua-side resize land on the component height
+-- instead of chasing each caller separately. The original method is kept so
+-- ApplyControlHeight still reaches the real setter.
+local function LockControlHeight(dropdown)
+  if not dropdown or dropdown.uuiDropdownHeightLock then return end
+  if type(dropdown.SetHeight) ~= "function" then return end
+  local native = dropdown.SetHeight
+  local ok = pcall(function()
+    dropdown.SetHeight = function(self, _)
+      return native(self, CONTROL_HEIGHT)
+    end
+  end)
+  if ok then dropdown.uuiDropdownHeightLock = native end
+end
+
 local function ApplyControlHeight(dropdown)
   if not dropdown then return end
-  pcall(dropdown.SetHeight, dropdown, CONTROL_HEIGHT)
+  pcall(dropdown.uuiDropdownHeightLock or dropdown.SetHeight, dropdown, CONTROL_HEIGHT)
 end
 
 -- Selection handlers can continue changing the native FontString after their
@@ -117,17 +140,67 @@ local function IsSelected(check)
   return ok and shown and true or false
 end
 
--- The stock Check texture's shown flag *is* the client's ticked state, and it
--- is the only signal the owned indicator can read. So this deliberately does
--- not use U.HideRegion: its Hide() would clear that flag and every later pass
--- would read the row as unticked. Per knowledge.json /
--- rendering.native_texture_strip_requires_alpha the alpha is the part that
--- reliably removes the art anyway, so clearing texture plus alpha suppresses
--- the native mark while leaving the state intact.
+-- Popup list rows are the client's own state carriers, not decoration, so
+-- unrealUI only ever changes their ALPHA -- never a shown flag, never a
+-- texture path, never a button face.
+--
+-- USER_CONFIRMED_INGAME (class trainer Filter menu): the generic strip's
+-- U.HideRegion (SetTexture(nil) + SetAlpha(0) + Hide) on row regions left the
+-- filter doing nothing at all, and keeping only the Check region out of the
+-- strip -- the previous fix, and the open probe question in knowledge.json /
+-- frames.dropdown_component_checkbox_contract -- did NOT restore it. The
+-- single-select /who dropdown kept working throughout, which is what points at
+-- per-row state rather than at the click path: /who reads only its own func,
+-- while the trainer's entries are keepShownOnClick filters whose ticked state
+-- the client stores on the row itself.
+--
+-- Rather than guess which region or field holds that state, nothing owned by
+-- the row is mutated any more. knowledge.json /
+-- rendering.native_texture_strip_requires_alpha records alpha as the part that
+-- actually removes stock art on this client, so alpha alone gets the flat look
+-- with no way left to destroy client state. UnrealPfUI (WORKING_SOURCE,
+-- api/ui-widgets.lua SkinDropDown) does not touch list rows at all, which is
+-- the same conclusion from the other direction.
+local function SuppressRegionArt(region)
+  if not region or not region.GetObjectType then return end
+  local typeOk, objectType = pcall(region.GetObjectType, region)
+  if not typeOk or objectType ~= "Texture" then return end
+  pcall(function() if region.SetAlpha then region:SetAlpha(0) end end)
+end
+
+local function SuppressRowArt(row)
+  if not row then return end
+
+  if row.GetRegions then
+    local ok, regions = pcall(function() return { row:GetRegions() } end)
+    if ok and type(regions) == "table" then
+      local i
+      for i = 1, table.getn(regions) do
+        SuppressRegionArt(regions[i])
+      end
+    end
+  end
+
+  -- The row's button faces are separate objects from its regions, so they are
+  -- faded the same way instead of going through RemoveButtonArt -- that helper
+  -- reassigns the textures, which is a mutation rows must not receive.
+  local getters = { "GetNormalTexture", "GetPushedTexture",
+                    "GetHighlightTexture", "GetDisabledTexture" }
+  local i
+  for i = 1, table.getn(getters) do
+    local getter = row[getters[i]]
+    if type(getter) == "function" then
+      local ok, texture = pcall(getter, row)
+      if ok and texture then SuppressRegionArt(texture) end
+    end
+  end
+end
+
+-- The Check may not be enumerable as a row region on this client, so it is
+-- faded explicitly as well. Alpha only, for the same reason as above.
 local function SuppressCheckArt(check)
   if not check then return end
-  pcall(function() if check.SetTexture then check:SetTexture(nil) end end)
-  pcall(function() if check.SetAlpha then check:SetAlpha(0) end end)
+  SuppressRegionArt(check)
 end
 
 -- Owned tick box replacing the stock Check texture. It is created lazily so
@@ -158,17 +231,7 @@ local function StyleListRow(name, index, checkboxes)
   local selected = IsSelected(check)
   if row then
     row.uuiDropdownSelected = selected
-    -- The Check is a plain Texture region of the row, so the generic strip
-    -- would reach it through U.StripTextures -> U.HideRegion -> Hide(). That
-    -- is exactly what must not happen here: the client owns that region's
-    -- shown flag as the entry's ticked state (see SuppressCheckArt below), and
-    -- hiding it on every styling pass both destroyed the state we read back and
-    -- left the trainer's filter doing nothing at all. Keep it out of the strip
-    -- and suppress its art separately.
-    local keep = nil
-    if check then keep = { keep = { [check] = true } } end
-    U.StripStockTextures(row, keep)
-    RemoveButtonArt(row)
+    SuppressRowArt(row)
   end
   SuppressCheckArt(check)
 
@@ -290,6 +353,12 @@ local function AttachPlacement(dropdown, button)
   -- Keep the client responsible for invoking its native click handler. Calling
   -- that handler manually omits engine-owned click state and can fault natively.
   local installed = U.PostHookScript(button, "OnClick", function()
+    -- Toggling the menu runs the client's own dropdown update path, which
+    -- restores the stock control height, so the control must be re-measured
+    -- on open and on close. Inline plus one shared tick later, the same gap
+    -- the selection path needs, so the control keeps one height whether the
+    -- list is open or not.
+    LayoutTextWhenSettled(dropdown)
     D.PlaceListBelow(dropdown)
   end)
   if installed then button.uuiDropdownPlacementAttached = true end
@@ -360,6 +429,7 @@ function D.StyleStock(dropdown, width, options)
   U.HideRegion(U.G(name .. "Right"))
   U.HideRegion(U.G(name .. "Icon"))
   U.CreateBackdrop(dropdown, { background = { 0.03, 0.03, 0.03, 0.85 } })
+  LockControlHeight(dropdown)
   ApplyControlHeight(dropdown)
   if width then pcall(dropdown.SetWidth, dropdown, width) end
 

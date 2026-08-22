@@ -57,7 +57,11 @@ local function StyleTitleRow(i)
   if not button then return end
 
   local icon = G("GossipTitleButton" .. i .. "GossipIcon")
-  U.StripStockTextures(button, icon and { icon = icon } or nil)
+  -- U.StripStockRowTextures also detects the icon by texture path and re-shows
+  -- it, so the row keeps its "open the bank" / "train me" / "!" / "?" glyph
+  -- even when the named region is missing on this client or was stripped while
+  -- the row was still empty.
+  U.StripStockRowTextures(button, icon and { icon = icon } or nil)
 
   local function ForceRowWhite()
     -- Button:SetTextColor controls the normal label state; applying the shared
@@ -191,6 +195,14 @@ local function BuildFrame()
   -- change while the window stays open (e.g. a quest turned in mid-gossip),
   -- fold the real update hook into knowledge.json and hook it here.
   U.PostHookScript(frame, "OnShow", Reapply)
+
+  -- Do NOT post-hook GossipFrameUpdate/GossipFrameOptionsUpdate.
+  -- USER_CONFIRMED_INGAME: this client's GossipFrame.lua takes its option list
+  -- through `...`/arg.n, and U.PostHookGlobal's fixed-arity wrapper hands the
+  -- original ten arguments, so arg.n became 10, the update built rows for the
+  -- padding nils, and GossipFrame.lua:123 threw "attempt to concatenate field
+  -- '?' (a nil value)" beneath a column of empty option rows. GOSSIP_SHOW plus
+  -- OnShow already reapply late enough for the icons.
 
   if frame.IsShown then
     local ok, shown = pcall(frame.IsShown, frame)

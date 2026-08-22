@@ -140,9 +140,39 @@ local function ReapplyAllText()
   StyleSkillRows()
 end
 
+-- BUG (reported in game): the Filter dropdown box extended past the
+-- interface's visible edge. Its native anchor was set for the full-width,
+-- unstripped ClassTrainerFrame; the content panel above is inset from the
+-- frame's real edges, so that anchor no longer lines up with the visible
+-- dark backdrop once widened by D.StyleStock. Re-anchor explicitly against
+-- the panel and the already-repositioned greeting text instead of relying
+-- on the untouched native placement.
+--
+-- These two points BOTH constrain the vertical axis: "RIGHT" pins the control's
+-- vertical centre to the panel's, and "TOP" pins its top edge to the greeting.
+-- That over-constrains height, so the control stretches to satisfy both and
+-- core/dropdown.lua's CONTROL_HEIGHT lock is ignored (visibly a much taller
+-- Filter box than the 28-unit component height). It also means the TOP offset
+-- alone cannot move the control: raising it only grows the box upward while the
+-- centre stays pinned. Keep the pair in step -- both Y offsets move together --
+-- until the stretch itself is fixed by reducing this to a single anchor point.
+local FILTER_Y = 5
+
+local function RepositionFilterDropdown()
+  local filterDropdown = G("ClassTrainerFrameFilterDropDown")
+  if not filterDropdown then return end
+  pcall(function()
+    filterDropdown:ClearAllPoints()
+    filterDropdown:SetPoint("RIGHT", panel, "RIGHT", -14, FILTER_Y)
+    filterDropdown:SetPoint("TOP", G("ClassTrainerGreetingText"), "BOTTOM", 0,
+                            -14 + FILTER_Y)
+  end)
+end
+
 local function Reapply()
   U.StripStockTextures(frame)
   ReapplyAllText()
+  RepositionFilterDropdown()
 end
 
 local function BuildFrame()
@@ -186,21 +216,7 @@ local function BuildFrame()
   -- Each entry is an independent on/off filter rather than one selected value.
   local filterDropdown = G("ClassTrainerFrameFilterDropDown")
   U.Dropdown.StyleStock(filterDropdown, 130, { checkboxes = true })
-
-  -- BUG (reported in game): the Filter dropdown box extended past the
-  -- interface's visible edge. Its native anchor was set for the full-width,
-  -- unstripped ClassTrainerFrame; the content panel above is inset from the
-  -- frame's real edges, so that anchor no longer lines up with the visible
-  -- dark backdrop once widened by D.StyleStock. Re-anchor explicitly against
-  -- the panel and the already-repositioned greeting text instead of relying
-  -- on the untouched native placement.
-  if filterDropdown then
-    pcall(function()
-      filterDropdown:ClearAllPoints()
-      filterDropdown:SetPoint("RIGHT", panel, "RIGHT", -14, 0)
-      filterDropdown:SetPoint("TOP", G("ClassTrainerGreetingText"), "BOTTOM", 0, -14)
-    end)
-  end
+  RepositionFilterDropdown()
 
   U.StripStockTextures(G("ClassTrainerListScrollFrame"))
   U.StyleStockScrollbar(G("ClassTrainerListScrollFrameScrollBar"))

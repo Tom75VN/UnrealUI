@@ -1,11 +1,15 @@
 -- unrealUI :: modules/auras.lua
 --
--- Debuff icons above the player and target unit frames, plus the "Unit Frames"
+-- Buff and debuff icons above the player and target unit frames, each with the
+-- radial wipe and countdown number the action bar uses, plus the "Unit Frames"
 -- settings page that filters what they show.
 --
--- Scope: debuffs only, on player and target only. Buffs, party/raid auras,
--- aura timers, aura tooltips, weapon enchants and pfUI's whole buff/debuff
--- module framework are not reproduced here.
+-- Scope: player and target only. Party/raid auras, weapon enchants, and
+-- pfUI's whole buff/debuff module framework are not reproduced here. The
+-- player row stays debuffs-only; buffs were requested for the target.
+-- Hovering an icon shows the shared client GameTooltip (SetUnitBuff /
+-- SetUnitDebuff), the same native widget xpbar.lua already owns for the rest
+-- tooltip -- not a second private tooltip frame.
 --
 -- ---------------------------------------------------------------------------
 -- The measured contract this file is built on
@@ -21,20 +25,49 @@
 -- debuffType="Magic". There is no name, no duration, no timeLeft and no caster
 -- return on this runtime -- that is true Vanilla 1.12 shape, not the extended
 -- tuple pfUI's own code reads, which comes from its separate libdebuff
--- GameTooltip wrapper rather than from raw UnitDebuff.
+-- GameTooltip wrapper rather than from raw UnitDebuff. UnitBuff is the same
+-- shape minus the dispel type.
 --
--- Two consequences drive the whole design:
+-- Two consequences drive the design:
 --
---   * No timers. Without duration or timeLeft there is nothing to count down
---     from, so no cooldown swipe and no remaining-time text are drawn. Building
---     one from a guessed duration table would be exactly the fragile emulation
---     the project rules say to omit.
---   * No "DoT only" filter is possible. The client does not report whether a
---     debuff deals damage over time; debuffType is the dispel school (Magic /
---     Curse / Poison / Disease, or nil for physical effects), which is a
---     different axis entirely -- Corruption and Curse of Weakness are both
---     "Curse". So the row shows every debuff and the settings page filters by
---     the one property the client does report.
+--   * Names come from a tooltip, not from the aura call. knowledge.json /
+--     auras.no_native_debuff_expiry_time measured a GameTooltip-template
+--     scanner armed with SetUnitDebuff("target", 1) returning TextLeft1
+--     "Immolate" and TextRight1 "Magic" against a live DoT, so line 1 is the
+--     name and the scan is the only way to get one.
+--   * Timers come from one of two places, and which one depends entirely on
+--     whose aura it is.
+--
+-- Timers, native path -- the player's own auras (the player row, and the target
+-- row whenever the target is the player). GetPlayerBuff + GetPlayerBuffTimeLeft
+-- is a real client-reported remaining time, and it is the only one that exists
+-- anywhere on this runtime. See ReadPlayerAura for exactly what the probe
+-- measured and what it could not.
+--
+-- Timers, reconstructed path -- everyone else. auras.no_native_debuff_expiry_time
+-- is explicit that a target aura's expiry cannot be read here at all: the
+-- tooltip has exactly two lines and carries no time. Its solution text said a
+-- target timer "would require reproducing pfUI's whole duration-table +
+-- combat-log-timestamp reconstruction ... out of scope unless explicitly
+-- requested". It was explicitly requested. core/auradata.lua holds the duration
+-- table; this file supplies the start stamp by watching the aura appear.
+--
+-- What the reconstructed path costs, stated plainly so its readout is not
+-- mistaken for a client value:
+--
+--   * An aura already running when it is first seen -- anything on a mob you
+--     have just targeted -- is stamped from that moment, so it reads as freshly
+--     applied. pfUI has the same behaviour for the same reason.
+--   * An aura with no entry in the duration table gets no wipe and no number.
+--     The table is debuff-weighted, so a fair number of buffs land here. This
+--     is why the native path matters: your own buffs are exactly the ones the
+--     table tends to miss, and they no longer depend on it.
+--   * Rank is not recoverable for another unit's aura, so the table's max-rank
+--     duration is used. pfUI's display path passes rank as nil for the same
+--     reason.
+--
+-- "/uui aura" prints which path each row took and, per aura, whether the name,
+-- the table entry or the client time is the thing that came back empty.
 --
 -- The empty-index shape was measured too: an unused slot returns nil as its
 -- first value (with 0 as the second), and the first probe run -- taken with no
@@ -49,14 +82,18 @@
 --     split modules/unitframes.lua uses for target-of-target.
 --   * knowledge.json / scripts.child_onupdate_unreliable: no frame here owns an
 --     OnUpdate. Refreshes run on U.RegisterUpdate.
+--   * knowledge.json / cooldown.model_swipe_not_rendered (BROKEN): the native
+--     Model/CooldownFrameTemplate swipe draws nothing here, which is why the
+--     radial is U.CreateRadialWipe from core/style.lua -- the same hand-drawn
+--     wipe the action buttons use, per the request that these icons match them.
 --   * The icons are deliberately not mouse-interactive (no tooltip on hover).
---     UnitDebuff already gives no name, so a tooltip would have nothing more
---     to show than the icon already does; not a workaround for a client bug --
---     knowledge.json / tooltip.core_population_contract_unverified is
---     SUPPORTED/BEHAVIOR_VERIFIED, GameTooltip itself works fine here.
+--     The scanner below is never shown and never owns the shared GameTooltip;
+--     rules/unreal-ui-design.md's restriction is on creating an *explanatory*
+--     tooltip, and the scanner's create/SetOwner/populate/read sequence is the
+--     one the probe above already measured.
 --   * knowledge.json / config.savedvariables_backslash_corruption: only
---     numbers and booleans are persisted. The icon path is never stored -- it
---     comes back from the client on every read.
+--     numbers and booleans are persisted. Neither icon paths nor aura names nor
+--     timer stamps are stored -- every one of them is re-derived at runtime.
 
 local U = UnrealUI
 local M = U.media
@@ -69,25 +106,42 @@ local A = U.RegisterModule("auras")
 local CONFIG = "auras"
 
 local defaults = {
-  playerEnabled = true,
-  targetEnabled = true,
-  belowFrame    = false,
-  size          = 20,
-  perRow        = 8,
-  maxIcons      = 16,
-  spacing       = 2,
+  playerEnabled     = true,
+  targetEnabled     = true,
+  targetBuffEnabled = true,
+  showTimers        = true,
+  belowFrame        = false,
+  size              = 24,
+  perRow            = 8,
+  maxIcons          = 16,
+  -- Buffs get a tighter cap than debuffs: a raid boss can carry a dozen of
+  -- them and they would push the debuffs -- the actionable half -- off screen.
+  maxBuffs          = 8,
+  spacing           = 2,
   -- Filters, keyed by the dispel school the client reports. "other" covers a
   -- nil debuffType, which is what physical effects (Rend, Sunder Armor,
-  -- stuns) come back as.
-  showMagic     = true,
-  showCurse     = true,
-  showPoison    = true,
-  showDisease   = true,
-  showOther     = true,
+  -- stuns) come back as. Buffs are unfiltered: the client reports no
+  -- classification for them at all.
+  showMagic         = true,
+  showCurse         = true,
+  showPoison        = true,
+  showDisease       = true,
+  showOther         = true,
 }
 
+-- U.ModuleConfig only fills a key in when its stored type differs from the
+-- default's, so a numeric default that changes value (size 20 -> 24) never
+-- reaches an account that already saved the old one. `size` has no settings-
+-- page control, so nothing could have set it on purpose; a stale persisted 20
+-- is corrected once and the flag stops this from re-running (and from ever
+-- fighting an explicit change, if `size` gets a control later).
 local function Config()
-  return U.ModuleConfig(CONFIG, defaults)
+  local settings = U.ModuleConfig(CONFIG, defaults)
+  if not settings.migratedSize24 then
+    settings.migratedSize24 = true
+    if settings.size == 20 then settings.size = defaults.size end
+  end
+  return settings
 end
 
 function U.GetAuraSetting(key)
@@ -116,6 +170,11 @@ local TYPE_COLOR = {
 -- unfiltered row still reads as "these are debuffs" at a glance.
 local OTHER_COLOR = { 0.70, 0.15, 0.15, 1.00 }
 
+-- Buffs carry no dispel school here, so they take the shared chrome outline.
+-- That is also what separates the two rows visually: coloured edges are
+-- debuffs, neutral edges are buffs.
+local BUFF_COLOR = M.color.border
+
 local FILTER_KEY = {
   Magic   = "showMagic",
   Curse   = "showCurse",
@@ -136,26 +195,309 @@ end
 -- API access
 --
 -- Same defensive shape as modules/unitframes.lua: resolved once by name,
--- pcall'd on every call, and every value coerced. The measured tuple is
--- (texture, count, debuffType), but an unexpected return degrades to "no
--- debuff here" instead of erroring.
+-- pcall'd on every call, and every value coerced. An unexpected return degrades
+-- to "no aura here" instead of erroring.
+--
+-- The resolve is memoised because these run on a 0.2s tick across three rows;
+-- an uncached U.G per read is one extra pcall per index per pass.
 -- ---------------------------------------------------------------------------
-local debuffFn = nil
-local debuffResolved = false
+local resolved = {}
+
+local function Fn(name)
+  local cached = resolved[name]
+  if cached == nil then
+    local value = U.G(name)
+    cached = (type(value) == "function") and value or false
+    resolved[name] = cached
+  end
+  return cached or nil
+end
+
+local function Call(name, a, b)
+  local fn = Fn(name)
+  if not fn then return nil end
+  local ok, v1, v2, v3 = pcall(fn, a, b)
+  if not ok then return nil end
+  return v1, v2, v3
+end
+
+local function Now()
+  return tonumber(Call("GetTime")) or 0
+end
 
 local function ReadDebuff(unit, index)
-  if not debuffResolved then
-    local fn = U.G("UnitDebuff")
-    debuffFn = type(fn) == "function" and fn or false
-    debuffResolved = true
-  end
-  if not debuffFn then return nil end
-
-  local ok, texture, count, debuffType = pcall(debuffFn, unit, index)
-  if not ok or type(texture) ~= "string" or texture == "" then return nil end
+  local texture, count, debuffType = Call("UnitDebuff", unit, index)
+  if type(texture) ~= "string" or texture == "" then return nil end
 
   return texture, tonumber(count) or 0,
-         (type(debuffType) == "string" and debuffType ~= "" ) and debuffType or nil
+         (type(debuffType) == "string" and debuffType ~= "") and debuffType or nil
+end
+
+-- UnitBuff is the same call one classification short: the client reports no
+-- dispel school for a helpful aura, so the third value is never read.
+local function ReadBuff(unit, index)
+  local texture, count = Call("UnitBuff", unit, index)
+  if type(texture) ~= "string" or texture == "" then return nil end
+
+  return texture, tonumber(count) or 0, nil
+end
+
+local function ReadAura(unit, index, harmful)
+  if harmful then return ReadDebuff(unit, index) end
+  return ReadBuff(unit, index)
+end
+
+-- ---------------------------------------------------------------------------
+-- The player's own auras, read natively
+--
+-- The one thing auras.no_native_debuff_expiry_time left open. Probe
+-- auras.player_getplayerbuff_helpful_timers.v1 / _harmful_ (probeVersion
+-- 1.12.0) measured, on this client:
+--
+--   * GetPlayerBuff, GetPlayerBuffTimeLeft, GetPlayerBuffTexture,
+--     GetPlayerBuffDispelType and GetPlayerBuffApplications all exist and are
+--     of type "function";
+--   * GetPlayerBuff(index, filter) returns two numbers, and an empty slot
+--     answers -1 -- captured at every index in both runs, which is what a run
+--     with no aura on the player is supposed to look like;
+--   * PLAYER_BUFF_START_ID is nil here, so the walk is 0-based. The probe used
+--     base -1 with a 1-based loop, which is the same 0..n-1 sequence.
+--
+-- What the probe could NOT confirm is a live remaining time, because nothing
+-- was up on the player when it ran. So this path is BEHAVIOR_PARTIALLY_TESTED:
+-- every call is guarded, and a nil or zero time simply produces no timer,
+-- exactly as an aura missing from the duration table does.
+--
+-- It matters because it is the only *client-reported* expiry available
+-- anywhere on this runtime. Where it applies -- the player row, and the target
+-- row whenever the target is the player -- the countdown is the client's own
+-- number rather than a reconstruction.
+-- ---------------------------------------------------------------------------
+local playerBuffBase = nil
+
+local function PlayerBuffBase()
+  if playerBuffBase == nil then
+    playerBuffBase = tonumber(U.G("PLAYER_BUFF_START_ID")) or 0
+  end
+  return playerBuffBase
+end
+
+-- Returns the same leading tuple as ReadAura, plus the client's remaining time.
+local function ReadPlayerAura(index, harmful)
+  local get = Fn("GetPlayerBuff")
+  if not get then return nil end
+
+  local ok, buffIndex = pcall(get, PlayerBuffBase() + index - 1,
+                              harmful and "HARMFUL" or "HELPFUL")
+  buffIndex = ok and tonumber(buffIndex) or nil
+  if not buffIndex or buffIndex <= -1 then return nil end
+
+  local texture = Call("GetPlayerBuffTexture", buffIndex)
+  if type(texture) ~= "string" or texture == "" then return nil end
+
+  local dispel = Call("GetPlayerBuffDispelType", buffIndex)
+  local timeLeft = tonumber(Call("GetPlayerBuffTimeLeft", buffIndex)) or 0
+
+  return texture,
+         tonumber(Call("GetPlayerBuffApplications", buffIndex)) or 0,
+         (type(dispel) == "string" and dispel ~= "") and dispel or nil,
+         timeLeft > 0 and timeLeft or nil
+end
+
+-- "player" is the player without asking; a target can be too. UnitIsUnit is
+-- documented to match on the token string before any object lookup, so the
+-- self-target case costs one call per row per tick.
+local function IsPlayerUnit(unit)
+  if unit == "player" then return true end
+
+  local fn = Fn("UnitIsUnit")
+  if not fn then return false end
+
+  local ok, same = pcall(fn, unit, "player")
+  return (ok and same and same ~= 0) and true or false
+end
+
+-- ---------------------------------------------------------------------------
+-- Name scanner
+--
+-- The only way to learn what an aura is on this client. A private
+-- GameTooltip-template frame is armed with SetUnitBuff/SetUnitDebuff and line 1
+-- is read back off its own fontstring global -- exactly the sequence probe
+-- auras.target_debuff_tooltip_name.v1 measured, including the single SetOwner
+-- with ANCHOR_NONE that the probe set once and reused across four reads.
+--
+-- It is never shown, never anchored to the cursor and never the shared
+-- GameTooltip, so nothing here can disturb the game's own tooltip.
+-- ---------------------------------------------------------------------------
+local SCANNER_NAME = "UnrealUIAuraScanner"
+
+local scanner = nil
+local scannerBuilt = false
+
+local function Scanner()
+  if scannerBuilt then return scanner end
+  scannerBuilt = true
+
+  local ok, frame = pcall(CreateFrame, "GameTooltip", SCANNER_NAME, UIParent,
+                          "GameTooltipTemplate")
+  if not ok or not frame then
+    U.Debug("aura name scanner unavailable; timers will be inactive")
+    return nil
+  end
+
+  pcall(frame.SetOwner, frame, UIParent, "ANCHOR_NONE")
+  scanner = frame
+  return scanner
+end
+
+local function ScanName(unit, index, harmful)
+  local tip = Scanner()
+  if not tip then return nil end
+
+  local setter = harmful and tip.SetUnitDebuff or tip.SetUnitBuff
+  if type(setter) ~= "function" then return nil end
+  if not pcall(setter, tip, unit, index) then return nil end
+
+  -- The probe read this fontstring straight off _G. U.G prefers getglobal, and
+  -- nothing has verified the two agree for a region a template created, so the
+  -- measured path is tried first and U.G is the fallback.
+  local global = SCANNER_NAME .. "TextLeft1"
+  local line = nil
+  if _G then line = _G[global] end
+  if not line then line = U.G(global) end
+  if not line or type(line.GetText) ~= "function" then return nil end
+
+  local ok, text = pcall(line.GetText, line)
+  if not ok or type(text) ~= "string" or text == "" then return nil end
+  return text
+end
+
+-- ---------------------------------------------------------------------------
+-- Aura tracking
+--
+-- What the client will not tell us: when an aura started. What it will: whether
+-- the aura is there right now. So the start stamp is the first tick that saw
+-- it, kept per unit and per aura name.
+--
+-- The unit key is name plus level, which is pfUI's own key
+-- (libdebuff.objects[unit][unitlevel]) and the closest thing to an identity
+-- this client offers -- there is no GUID in the Vanilla API shape. Keeping a
+-- short history of keys rather than only the current target means switching
+-- target and switching back keeps the timers running instead of restarting
+-- them.
+-- ---------------------------------------------------------------------------
+local MAX_UNITS = 16
+
+local units = {}      -- unit key -> { helpful = {}, harmful = {}, touched }
+local unitCount = 0
+local passCount = 0
+
+local function PruneUnits()
+  if unitCount <= MAX_UNITS then return end
+
+  local oldestKey, oldestTouched = nil, nil
+  local key, store
+  for key, store in pairs(units) do
+    if not oldestTouched or store.touched < oldestTouched then
+      oldestKey, oldestTouched = key, store.touched
+    end
+  end
+
+  if oldestKey then
+    units[oldestKey] = nil
+    unitCount = unitCount - 1
+  end
+end
+
+local function UnitStore(unit)
+  local name = Call("UnitName", unit)
+  if type(name) ~= "string" or name == "" then return nil end
+
+  local key = name .. "@" .. (tonumber(Call("UnitLevel", unit)) or 0)
+  local store = units[key]
+  if not store then
+    -- Stamped before PruneUnits runs, not after: the prune compares every
+    -- store's stamp and an unstamped one would be a nil in that comparison.
+    store = { helpful = {}, harmful = {}, touched = Now() }
+    units[key] = store
+    unitCount = unitCount + 1
+    PruneUnits()
+    return units[key]
+  end
+
+  store.touched = Now()
+  return store
+end
+
+-- One aura, seen this pass. Returns the tracked entry, or nil when nothing is
+-- known about it -- an unnamed aura, or one the duration table has no answer
+-- for, is tracked as present but never gets a timer.
+--
+-- `key` is the aura name on the reconstructed path and the icon texture on the
+-- native one, where no name is needed because the client supplies the time.
+-- `timeLeft`, when present, is that client-reported remaining time and takes
+-- over completely: the entry is rewritten from it on every scan, so the number
+-- cannot drift.
+local function TrackAura(bucket, key, count, pass, timeLeft)
+  if not bucket or not key then return nil end
+
+  local entry = bucket[key]
+  local now = Now()
+
+  if timeLeft then
+    if not entry then
+      entry = { count = count }
+      bucket[key] = entry
+    end
+
+    -- The client gives remaining, not total, and the wipe needs a total. The
+    -- largest remaining ever seen for this entry is that total: exact once the
+    -- aura has been watched from its application, and merely "starts full" for
+    -- one that was already running when the row first saw it. A refresh pushes
+    -- the remaining back up and the total follows it.
+    local duration = entry.duration or 0
+    if timeLeft > duration then duration = timeLeft end
+
+    entry.duration = duration
+    entry.start = now - (duration - timeLeft)
+    entry.count = count
+    entry.native = true
+    entry.seen = pass
+    return entry
+  end
+
+  if not entry then
+    entry = { start = now, duration = U.AuraDuration(key), count = count }
+    bucket[key] = entry
+  elseif count > entry.count then
+    -- A stack going up is a reapplication. It is the only refresh signal this
+    -- client gives, since neither the aura call nor the tooltip changes when a
+    -- DoT is recast at the same stack size.
+    entry.count = count
+    entry.start = now
+  elseif entry.duration and entry.start + entry.duration <= now then
+    -- Still here after its duration ran out. Either it was recast (the common
+    -- case, and invisible to us) or core/auradata.lua's number is wrong for
+    -- this server. Restarting is right in the first case and self-correcting
+    -- in neither -- so the timer loops rather than freezing at zero, and a
+    -- duration that is wrong shows up as a timer that resets early.
+    entry.start = now
+    entry.count = count
+  else
+    entry.count = count
+  end
+
+  entry.seen = pass
+  return entry
+end
+
+-- Anything not seen this pass has fallen off. Dropping it is what makes a
+-- re-applied aura start from full instead of resuming a stale stamp.
+local function PruneAuras(bucket, pass)
+  local name, entry
+  for name, entry in pairs(bucket) do
+    if entry.seen ~= pass then bucket[name] = nil end
+  end
 end
 
 -- ---------------------------------------------------------------------------
@@ -168,23 +510,81 @@ end
 local MAX_SCAN = 24
 local EMPTY_STOP = 2
 
--- Gap between the row and the unit frame edge it is anchored to, on either
--- side (above or below).
+-- Gap between a row and whatever it sits against, on either side.
 local ROW_GAP = 4
 
-local rows = {}   -- unit id -> row frame
+-- The countdown re-reads the clock this often. Matches modules/actionbar.lua's
+-- CD_TICK so the tenths shown in the last five seconds actually count down;
+-- the aura scan itself stays on the slower tick below.
+local TIMER_TICK = 0.1
+
+local rows = {}       -- row id -> row frame
+local rowOrder = {}   -- stable iteration order for the timer tick
 
 -- Work counters; see core/compat.lua's for why counting substitutes for timing
--- on this client. Declared here because ApplyIcon, further down, writes to them.
-local statRows, statScans, statApplied, statTextures = 0, 0, 0, 0
+-- on this client.
+local statRows, statScans, statApplied, statTextures, statNames = 0, 0, 0, 0, 0
 
 function U.AuraStats()
   return {
     rowRefreshes = statRows,
-    debuffReads = statScans,
+    auraReads = statScans,
     iconsApplied = statApplied,
     texturesSet = statTextures,
+    nameScans = statNames,
+    trackedUnits = unitCount,
+    -- Not work done, but the ceiling on how many auras can ever show a timer.
+    durationTable = U.AuraDurationCount(),
   }
+end
+
+-- The timer font scales off the icon the way the action button's countdown
+-- scales off the button, but at a shallower ratio: a 24-unit aura icon carries
+-- both a timer and a stack count in its corner, so the timer stays small
+-- enough to leave the icon's own art readable underneath it. Capped at 10 by
+-- request, one below M.fontSize.tiny's 9-unit floor stated elsewhere for the
+-- action bar -- this is a smaller, denser label than that one, so it is
+-- allowed to sit under that floor; watch it in game for legibility.
+local function TimerFontSize(size)
+  local value = math.floor(size * 0.3)
+  if value < 8 then value = 8 end
+  if value > 10 then value = 10 end
+  return value
+end
+
+-- Shows the shared client GameTooltip for the aura currently in this icon's
+-- slot (row.unit/row.harmful/icon.uuiIndex, kept current by RefreshRow).
+--
+-- No caster line: probe run targetcast (2026-08-22, behavior.json) measured
+-- this client's SetUnitBuff/SetUnitDebuff tooltip at exactly 2 lines (name,
+-- static description) with a live Power Word: Shield/Fortitude/Shadow Word:
+-- Pain, matching true Vanilla 1.12 -- there is no "Cast By" line to show, on
+-- this tooltip or the raw UnitBuff/UnitDebuff return. The only place a caster
+-- name appears at all is inside periodic-damage combat-log chat text ("X
+-- suffers N damage from your/Name's Spell"), and only for damage-over-time
+-- debuffs -- plain buffs and instant debuffs carry no caster text anywhere.
+-- Reconstructing that (pfUI libdebuff-style chat parsing) was deliberately
+-- not built: partial DoT-only coverage for real parsing fragility, by
+-- request.
+local function ShowIconTooltip(row, icon)
+  local index = icon.uuiIndex
+  if not index then return end
+
+  local tooltip = U.G("GameTooltip")
+  if not tooltip then return end
+
+  pcall(tooltip.SetOwner, tooltip, icon, "ANCHOR_RIGHT")
+  local setter = row.harmful and tooltip.SetUnitDebuff or tooltip.SetUnitBuff
+  if type(setter) ~= "function" or not pcall(setter, tooltip, row.unit, index) then
+    pcall(tooltip.Hide, tooltip)
+    return
+  end
+  pcall(tooltip.Show, tooltip)
+end
+
+local function HideIconTooltip()
+  local tooltip = U.G("GameTooltip")
+  if tooltip then pcall(tooltip.Hide, tooltip) end
 end
 
 local function CreateIcon(row, index)
@@ -195,8 +595,12 @@ local function CreateIcon(row, index)
   icon:SetHeight(size)
   U.CreateBackdrop(icon, {})
 
-  -- Deliberately inert: no EnableMouse, no tooltip. See the GameTooltip note in
-  -- the file header.
+  -- scripts.handler_arguments_direct: handlers close over `row`/`icon` instead
+  -- of reading `this`, matching modules/actionbar.lua's button tooltip wiring.
+  pcall(icon.EnableMouse, icon, true)
+  icon:SetScript("OnEnter", function() ShowIconTooltip(row, icon) end)
+  icon:SetScript("OnLeave", function() HideIconTooltip() end)
+
   local texture = icon:CreateTexture(nil, "ARTWORK")
   texture:SetPoint("TOPLEFT", icon, "TOPLEFT", 1, -1)
   texture:SetPoint("BOTTOMRIGHT", icon, "BOTTOMRIGHT", -1, 1)
@@ -205,15 +609,44 @@ local function CreateIcon(row, index)
   pcall(texture.SetTexCoord, texture, 0.08, 0.92, 0.08, 0.92)
   icon.texture = texture
 
+  -- A raised child inset one unit, so the wipe covers the artwork but never the
+  -- outline. It exists for the same reason modules/actionbar.lua's textLayer
+  -- does: regions on the icon's own OVERLAY layer would be drawn underneath a
+  -- wipe that has to sit above the artwork, and a higher frame level is the
+  -- only ordering this client guarantees between the two.
+  local overlay = CreateFrame("Frame", nil, icon)
+  overlay:SetPoint("TOPLEFT", icon, "TOPLEFT", 1, -1)
+  overlay:SetPoint("BOTTOMRIGHT", icon, "BOTTOMRIGHT", -1, 1)
+  local levelOk, level = pcall(icon.GetFrameLevel, icon)
+  if levelOk and tonumber(level) then
+    pcall(overlay.SetFrameLevel, overlay, level + 5)
+  end
+  icon.overlay = overlay
+
+  -- The same hand-drawn radial the action buttons use. BACKGROUND within the
+  -- raised frame keeps the number and the stack count on top of it.
+  icon.wipe = U.CreateRadialWipe(overlay, { size = size - 2 })
+
+  icon.timer = U.CreateLabel(overlay, {
+    size = TimerFontSize(size),
+    color = M.cooldownText.normal,
+    inherits = "GameFontNormal",
+  })
+  if icon.timer then
+    -- Nudged down half a unit by request, off the icon's true centre.
+    icon.timer:SetPoint("CENTER", overlay, "CENTER", 0, -0.5)
+    icon.timer:Hide()
+  end
+
   -- fonts.stretched_justification_ignored: anchored to the one corner it
   -- belongs in rather than stretched across the icon.
-  icon.count = U.CreateLabel(icon, {
+  icon.count = U.CreateLabel(overlay, {
     size = M.fontSize.small,
     color = M.color.text,
     inherits = "GameFontNormalSmall",
   })
   if icon.count then
-    icon.count:SetPoint("BOTTOMRIGHT", icon, "BOTTOMRIGHT", -1, 1)
+    icon.count:SetPoint("BOTTOMRIGHT", overlay, "BOTTOMRIGHT", 0, 0)
   end
 
   icon:Hide()
@@ -224,7 +657,7 @@ end
 -- Places one icon in the grid. The near row always sits against the frame
 -- edge closest to it (top edge when shown above, bottom edge when shown
 -- below) and further rows stack away from the frame, so that edge stays put
--- no matter how many debuffs are up.
+-- no matter how many auras are up.
 local function PlaceIcon(row, icon, slot, size, spacing, perRow, below)
   local column = math.mod(slot - 1, perRow)
   local line = math.floor((slot - 1) / perRow)
@@ -242,34 +675,101 @@ local function PlaceIcon(row, icon, slot, size, spacing, perRow, below)
 end
 
 -- Anchors the row itself to the frame edge matching the current position
--- setting. Re-run every refresh (cheap, same pattern as the geometry reads
--- below) so a mid-session setting change takes effect without a reload.
-local function PositionRow(row, below)
+-- setting, `offset` units further out. Re-run every refresh (cheap, same
+-- pattern as the geometry reads below) so a mid-session setting change takes
+-- effect without a reload.
+--
+-- The offset is how the target's two rows stack: debuffs take the edge, buffs
+-- are pushed out past whatever height the debuffs ended up needing. Anchoring
+-- the buff row to the debuff row instead would leave it reading a stale height
+-- on the pass where the debuff row is empty and hidden.
+local function PositionRow(row, below, offset)
+  offset = offset or 0
   row:ClearAllPoints()
   if below then
-    row:SetPoint("TOPLEFT", row.anchor, "BOTTOMLEFT", 0, -ROW_GAP)
+    row:SetPoint("TOPLEFT", row.anchor, "BOTTOMLEFT", 0, -(ROW_GAP + offset))
   else
-    row:SetPoint("BOTTOMLEFT", row.anchor, "TOPLEFT", 0, ROW_GAP)
+    row:SetPoint("BOTTOMLEFT", row.anchor, "TOPLEFT", 0, ROW_GAP + offset)
   end
 end
 
--- Everything here is written only when the value it writes actually changed.
--- RefreshAll runs five times a second and re-derives the same tuple from the
--- client each time, so without these guards a live debuff re-issued its own
--- icon path to SetTexture 5x/s per icon, for as long as it was up. On this
+-- ---------------------------------------------------------------------------
+-- Timer readout
+--
+-- Split from the aura scan the way modules/actionbar.lua splits
+-- RefreshCooldownText from UpdateCooldown: this runs at TIMER_TICK and touches
+-- no client API beyond the clock, while the scan below runs at the slower tick
+-- and does all the reading.
+-- ---------------------------------------------------------------------------
+local function HideTimer(icon)
+  U.HideRadialWipe(icon.wipe)
+  if icon.timer and icon.uuiTimerShown then
+    icon.uuiTimerShown = false
+    icon.uuiTimerText = nil
+    icon.uuiTimerTier = nil
+    icon.timer:SetText("")
+    icon.timer:Hide()
+  end
+end
+
+-- `enabled` is passed in rather than read here: this runs once per shown icon
+-- at TIMER_TICK, and U.ModuleConfig walks the whole defaults table on every
+-- read, so the one lookup belongs at the top of the sweep.
+local function RefreshTimer(icon, now, enabled)
+  local entry = icon.uuiEntry
+  if not enabled or not entry or not entry.duration then
+    HideTimer(icon)
+    return
+  end
+
+  local elapsed = now - entry.start
+  local remaining = entry.duration - elapsed
+  if remaining <= 0 then
+    -- The scan tick restamps a still-present aura; until it does, drawing an
+    -- empty wipe is better than drawing a negative number.
+    HideTimer(icon)
+    return
+  end
+
+  U.SetRadialWipeProgress(icon.wipe, elapsed / entry.duration)
+
+  if not icon.timer then return end
+
+  local text, tier = U.FormatTimeShort(remaining)
+  if icon.uuiTimerText ~= text then
+    icon.uuiTimerText = text
+    icon.timer:SetText(text)
+  end
+  if icon.uuiTimerTier ~= tier then
+    icon.uuiTimerTier = tier
+    local color = M.cooldownText[tier] or M.cooldownText.normal
+    pcall(icon.timer.SetTextColor, icon.timer, M.Unpack(color))
+  end
+  if not icon.uuiTimerShown then
+    icon.uuiTimerShown = true
+    icon.timer:Show()
+  end
+end
+
+-- Everything in ApplyIcon is written only when the value it writes actually
+-- changed. RefreshAll runs five times a second and re-derives the same tuple
+-- from the client each time, so without these guards a live aura re-issued its
+-- own icon path to SetTexture 5x/s per icon, for as long as it was up. On this
 -- client an icon path is a UAsset reference ("/Game/Interface/Icons/..._TEX",
--- measured in auras.unitbuff_unitdebuff_contract_unverified), not a loose
--- BLP, so how a repeated set is handled is the renderer's business rather than
+-- measured in auras.unitbuff_unitdebuff_contract_unverified), not a loose BLP,
+-- so how a repeated set is handled is the renderer's business rather than
 -- something this addon can assume is free -- and it never had to ask.
 --
--- It matters most on target change: only the icons whose debuff genuinely
+-- It matters most on target change: only the icons whose aura genuinely
 -- differs from the previous target's now touch a texture at all.
-local function ApplyIcon(icon, texture, count, debuffType, size)
+local function ApplyIcon(icon, texture, count, borderColor, size, entry, now, timers)
   statApplied = statApplied + 1
   if icon.uuiSize ~= size then
     icon.uuiSize = size
     icon:SetWidth(size)
     icon:SetHeight(size)
+    U.SizeRadialWipe(icon.wipe, size - 2)
+    if icon.timer then U.SetFont(icon.timer, TimerFontSize(size)) end
   end
 
   if icon.uuiTexture ~= texture then
@@ -278,14 +778,12 @@ local function ApplyIcon(icon, texture, count, debuffType, size)
     pcall(icon.texture.SetTexture, icon.texture, texture)
   end
 
-  -- nil is a real debuffType here (physical effects report it), so the cache
-  -- stores false for it. A plain nil would be indistinguishable from "never
-  -- applied" and the first physical debuff in a slot would keep the backdrop's
-  -- default outline instead of taking OTHER_COLOR.
-  local typeKey = debuffType or false
-  if icon.uuiType ~= typeKey then
-    icon.uuiType = typeKey
-    U.SetBorderColor(icon, M.Unpack(TypeColor(debuffType)))
+  -- The colour table is the cache key, not the aura type: TypeColor already
+  -- collapses every unclassified debuff onto one table and buffs onto another,
+  -- so identity is enough and a nil debuffType needs no sentinel of its own.
+  if icon.uuiBorder ~= borderColor then
+    icon.uuiBorder = borderColor
+    U.SetBorderColor(icon, M.Unpack(borderColor))
   end
 
   -- A stack of 1 is the normal case and the number would just be noise.
@@ -298,6 +796,9 @@ local function ApplyIcon(icon, texture, count, debuffType, size)
     end
   end
 
+  icon.uuiEntry = entry
+  RefreshTimer(icon, now, timers)
+
   if not icon.uuiShown then
     icon.uuiShown = true
     icon:Show()
@@ -305,106 +806,259 @@ local function ApplyIcon(icon, texture, count, debuffType, size)
 end
 
 -- Paired with the guard above: a hidden icon must forget it is shown, or the
--- next debuff to land in that slot would be left invisible.
+-- next aura to land in that slot would be left invisible.
 local function HideIcon(icon)
   if not icon.uuiShown then return end
   icon.uuiShown = false
+  icon.uuiEntry = nil
+  icon.uuiIndex = nil
+  HideTimer(icon)
   icon:Hide()
 end
 
 -- ---------------------------------------------------------------------------
 -- Refresh
 -- ---------------------------------------------------------------------------
-local function RefreshRow(row)
+local function RowEnabled(row)
+  return U.GetAuraSetting(row.setting) and true or false
+end
+
+local function UnitExists(unit)
+  local value = Call("UnitExists", unit)
+  return (value and value ~= 0) and true or false
+end
+
+-- The name behind one index, cached against the texture that was in that slot
+-- when it was last scanned. Without the cache this would arm and read a tooltip
+-- for every aura on every unit five times a second; with it, a steady row scans
+-- nothing at all.
+local function AuraName(row, index, texture)
+  local cached = row.names[index]
+  if cached and cached.texture == texture then return cached.name end
+
+  statNames = statNames + 1
+  local name = ScanName(row.unit, index, row.harmful)
+  row.names[index] = { texture = texture, name = name }
+  return name
+end
+
+-- Draws one row and returns the height it used, which is what the row stacked
+-- outside it is offset by. A hidden row returns 0.
+local function RefreshRow(row, offset)
   statRows = statRows + 1
-  if not row then return end
-  if U.PerfDisabled and U.PerfDisabled("auras") then return end
+  if not row then return 0 end
+  if U.PerfDisabled and U.PerfDisabled("auras") then return 0 end
 
-  local settings = Config()
-  local enabled = row.id == "player" and settings.playerEnabled
-                                     or settings.targetEnabled
-
-  local exists = false
-  local existsFn = U.G("UnitExists")
-  if type(existsFn) == "function" then
-    local ok, value = pcall(existsFn, row.unit)
-    exists = ok and value and value ~= 0 and true or false
-  end
-
-  if not enabled or not exists then
-    local i
+  local i
+  if not RowEnabled(row) or not UnitExists(row.unit) then
     for i = 1, table.getn(row.icons) do HideIcon(row.icons[i]) end
     row:Hide()
-    return
+    return 0
   end
 
   local size = U.GetAuraSetting("size")
   local spacing = U.GetAuraSetting("spacing")
   local perRow = U.GetAuraSetting("perRow")
-  local maxIcons = U.GetAuraSetting("maxIcons")
+  local maxIcons = U.GetAuraSetting(row.harmful and "maxIcons" or "maxBuffs")
   local below = U.GetAuraSetting("belowFrame")
+  local timers = U.GetAuraSetting("showTimers")
 
-  PositionRow(row, below)
+  PositionRow(row, below, offset)
 
-  local shown, empty, index = 0, 0, nil
-  for index = 1, MAX_SCAN do
+  local store = UnitStore(row.unit)
+  local bucket = store and (row.harmful and store.harmful or store.helpful)
+  local now = Now()
+
+  -- Resolved once per pass, not per index: which unit this row is pointed at
+  -- cannot change halfway through its own scan.
+  local native = IsPlayerUnit(row.unit)
+  row.native = native
+
+  passCount = passCount + 1
+  local pass = passCount
+
+  local shown, empty = 0, 0
+  for i = 1, MAX_SCAN do
     statScans = statScans + 1
-    local texture, count, debuffType = ReadDebuff(row.unit, index)
+    local texture, count, debuffType, timeLeft
+    if native then
+      texture, count, debuffType, timeLeft = ReadPlayerAura(i, row.harmful)
+    else
+      texture, count, debuffType = ReadAura(row.unit, i, row.harmful)
+    end
 
     if not texture then
       empty = empty + 1
       if empty >= EMPTY_STOP then break end
     else
       empty = 0
-      if PassesFilter(debuffType) then
+
+      -- Tracking runs for every aura on the unit, not only the drawn ones. A
+      -- filtered-out debuff that stopped being tracked would be stamped anew
+      -- the moment its filter was switched back on, and one past the icon cap
+      -- would restart every time the auras ahead of it changed.
+      -- The tooltip scan exists only to feed the duration table. On the native
+      -- path the client already gave a remaining time, so the aura is keyed by
+      -- its texture and no tooltip is armed at all.
+      local key = native and texture or AuraName(row, i, texture)
+      local entry = TrackAura(bucket, key, count, pass, timeLeft)
+
+      if row.harmful and not PassesFilter(debuffType) then
+        -- Tracked, not drawn.
+      elseif shown < maxIcons then
         shown = shown + 1
         local icon = row.icons[shown] or CreateIcon(row, shown)
+        -- The drawn slot (shown) and the native aura index (i) diverge once a
+        -- debuff ahead of this one is filtered out by PassesFilter; the
+        -- tooltip must key off the real index or it would show the wrong aura.
+        icon.uuiIndex = i
         PlaceIcon(row, icon, shown, size, spacing, perRow, below)
-        ApplyIcon(icon, texture, count, debuffType, size)
-        if shown >= maxIcons then break end
+        ApplyIcon(icon, texture, count,
+                  row.harmful and TypeColor(debuffType) or BUFF_COLOR,
+                  size, entry, now, timers)
       end
     end
   end
 
-  local i
+  if bucket then PruneAuras(bucket, pass) end
+
   for i = shown + 1, table.getn(row.icons) do HideIcon(row.icons[i]) end
 
   if shown > 0 then
     local lines = math.floor((shown - 1) / perRow) + 1
     local columns = shown < perRow and shown or perRow
+    local height = lines * (size + spacing)
     row:SetWidth(columns * (size + spacing))
-    row:SetHeight(lines * (size + spacing))
+    row:SetHeight(height)
     row:Show()
-  else
-    row:Hide()
+    return height
   end
+
+  row:Hide()
+  return 0
+end
+
+-- Debuffs take the frame edge and buffs stack outside them, so the row a player
+-- reads mid-fight never moves because a buff came or went.
+local function RefreshTarget()
+  local used = RefreshRow(rows.target, 0)
+  RefreshRow(rows.targetBuff, used > 0 and used + ROW_GAP or 0)
 end
 
 local function RefreshAll()
-  RefreshRow(rows.player)
-  RefreshRow(rows.target)
+  RefreshRow(rows.player, 0)
+  RefreshTarget()
 end
 
--- Only the row whose unit changed, when the event carries a usable token.
+-- Only the unit the event carries, when it carries a usable token.
 local function RefreshUnitToken(token)
-  if type(token) ~= "string" then
+  if token == "target" then
+    RefreshTarget()
+  elseif token == "player" then
+    RefreshRow(rows.player, 0)
+  else
     RefreshAll()
-    return
   end
-  if rows[token] then RefreshRow(rows[token]) end
 end
 
--- Called by the settings page after any option changes: geometry and filters
--- both take effect on the next refresh, so this is just an immediate one.
+-- The fast half: clock only, over the icons that are already on screen.
+local function RefreshTimers()
+  if U.PerfDisabled and U.PerfDisabled("auras") then return end
+
+  local now = Now()
+  local timers = U.GetAuraSetting("showTimers")
+  local r, i
+  for r = 1, table.getn(rowOrder) do
+    local row = rowOrder[r]
+    for i = 1, table.getn(row.icons) do
+      local icon = row.icons[i]
+      if icon.uuiShown then RefreshTimer(icon, now, timers) end
+    end
+  end
+end
+
+-- Called by the settings page after any option changes: geometry, filters and
+-- the timer toggle all take effect on the next refresh, so this is just an
+-- immediate one.
 function U.ApplyAuras()
   RefreshAll()
 end
 
 -- ---------------------------------------------------------------------------
+-- Diagnostics
+--
+-- A missing timer is always one of exactly three things: the scanner gave no
+-- name, the duration table has no entry for that name, or the client reported
+-- no remaining time. "/uui aura" says which, per row and per index, from the
+-- live state -- no reload, no probe run, no guessing between them.
+-- ---------------------------------------------------------------------------
+-- Icon paths on this client are UAsset references with forward slashes
+-- ("/Game/Interface/Icons/Spell_Fire_Immolation_TEX", measured in
+-- auras.unitbuff_unitdebuff_contract_unverified), so the leaf is all a chat
+-- line needs.
+local function ShortTexture(texture)
+  if type(texture) ~= "string" then return "-" end
+  local tail = string.gsub(texture, ".*/", "")
+  if tail == "" then return texture end
+  return tail
+end
+
+function U.AuraDebugDump()
+  U.Print("aura dump - duration table holds " .. U.AuraDurationCount() ..
+          " entries")
+
+  local r
+  for r = 1, table.getn(rowOrder) do
+    local row = rowOrder[r]
+    local native = IsPlayerUnit(row.unit)
+    local exists = UnitExists(row.unit)
+
+    U.Print(string.format("|cffffff00%s|r %s on %s - enabled=%s exists=%s via %s",
+                          row.id, row.harmful and "debuffs" or "buffs", row.unit,
+                          tostring(RowEnabled(row)), tostring(exists),
+                          native and "GetPlayerBuff (client time)"
+                                 or "tooltip name + duration table"))
+
+    if exists then
+      local empty = 0
+      local i
+      for i = 1, MAX_SCAN do
+        local texture, count, debuffType, timeLeft
+        if native then
+          texture, count, debuffType, timeLeft = ReadPlayerAura(i, row.harmful)
+        else
+          texture, count, debuffType = ReadAura(row.unit, i, row.harmful)
+        end
+
+        if not texture then
+          empty = empty + 1
+          if empty >= EMPTY_STOP then break end
+        else
+          empty = 0
+
+          local name = nil
+          if not native then name = ScanName(row.unit, i, row.harmful) end
+
+          local seconds = timeLeft
+          if not seconds and name then seconds = U.AuraDuration(name) end
+
+          U.Print(string.format("  %d %s name=%s stacks=%s type=%s %s=%s",
+                                i, ShortTexture(texture), tostring(name or "-"),
+                                tostring(count or 0), tostring(debuffType or "-"),
+                                native and "timeLeft" or "duration",
+                                seconds and string.format("%.1f", seconds)
+                                        or "|cffff4040none|r"))
+        end
+      end
+    end
+  end
+end
+
+-- ---------------------------------------------------------------------------
 -- Build
 -- ---------------------------------------------------------------------------
-local function BuildRow(id, unit)
-  local anchor = U.GetUnitFrame(id)
+local function BuildRow(id, unit, harmful, setting)
+  local anchor = U.GetUnitFrame(unit)
   if not anchor then
     U.Debug("no unit frame to anchor auras to: " .. id)
     return nil
@@ -417,14 +1071,18 @@ local function BuildRow(id, unit)
   row.anchor = anchor
   row:SetWidth(1)
   row:SetHeight(1)
-  PositionRow(row, U.GetAuraSetting("belowFrame"))
+  PositionRow(row, U.GetAuraSetting("belowFrame"), 0)
 
   row.id = id
   row.unit = unit
+  row.harmful = harmful
+  row.setting = setting
   row.icons = {}
+  row.names = {}
   row:Hide()
 
   rows[id] = row
+  table.insert(rowOrder, row)
   return row
 end
 
@@ -441,10 +1099,16 @@ end
 local PAGE_WIDTH = 484
 local FILTER_COLUMN_X = 200
 
+-- Two columns, so five toggles occupy the three rows the previous three did and
+-- the sections below them keep their positions.
+local TOGGLE_COLUMN_X = 240
+
 local TOGGLES = {
-  { key = "playerEnabled", text = "Show player frame debuffs" },
-  { key = "targetEnabled", text = "Show target frame debuffs" },
-  { key = "belowFrame",    text = "Show debuffs below the frame instead of above" },
+  { key = "playerEnabled",     text = "Player frame debuffs",  column = 0, row = 0 },
+  { key = "targetEnabled",     text = "Target frame debuffs",  column = 1, row = 0 },
+  { key = "targetBuffEnabled", text = "Target frame buffs",    column = 0, row = 1 },
+  { key = "showTimers",        text = "Timers on aura icons",  column = 1, row = 1 },
+  { key = "belowFrame",        text = "Show auras below the frame", column = 0, row = 2 },
 }
 
 -- Laid out 2 per row (column, row) so the list reads as a table instead of a
@@ -462,7 +1126,7 @@ local function BuildSettingsPage(parent)
   local controls = {}
 
   local header = U.CreateSectionHeader(parent, {
-    text = "Unit Frame Debuffs",
+    text = "Unit Frame Auras",
     width = PAGE_WIDTH,
     y = -4,
   })
@@ -474,19 +1138,21 @@ local function BuildSettingsPage(parent)
     local check = U.CreateCheckbox(parent, {
       name = "UnrealUIAuraToggle" .. spec.key,
       text = spec.text,
+      textWidth = TOGGLE_COLUMN_X - 26,
       value = U.GetAuraSetting(spec.key),
       onChange = function(value)
         Config()[spec.key] = value
         U.ApplyAuras()
       end,
     })
-    check.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -34 - (i - 1) * 26)
+    check.SetPoint("TOPLEFT", parent, "TOPLEFT",
+                   spec.column * TOGGLE_COLUMN_X, -34 - spec.row * 26)
     controls[spec.key] = check
     table.insert(widgets, check)
   end
 
   local filterHeader = U.CreateSectionHeader(parent, {
-    text = "Show By Dispel Type",
+    text = "Show Debuffs By Dispel Type",
     width = PAGE_WIDTH,
     y = -128,
   })
@@ -510,8 +1176,9 @@ local function BuildSettingsPage(parent)
     table.insert(widgets, check)
   end
 
-  -- States plainly what the client does and does not report, so the missing
-  -- "DoTs only" option reads as a measured limit rather than an oversight.
+  -- States plainly where the timers come from, so a missing one reads as a gap
+  -- in the duration table rather than as a bug, and a wrong one is not mistaken
+  -- for a value the client handed over.
   local hint = U.CreateSettingsLabel(parent, {
     size = M.fontSize.small,
     color = M.color.textDim,
@@ -521,13 +1188,16 @@ local function BuildSettingsPage(parent)
   })
   if hint then
     U.AnchorSettingsDescription(hint, controls[FILTERS[table.getn(FILTERS)].key].box)
-    hint:SetText("This client reports only icon, stack count and dispel type " ..
-                 "per debuff -- no duration and no caster -- so debuffs are " ..
-                 "filtered by dispel type and shown without timers.")
+    hint:SetText("Your own auras are timed by the client and are exact. " ..
+                 "For any other unit this client reports no duration, so " ..
+                 "those timers are rebuilt from a spell duration table and " ..
+                 "the moment the aura was first seen: one already running " ..
+                 "when you target reads as fresh, and one the table does not " ..
+                 "list shows no timer. Use /uui aura to see which is which.")
     table.insert(widgets, hint)
   end
 
-  local function RefreshDebuffs()
+  local function RefreshAuraControls()
     local key, control
     for key, control in pairs(controls) do
       control.SetValue(U.GetAuraSetting(key))
@@ -537,7 +1207,7 @@ local function BuildSettingsPage(parent)
   local refreshColors
   if type(U.BuildUnitFrameColorSettings) == "function" then
     local colorWidgets
-    colorWidgets, refreshColors = U.BuildUnitFrameColorSettings(parent, -270)
+    colorWidgets, refreshColors = U.BuildUnitFrameColorSettings(parent, -296)
     local n
     for n = 1, table.getn(colorWidgets) do
       table.insert(widgets, colorWidgets[n])
@@ -545,7 +1215,7 @@ local function BuildSettingsPage(parent)
   end
 
   local function Refresh()
-    RefreshDebuffs()
+    RefreshAuraControls()
     if refreshColors then refreshColors() end
   end
 
@@ -562,10 +1232,11 @@ function A:OnInit()
 end
 
 function A:OnEnable()
-  BuildRow("player", "player")
-  BuildRow("target", "target")
+  BuildRow("player", "player", true, "playerEnabled")
+  BuildRow("target", "target", true, "targetEnabled")
+  BuildRow("targetBuff", "target", false, "targetBuffEnabled")
 
-  if not rows.player and not rows.target then
+  if table.getn(rowOrder) == 0 then
     U.Error("aura rows could not be anchored; unit frames are unavailable")
     return
   end
@@ -580,14 +1251,20 @@ function A:OnEnable()
   -- indices and lay out icon geometry synchronously inside the same frame the
   -- client re-shows the native TargetFrame in.
   U.RegisterEvent("PLAYER_TARGET_CHANGED", function()
-    U.DeferOnce("auras.target-refresh", function() RefreshRow(rows.target) end)
+    U.DeferOnce("auras.target-refresh", function()
+      -- A new target is a new set of indices, so every cached name is stale.
+      if rows.target then rows.target.names = {} end
+      if rows.targetBuff then rows.targetBuff.names = {} end
+      RefreshTarget()
+    end)
   end)
   U.RegisterEvent("PLAYER_ENTERING_WORLD", function() RefreshAll() end)
 
   -- The mechanism, not an optimisation: with no duration return there is
-  -- nothing to expire an icon locally, so a debuff that falls off is only
+  -- nothing to expire an icon locally, so an aura that falls off is only
   -- noticed by re-reading. 0.2s matches the unit frame tick.
   U.RegisterUpdate("auras.refresh", 0.2, function() RefreshAll() end)
+  U.RegisterUpdate("auras.timers", TIMER_TICK, RefreshTimers)
 
   RefreshAll()
 end

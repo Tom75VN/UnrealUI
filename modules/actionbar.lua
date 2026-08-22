@@ -160,14 +160,10 @@ local COLOR = {
 -- Cooldown countdown colours and unit thresholds. Both are pfUI-modern's own
 -- cd defaults (appearance.cd lowcolor/normalcolor/minutecolor/hourcolor/
 -- daycolor and the unit switch points in its GetColoredTimeString), which is
--- the visual baseline this module follows.
-local CD_COLOR = {
-  low    = { 1.00, 0.20, 0.20, 1.00 },   -- last five seconds
-  normal = { 1.00, 1.00, 1.00, 1.00 },
-  minute = { 0.20, 1.00, 1.00, 1.00 },
-  hour   = { 0.20, 0.50, 1.00, 1.00 },
-  day    = { 0.20, 0.20, 1.00, 1.00 },
-}
+-- the visual baseline this module follows. Both now live centrally --
+-- M.cooldownText and U.FormatTimeShort -- because modules/auras.lua draws the
+-- same readout over its aura icons.
+local CD_COLOR = M.cooldownText
 
 -- A cooldown shorter than this is the global cooldown, and a 1.5s number on
 -- every button on every cast is noise rather than information. 2 is pfUI's own
@@ -665,6 +661,26 @@ local function HookNativeBindingHighlights()
   nativeBindingHooksInstalled = installed
 end
 
+-- Native text-entry frames whose visibility means typed keys are text, not an
+-- action. This client has no keyboard-focus query API (no compat evidence for
+-- GetCurrentKeyBoardFocus/HasFocus), so shown-ness is the only safe signal
+-- available; unlike ChatFrameEditBox, AuctionFrame's search box stays shown
+-- for the whole AH session, so this suppresses action-bar keys for as long as
+-- the window is open, not just while actively typing.
+local TEXT_INPUT_OWNER_FRAMES = { "ChatFrameEditBox", "AuctionFrame" }
+
+local function TextInputBlocksActionKey()
+  local i
+  for i = 1, #TEXT_INPUT_OWNER_FRAMES do
+    local frame = U.G(TEXT_INPUT_OWNER_FRAMES[i])
+    if frame and frame.IsShown then
+      local ok, shown = pcall(frame.IsShown, frame)
+      if ok and shown then return true end
+    end
+  end
+  return false
+end
+
 -- Vanilla binding commands call the stock ActionButtonDown/Up globals instead
 -- of clicking a named button. When the later override-binding API is absent,
 -- letting those globals continue into the hidden stock ActionButton would bind
@@ -726,26 +742,17 @@ local function InstallLegacyMainBindingRoute()
     return false
   end
 
-  -- The legacy binding globals are invoked even while a native chat EditBox
-  -- owns text input. Match the declared-binding path below: typed keys must
-  -- never produce an action-bar press or activation.
-  local function ChatEditBoxIsOpen()
-    local edit = U.G("ChatFrameEditBox")
-    if edit and edit.IsShown then
-      local ok, shown = pcall(edit.IsShown, edit)
-      return ok and shown and true or false
-    end
-    return false
-  end
-
+  -- The legacy binding globals are invoked even while a native text-entry
+  -- frame owns keyboard input. Match the declared-binding path below: typed
+  -- keys must never produce an action-bar press or activation.
   local down = function(index)
-    if ChatEditBoxIsOpen() then return end
+    if TextInputBlocksActionKey() then return end
     if StolenByModifiedChord(index) then return end
     local button = BoundButton(1, index)
     if button then ShowButtonPress(button, true) end
   end
   local up = function(index)
-    if ChatEditBoxIsOpen() then return end
+    if TextInputBlocksActionKey() then return end
     if StolenByModifiedChord(index) then return end
     local button = BoundButton(1, index)
     if button then OnButtonClick(button) end
@@ -777,13 +784,9 @@ local function InstallDeclaredBindingHandler()
     bar, index = tonumber(bar), tonumber(index)
     if not bar or not index then return end
 
-    -- UnrealPfUI's guard on the same path: while the chat edit box is open the
-    -- key is text, not an action.
-    local edit = U.G("ChatFrameEditBox")
-    if edit and edit.IsShown then
-      local ok, shown = pcall(edit.IsShown, edit)
-      if ok and shown then return end
-    end
+    -- UnrealPfUI's guard on the same path, extended past chat: while a native
+    -- text-entry frame is open the key is text, not an action.
+    if TextInputBlocksActionKey() then return end
 
     local entry = bars[bar]
     local button = entry and entry.buttons[index]
@@ -1159,10 +1162,6 @@ end
 --   * api.json / core.time.v1: GetTime() returned a plain rising number of
 --     seconds (852.623). Same clock GetActionCooldown stamps start with.
 -- ---------------------------------------------------------------------------
-local function Round(value)
-  return math.floor(value + 0.5)
-end
-
 -- Only needed by the wrap correction below, and only if this client wraps at
 -- all. Each source is optional and guarded.
 local function EpochSeconds()
@@ -1204,19 +1203,11 @@ local function CooldownRemaining(start, duration)
   return (startupTime - cdTime + duration) - epoch
 end
 
--- pfUI-modern's unit switch points: days above 99 hours, hours above 99
--- minutes, minutes above 99 seconds, and tenths over the last five seconds.
+-- The string and its tier come from the shared U.FormatTimeShort; this only
+-- maps the tier onto the palette.
 local function FormatCooldown(remaining)
-  if remaining > 356400 then
-    return Round(remaining / 86400) .. "d", CD_COLOR.day
-  elseif remaining > 5940 then
-    return Round(remaining / 3600) .. "h", CD_COLOR.hour
-  elseif remaining > 99 then
-    return Round(remaining / 60) .. "m", CD_COLOR.minute
-  elseif remaining <= 5 then
-    return string.format("%.1f", remaining), CD_COLOR.low
-  end
-  return tostring(Round(remaining)), CD_COLOR.normal
+  local text, tier = U.FormatTimeShort(remaining)
+  return text, CD_COLOR[tier] or CD_COLOR.normal
 end
 
 -- Redraws one button's number from its cached pair. Cheap on purpose: this is

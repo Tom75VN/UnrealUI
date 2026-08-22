@@ -41,6 +41,15 @@ end
 -- its returns are passed through, so this appends behaviour rather than
 -- replacing a client function, and the write is read back before any callback
 -- is registered so an ignored global assignment still fails closed.
+--
+-- LIMIT -- USER_CONFIRMED_INGAME: never point this at a native function that
+-- reads `...`/arg.n. The wrapper has fixed arity and always forwards ten
+-- arguments, so a vararg original sees arg.n == 10 and iterates over the
+-- padding nils. Hooking this client's GossipFrameOptionsUpdate that way built
+-- an option row per nil and threw "attempt to concatenate field '?' (a nil
+-- value)" out of GossipFrame.lua. Fixed-signature natives (the QuestFrame
+-- *_Update functions) are fine; for a vararg one, drive the reapply from an
+-- event or an OnShow/OnEvent script hook instead.
 local hookedGlobals = {}   -- global name -> array of unrealUI callbacks
 
 function U.PostHookGlobal(name, callback)
@@ -127,6 +136,94 @@ end
 
 function U.StripStockTextures(frame, extra)
   return U.StripTextures(frame, U.StockRegionKeep(frame, extra))
+end
+
+-- ---------------------------------------------------------------------------
+-- Stock list rows that carry a meaningful per-row icon
+--
+-- rules/unreal-ui-design.md keeps content imagery (the NPC dialog's "talk to
+-- the banker" / "train me" / "!" / "?" glyphs) while stripping row chrome.
+-- Keeping it by global name alone is not enough on this client:
+--
+--  * the region names for these rows are WORKING_SOURCE from UnrealPfUI, so a
+--    single missed name silently strips a real icon, and
+--  * U.HideRegion is deliberately permanent (SetTexture(nil) + SetAlpha(0) +
+--    Hide, per knowledge.json / rendering.native_texture_strip_requires_alpha).
+--    A row that was empty when unrealUI first stripped it keeps alpha 0 after
+--    FrameXML repopulates it, because the native update only calls SetTexture
+--    -- it never restores alpha or shown state. That is invisible-icon-forever.
+--
+-- So rows are stripped by *what the texture is* rather than by name, and every
+-- kept icon is actively revealed again on each pass.
+local CONTENT_ICON_PATHS = {
+  "gossipicon",        -- Interface\GossipFrame\<token>GossipIcon
+  "questicon",         -- Available/ActiveQuestIcon and the quest row markers
+  "interface\\icons\\",  -- ability/item art, should a row ever use it
+  "interface/icons/",
+}
+
+local function IsContentIconTexture(region)
+  if not region or not region.GetObjectType or not region.GetTexture then
+    return false
+  end
+
+  local typeOk, objectType = pcall(region.GetObjectType, region)
+  if not typeOk or objectType ~= "Texture" then return false end
+
+  local pathOk, path = pcall(region.GetTexture, region)
+  if not pathOk or type(path) ~= "string" then return false end
+
+  path = string.lower(path)
+  local i
+  for i = 1, table.getn(CONTENT_ICON_PATHS) do
+    if string.find(path, CONTENT_ICON_PATHS[i], 1, true) then return true end
+  end
+  return false
+end
+
+-- Undo an earlier U.HideRegion on a region that turned out to be content.
+function U.RestoreContentIcon(region)
+  if not region then return false end
+  pcall(function() if region.SetAlpha then region:SetAlpha(1) end end)
+  pcall(function()
+    if region.SetVertexColor then region:SetVertexColor(1, 1, 1) end
+  end)
+  pcall(function() if region.Show then region:Show() end end)
+  return true
+end
+
+-- Strip a stock list row's native chrome, keep its content icon, and make sure
+-- that icon is actually visible afterwards. `extra.icon` is still honoured as
+-- the named hint; texture-path detection is the safety net behind it.
+function U.StripStockRowTextures(button, extra)
+  if not button then return 0 end
+
+  local keep = U.StockRegionKeep(button, extra)
+  local icons = {}
+  if extra and extra.icon then table.insert(icons, extra.icon) end
+
+  if button.GetRegions then
+    local ok, regions = pcall(function() return { button:GetRegions() } end)
+    if ok and type(regions) == "table" then
+      local i
+      for i = 1, table.getn(regions) do
+        if IsContentIconTexture(regions[i]) then
+          keep[regions[i]] = true
+          table.insert(icons, regions[i])
+        end
+      end
+    end
+  end
+
+  local stripped = U.StripTextures(button, keep)
+
+  -- Only the icons, never unrealUI's own fill/edge regions in `keep`.
+  local i
+  for i = 1, table.getn(icons) do
+    U.RestoreContentIcon(icons[i])
+  end
+
+  return stripped
 end
 
 -- Recolours every FontString under a stock window, found by walking regions and

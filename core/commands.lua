@@ -96,6 +96,8 @@ local function ShowHelp()
   U.Print("  |cffffff00/uui check|r - runtime self-check")
   U.Print("  |cffffff00/uui elite|r - cycle the classification icon test")
   U.Print("  |cffffff00/uui np|r - dump WorldFrame children (nameplates)")
+  U.Print("  |cffffff00/uui aura|r - dump the aura rows and why a timer is missing")
+  U.Print("  |cffffff00/uui res|r - dump the Character sheet resistance frames")
   U.Print("  |cffffff00/uui movertest|r - foundation mover smoke test")
   U.Print("  |cffffff00/uui perf|r - record frame time around target changes")
   U.Print("  |cffffff00/uui nosuppress|r - skip native frame suppression (needs /reload)")
@@ -183,6 +185,19 @@ local function ShowUnitFrameCheck()
               ", shown " .. tostring(dm.shown))
       U.Print("  mana " .. tostring(dm.mana) .. "/" .. tostring(dm.manaMax) ..
               "  raw " .. tostring(dm.returns))
+    end
+  end
+
+  -- Warriors only. modules/stancebar.lua never creates its bar/mover for any
+  -- other class, so isWarrior false with created false is the expected line
+  -- for everyone else.
+  if type(U.StanceBarReport) == "function" then
+    local sb = U.StanceBarReport()
+    if sb then
+      U.Print("stance bar: warrior " .. tostring(sb.isWarrior) ..
+              ", created " .. tostring(sb.created) ..
+              ", shown " .. tostring(sb.shown) ..
+              ", forms " .. tostring(sb.slotCount))
     end
   end
 end
@@ -510,6 +525,365 @@ local function ShowMoverTest()
           "|cffffff00/uui movertest|r again to confirm it comes back in place.")
 end
 
+-- Resistance-block structure dump.
+--
+-- The Character sheet's resistance readouts are the one part of that skin with
+-- no compact-DB evidence and no working Vanilla assumption behind them: this
+-- client draws its own resistance icons and its own hover tooltip text
+-- ("Increases the ability to resist frost-based attacks...", USER_CONFIRMED_
+-- INGAME screenshot), neither of which matches Vanilla's paper doll. Skinning
+-- them by the Vanilla names (MagicResFrame1-5) changed nothing on screen in
+-- either direction, which is exactly what a wrong frame name looks like.
+--
+-- Rather than keep guessing names, this writes what is actually there. It is a
+-- read-only walk: nothing is hidden, re-anchored or hooked.
+local resDump = {}
+
+resDump.CANDIDATES = {
+  "CharacterResistanceFrame", "PaperDollFrame", "CharacterAttributesFrame",
+  "MagicResFrame1", "MagicResFrame2", "MagicResFrame3", "MagicResFrame4",
+  "MagicResFrame5",
+  "MagicResText1", "MagicResText2", "MagicResText3", "MagicResText4",
+  "MagicResText5",
+  "PlayerResistanceFrame1", "PlayerResistanceFrame2", "PlayerResistanceFrame3",
+  "PlayerResistanceFrame4", "PlayerResistanceFrame5",
+  "ResistanceFrame1", "ResistanceFrame2", "ResistanceFrame3",
+  "ResistanceFrame4", "ResistanceFrame5",
+}
+
+function resDump.Try(object, method)
+  if not object or type(object[method]) ~= "function" then return nil end
+  local ok, value = pcall(object[method], object)
+  if not ok then return nil end
+  return value
+end
+
+function resDump.Describe(object)
+  if not object then return "nil" end
+
+  local line = tostring(resDump.Try(object, "GetName") or "<unnamed>") ..
+    " [" .. tostring(resDump.Try(object, "GetObjectType") or "?") .. "]"
+
+  local id = resDump.Try(object, "GetID")
+  if id then line = line .. " id=" .. tostring(id) end
+
+  local width = resDump.Try(object, "GetWidth")
+  local height = resDump.Try(object, "GetHeight")
+  if width or height then
+    line = line .. " size=" .. tostring(width) .. "x" .. tostring(height)
+  end
+
+  local layer = resDump.Try(object, "GetDrawLayer")
+  if layer then line = line .. " layer=" .. tostring(layer) end
+
+  local texture = resDump.Try(object, "GetTexture")
+  if texture then line = line .. " tex=" .. tostring(texture) end
+
+  local text = resDump.Try(object, "GetText")
+  if text then line = line .. " text=\"" .. tostring(text) .. "\"" end
+
+  if type(object.IsMouseEnabled) == "function" then
+    line = line .. " mouse=" .. tostring(resDump.Try(object, "IsMouseEnabled"))
+  end
+  if type(object.GetScript) == "function" then
+    local ok, handler = pcall(object.GetScript, object, "OnEnter")
+    line = line .. " onEnter=" .. tostring(ok and handler ~= nil)
+  end
+
+  return line
+end
+
+-- Depth-limited so an unexpected parent chain cannot walk the whole UI.
+function resDump.Walk(object, into, depth, prefix)
+  local i
+  if type(object.GetRegions) == "function" then
+    local ok, regions = pcall(function() return { object:GetRegions() } end)
+    if ok then
+      for i = 1, table.getn(regions) do
+        table.insert(into, prefix .. "region " .. resDump.Describe(regions[i]))
+      end
+    end
+  end
+
+  if depth <= 0 or type(object.GetChildren) ~= "function" then return end
+
+  local ok, children = pcall(function() return { object:GetChildren() } end)
+  if not ok then return end
+  for i = 1, table.getn(children) do
+    table.insert(into, prefix .. "child " .. resDump.Describe(children[i]))
+    resDump.Walk(children[i], into, depth - 1, prefix .. "  ")
+  end
+end
+
+-- Direct OnEnter exercise.
+--
+-- The structure dump alone cannot say why the resistance tooltip does not
+-- appear: "no handler", "handler errors out", "handler runs but never calls
+-- Show", and "tooltip shown somewhere invisible" all look identical while
+-- hovering. unrealUI also suppresses Lua errors by default, so a failing
+-- native handler stays silent.
+--
+-- This calls the handler itself and reports the error text and the resulting
+-- GameTooltip state, which separates all four. `this` is set the way the
+-- client's own C caller would for a Vanilla-shaped XML handler, then restored.
+function resDump.FireOnEnter(res, into)
+  local name = tostring(resDump.Try(res, "GetName"))
+  local handler = nil
+  if type(res.GetScript) == "function" then
+    local ok, value = pcall(res.GetScript, res, "OnEnter")
+    if ok then handler = value end
+  end
+
+  table.insert(into, name .. " OnEnter=" .. type(handler) ..
+               " mouse=" .. tostring(resDump.Try(res, "IsMouseEnabled")))
+  if type(handler) ~= "function" then return end
+
+  local tooltip = U.G("GameTooltip")
+  if tooltip then pcall(tooltip.Hide, tooltip) end
+
+  local previousThis = this
+  this = res
+  resDump.firing = true
+  local ok, err = pcall(handler, res)
+  resDump.firing = false
+  this = previousThis
+
+  table.insert(into, "  called: ok=" .. tostring(ok) ..
+               (ok and "" or " err=" .. tostring(err)))
+
+  if not tooltip then
+    table.insert(into, "  GameTooltip missing")
+    return
+  end
+
+  table.insert(into, "  tooltip shown=" ..
+               tostring(resDump.Try(tooltip, "IsShown")) ..
+               " visible=" .. tostring(resDump.Try(tooltip, "IsVisible")) ..
+               " alpha=" .. tostring(resDump.Try(tooltip, "GetAlpha")) ..
+               " lines=" .. tostring(resDump.Try(tooltip, "NumLines")))
+
+  local owner = nil
+  if type(tooltip.GetOwner) == "function" then
+    local ownerOk, value = pcall(tooltip.GetOwner, tooltip)
+    if ownerOk and value then owner = resDump.Try(value, "GetName") end
+  end
+  table.insert(into, "  owner=" .. tostring(owner) ..
+               " point=" .. tostring(resDump.Try(tooltip, "GetPoint")))
+
+  local line
+  for line = 1, 4 do
+    local text = resDump.Try(U.G("GameTooltipTextLeft" .. line), "GetText")
+    if text then table.insert(into, "  line" .. line .. "=\"" .. text .. "\"") end
+  end
+
+  pcall(tooltip.Hide, tooltip)
+end
+
+local function ShowResistanceDump()
+  local lines, i = {}, nil
+
+  for i = 1, table.getn(resDump.CANDIDATES) do
+    local name = resDump.CANDIDATES[i]
+    local object = U.G(name)
+    table.insert(lines, "global " .. name .. " = " ..
+                 (object and resDump.Describe(object) or "nil"))
+  end
+
+  local root = U.G("CharacterResistanceFrame") or U.G("PaperDollFrame")
+  if root then
+    table.insert(lines, "--- walk from " ..
+                 tostring(resDump.Try(root, "GetName")) .. " ---")
+    resDump.Walk(root, lines, 2, "")
+  else
+    table.insert(lines, "--- no CharacterResistanceFrame or PaperDollFrame ---")
+  end
+
+  -- Input priority context: strata first, then level. Printed together so the
+  -- resistance column and everything overlapping it can be compared at a glance.
+  table.insert(lines, "--- input priority ---")
+  local overlap = {
+    "CharacterResistanceFrame", "MagicResFrame1", "CharacterModelFrame",
+    "UnrealUICharacterModelRotateCatcher", "UnrealUICharacterPanel",
+    "CharacterHandsSlot", "PaperDollFrame", "CharacterFrame",
+  }
+  for i = 1, table.getn(overlap) do
+    local object = U.G(overlap[i])
+    table.insert(lines, overlap[i] .. " = " ..
+      (object and ("strata=" .. tostring(resDump.Try(object, "GetFrameStrata")) ..
+        " level=" .. tostring(resDump.Try(object, "GetFrameLevel")) ..
+        " mouse=" .. tostring(resDump.Try(object, "IsMouseEnabled")) ..
+        " x=" .. tostring(resDump.Try(object, "GetLeft")) ..
+        " y=" .. tostring(resDump.Try(object, "GetBottom")) ..
+        " w=" .. tostring(resDump.Try(object, "GetWidth")) ..
+        " h=" .. tostring(resDump.Try(object, "GetHeight"))) or "nil"))
+  end
+
+  table.insert(lines, "--- OnEnter exercise ---")
+  for i = 1, 5 do
+    local res = U.G("MagicResFrame" .. i)
+    if res then resDump.FireOnEnter(res, lines) end
+  end
+
+  -- Same exercise on an equipment slot, whose tooltip is confirmed working in
+  -- game. If the slot behaves and the resistance frame does not, the
+  -- difference is in the frame; if neither does, it is in how this dump calls
+  -- them, not in the resistance skin.
+  local slot = U.G("CharacterHeadSlot")
+  if slot then
+    table.insert(lines, "--- control: CharacterHeadSlot ---")
+    resDump.FireOnEnter(slot, lines)
+  end
+
+  table.insert(lines, "--- event trace (/uui res trace) ---")
+  for i = 1, table.getn(resDump.events) do
+    table.insert(lines, resDump.events[i])
+  end
+
+  SaveDiagnostic("resistances", lines)
+  U.Print("resistance dump: " .. tostring(table.getn(lines)) ..
+          " lines saved to UnrealUIDiagDB.resistances")
+  U.Print("  open the Character sheet first, then |cffffff00/reload|r and open " ..
+          U.SavedVariablesHint() .. " to read it")
+end
+
+-- Who actually receives the cursor.
+--
+-- Raising CharacterResistanceFrame above the model rotate catcher did not bring
+-- the tooltip back, and the handler is already proven to work when called
+-- directly, so the remaining question is only which frame the client hands the
+-- mouse to over that column. GetMouseFocus answers it, but it has to be read
+-- *while* hovering -- which is why this samples on a ticker instead of
+-- reporting once at command time.
+local SLOT_NAMES = {
+  "HeadSlot", "NeckSlot", "ShoulderSlot", "ChestSlot", "WristSlot",
+  "HandsSlot", "WaistSlot", "LegsSlot", "FeetSlot",
+  "MainHandSlot", "SecondaryHandSlot", "RangedSlot",
+}
+
+resDump.HOVER_ID = "commands.res-hover"
+resDump.HOVER_SECONDS = 8
+
+function resDump.Chain(frame)
+  local names, guard = {}, 0
+  while frame and guard < 6 do
+    table.insert(names, tostring(resDump.Try(frame, "GetName") or "<unnamed>") ..
+                 "(L" .. tostring(resDump.Try(frame, "GetFrameLevel")) ..
+                 "/" .. tostring(resDump.Try(frame, "GetFrameStrata")) .. ")")
+    frame = resDump.Try(frame, "GetParent")
+    guard = guard + 1
+  end
+  return table.concat(names, " < ")
+end
+
+-- Event trace on the frames themselves.
+--
+-- GetMouseFocus returned <none> for every sample of an 8s hover watch, so it
+-- reports nothing usable on this client and cannot say who receives the cursor.
+-- Hooking the frames answers the same question directly: if OnEnter never fires
+-- on a resistance frame but does on the equipment slot beside it, the cursor is
+-- being intercepted; if it fires and the tooltip is shown here but invisible in
+-- game, something hides it afterwards -- which is why the tooltip state is
+-- sampled both immediately and one tick later.
+resDump.events = {}
+
+-- FireOnEnter invokes the very handlers this traces, so a /uui res run would
+-- otherwise fill the trace with its own synthetic ENTERs and read exactly like
+-- a successful hover. Anything recorded while the dump is driving is dropped.
+resDump.firing = false
+
+function resDump.Note(text)
+  if resDump.firing then return end
+  if table.getn(resDump.events) < 60 then
+    table.insert(resDump.events, text)
+    U.Print("|cff888888trace|r " .. text)
+    -- Written on every event so the trace survives a plain /reload with no
+    -- second command to remember, and never has to be copied out of chat.
+    SaveDiagnostic("resistanceTrace", resDump.events)
+  end
+end
+
+-- Geometry, not just state: the trace proved the tooltip is shown and populated
+-- on a real hover while nothing appears on screen, so what is left to measure is
+-- where it actually is and what draws over it.
+function resDump.TooltipState(tag, owner)
+  local tooltip = U.G("GameTooltip")
+  if not tooltip then return tag .. " GameTooltip=nil" end
+  return tag .. " " .. tostring(owner) ..
+         " shown=" .. tostring(resDump.Try(tooltip, "IsShown")) ..
+         " lines=" .. tostring(resDump.Try(tooltip, "NumLines")) ..
+         " x=" .. tostring(resDump.Try(tooltip, "GetLeft")) ..
+         " y=" .. tostring(resDump.Try(tooltip, "GetBottom")) ..
+         " w=" .. tostring(resDump.Try(tooltip, "GetWidth")) ..
+         " h=" .. tostring(resDump.Try(tooltip, "GetHeight")) ..
+         " strata=" .. tostring(resDump.Try(tooltip, "GetFrameStrata")) ..
+         " level=" .. tostring(resDump.Try(tooltip, "GetFrameLevel")) ..
+         " alpha=" .. tostring(resDump.Try(tooltip, "GetAlpha"))
+end
+
+function resDump.Trace(frame)
+  local name = tostring(resDump.Try(frame, "GetName"))
+
+  U.PostHookScript(frame, "OnEnter", function()
+    resDump.Note(resDump.TooltipState("ENTER " .. name, name))
+    U.DeferOnce("commands.res-trace", function()
+      resDump.Note(resDump.TooltipState("  +1 tick " .. name, name))
+    end)
+  end)
+  U.PostHookScript(frame, "OnLeave", function()
+    resDump.Note("LEAVE " .. name)
+  end)
+end
+
+local function StartEventTrace()
+  local i
+  for i = 1, 5 do
+    local res = U.G("MagicResFrame" .. i)
+    if res then resDump.Trace(res) end
+  end
+  -- Every gear slot, not just the head: the working tooltip is the reference
+  -- this comparison depends on, and a trace armed on one slot reads as "no
+  -- events" the moment a different piece of armour is hovered.
+  for i = 1, table.getn(SLOT_NAMES) do
+    resDump.Trace(U.G("Character" .. SLOT_NAMES[i]))
+  end
+
+  resDump.events = {}
+  U.Print("trace armed - hover the resistance icons, then a gear slot, " ..
+          "then |cffffff00/uui res|r and |cffffff00/reload|r")
+end
+
+local function StartHoverWatch()
+  local getFocus = U.G("GetMouseFocus")
+  if type(getFocus) ~= "function" then
+    U.Print("GetMouseFocus unavailable on this client")
+    return
+  end
+
+  local samples, seen, elapsed = {}, {}, 0
+
+  U.RegisterUpdate(resDump.HOVER_ID, 0.1, function(step)
+    elapsed = elapsed + (tonumber(step) or 0.1)
+
+    local ok, focus = pcall(getFocus)
+    local line = (ok and focus) and resDump.Chain(focus) or "<none>"
+    if not seen[line] then
+      seen[line] = true
+      table.insert(samples, string.format("%.1fs %s", elapsed, line))
+    end
+
+    if elapsed >= resDump.HOVER_SECONDS then
+      U.UnregisterUpdate(resDump.HOVER_ID)
+      SaveDiagnostic("resistanceHover", samples)
+      U.Print("hover watch done: " .. tostring(table.getn(samples)) ..
+              " distinct targets saved to UnrealUIDiagDB.resistanceHover")
+      U.Print("  |cffffff00/reload|r then read " .. U.SavedVariablesHint())
+    end
+  end)
+
+  U.Print("hover watch armed for " .. resDump.HOVER_SECONDS ..
+          "s - move the cursor slowly over the resistance icons NOW")
+end
+
 local handlers = {}
 
 handlers["unlock"] = function() U.UnlockUI() end
@@ -520,6 +894,26 @@ handlers["check"]  = function() ShowSelfCheck() end
 handlers["help"]   = function() ShowHelp() end
 handlers["movertest"] = function() ShowMoverTest() end
 handlers["np"] = function() ShowNameplateDump() end
+-- Live readout, printed straight to chat: an aura timer that does not appear
+-- has exactly three possible causes and modules/auras.lua's dump names the one
+-- responsible, per row and per index, without a reload or a probe run.
+handlers["aura"] = function()
+  if type(U.AuraDebugDump) ~= "function" then
+    U.Print("aura dump unavailable - modules/auras.lua did not load")
+    return
+  end
+  U.AuraDebugDump()
+end
+handlers["res"] = function(rest)
+  local mode = Trim(rest or "")
+  if mode == "hover" then
+    StartHoverWatch()
+  elseif mode == "trace" then
+    StartEventTrace()
+  else
+    ShowResistanceDump()
+  end
+end
 handlers["elite"] = function(rest) HandleElite(rest) end
 
 -- Binding-table readout.
@@ -839,12 +1233,18 @@ end
 -- (see knowledge.json / compat.native_suppression_pcall_burst_stutter): the
 -- recipe's permanent state, not its sweep, is what costs -- +2.66ms/frame and a
 -- 9ms -> 159ms target-change peak. This narrows that to a step.
+--
+-- Level 4 used to add UnregisterAllEvents on top of the event-driven re-apply,
+-- and that call was the party-only freeze (knowledge.json /
+-- compat.unregisterallevents_native_frame_stall). It is gone from every level,
+-- so 4 now differs from 3 only by the event-driven group sweeps. The ladder is
+-- kept at five steps because it is the instrument that located the freeze.
 local SUPPRESS_LEVELS = {
   "0 - off, stock frames fully intact",
   "1 - Hide() only",
   "2 - + SetAlpha(0)",
   "3 - + EnableMouse(false) and the Show() neutraliser",
-  "4 - + UnregisterAllEvents and the periodic re-apply (shipped default)",
+  "4 - + event-driven re-apply on target/party change (shipped default)",
 }
 
 handlers["suppress"] = function(rest)

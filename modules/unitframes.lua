@@ -118,9 +118,11 @@ end
 -- ---------------------------------------------------------------------------
 -- Layout
 --
--- Each frame is three stacked, individually bordered boxes: health (large),
--- power (thin), and a text-only "values" strip. width is the bar width shared
--- by all three; height is set per box, valuesHeight for the strip.
+-- Each frame is a stack of individually bordered boxes: health (large) and,
+-- where the unit has one, power (thin). Every frame now carries its text on
+-- the bars themselves, so no spec asks for the optional text-only "values"
+-- strip the layout still supports. width is the bar width shared by the
+-- stack; height is set per box, valuesHeight for the strip.
 --
 -- Default anchors are UIParent-relative, which is what the mover position
 -- store requires. A frame with anchorTo instead rides another frame's mover:
@@ -171,13 +173,17 @@ local SPECS = {
     width = 120, health = 20, power = 8, gap = 0,
     healthLabels = { left = "unit", right = "healthdyn" },
     powerLabels = { right = "powerdyn" },
-    portrait = true,
+    portrait = true, happiness = true,
     default = { point = "BOTTOMRIGHT", relativePoint = "BOTTOM", x = -75, y = 90 },
   },
 }
 
 local PARTY_COUNT = 4
-local PARTY_SPACING = 75
+-- Top-of-frame to top-of-frame, so the visible gap between two members is
+-- this minus a member's own height (36 health + 8 power + 4 border = 48 at
+-- the default 1px border). 75 left a 27px gap; reduced 80% to 5px by
+-- request, hence 53.
+local PARTY_SPACING = 53
 
 -- The party frames are laid out inside one anchor frame and moved as a block:
 -- a party is a single unit of layout, and dragging four frames into alignment
@@ -193,8 +199,12 @@ do
       unit = "party" .. i,
       name = "Party" .. i,
       label = "Party " .. i,
-      width = 164, health = 18, power = 8, valuesHeight = 12, gap = 0,
-      values = { left = "unit", right = "healthdyn" },
+      -- Same treatment as player/target/pet: no separate values strip -- the
+      -- text lives on the bars themselves, name+health on the health bar and
+      -- power on the power bar. health doubled from 18 to 36, by request.
+      width = 164, health = 36, power = 8, gap = 0,
+      healthLabels = { left = "unit", right = "healthdyn" },
+      powerLabels = { right = "powerdyn" },
       anchorTo = PARTY_ANCHOR,
       anchorPoint = "TOPLEFT", anchorRelativePoint = "TOPLEFT",
       anchorOffsetX = 0, anchorOffsetY = -((i - 1) * PARTY_SPACING),
@@ -216,9 +226,24 @@ local function SuppressStockFrames()
   -- PLAYER_TARGET_CHANGED, so they are the only ones that event needs to sweep.
   U.SuppressNativeFrame(U.NativeFrameParts("TargetFrame",
     { "Texture", "TextureFrame", "Background", "NameBackground", "HealthBar",
-      "HealthBarText", "ManaBar", "ManaBarText", "Name", "Level", "Portrait" },
+      "HealthBarText", "ManaBar", "ManaBarText" },
     { { "Buff", 5 }, { "Debuff", 16 } }), "target")
-  U.SuppressNativeFrame("TargetPortrait", "target")
+
+  -- Not $parent-named on this client. "Name", "Level" and "Portrait" were in
+  -- the list above, inherited from UnrealPfUI, but TargetFrameName,
+  -- TargetFrameLevel and TargetFramePortrait do not exist here: a full
+  -- 29,520-entry global enumeration has TargetName, TargetLevelText,
+  -- TargetHighLevelTexture and TargetPortrait instead. Those three names
+  -- resolved to nil on every sweep, so nothing ever cleared the yellow level
+  -- number -- the one piece of stock target art that stayed visible after the
+  -- Tab-spam stability fix took Hide() away from this family.
+  --
+  -- TargetHighLevelTexture is the skull this client draws in place of the
+  -- number for a ??-level target, so it belongs with the level rather than
+  -- being a separate feature.
+  U.SuppressNativeFrame({ "TargetName", "TargetLevelText",
+                          "TargetHighLevelTexture", "TargetPortrait" },
+                        "target")
 
   U.SuppressNativeFrame(U.NativeFrameParts("TargetofTarget",
     { "Frame", "Texture", "TextureFrame", "Background", "HealthBar",
@@ -742,6 +767,98 @@ local function RefreshPortrait(frame)
   pcall(setPortrait, box.icon, frame.unit)
 end
 
+-- ---------------------------------------------------------------------------
+-- Pet happiness
+--
+-- Replaces the suppressed stock PetFrameHappiness smiley. The read is
+-- GetPetHappiness(), documented for this client as returning the 1/2/3 band
+-- (documentation.json / global:Pet:GetPetHappiness,
+-- DOCUMENTED_NOT_RUNTIME_VERIFIED) and driven from the same call by
+-- UnrealPfUI's own pet happiness icon on this client
+-- (api/unitframes.lua:1452, WORKING_SOURCE -- not runtime verification).
+-- Non-hunter pets have no happiness and the call returns nothing usable for
+-- them, which is the same gate as pfUI's explicit HUNTER check without needing
+-- the class read.
+--
+-- The indicator is unrealUI's own flat swatch rather than the Blizzard face:
+-- rules/unreal-ui-design.md removes native state art, and the stock texture is
+-- one more Vanilla path this client is not known to draw (see the elite icon
+-- notes above). Colour carries the band -- red / amber / green is game state,
+-- so it is outside the accent restraint. It rides the portrait's corner, so a
+-- client without SetPortraitTexture (portrait_model_crash fallback) has no
+-- happiness swatch either rather than one laid over the bar text.
+--
+-- No event: the pet frame already takes a full refresh on every scheduled
+-- sweep (see RefreshScheduledUnits), which is where the band is re-read.
+-- ---------------------------------------------------------------------------
+local HAPPINESS_SIZE = 10
+
+local HAPPINESS_TINTS = {
+  [1] = { 0.80, 0.20, 0.20 },   -- unhappy: losing loyalty, reduced damage
+  [2] = { 0.85, 0.65, 0.10 },   -- content
+  [3] = { 0.25, 0.75, 0.30 },   -- happy: full damage bonus
+}
+
+local function BuildHappinessIndicator(frame, border)
+  local box = frame.portrait
+  if not box then return end
+
+  local badge = CreateFrame("Frame", nil, box)
+  badge:SetWidth(HAPPINESS_SIZE)
+  badge:SetHeight(HAPPINESS_SIZE)
+  badge:SetPoint("TOPRIGHT", box, "TOPRIGHT", -border, -border)
+  -- Same raised-child-layer guard the classification icon and combo pips use:
+  -- the portrait texture is a sibling region and art on the same level can end
+  -- up behind it.
+  local levelOk, level = pcall(box.GetFrameLevel, box)
+  if levelOk and tonumber(level) then
+    pcall(badge.SetFrameLevel, badge, level + 10)
+  end
+  U.CreateBackdrop(badge)
+
+  local fill = badge:CreateTexture(nil, "ARTWORK")
+  fill:SetTexture(M.texture.plain)
+  fill:SetPoint("TOPLEFT", badge, "TOPLEFT", border, -border)
+  fill:SetPoint("BOTTOMRIGHT", badge, "BOTTOMRIGHT", -border, border)
+  badge.fill = fill
+
+  pcall(badge.Hide, badge)
+  frame.happiness = badge
+  frame.happinessState = false
+end
+
+local function ApplyHappinessIndicator(frame)
+  local badge = frame.happiness
+  if not badge then return end
+
+  local band = nil
+  local fn = ResolveApiFn("GetPetHappiness")
+  if fn then
+    local ok, value = pcall(fn)
+    if ok then band = tonumber(value) end
+  end
+
+  local tint = band and HAPPINESS_TINTS[band]
+  local state = tint and band or false
+  -- Nothing below needs to run again while the band has not changed.
+  if frame.happinessState == state then return end
+  frame.happinessState = state
+
+  if not tint then
+    pcall(badge.Hide, badge)
+    return
+  end
+
+  U.SetColor(badge.fill, tint[1], tint[2], tint[3], 1)
+  pcall(badge.Show, badge)
+end
+
+local function HideHappinessIndicator(frame)
+  if not frame.happiness or frame.happinessState == false then return end
+  frame.happinessState = false
+  pcall(frame.happiness.Hide, frame.happiness)
+end
+
 local function FrameHeight(spec)
   local border = U.BorderSize()
   local height = spec.health + 2 * border
@@ -786,6 +903,54 @@ local function BuildClassificationIcon(frame, health)
   frame.classIcon = icon
 end
 
+-- ---------------------------------------------------------------------------
+-- Rest icon
+--
+-- First attempt drew UnrealPfUI's native rest icon (top-left quadrant of
+-- Interface\CharacterFrame\UI-StateIcon, gated on PLAYER_UPDATE_RESTING) as a
+-- WORKING_SOURCE fallback -- query_compat.py had zero evidence for either the
+-- texture or the event on this client. User confirmed in game it never drew.
+-- Second attempt was unrealUI's own flat accent glyph, no client asset at all.
+-- Now replaced by a user-supplied icon (media/rest-icon.tga, native 36x39).
+-- TGA rather than PNG: this is a Vanilla-era client and
+-- media/chat_resize_grip.tga is this addon's only other shipped custom
+-- texture, so TGA is the one raster format already confirmed to render here
+-- -- PNG support was never verified. Displayed 60% smaller than native size,
+-- by request.
+-- IsResting() is unchanged -- that call IS documented for this client
+-- (documentation.json / global:Character:IsResting).
+-- ---------------------------------------------------------------------------
+local REST_ICON_SCALE = 0.4
+local REST_ICON_WIDTH = 36 * REST_ICON_SCALE
+local REST_ICON_HEIGHT = 39 * REST_ICON_SCALE
+
+-- Same raised-child-layer guard as the classification icon and happiness
+-- badge: the health bar's fill is a sibling texture that changes size on every
+-- refresh, and art on the same frame level can end up behind it.
+local function BuildRestIcon(frame, health)
+  if frame.unit ~= "player" then return end
+  if type(health.CreateTexture) ~= "function" then return end
+
+  local layer = CreateFrame("Frame", nil, frame)
+  layer:SetWidth(REST_ICON_WIDTH)
+  layer:SetHeight(REST_ICON_HEIGHT)
+  -- Centred on the frame's top-left corner, by request: half the icon (its
+  -- top-left quadrant) sits outside the frame, the rest overlaps it.
+  layer:SetPoint("CENTER", frame, "TOPLEFT", 0, 0)
+  local levelOk, level = pcall(health.GetFrameLevel, health)
+  if levelOk and tonumber(level) then
+    pcall(layer.SetFrameLevel, layer, level + 10)
+  end
+
+  local icon = layer:CreateTexture(nil, "OVERLAY")
+  icon:SetAllPoints(layer)
+  pcall(icon.SetTexture, icon, M.texture.restIcon)
+
+  pcall(layer.Hide, layer)
+  frame.restIcon = layer
+  frame.restIconState = false
+end
+
 local function BuildFrame(spec, parent)
   local border = U.BorderSize()
 
@@ -817,6 +982,7 @@ local function BuildFrame(spec, parent)
   if hasPortrait then
     frame.portrait = BuildPortraitBox(frame, portraitSize, border)
     frame.portrait:SetPoint("TOPLEFT", frame, "TOPLEFT", 0, 0)
+    if spec.happiness then BuildHappinessIndicator(frame, border) end
   end
 
   -- Each bar starts on the colour it will normally carry, so a frame is never
@@ -839,6 +1005,7 @@ local function BuildFrame(spec, parent)
   end
 
   BuildClassificationIcon(frame, health)
+  BuildRestIcon(frame, health)
 
   local previous = health
   local power = nil
@@ -1210,6 +1377,28 @@ local function HideClassificationIcon(frame)
   pcall(frame.classIcon.Hide, frame.classIcon)
 end
 
+local function ApplyRestIcon(frame)
+  local icon = frame.restIcon
+  if not icon then return end
+
+  local resting = ApiTruth("IsResting")
+  -- Nothing below needs to run again while the resting state has not changed.
+  if frame.restIconState == resting then return end
+  frame.restIconState = resting
+
+  if resting then
+    pcall(icon.Show, icon)
+  else
+    pcall(icon.Hide, icon)
+  end
+end
+
+local function HideRestIcon(frame)
+  if not frame.restIcon or frame.restIconState == false then return end
+  frame.restIconState = false
+  pcall(frame.restIcon.Hide, frame.restIcon)
+end
+
 local function SetFrameShown(frame, shown)
   if frame.uuiShown == shown then return end
   frame.uuiShown = shown
@@ -1240,6 +1429,8 @@ local function RefreshFrame(frame, mode)
   if not exists then
     frame.data.initialised = false
     HideClassificationIcon(frame)
+    HideHappinessIndicator(frame)
+    HideRestIcon(frame)
     -- An empty shell stays on screen while the UI is unlocked, otherwise a
     -- frame with no unit could never be dragged into place.
     if U.IsUnlocked() then
@@ -1313,6 +1504,8 @@ local function RefreshFrame(frame, mode)
   if textMode then ApplyTexts(frame, textMode) end
   if mode == "full" then ApplyClassificationIcon(frame) end
   if mode == "full" then RefreshPortrait(frame) end
+  if mode == "full" then ApplyHappinessIndicator(frame) end
+  if mode == "full" then ApplyRestIcon(frame) end
 
   -- Offline party members are dimmed rather than hidden, matching pfUI's
   -- alpha_offline treatment without importing its alpha config. Unverified on
@@ -1743,7 +1936,16 @@ local function EnableMouse(frame)
 
   frame:SetScript("OnLeave", function()
     local tooltip = U.G("GameTooltip")
-    if tooltip then pcall(tooltip.Hide, tooltip) end
+    if not tooltip then return end
+
+    -- UnrealPfUI's unit-frame OnLeave (api/unitframes.lua) fades rather than
+    -- hides instantly; Hide() here made the tooltip vanish the moment the
+    -- mouse crossed off the frame instead of the eased dismissal Blizzard's
+    -- own tooltip animates elsewhere. Same evidence gap as SetUnit above:
+    -- WORKING_SOURCE, not runtime-verified on this client.
+    if not pcall(tooltip.FadeOut, tooltip) then
+      pcall(tooltip.Hide, tooltip)
+    end
   end)
 end
 
@@ -1808,6 +2010,13 @@ local function RegisterEvents()
   U.RegisterEvent("PLAYER_TARGET_CHANGED", function()
     QueueUnitToken("target", "full")
     QueueUnitToken("targettarget", "full")
+  end)
+
+  -- Unverified event (see the Rest icon section above) -- an accelerator on
+  -- top of the existing 1s full-refresh cycle, which still catches the state
+  -- change if this client never actually fires it.
+  U.RegisterEvent("PLAYER_UPDATE_RESTING", function()
+    QueueUnitToken("player", "full")
   end)
 end
 

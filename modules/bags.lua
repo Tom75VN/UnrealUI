@@ -20,7 +20,9 @@
 --
 -- Only the slot algorithm, the keyring/bag-slot recipe and the grey-item scan
 -- are reused from UnrealPfUI; none of its module framework, config schema,
--- bank support, disenchant/picklock buttons or panel system are reproduced.
+-- disenchant/picklock buttons or panel system are reproduced. The bank is a
+-- separate unrealUI window (modules/bank.lua) built on the same shared slot
+-- component (core/itemslot.lua).
 
 local U = UnrealUI
 local M = U.media
@@ -36,36 +38,15 @@ local BAG_IDS = { 0, 1, 2, 3, 4 }   -- backpack + the four carried bag slots
 local KEYRING_BAG = -2
 local BAG_SLOT_COUNT = 4            -- the four swappable equipped bag slots
 
+-- Metrics are the shared container tokens (core/media.lua M.slot) so the bag
+-- and bank windows cannot drift apart; only the row length is per-window.
 local COLUMNS       = 10
-local SLOT_SIZE     = 30
-local SLOT_GAP      = 3
-local PADDING       = 6
-local HEADER_HEIGHT = 28
-local ICON_SIZE     = 16
-local TRAY_SLOT     = 26            -- keyring / bag-slot button size
-
--- Vanilla ITEM_QUALITY_COLORS values, kept local: bag chrome is not shared
--- unrealUI state (see .claude/rules/unreal-ui.md on compatibility placement)
--- and the stock global is unverified here.
-local QUALITY_COLOR = {
-  [0] = { 0.62, 0.62, 0.62 },   -- Poor
-  [1] = { 1.00, 1.00, 1.00 },   -- Common
-  [2] = { 0.12, 1.00, 0.00 },   -- Uncommon
-  [3] = { 0.00, 0.44, 0.87 },   -- Rare
-  [4] = { 0.64, 0.21, 0.93 },   -- Epic
-  [5] = { 1.00, 0.50, 0.00 },   -- Legendary
-  [6] = { 0.90, 0.80, 0.50 },   -- Artifact
-}
-
--- Only quality *above* this gets its colour on the slot border. pfUI calls the
--- same threshold `borderlimit` and defaults it to 1: without it every common
--- item outlines itself in pure white, which is the white border the first
--- in-game screenshot showed on almost every slot.
-local QUALITY_LIMIT = 1
-
-local BORDER_EMPTY = { 0.16, 0.16, 0.16, 1.00 }   -- empty slot
-local BORDER_PLAIN = { 0.32, 0.32, 0.32, 1.00 }   -- poor / common item
-local BORDER_QUEST = { 0.85, 0.55, 0.55, 1.00 }   -- quest item, light pale red
+local SLOT_SIZE     = M.slot.size
+local SLOT_GAP      = M.slot.gap
+local PADDING       = M.slot.padding
+local HEADER_HEIGHT = M.slot.header
+local ICON_SIZE     = M.slot.icon
+local TRAY_SLOT     = M.slot.tray   -- keyring / bag-slot button size
 
 local anchor, frame, grid
 local slots = {}        -- slots[bag][slot] = button
@@ -78,37 +59,6 @@ local vendorDirty = false
 local keyringDirty = false
 
 local pending    -- { items, index, mode = "sell"|"delete", startGold }
-local confirm    -- shared delete-confirmation panel
-
--- ---------------------------------------------------------------------------
--- Quality colour
--- ---------------------------------------------------------------------------
-local function QualityColor(quality)
-  quality = tonumber(quality)
-  if not quality then return nil end
-
-  local stock = U.G("ITEM_QUALITY_COLORS")
-  if type(stock) == "table" and type(stock[quality]) == "table" then
-    local c = stock[quality]
-    if tonumber(c.r) and tonumber(c.g) and tonumber(c.b) then
-      return { c.r, c.g, c.b }
-    end
-  end
-
-  return QUALITY_COLOR[quality]
-end
-
--- No compact runtime record establishes GetItemInfo's full Vanilla tuple
--- shape on this client (see bags.container_api_contract_unverified in
--- knowledge.json); this mirrors UnrealPfUI's working itemType == "Quest"
--- check (modules/bags.lua:460 in UnrealPfUI) as WORKING_SOURCE evidence only.
-local function IsQuestItem(bag, slot)
-  local ok, link = pcall(GetContainerItemLink, bag, slot)
-  if not ok or not link then return false end
-
-  local infoOk, _, _, _, _, _, _, itemType = pcall(GetItemInfo, link)
-  return infoOk and itemType == "Quest"
-end
 
 -- ---------------------------------------------------------------------------
 -- Grey-item scan, shared by the tooltip, the button state and the action.
@@ -195,78 +145,21 @@ end
 -- ---------------------------------------------------------------------------
 -- Delete confirmation
 --
--- An owned panel rather than StaticPopup: query_compat.py has no record of
--- StaticPopupDialogs/StaticPopup_Show on this client at all, and this needs
--- only two buttons and a label, which core/style.lua already provides.
+-- The shared modal from core/widgets.lua (U.ShowConfirm); this module owned a
+-- private copy of it until the bank needed the same dialog.
 -- ---------------------------------------------------------------------------
-local function BuildConfirm()
-  confirm = U.CreatePanel(UIParent, {
-    name = "UnrealUIBagDeleteConfirm",
-    width = 280,
-    height = 100,
-  })
-  confirm:SetPoint("CENTER", UIParent, "CENTER", 0, 120)
-  pcall(confirm.SetFrameStrata, confirm, "DIALOG")
-
-  confirm.text = U.CreateLabel(confirm, {
-    size = M.fontSize.normal,
-    color = M.color.text,
-    inherits = "GameFontNormal",
-  })
-  if confirm.text then
-    confirm.text:SetPoint("TOP", confirm, "TOP", 0, -16)
-  end
-
-  confirm.warn = U.CreateLabel(confirm, {
-    size = M.fontSize.small,
-    color = M.color.textDim,
-    inherits = "GameFontNormalSmall",
-  })
-  if confirm.warn then
-    confirm.warn:SetPoint("TOP", confirm, "TOP", 0, -38)
-    confirm.warn:SetText("This cannot be undone.")
-  end
-
-  confirm.cancel = U.CreateButton(confirm, {
-    name = "UnrealUIBagDeleteConfirmCancel",
-    text = "Cancel",
-    width = 110,
-    height = 24,
-    onClick = function() confirm:Hide() end,
-  })
-  confirm.cancel:SetPoint("BOTTOMRIGHT", confirm, "BOTTOMRIGHT", -16, 14)
-
-  confirm.accept = U.CreateButton(confirm, {
-    name = "UnrealUIBagDeleteConfirmAccept",
-    text = "Delete",
-    width = 110,
-    height = 24,
-  })
-  confirm.accept:SetPoint("BOTTOMLEFT", confirm, "BOTTOMLEFT", 16, 14)
-
-  confirm:Hide()
-end
-
 local function ShowDeleteConfirm(items)
-  if not confirm then BuildConfirm() end
-
   local n = table.getn(items)
-  if confirm.text then
-    confirm.text:SetText("Delete " .. n .. " grey item" ..
-                         (n == 1 and "" or "s") .. "?")
-  end
 
-  confirm.accept:SetScript("OnClick", function()
-    confirm:Hide()
-    pending = { items = items, index = 1, mode = "delete" }
-    U.RegisterUpdate("bags.sellDelete", 0.15, ProcessPending)
-  end)
-
-  confirm:Show()
-  if confirm.text then confirm.text:Show() end
-  if confirm.warn then confirm.warn:Show() end
-  confirm.accept:Show()
-  confirm.cancel:Show()
+  U.ShowConfirm({
+    text = "Delete " .. n .. " grey item" .. (n == 1 and "" or "s") .. "?",
+    detail = "This cannot be undone.",
+    acceptText = "Delete",
+    onAccept = function()
+      pending = { items = items, index = 1, mode = "delete" }
+      U.RegisterUpdate("bags.sellDelete", 0.15, ProcessPending)
+    end,
+  })
 end
 
 local function SellOrDeleteGreys()
@@ -306,73 +199,41 @@ local function RefreshVendorButton()
 end
 
 -- ---------------------------------------------------------------------------
--- Header icon button
---
--- A small square with a stock icon inset inside the unrealUI border, plus a
--- tooltip. Used for the keyring, bag-slot and vendor toggles so the three read
--- as one row.
+-- Header icon buttons -- U.CreateIconButton (core/widgets.lua) now owns this;
+-- this module used to keep a private copy until modules/bank.lua needed the
+-- identical recipe for its purchase control.
 -- ---------------------------------------------------------------------------
-local function CreateIconButton(parent, options)
-  local button = U.CreateButton(parent, {
-    name = options.name,
-    text = "",
-    width = ICON_SIZE,
-    height = ICON_SIZE,
-    onClick = options.onClick,
-  })
-
-  local edge = U.BorderSize()
-  local icon = button:CreateTexture(nil, "ARTWORK")
-  icon:SetPoint("TOPLEFT", button, "TOPLEFT", edge, -edge)
-  icon:SetPoint("BOTTOMRIGHT", button, "BOTTOMRIGHT", -edge, edge)
-
-  if pcall(icon.SetTexture, icon, options.texture) then
-    pcall(icon.SetTexCoord, icon, 0.08, 0.92, 0.08, 0.92)
-  else
-    icon:Hide()
-    if button.label then button.label:SetText(options.fallback or "?") end
-  end
-  button.icon = icon
-
-  button:SetScript("OnEnter", function()
-    U.SetBorderColor(button, M.Unpack(M.color.moverEdge))
-
-    local tip = U.G("GameTooltip")
-    if not tip then return end
-    pcall(tip.SetOwner, tip, button, "ANCHOR_BOTTOM")
-    pcall(tip.SetText, tip, options.title)
-    if type(options.detail) == "function" then
-      local line = options.detail()
-      if line then pcall(tip.AddLine, tip, line, 0.65, 0.65, 0.65, 1) end
-    end
-    pcall(tip.Show, tip)
-  end)
-
-  button:SetScript("OnLeave", function()
-    U.SetBorderColor(button, M.Unpack(M.color.border))
-    local tip = U.G("GameTooltip")
-    if tip then pcall(tip.Hide, tip) end
-  end)
-
-  return button
-end
 
 -- ---------------------------------------------------------------------------
 -- Money display
 --
 -- Number then coin, gold to copper left-to-right, laid out right-to-left so
--- the whole readout keeps its right edge fixed as the amounts change.
+-- the whole readout keeps its right edge fixed as the amounts change. The
+-- coin icon is the single UI-MoneyIcons atlas sliced with texture
+-- coordinates -- the same recipe modules/status.lua uses for the status
+-- overlay's coin readout, which is USER_CONFIRMED_INGAME to render. The
+-- separate per-denomination icon files this used to reference did not.
 -- ---------------------------------------------------------------------------
-local function BuildCoin(parent, texture, color)
+local MONEY_TEXTURE = "Interface\\MoneyFrame\\UI-MoneyIcons"
+local COIN_GOLD   = { 0.00, 0.25, 0, 1 }
+local COIN_SILVER = { 0.25, 0.50, 0, 1 }
+local COIN_COPPER = { 0.50, 0.75, 0, 1 }
+local COIN_GAP = 1
+
+local function BuildCoin(parent, texCoords, color)
   local holder = CreateFrame("Frame", nil, parent)
   holder:SetHeight(14)
-  holder:SetWidth(44)
+  holder:SetWidth(26)
 
   local icon = holder:CreateTexture(nil, "ARTWORK")
   icon:SetWidth(12)
   icon:SetHeight(12)
-  icon:SetPoint("RIGHT", holder, "RIGHT", 0, 0)
-  pcall(icon.SetTexture, icon, texture)
+  -- The coin artwork sits low inside the atlas slice. Raise only the texture
+  -- while keeping the number on the common text baseline.
+  icon:SetPoint("RIGHT", holder, "RIGHT", 0, 2)
+  pcall(icon.SetTexture, icon, MONEY_TEXTURE)
+  pcall(icon.SetTexCoord, icon,
+        texCoords[1], texCoords[2], texCoords[3], texCoords[4])
   holder.icon = icon
 
   -- fonts.stretched_justification_ignored: anchored to the one edge it belongs
@@ -382,7 +243,7 @@ local function BuildCoin(parent, texture, color)
     color = color,
     inherits = "GameFontNormalSmall",
   })
-  if holder.label then holder.label:SetPoint("RIGHT", icon, "LEFT", -2, 0) end
+  if holder.label then holder.label:SetPoint("RIGHT", icon, "LEFT", -1, -2) end
 
   return holder
 end
@@ -392,18 +253,28 @@ local function BuildMoneyDisplay(parent)
   money:SetHeight(16)
   money:SetWidth(150)
 
-  money.copper = BuildCoin(money, "Interface\\MoneyFrame\\UI-CopperIcon",
-                           { 0.80, 0.47, 0.29 })
-  money.silver = BuildCoin(money, "Interface\\MoneyFrame\\UI-SilverIcon",
-                           { 0.75, 0.75, 0.75 })
-  money.gold   = BuildCoin(money, "Interface\\MoneyFrame\\UI-GoldIcon",
-                           { 1.00, 0.82, 0.00 })
+  money.copper = BuildCoin(money, COIN_COPPER, { 0.80, 0.47, 0.29 })
+  money.silver = BuildCoin(money, COIN_SILVER, { 0.75, 0.75, 0.75 })
+  money.gold   = BuildCoin(money, COIN_GOLD, { 1.00, 0.82, 0.00 })
 
   money.copper:SetPoint("RIGHT", money, "RIGHT", 0, 0)
-  money.silver:SetPoint("RIGHT", money.copper, "LEFT", -4, 0)
-  money.gold:SetPoint("RIGHT", money.silver, "LEFT", -4, 0)
+  money.silver:SetPoint("RIGHT", money.copper, "LEFT", -COIN_GAP, 0)
+  money.gold:SetPoint("RIGHT", money.silver, "LEFT", -COIN_GAP, 0)
 
   return money
+end
+
+-- Sizes a coin holder to its rendered amount instead of a reserved width --
+-- matching modules/status.lua's SetCoinValue -- so the fixed 44-wide frames
+-- this used to leave behind an oversized gap in front of each icon.
+local function SetCoinValue(coin, value)
+  if not coin or not coin.label then return end
+  coin.label:SetText(value)
+
+  local ok, textWidth = pcall(coin.label.GetStringWidth, coin.label)
+  textWidth = (ok and tonumber(textWidth)) or (string.len(value) * 7)
+  coin.contentWidth = math.ceil(textWidth) + 13
+  coin:SetWidth(coin.contentWidth)
 end
 
 local function RefreshMoney()
@@ -413,15 +284,9 @@ local function RefreshMoney()
   total = (ok and tonumber(total)) or 0
 
   local money = frame.money
-  if money.gold.label then
-    money.gold.label:SetText(tostring(math.floor(total / 10000)))
-  end
-  if money.silver.label then
-    money.silver.label:SetText(tostring(math.floor(math.mod(total, 10000) / 100)))
-  end
-  if money.copper.label then
-    money.copper.label:SetText(tostring(math.mod(total, 100)))
-  end
+  SetCoinValue(money.gold, tostring(math.floor(total / 10000)))
+  SetCoinValue(money.silver, tostring(math.floor(math.mod(total, 10000) / 100)))
+  SetCoinValue(money.copper, tostring(math.mod(total, 100)))
 end
 
 -- ---------------------------------------------------------------------------
@@ -449,50 +314,6 @@ local function EnsureBagRoot(bag, parent)
   return root
 end
 
-local function StyleSlotButton(button, name)
-  local edge = U.BorderSize()
-
-  pcall(button.SetNormalTexture, button, "")
-  U.HideRegion(U.G(name .. "NormalTexture"))
-
-  U.CreateBackdrop(button, {
-    background = { 0.10, 0.10, 0.10, 0.60 },
-    border = M.color.border,
-  })
-
-  local icon = U.G(name .. "IconTexture")
-  if icon then
-    pcall(icon.SetTexCoord, icon, 0.08, 0.92, 0.08, 0.92)
-    pcall(function()
-      icon:ClearAllPoints()
-      icon:SetPoint("TOPLEFT", button, "TOPLEFT", edge, -edge)
-      icon:SetPoint("BOTTOMRIGHT", button, "BOTTOMRIGHT", -edge, edge)
-    end)
-  end
-
-  -- fonts.stretched_justification_ignored: pfUI stretches the count across the
-  -- button and justifies it BOTTOMRIGHT, which is exactly the pattern that
-  -- record says can be ignored here. Anchored to the one corner instead.
-  local count = U.G(name .. "Count")
-  if count then
-    U.SetFont(count, M.fontSize.small)
-    pcall(function()
-      count:ClearAllPoints()
-      count:SetPoint("BOTTOMRIGHT", button, "BOTTOMRIGHT", -3, 3)
-    end)
-  end
-
-  local hlOk, highlight = pcall(button.GetHighlightTexture, button)
-  if hlOk and highlight then
-    pcall(highlight.SetTexture, highlight, 0.5, 0.5, 0.5, 0.4)
-  end
-
-  local pushOk, pushed = pcall(button.GetPushedTexture, button)
-  if pushOk and pushed then
-    pcall(pushed.SetTexture, pushed, 0.5, 0.5, 0.5, 0.4)
-  end
-end
-
 local function EnsureSlot(bag, slot, parent)
   slots[bag] = slots[bag] or {}
   if slots[bag][slot] then return slots[bag][slot] end
@@ -500,56 +321,19 @@ local function EnsureSlot(bag, slot, parent)
   local root = EnsureBagRoot(bag, parent)
   local name = "UnrealUIBagSlot" .. (bag < 0 and ("m" .. -bag) or bag) .. "_" .. slot
 
-  local ok, button = pcall(CreateFrame, "Button", name, root,
-                           "ContainerFrameItemButtonTemplate")
-  if not ok or not button then
-    U.Error("bags: ContainerFrameItemButtonTemplate unavailable; slot " ..
-            bag .. "/" .. slot .. " not created")
-    return nil
-  end
-
-  button:SetID(slot)
-  StyleSlotButton(button, name)
+  local button = U.CreateItemSlot(root, name, bag, slot)
+  if not button then return nil end
 
   slots[bag][slot] = button
   return button
 end
 
 local function UpdateCooldown(bag, slot)
-  local button = slots[bag] and slots[bag][slot]
-  if not button then return end
-
-  local fn = U.G("ContainerFrame_UpdateCooldown")
-  if type(fn) == "function" then pcall(fn, bag, button) end
+  U.UpdateItemSlotCooldown(bag, slots[bag] and slots[bag][slot])
 end
 
 local function UpdateSlotAppearance(bag, slot)
-  local button = slots[bag] and slots[bag][slot]
-  if not button then return end
-
-  local ok, texture, count, locked, quality =
-    pcall(GetContainerItemInfo, bag, slot)
-  if not ok then texture, count, locked, quality = nil, nil, nil, nil end
-
-  pcall(SetItemButtonTexture, button, texture)
-  pcall(SetItemButtonCount, button, count)
-  pcall(SetItemButtonDesaturated, button, locked, 0.5, 0.5, 0.5)
-
-  -- The border rule that removes the white outline: only quality above the
-  -- limit earns its colour, everything else gets a dim neutral edge.
-  local color
-  if not texture then
-    color = BORDER_EMPTY
-  elseif IsQuestItem(bag, slot) then
-    color = BORDER_QUEST
-  elseif tonumber(quality) and quality > QUALITY_LIMIT then
-    color = QualityColor(quality) or BORDER_PLAIN
-  else
-    color = BORDER_PLAIN
-  end
-  U.SetBorderColor(button, color[1], color[2], color[3], color[4] or 1)
-
-  UpdateCooldown(bag, slot)
+  U.UpdateItemSlot(slots[bag] and slots[bag][slot], bag, slot)
 end
 
 local function RefreshBag(bag)
@@ -651,7 +435,7 @@ local function LayoutBagSlots()
                       PADDING + (i - 1) * (TRAY_SLOT + SLOT_GAP), -PADDING)
       button:SetWidth(TRAY_SLOT)
       button:SetHeight(TRAY_SLOT)
-      StyleSlotButton(button, name)
+      U.StyleItemSlot(button, name)
       button:Show()
     else
       U.Error("bags: BagSlotButtonTemplate unavailable; bag slot " .. i ..
@@ -822,40 +606,9 @@ local function BuildHeader()
   frame.money = BuildMoneyDisplay(frame)
   frame.money:SetPoint("RIGHT", frame.close, "LEFT", -8, 0)
 
-  frame.sell = CreateIconButton(frame, {
-    name = "UnrealUIBagSell",
-    texture = "Interface\\Icons\\INV_Misc_Coin_02",
-    fallback = "$",
-    title = "Vendor / Delete Grays",
-    onClick = SellOrDeleteGreys,
-    detail = function()
-      local n = table.getn(CollectGreyItems())
-      return n .. " grey item" .. (n == 1 and "" or "s") ..
-             " - sells at an open vendor, otherwise asks to delete."
-    end,
-  })
-  frame.sell:SetPoint("RIGHT", frame.money, "LEFT", -8, 0)
-
-  frame.bagsToggle = CreateIconButton(frame, {
-    name = "UnrealUIBagBagsToggle",
-    texture = "Interface\\Icons\\INV_Misc_Bag_08",
-    fallback = "B",
-    title = "Toggle Bags",
-    detail = function() return "Show the equipped bag slots." end,
-    onClick = function()
-      local tray = frame.bagslots
-      local ok, shown = pcall(tray.IsShown, tray)
-      if ok and shown then
-        tray:Hide()
-      else
-        LayoutBagSlots()
-        tray:Show()
-      end
-    end,
-  })
-  frame.bagsToggle:SetPoint("RIGHT", frame.sell, "LEFT", -4, 0)
-
-  frame.keyToggle = CreateIconButton(frame, {
+  -- Key / bag / sell-greys sit as a group at the header's left edge, separate
+  -- from the money readout and close button on the right.
+  frame.keyToggle = U.CreateIconButton(frame, {
     name = "UnrealUIBagKeyToggle",
     texture = "Interface\\Icons\\INV_Misc_Key_03",
     fallback = "K",
@@ -872,7 +625,40 @@ local function BuildHeader()
       end
     end,
   })
-  frame.keyToggle:SetPoint("RIGHT", frame.bagsToggle, "LEFT", -4, 0)
+  frame.keyToggle:SetPoint("TOPLEFT", frame, "TOPLEFT", PADDING, -PADDING)
+
+  frame.bagsToggle = U.CreateIconButton(frame, {
+    name = "UnrealUIBagBagsToggle",
+    texture = "Interface\\Icons\\INV_Misc_Bag_08",
+    fallback = "B",
+    title = "Toggle Bags",
+    detail = function() return "Show the equipped bag slots." end,
+    onClick = function()
+      local tray = frame.bagslots
+      local ok, shown = pcall(tray.IsShown, tray)
+      if ok and shown then
+        tray:Hide()
+      else
+        LayoutBagSlots()
+        tray:Show()
+      end
+    end,
+  })
+  frame.bagsToggle:SetPoint("LEFT", frame.keyToggle, "RIGHT", 4, 0)
+
+  frame.sell = U.CreateIconButton(frame, {
+    name = "UnrealUIBagSell",
+    texture = "Interface\\Icons\\INV_Misc_Coin_02",
+    fallback = "$",
+    title = "Vendor / Delete Grays",
+    onClick = SellOrDeleteGreys,
+    detail = function()
+      local n = table.getn(CollectGreyItems())
+      return n .. " grey item" .. (n == 1 and "" or "s") ..
+             " - sells at an open vendor, otherwise asks to delete."
+    end,
+  })
+  frame.sell:SetPoint("LEFT", frame.bagsToggle, "RIGHT", 4, 0)
 end
 
 local function Build()

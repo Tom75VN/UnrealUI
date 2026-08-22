@@ -49,6 +49,7 @@ M.fontSize = {
 M.texture = {
   plain = "Interface\\BUTTONS\\WHITE8X8",
   chatResizeGrip = "Interface\\AddOns\\unrealUI\\media\\chat_resize_grip",
+  restIcon = "Interface\\AddOns\\unrealUI\\media\\rest-icon",
 }
 
 -- ---------------------------------------------------------------------------
@@ -102,6 +103,20 @@ M.color = {
   moverEdge  = { 0.96, 0.68, 0.04, 1.00 },
   grid       = { 0.45, 0.45, 0.45, 0.30 },
   gridAxis   = { 0.96, 0.68, 0.04, 0.55 },
+}
+
+-- Countdown-number tiers, keyed by the tier U.FormatTimeShort reports. Shared
+-- because two surfaces now draw the same readout -- action-button cooldowns
+-- (modules/actionbar.lua) and aura timers (modules/auras.lua) -- and a second
+-- copy of the palette is exactly the module-local design system
+-- rules/unreal-ui-design.md forbids. The last five seconds turn red; the longer
+-- tiers cool towards blue so a glance at the colour alone reads the magnitude.
+M.cooldownText = {
+  low    = { 1.00, 0.20, 0.20, 1.00 },   -- last five seconds
+  normal = { 1.00, 1.00, 1.00, 1.00 },
+  minute = { 0.20, 1.00, 1.00, 1.00 },
+  hour   = { 0.20, 0.50, 1.00, 1.00 },
+  day    = { 0.20, 0.20, 1.00, 1.00 },
 }
 
 -- Power colours keyed by the numeric UnitPowerType index used by Vanilla.
@@ -190,3 +205,67 @@ function M.Unpack(color, fallbackAlpha)
          tonumber(color[3]) or 0,
          tonumber(color[4]) or fallbackAlpha or 1
 end
+
+-- ---------------------------------------------------------------------------
+-- Item slots
+--
+-- Shared by every window that draws container slots (bags, bank). Kept here
+-- rather than in a module so the two frames cannot drift apart; see
+-- .claude/rules/unreal-ui.md on compatibility/token placement.
+--
+-- Vanilla ITEM_QUALITY_COLORS values. The stock global is used when the client
+-- provides it (see M.ItemQualityColor in core/itemslot.lua) but is not assumed.
+-- ---------------------------------------------------------------------------
+M.quality = {
+  [0] = { 0.62, 0.62, 0.62 },   -- Poor
+  [1] = { 1.00, 1.00, 1.00 },   -- Common
+  [2] = { 0.12, 1.00, 0.00 },   -- Uncommon
+  [3] = { 0.00, 0.44, 0.87 },   -- Rare
+  [4] = { 0.64, 0.21, 0.93 },   -- Epic
+  [5] = { 1.00, 0.50, 0.00 },   -- Legendary
+  [6] = { 0.90, 0.80, 0.50 },   -- Artifact
+}
+
+-- Only quality *above* this gets its colour on the slot border. pfUI calls the
+-- same threshold `borderlimit` and defaults it to 1: without it every common
+-- item outlines itself in pure white, which is the white border the first
+-- in-game bag screenshot showed on almost every slot.
+M.qualityLimit = 1
+
+M.slotBorder = {
+  empty = { 0.16, 0.16, 0.16, 1.00 },   -- empty slot
+  plain = { 0.32, 0.32, 0.32, 1.00 },   -- poor / common item
+  quest = { 0.85, 0.55, 0.55, 1.00 },   -- quest item, light pale red
+}
+
+-- Container-window metrics. Bags and bank share them so the two windows read
+-- as one component at one density.
+M.slot = {
+  size    = 30,   -- item button
+  gap     = 3,
+  padding = 6,
+  header  = 28,
+  tray    = 26,   -- keyring / bag-slot button
+  icon    = 16,   -- header icon button
+}
+
+-- ---------------------------------------------------------------------------
+-- Money
+--
+-- One coin atlas, one set of texture coordinates and one colour per
+-- denomination, shared by every readout in the addon (the status overlay and,
+-- since it needs the identical look, the bank purchase price). Centralised so
+-- a second consumer cannot drift from the first; see
+-- .claude/rules/unreal-ui.md on shared media/state placement.
+-- ---------------------------------------------------------------------------
+-- The icon atlas did not render in the tooltip/modal price readouts in game
+-- (USER_CONFIRMED_INGAME): the texture path was written with single
+-- backslashes, an invalid Lua escape that this client silently drops rather
+-- than rejecting, so SetTexture got a path with no separators at all and
+-- failed inside its pcall with nothing visible to explain why. A coloured
+-- number plus letter suffix needs no texture and cannot fail the same way.
+M.money = {
+  gold   = { suffix = "g", color = { 1.00, 0.82, 0.00, 1.00 } },
+  silver = { suffix = "s", color = { 0.75, 0.75, 0.75, 1.00 } },
+  copper = { suffix = "c", color = { 0.80, 0.47, 0.29, 1.00 } },
+}

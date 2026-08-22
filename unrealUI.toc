@@ -2,16 +2,18 @@
 ## Title: |cffffffffUnreal |cfff5ae0aUI
 ## Notes: Unreal Azeroth native UI addon.
 ## Author: unrealUI
-## Version: 0.1.1
+## Version: 0.1.2
 ## X-License: MIT
 ## SavedVariables: UnrealUIDB, UnrealUIDiagDB
 
 core\init.lua
 core\perf.lua
 core\media.lua
+core\auradata.lua
 core\compat.lua
 core\config.lua
 core\style.lua
+core\itemslot.lua
 core\widgets.lua
 core\stockui.lua
 core\dropdown.lua
@@ -35,7 +37,9 @@ modules\actionbar.lua
 modules\actionbarconfig.lua
 modules\quickbind.lua
 modules\petbar.lua
+modules\stancebar.lua
 modules\bags.lua
+modules\bank.lua
 modules\status.lua
 modules\questlog.lua
 modules\spellbook.lua
@@ -43,6 +47,7 @@ modules\character.lua
 modules\friends.lua
 modules\merchant.lua
 modules\trainer.lua
+modules\mail.lua
 modules\gossip.lua
 modules\quest.lua
 modules\windowmove.lua

@@ -17,6 +17,31 @@ function U.Round(value)
   return math.floor(value + 0.5)
 end
 
+-- A remaining time as a short countdown string plus the tier it falls in, so
+-- callers can colour it from M.cooldownText without repeating the thresholds.
+--
+-- The unit switch points are pfUI-modern's: days above 99 hours, hours above 99
+-- minutes, minutes above 99 seconds, and tenths over the last five seconds --
+-- which keeps the number at most three characters wide at every scale, the
+-- reason it fits inside an action button or a 20-unit aura icon at all.
+--
+-- Shared rather than module-local because both modules/actionbar.lua and
+-- modules/auras.lua draw this readout; see M.cooldownText.
+function U.FormatTimeShort(remaining)
+  remaining = tonumber(remaining) or 0
+
+  if remaining > 356400 then
+    return U.Round(remaining / 86400) .. "d", "day"
+  elseif remaining > 5940 then
+    return U.Round(remaining / 3600) .. "h", "hour"
+  elseif remaining > 99 then
+    return U.Round(remaining / 60) .. "m", "minute"
+  elseif remaining <= 5 then
+    return string.format("%.1f", remaining), "low"
+  end
+  return tostring(U.Round(remaining)), "normal"
+end
+
 -- ---------------------------------------------------------------------------
 -- Screen metrics
 --
@@ -274,6 +299,12 @@ end
 -- brings something back. One shared watcher serves every caller, so registering
 -- more frames never adds another update.
 --
+-- UnregisterAllEvents is not part of that recipe at any level, and is not
+-- merely redundant: repeated on a live native frame it is the measured cause of
+-- the party-only freeze (knowledge.json /
+-- compat.unregisterallevents_native_frame_stall). It never held a frame down
+-- either, per the failed approaches above, so it bought nothing for its cost.
+--
 -- Show() is replaced only on frames a module explicitly names, and only once
 -- per object. Nothing here installs a global or removes a client function
 -- unrealUI was not asked to suppress.
@@ -324,10 +355,18 @@ local visualOnlyNames = {}
 local visualOnlyKinds = {}
 local visualObjectEpoch = {}
 local targetVisualEpoch = 0
--- TargetFrameLevel is rewritten a few render ticks after the target event on
+-- TargetLevelText is rewritten a few render ticks after the target event on
 -- this client. Retry only this text for a short bounded window; keeping the
 -- target frame lifecycle intact remains mandatory for the confirmed Tab-spam
 -- stability fix.
+--
+-- The name matters: this retry used to resolve "TargetFrameLevel", which does
+-- not exist on this client and therefore made the whole loop a no-op, which is
+-- why the yellow level survived every pass. A full 29,520-entry global
+-- enumeration (UnrealRuntimeProbe capture, 2026-08-16) has TargetLevelText and
+-- TargetName but no TargetFrameLevel/TargetFrameName -- this client keeps
+-- Vanilla's Target* naming for those two, while the bars really are
+-- TargetFrameHealthBar/TargetFrameManaBar.
 local TARGET_LEVEL_RETRY_PASSES = 12
 local targetLevelRetryPasses = 0
 
@@ -339,9 +378,9 @@ local function NoOpShow() return end
 local function NeutraliseShow(object)
   if object.Show then object.Show = NoOpShow end
 end
-local function DropNativeEvents(object)
-  if object.UnregisterAllEvents then object:UnregisterAllEvents() end
-end
+-- There is deliberately no DropNativeEvents helper here. UnregisterAllEvents on
+-- a live native frame is the measured cause of the party freeze; see the note
+-- in KillNativeObject below before adding one back.
 local function HideObject(object)
   if object.Hide then object:Hide() end
 end
@@ -518,10 +557,13 @@ local function KillNativeObject(object, visualOnly, visualKind)
   local alreadyMarked = suppressedObjects[object] and true or false
   if forceFullApply then alreadyMarked = false end
 
-  -- The target family keeps its native lifecycle intact. Unregistering its
-  -- events, replacing Show(), and repeatedly hiding it were the difference
-  -- between the reproducible 1-fps collapse and a user-confirmed stable run;
-  -- the native mechanism behind that difference remains opaque to Lua.
+  -- The target family keeps its native lifecycle intact: it is never hidden,
+  -- its Show is left alone, and only its visible content is cleared. Replacing
+  -- Show() and repeatedly hiding this family was the difference between the
+  -- reproducible 1-fps collapse and a user-confirmed stable run; the native
+  -- mechanism behind that difference remains opaque to Lua. (Event stripping
+  -- was the third part of that original finding and is now gone from every
+  -- path, visual-only or not -- see KillNativeObject's note below.)
   -- Alpha is applied to every named child because this client does not
   -- propagate parent alpha. Mouse input is dropped once, but the widget stays
   -- shown and subscribed so native code can recycle it normally. Some native
@@ -564,7 +606,35 @@ local function KillNativeObject(object, visualOnly, visualKind)
 
   statTornDown = statTornDown + 1
 
-  if level >= 4 then pcall(DropNativeEvents, object) end
+  -- No UnregisterAllEvents here, at any level. See
+  -- knowledge.json / compat.unregisterallevents_native_frame_stall: stripping a
+  -- live native frame's event registrations is what the party-only freeze
+  -- actually was, and it is measured rather than reasoned. Two runs by the same
+  -- reporter, same party, same zone, ~175s each, vsync-locked at 60fps:
+  --
+  --   level 4 (this call present) : 22.8s of stall above the 60fps floor
+  --                                 (12.9% of wall time), worst frame >=1000ms,
+  --                                 worst target-change frame 489ms
+  --   level 3 (this call absent)  : 6.5s of stall (3.7%), worst frame 52.8ms
+  --                                 (and that one is the post-reload settle),
+  --                                 worst target-change frame 19.3ms
+  --
+  -- The decisive part is that the teardown *volume* barely moved between them:
+  -- 10485 -> 9157 objects, -11%, while the stall fell 72%. Everything else in
+  -- this recipe -- Hide, SetAlpha(0), EnableMouse(false), the Show neutraliser
+  -- -- ran at nearly the same rate in the good run. So the cost is not how many
+  -- objects are visited, it is this one call: ~59/s at roughly 1.5-4ms each.
+  --
+  -- It is also not needed. The level 3 run covered ~3 minutes of active play,
+  -- 40 target changes and 215 PARTY_MEMBERS_CHANGED, and the reporter confirmed
+  -- no stock frame ever became visible. NeutraliseShow below already stops a
+  -- Lua-driven re-show, and the bounded periodic batch re-hides anything that
+  -- slips past within about a second.
+  --
+  -- Deliberately deleted rather than moved inside the `alreadyMarked` guard
+  -- below: once-per-object still means ~400-500 of these inside the load batch
+  -- at several ms each, which trades a steady drip for a burst of ~90ms hitches
+  -- right after login. The operation has no home in this recipe.
 
   -- Wrapping an already-replaced Show would nest the no-op inside itself on
   -- every re-apply pass, so the swap happens once and is then remembered.
@@ -621,7 +691,7 @@ local function ApplyNativeSuppressionBatch()
   -- return. Clear just that FontString across a bounded 0.6s window (at the
   -- normal 0.05s cadence), without Hide, event removal, or Show replacement.
   if targetLevelRetryPasses > 0 then
-    local levelText = ResolveNativeObject("TargetFrameLevel")
+    local levelText = ResolveNativeObject("TargetLevelText")
     if levelText then
       pcall(ZeroAlpha, levelText)
       pcall(ClearTextVisual, levelText)
@@ -718,11 +788,16 @@ function U.SuppressNativeFrame(names, group)
       if string.find(name, "HealthBar$") or
          string.find(name, "ManaBar$") then
         visualOnlyKinds[name] = "bar"
-      elseif string.find(name, "HealthBarText$") or
+      -- "Text$" covers this client's TargetLevelText, and subsumes the
+      -- HealthBarText/ManaBarText/DeadText suffixes kept below for clarity.
+      -- Without it TargetLevelText would be registered visual-only with no
+      -- kind, so it would only get SetAlpha(0) -- which this client's
+      -- FontString renderer ignores, the reason ClearTextVisual exists.
+      elseif string.find(name, "Text$") or
+             string.find(name, "HealthBarText$") or
              string.find(name, "ManaBarText$") or
              string.find(name, "Name$") or
              string.find(name, "Level$") or
-             string.find(name, "DeadText$") or
              string.find(name, "Count$") then
         visualOnlyKinds[name] = "text"
       elseif string.find(name, "Texture$") or
@@ -789,7 +864,23 @@ function U.SuppressNativeFrame(names, group)
         lastTargetTornDown = statTornDown - torn
       end)
     end)
-    U.RegisterEvent("PARTY_MEMBERS_CHANGED", GroupSweeper("party"))
+    -- Deferred and coalesced for the same reason the target sweep above is,
+    -- and more urgently: PARTY_MEMBERS_CHANGED is by far the noisiest event
+    -- this client emits while grouped. Measured in the reporter's runs, 130
+    -- and 215 occurrences in ~175s -- one every 0.8-1.4s, and 16x the rate of
+    -- PLAYER_TARGET_CHANGED. Run inline that is a synchronous ~204-name sweep
+    -- landing in the same frame the client does its own party-roster work in.
+    --
+    -- events.json still records this event as accepted-but-never-observed;
+    -- that record is wrong and is corrected in knowledge.json /
+    -- compat.party_members_changed_high_frequency.
+    --
+    -- U.DeferOnce replaces a pending sweep rather than queueing a second, so a
+    -- burst of roster events collapses to one sweep on the next driver tick.
+    local partySweep = GroupSweeper("party")
+    U.RegisterEvent("PARTY_MEMBERS_CHANGED", function()
+      U.DeferOnce("compat.party-sweep", partySweep)
+    end)
     U.RegisterUpdate("compat.native-suppression", 0.05,
                      ApplyNativeSuppressionBatch)
 

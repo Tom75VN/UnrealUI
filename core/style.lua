@@ -331,13 +331,62 @@ end
 -- quads, which is all this client gives us: no Cooldown widget, and a wedge
 -- needs either a triangular mark or a rotated quad.
 --
--- Strips are sized against the quadrant, not the whole square, so a 30-unit
--- button lands near 1.5 units per step: at that size the staircase is finer
--- than the boundary it approximates and reads as a straight edge.
+-- Strips are sized against the quadrant, not the whole square, one unit per
+-- step: fine enough that the staircase reads as a straight edge even on a
+-- 24-unit aura icon, where the whole quadrant is only 12 units tall and the
+-- previous 1.5-unit step (8 strips) was coarse enough to show. The cap is
+-- raised alongside it so a full-size action button still gets to use the
+-- finer step instead of hitting the old ceiling early.
 -- ---------------------------------------------------------------------------
-local WIPE_STRIP_MAX = 14
-local WIPE_STRIP_UNITS = 1.5
+local WIPE_STRIP_MAX = 20
+local WIPE_STRIP_UNITS = 1.0
 local WIPE_RADIANS = math.pi / 180
+
+-- The staircase is inherent to drawing a diagonal out of axis-aligned strips,
+-- and more rows only shrink the steps, never remove them -- at a 24-unit icon
+-- the quadrant is 12 units tall, so 12 strips (one per unit) is already the
+-- finest whole-unit row count available, and going finer hits the Borders
+-- note above: this client drops fractional sizes rather than rendering them,
+-- so a sub-unit strip height would not draw smoother, it would not draw.
+--
+-- What actually softens a staircase without more rows is antialiasing the
+-- edge, and Texture:SetGradientAlpha is a real, BEHAVIOR_VERIFIED primitive
+-- here (rendering.setgradientalpha_vertical_origin_top, confirmed in game on
+-- the colour picker's saturation/value square). Each strip's free edge -- the
+-- one that moves, the actual diagonal boundary -- gets a second texture beyond
+-- it that fades from the strip's own colour down to fully transparent. The
+-- strip itself stays flat; only this sliver blends, so the fill keeps the
+-- flat, no-gloss look rules/unreal-ui-design.md requires.
+--
+-- The feather's WIDTH and its two end alphas are the whole trick, and a fixed
+-- feather is wrong at every angle but one. Within a single row the true edge
+-- is not at a point -- it sweeps horizontally by stripHeight * slope between
+-- the row's top and bottom. That sweep is the row's partial-coverage band: at
+-- its leading end the edge covers none of the row, at its trailing end all of
+-- it, and in between the covered fraction rises linearly. A linear alpha ramp
+-- spanning exactly that band is therefore not an approximation of
+-- antialiasing -- for a straight edge it IS the exact coverage integral, which
+-- is what an antialiased edge is.
+--
+-- Two things follow, and both matter:
+--
+--   * The band is derived per row from where the edge actually crosses that
+--     row, not from a clamped midpoint. A row the edge has already left
+--     entirely draws nothing, and a row it has not reached is solid. Clamping
+--     a midpoint instead makes every row past the edge draw a phantom band.
+--   * Where the band runs off the quadrant, the ramp is cut short, so its
+--     stops carry the true coverage at the cut rather than a flat 1 and 0.
+--     Without that a near-horizontal edge starts its ramp at solid and the
+--     first row reads far too dark.
+--
+-- WIPE_FEATHER_MIN keeps a near-vertical edge from collapsing to a hard line,
+-- matching the sub-unit softness such an edge really has.
+local WIPE_FEATHER_MIN = 1
+
+-- Which side of each strip is that free edge, derived from the strip's own
+-- anchor corner (WIPE_QUADS column 2, below): an anchor that pins the RIGHT
+-- edge leaves the LEFT edge to move, and the other way round.
+local WIPE_FREE_SIDE = { "LEFT", "RIGHT", "RIGHT", "LEFT" }
 
 -- Clockwise from twelve. Per quadrant: the corner its flat fill sits in, the
 -- strip's own anchor corner, the frame point the strip stack hangs off, and the
@@ -365,6 +414,7 @@ end
 local function MoveWipeStrips(wipe, quadrant)
   if wipe.quadrant == quadrant then return end
   wipe.quadrant = quadrant
+  wipe.freeSide = WIPE_FREE_SIDE[quadrant]
 
   local shape = WIPE_QUADS[quadrant]
   local i
@@ -374,6 +424,41 @@ local function MoveWipeStrips(wipe, quadrant)
     strip:SetPoint(shape[2], wipe.frame, shape[3], 0,
                    shape[4] * (i - shape[5]) * wipe.stripHeight)
     wipe.drawn[i] = nil
+
+    -- Anchored to the strip itself, not to the frame: a relative point tracks
+    -- the strip's free edge automatically as its width changes every tick, so
+    -- no position here is recomputed outside a quadrant change.
+    local feather = wipe.feathers[i]
+    if feather then
+      feather:ClearAllPoints()
+      if wipe.freeSide == "LEFT" then
+        feather:SetPoint("TOPRIGHT", strip, "TOPLEFT", 0, 0)
+      else
+        feather:SetPoint("TOPLEFT", strip, "TOPRIGHT", 0, 0)
+      end
+      wipe.featherDrawn[i] = nil
+      wipe.featherAlpha[i] = nil
+    end
+  end
+end
+
+-- The ramp's stops carry the true coverage at each end. Quantised and cached,
+-- because only the row or two actually under the leading edge changes its
+-- stops on a given tick: this costs a call or two per redraw, not one per row.
+local function SetFeatherAlpha(wipe, index, near, far)
+  local key = math.floor(near * 64) * 128 + math.floor(far * 64)
+  if wipe.featherAlpha[index] == key then return end
+  wipe.featherAlpha[index] = key
+
+  local feather = wipe.feathers[index]
+  local r, g, b, a = M.Unpack(wipe.color)
+  if wipe.freeSide == "LEFT" then
+    -- Outer (transparent) end on the left, the end against the strip on the right.
+    pcall(feather.SetGradientAlpha, feather, "HORIZONTAL",
+          r, g, b, a * far, r, g, b, a * near)
+  else
+    pcall(feather.SetGradientAlpha, feather, "HORIZONTAL",
+          r, g, b, a * near, r, g, b, a * far)
   end
 end
 
@@ -410,11 +495,25 @@ function U.SizeRadialWipe(wipe, size)
     end
     wipe.strips[i]:SetHeight(wipe.stripHeight)
     wipe.drawn[i] = nil
+
+    if not wipe.feathers[i] then
+      local feather = wipe.frame:CreateTexture(nil, wipe.layer)
+      feather:SetTexture(M.texture.plain)
+      feather:Hide()
+      wipe.feathers[i] = feather
+    end
+    wipe.feathers[i]:SetHeight(wipe.stripHeight)
+    wipe.featherDrawn[i] = nil
+    wipe.featherAlpha[i] = nil
   end
   -- A strip left over from a larger size must not keep drawing at the new one.
   for i = count + 1, table.getn(wipe.strips) do
     wipe.strips[i]:Hide()
     wipe.shown[i] = nil
+    if wipe.feathers[i] then
+      wipe.feathers[i]:Hide()
+      wipe.featherShown[i] = nil
+    end
   end
 
   -- Force the next redraw to re-anchor: the rows moved with the size.
@@ -430,6 +529,7 @@ function U.CreateRadialWipe(frame, options)
     layer = options.layer or "BACKGROUND",
     color = options.color or M.color.cooldownWipe,
     quads = {}, strips = {}, drawn = {}, shown = {}, quadShown = {},
+    feathers = {}, featherDrawn = {}, featherShown = {}, featherAlpha = {},
     stripCount = 0, stripHeight = 0, size = 0, half = 0,
   }
 
@@ -462,6 +562,10 @@ function U.HideRadialWipe(wipe)
       wipe.strips[i]:Hide()
       wipe.shown[i] = nil
     end
+    if wipe.featherShown[i] then
+      wipe.feathers[i]:Hide()
+      wipe.featherShown[i] = nil
+    end
   end
 end
 
@@ -470,6 +574,11 @@ function U.SetRadialWipeColor(wipe, r, g, b, a)
   local i
   for i = 1, 4 do U.SetColor(wipe.quads[i], r, g, b, a) end
   for i = 1, table.getn(wipe.strips) do U.SetColor(wipe.strips[i], r, g, b, a) end
+
+  wipe.color = { r, g, b, a }
+  -- The ramps are rebuilt from the new colour on the next redraw rather than
+  -- here, so a recolour never has to know which row is under the edge.
+  for i = 1, table.getn(wipe.feathers) do wipe.featherAlpha[i] = nil end
 end
 
 local function ShowWipeQuad(wipe, index, show)
@@ -515,20 +624,70 @@ function U.SetRadialWipeProgress(wipe, progress)
   local slope = math.tan(phase * WIPE_RADIANS)
 
   local half = wipe.half
-  for i = 1, wipe.stripCount do
-    -- How far the boundary ray has reached across this strip's own midline,
-    -- which is what its dark run is measured against.
-    local reach = (i - 0.5) * wipe.stripHeight * slope
-    if reach > half then reach = half end
-    if reach < 0 then reach = 0 end
+  local limit = math.floor(half)
+  local rowHeight = wipe.stripHeight
 
-    local width = mirrored and reach or (half - reach)
-    width = math.floor(width + 0.5)
+  -- How far the true edge travels horizontally across one row's height: the
+  -- width of that row's partial-coverage band. Zero when the edge is exactly
+  -- along the quadrant's own edge, in which case every row is solid or clear.
+  local band = rowHeight * slope
+
+  for i = 1, wipe.stripCount do
+    -- Distance from the strip's anchored side out to the true edge, taken at
+    -- the row's two horizontal boundaries. `near` is where the edge is when it
+    -- enters the row and `far` where it leaves, so the row is solid up to
+    -- `near`, clear past `far`, and ramps between them.
+    local near, far
+    if mirrored then
+      near = (i - 1) * rowHeight * slope
+      far = i * rowHeight * slope
+    else
+      near = half - i * rowHeight * slope
+      far = half - (i - 1) * rowHeight * slope
+    end
+
+    local width, feather = 0, 0
+    if far > 0 then
+      local lo = near < 0 and 0 or near
+      if lo > half then lo = half end
+      local hi = far > half and half or far
+
+      -- Both ends are rounded to the nearest unit, deliberately, and not
+      -- floored/ceiled outward. Widening the ramp past the real transition
+      -- forces one straight gradient to stand in for a curve that is flat,
+      -- then sloped, then flat -- measurably worse than letting the ramp sit
+      -- on the transition itself, where its endpoint alphas make it exact.
+      width = math.floor(lo + 0.5)
+      feather = math.floor(hi + 0.5) - width
+
+      -- A near-vertical edge crosses well under one unit; keep a single unit
+      -- of ramp rather than letting it round away into a hard line.
+      if feather < WIPE_FEATHER_MIN and hi < half then
+        feather = WIPE_FEATHER_MIN
+      end
+
+      -- The feather hangs off the strip's free edge, so it needs a strip to
+      -- hang from. A row whose solid part rounds away keeps one unit of it.
+      if feather >= 1 and width < 1 then
+        width = 1
+        feather = feather - 1
+      end
+
+      -- Nothing may spill past the frame's own edge: these are plain textures
+      -- on the frame and this client offers no clipping to fall back on.
+      if width > limit then width = limit end
+      if width + feather > limit then feather = limit - width end
+      if feather < 0 then feather = 0 end
+    end
 
     if width < 1 then
       if wipe.shown[i] then
         wipe.strips[i]:Hide()
         wipe.shown[i] = nil
+      end
+      if wipe.featherShown[i] then
+        wipe.feathers[i]:Hide()
+        wipe.featherShown[i] = nil
       end
     else
       if wipe.drawn[i] ~= width then
@@ -538,6 +697,34 @@ function U.SetRadialWipeProgress(wipe, progress)
       if not wipe.shown[i] then
         wipe.strips[i]:Show()
         wipe.shown[i] = true
+      end
+
+      if feather < 1 then
+        if wipe.featherShown[i] then
+          wipe.feathers[i]:Hide()
+          wipe.featherShown[i] = nil
+        end
+      else
+        -- Coverage at the ramp's two ends, read off the same edge geometry
+        -- rather than assumed to be a full 1 and 0 -- which they are not when
+        -- the quadrant boundary cut the band short.
+        local aNear, aFar = 1, 0
+        if band > 0 then
+          aNear = (far - width) / band
+          aFar = (far - width - feather) / band
+          if aNear > 1 then aNear = 1 elseif aNear < 0 then aNear = 0 end
+          if aFar > 1 then aFar = 1 elseif aFar < 0 then aFar = 0 end
+        end
+        SetFeatherAlpha(wipe, i, aNear, aFar)
+
+        if wipe.featherDrawn[i] ~= feather then
+          wipe.featherDrawn[i] = feather
+          wipe.feathers[i]:SetWidth(feather)
+        end
+        if not wipe.featherShown[i] then
+          wipe.feathers[i]:Show()
+          wipe.featherShown[i] = true
+        end
       end
     end
   end

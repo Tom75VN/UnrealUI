@@ -29,11 +29,13 @@ Quick Binding removes the trip through nested menus. Hover an action slot, press
 
 ### Read combat before the moment has passed
 
-Clean player, target, target-of-target, pet, and party frames keep health and power readable at a glance. Modern nameplates emphasize your target, the player cast bar shows progress and remaining time, and configurable debuff rows separate Magic, Curse, Poison, Disease, and physical effects by color.
+Clean player, target, target-of-target, pet, and party frames keep health and power readable at a glance. Modern nameplates emphasize your target, the player cast bar shows progress and remaining time, and configurable debuff rows separate Magic, Curse, Poison, Disease, and physical effects by color. The target also carries its buffs on a row of their own, and every aura icon runs the same radial wipe and countdown the action bars use.
 
 ### Spend less time managing inventory
 
 One unified bag window replaces the pile of separate containers. See item quality and cooldowns clearly, open the keyring when needed, and clean up grey items in one action—selling them at a merchant or asking before deleting them elsewhere.
+
+The bank uses the same window: the bank container and every purchased bank bag are packed into one continuous grid, your bank bags sit in the header with the slot you have not bought yet, and item quality reads exactly as it does in your bags.
 
 ### Modern where it helps, familiar where it matters
 
@@ -89,7 +91,7 @@ Use `/uui` to open the settings, `/uui unlock` to arrange supported elements, an
 
 ## Version
 
-Current release: **0.1.1**
+Current release: **0.1.2**
 
 ## Acknowledgements
 

@@ -1228,3 +1228,361 @@ function U.CreateSlider(parent, options)
   control.SetValue(options.value or min)
   return control
 end
+
+-- ---------------------------------------------------------------------------
+-- Money readout
+--
+-- One coin (a number plus its g/s/c letter suffix, e.g. "12g", coloured as one
+-- label) and a gold/silver/copper row built from three of them, both driven by
+-- core/media.lua's M.money so a colour cannot drift between callers. An icon
+-- atlas was tried first and silently failed to render in game (see M.money's
+-- comment); text needs no texture and cannot fail the same way.
+-- ---------------------------------------------------------------------------
+local function LabelWidth(label)
+  if not label then return 0 end
+  local ok, width = pcall(label.GetStringWidth, label)
+  return ok and math.ceil(tonumber(width) or 0) or 0
+end
+
+-- denom: "gold" | "silver" | "copper"
+function U.CreateMoneyCoin(parent, denom, size)
+  local spec = M.money[denom]
+  if not spec then return nil end
+
+  size = size or 14
+  local holder = CreateFrame("Frame", nil, parent)
+  holder:SetHeight(size)
+  holder:SetWidth(size)
+  holder.suffix = spec.suffix
+
+  holder.label = U.CreateLabel(holder, {
+    size = M.fontSize.small,
+    color = spec.color,
+    inherits = "GameFontNormalSmall",
+  })
+  if holder.label then
+    holder.label:SetPoint("RIGHT", holder, "RIGHT", 0, 0)
+  end
+
+  return holder
+end
+
+function U.SetMoneyCoin(coin, value)
+  if not coin or not coin.label then return end
+  coin.label:SetText(tostring(value) .. (coin.suffix or ""))
+
+  -- Sized to the rendered amount rather than a reserved width, so adjacent
+  -- denominations sit with a small, constant gap between them.
+  local width = LabelWidth(coin.label)
+  if width == 0 then width = string.len(tostring(value)) * 7 end
+  coin.contentWidth = math.ceil(width) + 4
+  coin:SetWidth(coin.contentWidth)
+end
+
+-- A gold/silver/copper row with a single :SetAmount(copper) entry point.
+-- row.contentWidth is kept current after every call, so a caller can centre
+-- or resize around it without re-measuring the three coins itself.
+function U.CreateMoneyReadout(parent)
+  local row = CreateFrame("Frame", nil, parent)
+  row:SetHeight(14)
+
+  row.gold   = U.CreateMoneyCoin(row, "gold")
+  row.silver = U.CreateMoneyCoin(row, "silver")
+  row.copper = U.CreateMoneyCoin(row, "copper")
+  row.gold:SetPoint("LEFT", row, "LEFT", 0, 0)
+  row.silver:SetPoint("LEFT", row.gold, "RIGHT", 1, 0)
+  row.copper:SetPoint("LEFT", row.silver, "RIGHT", 1, 0)
+
+  function row:SetAmount(copper)
+    copper = tonumber(copper) or 0
+    if copper < 0 then copper = 0 end
+
+    U.SetMoneyCoin(row.gold, tostring(math.floor(copper / 10000)))
+    U.SetMoneyCoin(row.silver, tostring(math.floor(math.mod(copper, 10000) / 100)))
+    U.SetMoneyCoin(row.copper, tostring(math.mod(copper, 100)))
+
+    row.contentWidth = (row.gold.contentWidth or 0) + 1 +
+                        (row.silver.contentWidth or 0) + 1 +
+                        (row.copper.contentWidth or 0)
+    row:SetWidth(row.contentWidth)
+  end
+
+  return row
+end
+
+-- ---------------------------------------------------------------------------
+-- Price panel
+--
+-- A small owned panel that shows a money readout under whatever button is
+-- being hovered. Kept separate from GameTooltip rather than injected into it:
+-- GameTooltip's own line/texture pool has no compact record on this client,
+-- so the price readout is a normal frame this addon fully owns instead of a
+-- guess at undocumented tooltip internals. One instance is reused by every
+-- caller, the same singleton pattern as the confirm dialog below.
+-- ---------------------------------------------------------------------------
+local pricePanel
+
+local function BuildPricePanel()
+  local panel = U.CreatePanel(UIParent, {
+    name = "UnrealUIPricePanel",
+    width = 10,
+    height = 22,
+  })
+  pcall(panel.SetFrameStrata, panel, "TOOLTIP")
+
+  panel.caption = U.CreateLabel(panel, {
+    size = M.fontSize.small,
+    color = M.color.textDim,
+    inherits = "GameFontNormalSmall",
+  })
+  if panel.caption then
+    panel.caption:SetText("Cost:")
+    panel.caption:SetPoint("LEFT", panel, "LEFT", 6, 0)
+  end
+
+  panel.readout = U.CreateMoneyReadout(panel)
+  if panel.caption then
+    panel.readout:SetPoint("LEFT", panel.caption, "RIGHT", 4, 0)
+  else
+    panel.readout:SetPoint("LEFT", panel, "LEFT", 6, 0)
+  end
+
+  panel:Hide()
+  return panel
+end
+
+local function ShowPricePanel(anchorFrame, copper)
+  if not pricePanel then pricePanel = BuildPricePanel() end
+
+  pricePanel.readout:SetAmount(copper)
+  local width = LabelWidth(pricePanel.caption) + 4 +
+                (pricePanel.readout.contentWidth or 0) + 12
+  pricePanel:SetWidth(width)
+  pricePanel:ClearAllPoints()
+  pricePanel:SetPoint("TOP", anchorFrame, "BOTTOM", 0, -4)
+  pricePanel:Show()
+end
+
+local function HidePricePanel()
+  if pricePanel then pricePanel:Hide() end
+end
+
+-- ---------------------------------------------------------------------------
+-- Icon buttons
+--
+-- A small square button with a stock icon inset inside the unrealUI border,
+-- plus a tooltip and an optional price readout underneath it. Promoted here
+-- from a module-local copy in modules/bags.lua (header toggles for the
+-- keyring, bag slots and vendor action) once modules/bank.lua needed the
+-- identical recipe for its purchase control.
+--
+-- options: name, texture, fallback, title, detail (function -> string or nil),
+--          price (function -> copper amount or nil), onClick
+-- ---------------------------------------------------------------------------
+function U.CreateIconButton(parent, options)
+  options = options or {}
+
+  local button = U.CreateButton(parent, {
+    name = options.name,
+    text = "",
+    width = options.size or M.slot.icon,
+    height = options.size or M.slot.icon,
+    onClick = options.onClick,
+  })
+
+  local edge = U.BorderSize()
+  local icon = button:CreateTexture(nil, "ARTWORK")
+  icon:SetPoint("TOPLEFT", button, "TOPLEFT", edge, -edge)
+  icon:SetPoint("BOTTOMRIGHT", button, "BOTTOMRIGHT", -edge, edge)
+
+  if pcall(icon.SetTexture, icon, options.texture) then
+    pcall(icon.SetTexCoord, icon, 0.08, 0.92, 0.08, 0.92)
+  else
+    icon:Hide()
+    if button.label then button.label:SetText(options.fallback or "?") end
+  end
+  button.icon = icon
+
+  button:SetScript("OnEnter", function()
+    U.SetBorderColor(button, M.Unpack(M.color.moverEdge))
+
+    local tip = U.G("GameTooltip")
+    if tip then
+      pcall(tip.SetOwner, tip, button, "ANCHOR_BOTTOM")
+      pcall(tip.SetText, tip, options.title)
+      if type(options.detail) == "function" then
+        local line = options.detail()
+        if line then pcall(tip.AddLine, tip, line, 0.65, 0.65, 0.65, 1) end
+      end
+      pcall(tip.Show, tip)
+    end
+
+    if type(options.price) == "function" then
+      local copper = options.price()
+      if tonumber(copper) then ShowPricePanel(button, copper) end
+    end
+  end)
+
+  button:SetScript("OnLeave", function()
+    U.SetBorderColor(button, M.Unpack(M.color.border))
+    local tip = U.G("GameTooltip")
+    if tip then pcall(tip.Hide, tip) end
+    HidePricePanel()
+  end)
+
+  return button
+end
+
+-- ---------------------------------------------------------------------------
+-- Confirmation dialog
+--
+-- One shared modal for "are you sure" actions (delete greys, buy a bank slot).
+-- An owned panel rather than StaticPopup: query_compat.py has no record of
+-- StaticPopupDialogs/StaticPopup_Show on this client at all, and this needs
+-- only a line of text, an optional detail line and two buttons, all of which
+-- core/style.lua already provides.
+--
+-- It replaced a module-local copy that lived in modules/bags.lua; the design
+-- rules list "modal dialogs" as a missing shared component, so the second
+-- caller (modules/bank.lua) added it centrally instead of copying it again.
+-- ---------------------------------------------------------------------------
+local confirmDialog
+
+local function BuildConfirmDialog()
+  local dialog = U.CreatePanel(UIParent, {
+    name = "UnrealUIConfirm",
+    width = 280,
+    height = 100,
+  })
+  dialog:SetPoint("CENTER", UIParent, "CENTER", 0, 120)
+  pcall(dialog.SetFrameStrata, dialog, "DIALOG")
+  pcall(dialog.EnableMouse, dialog, true)
+
+  dialog.text = U.CreateLabel(dialog, {
+    size = M.fontSize.normal,
+    color = M.color.text,
+    inherits = "GameFontNormal",
+  })
+  if dialog.text then
+    dialog.text:SetPoint("TOP", dialog, "TOP", 0, -16)
+  end
+
+  dialog.detail = U.CreateLabel(dialog, {
+    size = M.fontSize.small,
+    color = M.color.textDim,
+    inherits = "GameFontNormalSmall",
+  })
+  if dialog.detail then
+    dialog.detail:SetPoint("TOP", dialog, "TOP", 0, -38)
+  end
+
+  -- Optional price row: "Cost:" plus the shared gold/silver/copper readout,
+  -- shown instead of the plain detail text when a caller passes
+  -- options.moneyCopper (modules/bank.lua's purchase confirmation).
+  dialog.priceRow = CreateFrame("Frame", nil, dialog)
+  dialog.priceRow:SetHeight(14)
+
+  dialog.priceCaption = U.CreateLabel(dialog.priceRow, {
+    size = M.fontSize.small,
+    color = M.color.textDim,
+    inherits = "GameFontNormalSmall",
+  })
+  if dialog.priceCaption then
+    dialog.priceCaption:SetText("Cost:")
+    dialog.priceCaption:SetPoint("LEFT", dialog.priceRow, "LEFT", 0, 0)
+  end
+
+  dialog.priceReadout = U.CreateMoneyReadout(dialog.priceRow)
+  if dialog.priceCaption then
+    dialog.priceReadout:SetPoint("LEFT", dialog.priceCaption, "RIGHT", 4, 0)
+  else
+    dialog.priceReadout:SetPoint("LEFT", dialog.priceRow, "LEFT", 0, 0)
+  end
+
+  dialog.priceRow:Hide()
+
+  dialog.cancel = U.CreateButton(dialog, {
+    name = "UnrealUIConfirmCancel",
+    text = "Cancel",
+    width = 110,
+    height = 24,
+    onClick = function() dialog:Hide() end,
+  })
+  dialog.cancel:SetPoint("BOTTOMRIGHT", dialog, "BOTTOMRIGHT", -16, 14)
+
+  dialog.accept = U.CreateButton(dialog, {
+    name = "UnrealUIConfirmAccept",
+    text = "Accept",
+    width = 110,
+    height = 24,
+  })
+  dialog.accept:SetPoint("BOTTOMLEFT", dialog, "BOTTOMLEFT", 16, 14)
+
+  dialog:Hide()
+  return dialog
+end
+
+-- options: text, detail, acceptText, cancelText, onAccept, owner
+--
+-- `owner` is an opaque tag so a caller can take its own dialog down again
+-- (U.HideConfirm(owner)) without cancelling one another window put up.
+-- options.moneyCopper (a copper amount) shows the gold/silver/copper price
+-- row instead of plain detail text; leave it nil for a normal confirm.
+function U.ShowConfirm(options)
+  options = options or {}
+  if not confirmDialog then confirmDialog = BuildConfirmDialog() end
+
+  local dialog = confirmDialog
+  dialog.uuiOwner = options.owner
+  if dialog.text then dialog.text:SetText(options.text or "Are you sure?") end
+
+  local money = tonumber(options.moneyCopper)
+  if dialog.detail then dialog.detail:SetText(options.detail or "") end
+
+  if dialog.accept.label then
+    dialog.accept.label:SetText(options.acceptText or "Accept")
+  end
+  if dialog.cancel.label then
+    dialog.cancel.label:SetText(options.cancelText or "Cancel")
+  end
+
+  dialog.accept:SetScript("OnClick", function()
+    dialog:Hide()
+    if type(options.onAccept) == "function" then options.onAccept() end
+  end)
+
+  -- rendering.parent_alpha_not_propagated: every part is shown explicitly
+  -- rather than left to follow the panel it hangs off.
+  dialog:Show()
+  if dialog.text then dialog.text:Show() end
+  dialog.accept:Show()
+  dialog.cancel:Show()
+
+  if money then
+    dialog.priceReadout:SetAmount(money)
+
+    local capWidth = 0
+    if dialog.priceCaption then
+      local ok, w = pcall(dialog.priceCaption.GetStringWidth, dialog.priceCaption)
+      capWidth = (ok and math.ceil(tonumber(w) or 0)) or 0
+    end
+
+    dialog.priceRow:SetWidth(capWidth + 4 + (dialog.priceReadout.contentWidth or 0))
+    dialog.priceRow:ClearAllPoints()
+    dialog.priceRow:SetPoint("TOP", dialog, "TOP", 0, -40)
+    dialog.priceRow:Show()
+    if dialog.priceCaption then dialog.priceCaption:Show() end
+    if dialog.detail then dialog.detail:Hide() end
+  else
+    dialog.priceRow:Hide()
+    if dialog.detail then dialog.detail:Show() end
+  end
+
+  return dialog
+end
+
+function U.HideConfirm(owner)
+  if not confirmDialog then return end
+  if owner and confirmDialog.uuiOwner ~= owner then return end
+  confirmDialog:Hide()
+end

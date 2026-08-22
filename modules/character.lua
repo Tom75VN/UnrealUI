@@ -53,22 +53,199 @@ local function StyleSlots()
   end
 end
 
--- The stock magic-resistance readouts (MagicResFrame1-5). Each is a plain
--- Frame with its own icon/text region, not a button, so it gets the same
--- backdrop-plus-icon treatment as a slot without going through
--- U.StyleStockButton (which expects button texture getters/setters).
-local function StyleResistances()
+-- Resistance readouts (MagicResFrame1-5).
+--
+-- Measured on this client with /uui res (UnrealUIDiagDB.resistances,
+-- USER_CONFIRMED_INGAME). Each MagicResFrame<i> is a 32x29 Frame with
+-- mouse enabled, GetID() giving the real school id (6,2,3,4,5 =
+-- arcane/fire/nature/frost/shadow, so the frame index is NOT the id), and
+-- exactly two native regions of interest:
+--
+--   * an unnamed BACKGROUND Texture, 32x29, filling the frame -- the client's
+--     own resistance icon, already cropped per school;
+--   * MagicResText<i>, the BACKGROUND FontString holding the value.
+--
+-- Two things that dump settled, both of which had defeated earlier passes:
+--
+--   * GetTexture() returns nothing for these regions on this client, so the
+--     path filter UnrealPfUI's GetNoNameObject relies on cannot find the icon
+--     here. GetName() carries it instead -- the region reads as
+--     "Interface/PaperDollInfoFrame/UI-Character-ResistanceIcons_0x...". That
+--     name, not the texture path, is what identifies it below.
+--   * The icon path is Interface/PaperDollInfoFrame/UI-Character-
+--     ResistanceIcons, not Vanilla's PaperDoll sheet. An earlier pass created
+--     its own texture pointing at the Vanilla path and got an invisible
+--     region (it showed up in the dump as a 28x25 ARTWORK texture with no
+--     texture at all), which is why the icons stayed missing.
+--
+-- So unrealUI reuses the native region rather than owning one: it is kept out
+-- of the strip pass and simply shown again, at its native full-frame anchor
+-- and native crop. The 1-unit outline is OVERLAY and still draws over it.
+local RESIST_ICON_MARKER = "ResistanceIcons"
+
+local function FindResistIcon(res)
+  if res.uuiResistIcon then return res.uuiResistIcon end
+  if not res.GetRegions then return nil end
+
+  local ok, regions = pcall(function() return { res:GetRegions() } end)
+  if not ok then return nil end
+
+  local i
+  for i = 1, table.getn(regions) do
+    local region = regions[i]
+    local typeOk, objectType = false, nil
+    if region and region.GetObjectType then
+      typeOk, objectType = pcall(region.GetObjectType, region)
+    end
+    if typeOk and objectType == "Texture" and region.GetName then
+      local nameOk, name = pcall(region.GetName, region)
+      if nameOk and type(name) == "string" and
+         string.find(name, RESIST_ICON_MARKER, 1, true) then
+        res.uuiResistIcon = region
+        -- The name is "<texture path>_0x<address>", so the path can be
+        -- recovered from it. Kept because U.HideRegion's strip recipe calls
+        -- SetTexture(nil): if any pass ever reaches this region before the
+        -- keep set does, showing it again is not enough to bring the art back,
+        -- and GetTexture() cannot report what it used to be on this client.
+        res.uuiResistIconPath = string.gsub(name, "_0[xX]%x+$", "")
+        return region
+      end
+    end
+  end
+  return nil
+end
+
+-- Tooltip.
+--
+-- The client owns a per-school tooltip of its own ("Increases the ability to
+-- resist frost-based attacks, spells and abilities. / Resistance against level
+-- 20: None", USER_CONFIRMED_INGAME screenshot) and the dump shows the native
+-- OnEnter handler still attached with mouse enabled. That text is richer and
+-- correctly localized, so unrealUI does not replace it -- it only makes sure
+-- the native handler is left able to run, and it comes up inside the shared
+-- GameTooltip that modules/tooltip.lua already skins, which is the same
+-- component the equipment slots' tooltips use.
+--
+-- No OnEnter hook is installed here. The previous pass added one that rebuilt
+-- the tooltip from UnitResistance; that both discarded the client's own text
+-- and, since UnitResistance is only DOCUMENTED_NOT_RUNTIME_VERIFIED here, gave
+-- a silent handler error a way to leave the tooltip cleared but never shown --
+-- indistinguishable in game from no tooltip at all.
+-- Native crop of each school inside the resistance sheet, one row per
+-- MagicResFrame index. These are the client's own coordinates for this texture,
+-- confirmed by UnrealPfUI re-applying exactly these values to the same regions
+-- (skins/blizzard/character.lua:25-31, WORKING_SOURCE).
+--
+-- They have to be restated rather than read back and adjusted: GetTexCoord has
+-- no compact-evidence record on this client, so the crop already in place is not
+-- readable.
+local RESIST_TEXCOORD = {
+  { 0.21875, 0.78125, 0.25,        0.3203125  },
+  { 0.21875, 0.78125, 0.0234375,   0.09375    },
+  { 0.21875, 0.78125, 0.13671875,  0.20703125 },
+  { 0.21875, 0.78125, 0.36328125,  0.43359375 },
+  { 0.21875, 0.78125, 0.4765625,   0.546875   },
+}
+
+-- The sheet paints a rounded bevelled ring around each glyph, which is stock
+-- decorative chrome the design system does not allow to survive on a skinned
+-- surface (rules/unreal-ui-design.md, native texture policy) -- and it is baked
+-- into the art rather than carried by a separate region, so it can only be
+-- cropped out. This trims each native rect inwards by a fraction of its own
+-- span, keeping the glyph and dropping the ring, in the same spirit as the
+-- 0.08/0.92 trim U.StyleStockButton applies to item icons.
+local RESIST_ICON_TRIM = 0.14
+
+local function ApplyResistIconCrop(icon, index)
+  local coords = RESIST_TEXCOORD[index]
+  if not coords then return end
+
+  local insetX = (coords[2] - coords[1]) * RESIST_ICON_TRIM
+  local insetY = (coords[4] - coords[3]) * RESIST_ICON_TRIM
+
+  pcall(icon.SetTexCoord, icon,
+        coords[1] + insetX, coords[2] - insetX,
+        coords[3] + insetY, coords[4] - insetY)
+end
+
+local function StyleResistance(res, index)
+  local icon = FindResistIcon(res)
+
+  -- The icon has to be named in the keep set on every pass: StyleResistances is
+  -- re-run by the reapply hooks, and without this the strip pass hides the very
+  -- region being restored one line later.
+  U.StripStockTextures(res, { icon = icon })
+  U.CreateBackdrop(res, { background = { 0.03, 0.03, 0.03, 0.82 } })
+
+  -- U.HideRegion clears, hides and alpha-0s a region, so restoring one that a
+  -- previous pass stripped takes both calls back.
+  if icon then
+    if res.uuiResistIconPath then
+      pcall(icon.SetTexture, icon, res.uuiResistIconPath)
+    end
+    ApplyResistIconCrop(icon, index)
+
+    -- Inset by the outline thickness so unrealUI's own 1-unit border stays the
+    -- only edge on the square, with the glyph flat inside it.
+    local border = U.BorderSize()
+    pcall(function()
+      icon:ClearAllPoints()
+      icon:SetPoint("TOPLEFT", res, "TOPLEFT", border, -border)
+      icon:SetPoint("BOTTOMRIGHT", res, "BOTTOMRIGHT", -border, border)
+    end)
+
+    pcall(icon.Show, icon)
+    pcall(icon.SetAlpha, icon, 1)
+  end
+
+  SetTextFont(G("MagicResText" .. index), M.fontSize.small, WHITE)
+end
+
+-- The resistance column overlaps CharacterModelFrame, and unrealUI's own
+-- click-rotate catcher (StyleModel below) is SetAllPoints on that model with
+-- mouse enabled -- so it sat over the resistance frames and swallowed their
+-- hover. /uui res proved the native OnEnter itself is fine: called directly it
+-- returns ok and shows a populated tooltip ("Frost Resistance 0"), so nothing
+-- was wrong with the handler or the skin, the mouse simply never reached it.
+--
+-- Raising the container above the catcher is the narrow fix; the catcher still
+-- covers the rest of the model, so click-rotate keeps working everywhere the
+-- resistances are not.
+-- Measured overlap (/uui res, USER_CONFIRMED_INGAME): unrealUI's click-rotate
+-- catcher spans x 344-577 / y 369-593 over CharacterModelFrame, and the
+-- resistance column sits at x 544-576 inside it. Both were MEDIUM strata at
+-- level 4 -- a tie the catcher wins, which is why hovering an icon produced no
+-- OnEnter at all while a gear slot beside it behaved normally.
+--
+-- The level has to be set on each MagicResFrame, not on their container: this
+-- client does not push a SetFrameLevel down to existing children, so an earlier
+-- pass that raised CharacterResistanceFrame to level 9 left the five frames
+-- that actually take the mouse still sitting at 4.
+local function RaiseResistancesAboveModel()
+  local catcher = G("UnrealUICharacterModelRotateCatcher")
+  if not catcher then return end
+
+  local strataOk, strata = pcall(catcher.GetFrameStrata, catcher)
+  local levelOk, level = pcall(catcher.GetFrameLevel, catcher)
+  level = levelOk and tonumber(level) or nil
+
   local i
   for i = 1, 5 do
     local res = G("MagicResFrame" .. i)
     if res then
-      U.StripStockTextures(res)
-      U.CreateBackdrop(res, { background = { 0.03, 0.03, 0.03, 0.82 } })
-
-      local text = G("MagicResFrame" .. i .. "Text")
-      SetTextFont(text, M.fontSize.small, WHITE)
+      if strataOk and strata then pcall(res.SetFrameStrata, res, strata) end
+      if level then pcall(res.SetFrameLevel, res, level + 5) end
     end
   end
+end
+
+local function StyleResistances()
+  local i
+  for i = 1, 5 do
+    local res = G("MagicResFrame" .. i)
+    if res then StyleResistance(res, i) end
+  end
+  RaiseResistancesAboveModel()
 end
 
 -- FontString names below (CharacterStrengthLabel/Value, MeleeAttackPower*,
@@ -479,6 +656,7 @@ end
 -- before it (Lua locals only scope forward from their declaration; the same
 -- issue questlog.lua's SyncTrackedQuestMemory comment documents).
 local UpdateSkillRows
+local StyleUnlearnButton
 
 local function ToggleSkillHeader(row)
   local index = row and row.uuiSkillIndex
@@ -678,9 +856,76 @@ local function StyleSkillsTab()
 
   local status = G("SkillDetailStatusBar")
   if status then StyleSkillBar(status) end
-  U.StyleStockButton(G("SkillDetailStatusBarUnlearnButton"))
+  StyleUnlearnButton(G("SkillDetailStatusBarUnlearnButton"))
 
   U.PostHookGlobal("SkillFrame_Update", UpdateSkillRows)
+end
+
+-- The unlearn button carries its entire meaning in its NormalTexture (the red
+-- "pass" X); it has no label. U.StyleStockButton clears every button face, so
+-- the button rendered as an empty accent-outlined square in game
+-- (USER_CONFIRMED_INGAME, screenshot). The native face cannot simply be kept:
+-- the clear pass also runs SetNormalTexture(button, "") on this client, which
+-- blanks the same texture object.
+--
+-- So the glyph is re-added as an unrealUI-owned ARTWORK texture and passed
+-- through `keep` so the strip pass leaves it alone. WORKING_SOURCE
+-- (UnrealPfUI skins/blizzard/character.lua:324): that skin sets exactly this
+-- path on this button on this client, so it is the right art rather than a
+-- guessed path -- this is a working implementation, not runtime verification.
+--
+-- No icon-atlas texcoord crop here: knowledge.json /
+-- ui.microbutton_reskin_regresses_visually records that the 0.08-0.92 inset
+-- assumes icon-atlas art and visibly cuts plain UI button textures like this
+-- one. The glyph is inset with padding instead, which is why it does not go
+-- through U.StyleStockButton's `icon` option.
+local UNLEARN_ICON = "Interface\\Buttons\\UI-GroupLoot-Pass-Up"
+
+local function SetIconAlpha(icon, alpha)
+  if icon then pcall(icon.SetAlpha, icon, alpha) end
+end
+
+StyleUnlearnButton = function(button)
+  if not button then return end
+
+  if not button.uuiUnlearnIcon and button.CreateTexture then
+    local ok, icon = pcall(button.CreateTexture, button, nil, "ARTWORK")
+    if ok and icon then
+      pcall(icon.SetTexture, icon, UNLEARN_ICON)
+      pcall(function()
+        icon:ClearAllPoints()
+        icon:SetPoint("TOPLEFT", button, "TOPLEFT", 2, -2)
+        icon:SetPoint("BOTTOMRIGHT", button, "BOTTOMRIGHT", -2, 2)
+      end)
+      button.uuiUnlearnIcon = icon
+    end
+  end
+
+  local options
+  if button.uuiUnlearnIcon then
+    options = { keep = { [button.uuiUnlearnIcon] = true } }
+  end
+  U.StyleStockButton(button, options)
+
+  -- RUNTIME_FAILURE_CONFIRMED (UnrealRuntimeProbe skillunlearn.icon_field.v1 /
+  -- skillunlearn.icon_region_membership.v1): a texture from CreateTexture on
+  -- this button defaulted to IsShown() == false even though its texture path,
+  -- size, alpha and anchors were all set correctly -- and it is not enumerated
+  -- by button:GetRegions() at all here, so the `keep` table above never had
+  -- anything to protect it from. This client requires an explicit Show().
+  if button.uuiUnlearnIcon then pcall(button.uuiUnlearnIcon.Show, button.uuiUnlearnIcon) end
+
+  -- U.StyleStockButton only owns hover; the glyph carries the pressed state so
+  -- a destructive click still gives feedback without stock pushed art.
+  local icon = button.uuiUnlearnIcon
+  if icon and not button.uuiUnlearnStates then
+    button.uuiUnlearnStates = true
+    U.PostHookScript(button, "OnEnter", function() SetIconAlpha(icon, 1) end)
+    U.PostHookScript(button, "OnLeave", function() SetIconAlpha(icon, 0.85) end)
+    U.PostHookScript(button, "OnMouseDown", function() SetIconAlpha(icon, 0.6) end)
+    U.PostHookScript(button, "OnMouseUp", function() SetIconAlpha(icon, 0.85) end)
+    SetIconAlpha(icon, 0.85)
+  end
 end
 
 local function StyleHonorTab()

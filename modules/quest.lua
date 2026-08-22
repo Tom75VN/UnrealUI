@@ -171,7 +171,10 @@ local function StyleTitleRows()
     local button = G("QuestTitleButton" .. i)
     if button then
       local icon = G("QuestTitleButton" .. i .. "QuestIcon")
-      U.StripStockTextures(button, icon and { icon = icon } or nil)
+      -- Same shared row helper as modules/gossip.lua: it also finds the icon by
+      -- texture path and re-shows it, so the available/turn-in marker survives
+      -- both a missing region name and a strip pass on a then-empty row.
+      U.StripStockRowTextures(button, icon and { icon = icon } or nil)
 
       local fontOk, fontstring = false, nil
       if button.GetFontString then
