@@ -1,11 +1,9 @@
 -- unrealUI :: modules/unitframes.lua
 --
--- Player, target and party unit frames use three stacked bars: a large health
--- bar, a thinner power bar directly under it, and a third strip underneath
--- showing text values (name, health, power). Target-of-target is deliberately
--- simpler: one health bar with its name centred on top. No
--- portrait -- removed by request; the earlier 2D fallback worked, this is a
--- design choice, not a compatibility failure.
+-- Modern player, target and party unit frames use compact stacked status bars;
+-- target-of-target is deliberately simpler. Classic keeps the same UnrealUI
+-- roots, mover positions and update machinery but hides those bars and anchors
+-- the client's native portrait frames over them.
 --
 -- None of pfUI's unitframe architecture is reproduced: there is no config
 -- schema, no module framework, no aura/indicator/glow/click-cast machinery,
@@ -136,7 +134,7 @@ local PRIMARY_WIDTH = 180
 
 local SPECS = {
   {
-    -- health raised from 26 to 34 (+30%) by request.
+    -- Compact primary bars.
     -- No values strip: text lives on the health/power bars themselves --
     -- level+health on the health bar, power on the power bar, by request.
     id = "player", unit = "player", name = "Player", label = "Player",
@@ -148,6 +146,7 @@ local SPECS = {
   {
     id = "target", unit = "target", name = "Target", label = "Target",
     width = PRIMARY_WIDTH, health = 34, power = 10, gap = 0,
+    healthTexture = true,
     healthLabels = { left = "healthdyn", right = "unitrev" },
     powerLabels = { left = "powerdyn" },
     default = { point = "BOTTOMLEFT", relativePoint = "BOTTOM", x = 75, y = 125 },
@@ -180,10 +179,9 @@ local SPECS = {
 
 local PARTY_COUNT = 4
 -- Top-of-frame to top-of-frame, so the visible gap between two members is
--- this minus a member's own height (36 health + 8 power + 4 border = 48 at
--- the default 1px border). 75 left a 27px gap; reduced 80% to 5px by
--- request, hence 53.
-local PARTY_SPACING = 53
+-- this minus a member's own height (36 health + 8 power + 3 visible border =
+-- 47 at the default 1px border). Keep the requested 5px visible gap, hence 52.
+local PARTY_SPACING = 52
 
 -- The party frames are laid out inside one anchor frame and moved as a block:
 -- a party is a single unit of layout, and dragging four frames into alignment
@@ -203,6 +201,7 @@ do
       -- text lives on the bars themselves, name+health on the health bar and
       -- power on the power bar. health doubled from 18 to 36, by request.
       width = 164, health = 36, power = 8, gap = 0,
+      healthTexture = true,
       healthLabels = { left = "unit", right = "healthdyn" },
       powerLabels = { right = "powerdyn" },
       anchorTo = PARTY_ANCHOR,
@@ -314,10 +313,12 @@ end
 -- pfUI modern runs with pastel enabled, which lifts every derived colour toward
 -- white. Bars and text use different strengths upstream, so both are kept.
 local function PastelBar(r, g, b)
+  if not M.unitFrame.usePastelGradient then return r, g, b end
   return (r + 0.5) * 0.5, (g + 0.5) * 0.5, (b + 0.5) * 0.5
 end
 
 local function PastelText(r, g, b)
+  if not M.unitFrame.usePastelGradient then return r, g, b end
   return (r + 0.75) * 0.5, (g + 0.75) * 0.5, (b + 0.75) * 0.5
 end
 
@@ -612,6 +613,161 @@ local frameOrder = {}
 local textCache = {}    -- fontstring -> last applied string
 local dirtyUnits = {}   -- unit token -> health | power | vitals | full
 
+-- Classic keeps UnrealUI's generated frames as invisible layout anchors while
+-- showing the client's real unit frames on top of them. That gives the theme
+-- native portraits, frame art, level badges and status bars without surrendering
+-- saved mover positions, edit-mode handles, aura attachment points or the
+-- module's existing unit refresh contract.
+--
+-- Theme changes require /reload, so a frame family that was destructively
+-- suppressed by the Modern theme is never expected to be restored in place.
+-- On a Classic load SuppressStockFrames is skipped entirely.
+local classicNative = {
+  active = false,
+  roots = {
+    { id = "player",       names = { "PlayerFrame" } },
+    { id = "target",       names = { "TargetFrame" } },
+    { id = "targettarget", names = { "TargetofTargetFrame", "TargetofTarget" } },
+    { id = "pet",          names = { "PetFrame" } },
+    { id = "party1",       names = { "PartyMemberFrame1" } },
+    { id = "party2",       names = { "PartyMemberFrame2" } },
+    { id = "party3",       names = { "PartyMemberFrame3" } },
+    { id = "party4",       names = { "PartyMemberFrame4" } },
+  },
+}
+
+function classicNative.Enabled()
+  return type(U.ThemeStyleUsesNativeChrome) == "function" and
+         U.ThemeStyleUsesNativeChrome()
+end
+
+function classicNative.Resolve(names)
+  local i
+  for i = 1, table.getn(names) do
+    local frame = U.G(names[i])
+    if frame and type(frame.ClearAllPoints) == "function" and
+       type(frame.SetPoint) == "function" then
+      return frame
+    end
+  end
+  return nil
+end
+
+function classicNative.Dimension(frame, method)
+  local fn = frame and frame[method]
+  if type(fn) ~= "function" then return 0 end
+  local ok, value = pcall(fn, frame)
+  if not ok then return 0 end
+  return tonumber(value) or 0
+end
+
+function classicNative.Anchor(anchor, native)
+  if not anchor or not native then return end
+  if not pcall(native.ClearAllPoints, native) then return end
+  if not pcall(native.SetPoint, native, "CENTER", anchor, "CENTER", 0, 0) then
+    return
+  end
+
+  -- Aura rows remain children of UnrealUI's compact anchor. These offsets move
+  -- them from that invisible rectangle to the corresponding edge of the larger
+  -- native artwork without changing the anchor's saved position or dimensions.
+  local nativeWidth = classicNative.Dimension(native, "GetWidth")
+  local nativeHeight = classicNative.Dimension(native, "GetHeight")
+  local anchorWidth = classicNative.Dimension(anchor, "GetWidth")
+  local anchorHeight = classicNative.Dimension(anchor, "GetHeight")
+  anchor.uuiAuraRightOffset = math.max(0, (nativeWidth - anchorWidth) / 2)
+  anchor.uuiAuraTopOffset = math.max(0, (nativeHeight - anchorHeight) / 2)
+  anchor.uuiAuraBottomOffset = anchor.uuiAuraTopOffset
+end
+
+function classicNative.HideCustomVisuals(frame)
+  frame.classicNative = true
+  pcall(frame.EnableMouse, frame, false)
+  pcall(frame.SetAlpha, frame, 1)
+
+  local parts = {
+    frame.health, frame.power, frame.values, frame.portrait,
+    frame.classIcon, frame.restIcon, frame.happiness,
+  }
+  local i
+  for i = 1, table.getn(parts) do
+    local part = parts[i]
+    if part and type(part.Hide) == "function" then pcall(part.Hide, part) end
+  end
+end
+
+function classicNative.Bind(entry)
+  local anchor = frames[entry.id]
+  local native = classicNative.Resolve(entry.names)
+  if not anchor or not native then
+    U.Debug("no native Classic unit frame found for: " .. entry.id)
+    return
+  end
+
+  anchor.classicNativeFrame = native
+  entry.anchor = anchor
+  entry.native = native
+  classicNative.Anchor(anchor, native)
+
+  if not native.uuiClassicAnchorHooked then
+    native.uuiClassicAnchorHooked = true
+    U.PostHookScript(native, "OnShow", function()
+      classicNative.Anchor(anchor, native)
+    end)
+  end
+end
+
+function classicNative.Reanchor()
+  if not classicNative.active then return end
+  local i
+  for i = 1, table.getn(classicNative.roots) do
+    local entry = classicNative.roots[i]
+    if entry.anchor and entry.native then
+      classicNative.Anchor(entry.anchor, entry.native)
+    end
+  end
+end
+
+function classicNative.AuraNames(root, series)
+  local names = {}
+  local i, j
+  for i = 1, table.getn(series) do
+    local suffix, count = series[i][1], series[i][2]
+    for j = 1, count do
+      local base = root .. suffix .. j
+      table.insert(names, base)
+      table.insert(names, base .. "Icon")
+      table.insert(names, base .. "Border")
+      table.insert(names, base .. "Count")
+    end
+  end
+  return names
+end
+
+function classicNative.SuppressStockAuras()
+  -- UnrealUI still owns aura filtering, timers and settings in Classic. Hide
+  -- only the stock icon families so the native frames do not duplicate them.
+  U.SuppressNativeFrame(classicNative.AuraNames("TargetFrame",
+    { { "Buff", 5 }, { "Debuff", 16 } }), "target")
+
+  -- UnrealUI has no pet or target-of-target aura rows, so their native debuffs
+  -- stay visible. Suppressing them would be a feature loss, not a style change.
+
+  local i
+  for i = 1, PARTY_COUNT do
+    U.SuppressNativeFrame(classicNative.AuraNames("PartyMemberFrame" .. i,
+      { { "Debuff", 4 } }), "party")
+  end
+end
+
+function classicNative.BindAll()
+  classicNative.active = true
+  local i
+  for i = 1, table.getn(classicNative.roots) do
+    classicNative.Bind(classicNative.roots[i])
+  end
+end
+
 local function SetLabelText(label, value)
   if not label then return end
   value = value or ""
@@ -620,11 +776,14 @@ local function SetLabelText(label, value)
   pcall(label.SetText, label, value)
 end
 
-local function CreateBarBox(parent, width, height, border, color)
+local function CreateBarBox(parent, width, height, border, color, texture)
   local box = CreateFrame("Frame", nil, parent)
   box:SetWidth(width + 2 * border)
   box:SetHeight(height + 2 * border)
-  U.CreateBackdrop(box)
+  U.CreateBackdrop(box, {
+    background = M.unitFrame.background,
+    border = M.color.unitFrameBorder,
+  })
 
   -- Explicit size plus a single corner anchor. The bar computes its fill from
   -- its own GetWidth (core/style.lua), so the width has to be a number the
@@ -634,6 +793,7 @@ local function CreateBarBox(parent, width, height, border, color)
     width = width,
     height = height,
     color = color or M.color.health,
+    texture = texture,
   })
   bar:SetPoint("TOPLEFT", box, "TOPLEFT", border, -border)
 
@@ -646,6 +806,9 @@ local function CreateBarLabel(parent, anchor, target, offset, yOffset)
     size = M.fontSize.normal,
     color = M.color.text,
     inherits = "GameFontNormalSmall",
+    fontRole = "unitframe",
+    shadowOffset = M.compactTextShadowOffset,
+    shadowColor = M.color.shadowStrong,
   })
   if not label then return nil end
 
@@ -700,6 +863,9 @@ local function BuildBarLabels(box, labels, yOffset)
         size = M.fontSize.normal,
         color = M.color.text,
         inherits = "GameFontNormalSmall",
+        fontRole = "unitframe",
+        shadowOffset = M.compactTextShadowOffset,
+        shadowColor = M.color.shadowStrong,
       })
       if box.rightNameLabel then
         box.rightNameLabel:SetPoint("RIGHT", box.rightLabel, "LEFT",
@@ -716,7 +882,7 @@ local function CreateValuesStrip(parent, width, height, border, tokens)
   local strip = CreateFrame("Frame", nil, parent)
   strip:SetWidth(width + 2 * border)
   strip:SetHeight(height + 2 * border)
-  U.CreateBackdrop(strip)
+  U.CreateBackdrop(strip, { border = M.color.unitFrameBorder })
 
   local inset = 2 * border
   if tokens.left then
@@ -748,7 +914,7 @@ local function BuildPortraitBox(parent, size, border)
   local box = CreateFrame("Frame", nil, parent)
   box:SetWidth(size)
   box:SetHeight(size)
-  U.CreateBackdrop(box)
+  U.CreateBackdrop(box, { border = M.color.unitFrameBorder })
 
   local icon = box:CreateTexture(nil, "ARTWORK")
   icon:SetPoint("TOPLEFT", box, "TOPLEFT", border, -border)
@@ -759,6 +925,7 @@ local function BuildPortraitBox(parent, size, border)
 end
 
 local function RefreshPortrait(frame)
+  if frame.classicNative then return end
   local box = frame.portrait
   if not box or not box.icon then return end
 
@@ -814,7 +981,7 @@ local function BuildHappinessIndicator(frame, border)
   if levelOk and tonumber(level) then
     pcall(badge.SetFrameLevel, badge, level + 10)
   end
-  U.CreateBackdrop(badge)
+  U.CreateBackdrop(badge, { border = M.color.unitFrameBorder })
 
   local fill = badge:CreateTexture(nil, "ARTWORK")
   fill:SetTexture(M.texture.plain)
@@ -830,6 +997,11 @@ end
 local function ApplyHappinessIndicator(frame)
   local badge = frame.happiness
   if not badge then return end
+  if frame.classicNative then
+    frame.happinessState = false
+    pcall(badge.Hide, badge)
+    return
+  end
 
   local band = nil
   local fn = ResolveApiFn("GetPetHappiness")
@@ -862,9 +1034,12 @@ end
 local function FrameHeight(spec)
   local border = U.BorderSize()
   local height = spec.health + 2 * border
-  if spec.power then height = height + spec.gap + spec.power + 2 * border end
+  -- Adjacent rows overlap one border unit. Without that overlap, the health
+  -- bottom edge and power top edge draw as a 2-unit band even though every
+  -- individual outline is only the minimum reliable 1 unit.
+  if spec.power then height = height + spec.gap + spec.power + border end
   if spec.valuesHeight then
-    height = height + spec.gap + spec.valuesHeight + 2 * border
+    height = height + spec.gap + spec.valuesHeight + border
   end
   return height
 end
@@ -988,7 +1163,8 @@ local function BuildFrame(spec, parent)
   -- Each bar starts on the colour it will normally carry, so a frame is never
   -- briefly drawn in another bar's colour before the first refresh.
   local health = CreateBarBox(frame, spec.width, spec.health, border,
-                              M.color.healthFull)
+                              M.color.healthFull,
+                              spec.healthTexture and M.unitFrame.statusTexture)
   health:SetPoint("TOPLEFT", frame, "TOPLEFT", barOffsetX, 0)
   if spec.healthText then
     -- The status fill is its own child frame. Put the name on a higher child
@@ -1011,8 +1187,11 @@ local function BuildFrame(spec, parent)
   local power = nil
   if spec.power then
     power = CreateBarBox(frame, spec.width, spec.power, border,
-                         M.power.fallback)
-    power:SetPoint("TOPLEFT", previous, "BOTTOMLEFT", 0, -spec.gap)
+                         M.power.fallback, M.unitFrame.statusTexture)
+    -- Overlay the two touching horizontal edges so they form one crisp
+    -- separator rather than a double-thick gap between the fills.
+    power:SetPoint("TOPLEFT", previous, "BOTTOMLEFT", 0,
+                   border - spec.gap)
     previous = power
     if spec.powerLabels then
       BuildBarLabels(power, spec.powerLabels, POWER_LABEL_Y_OFFSET)
@@ -1023,7 +1202,8 @@ local function BuildFrame(spec, parent)
   if spec.valuesHeight then
     values = CreateValuesStrip(frame, spec.width, spec.valuesHeight,
                               border, spec.values or {})
-    values:SetPoint("TOPLEFT", previous, "BOTTOMLEFT", 0, -spec.gap)
+    values:SetPoint("TOPLEFT", previous, "BOTTOMLEFT", 0,
+                    border - spec.gap)
   end
 
   frame.health = health
@@ -1193,6 +1373,7 @@ local POWER_KEY_BY_TYPE = {}
 -- choices rather than starting over.
 local COLOR_DEFAULTS = {
   customColors = false,
+  classHealthColors = false,
   healthColorR = M.color.healthFull[1],
   healthColorG = M.color.healthFull[2],
   healthColorB = M.color.healthFull[3],
@@ -1247,17 +1428,29 @@ local function PowerBarColor(powerType)
   return M.Unpack(M.power[powerType] or M.power.fallback)
 end
 
--- A checked custom colour always wins over the health gradient. With it off,
--- keep the default full-health colour and fade into the pastel gradient.
+-- Class colouring matches the player tooltip exactly and takes priority over
+-- both the theme gradient and a custom health colour. Non-player units keep
+-- the normal theme/custom path below.
 local function ApplyHealthColor(frame)
   local perc = frame.data.healthPercent
   local cfg = ColorConfig()
   local cr, cg, cb = HealthBaseColor()
 
   local r, g, b
-  if cfg.customColors or perc >= 1 then
+  -- Target and party health always carry normTex2, including theme-colour
+  -- mode. Other health bars use it only for class colouring.
+  local textured = frame.spec and frame.spec.healthTexture and true or false
+  if cfg.classHealthColors and frame.data.isPlayer and frame.data.class then
+    r, g, b = M.ClassColor(frame.data.class)
+    if r then textured = true end
+  end
+
+  -- A checked custom colour always wins over the health gradient. With it
+  -- off, keep the default full-health colour and fade into the pastel
+  -- gradient. A missing class palette entry safely falls back to this path.
+  if not r and (cfg.customColors or perc >= 1) then
     r, g, b = cr, cg, cb
-  else
+  elseif not r then
     r, g, b = PastelBar(Gradient(perc))
     r = cr * perc + r * (1 - perc)
     g = cg * perc + g * (1 - perc)
@@ -1265,8 +1458,12 @@ local function ApplyHealthColor(frame)
   end
 
   if frame.healthColorR == r and frame.healthColorG == g and
-     frame.healthColorB == b then return end
+     frame.healthColorB == b and
+     frame.healthColorTextured == textured then return end
   frame.healthColorR, frame.healthColorG, frame.healthColorB = r, g, b
+  frame.healthColorTextured = textured
+  U.SetStatusBarTexture(frame.health.bar,
+                        textured and M.unitFrame.statusTexture or M.texture.plain)
   U.SetStatusBarColor(frame.health.bar, r, g, b, 1)
 end
 
@@ -1353,6 +1550,11 @@ end
 local function ApplyClassificationIcon(frame)
   local icon = frame.classIcon
   if not icon then return end
+  if frame.classicNative then
+    frame.classIconState = false
+    pcall(icon.Hide, icon)
+    return
+  end
 
   local class = frame.data.classification or ""
   local tint = ELITE_TINTS[class]
@@ -1380,6 +1582,11 @@ end
 local function ApplyRestIcon(frame)
   local icon = frame.restIcon
   if not icon then return end
+  if frame.classicNative then
+    frame.restIconState = false
+    pcall(icon.Hide, icon)
+    return
+  end
 
   local resting = ApiTruth("IsResting")
   -- Nothing below needs to run again while the resting state has not changed.
@@ -1438,9 +1645,14 @@ local function RefreshFrame(frame, mode)
       SetBar(frame.health.bar, 0, 1)
       if frame.power then SetBar(frame.power.bar, 0, 1) end
       local r, g, b = HealthBaseColor()
+      local textured = frame.spec and frame.spec.healthTexture and true or false
       if frame.healthColorR ~= r or frame.healthColorG ~= g or
-         frame.healthColorB ~= b then
+         frame.healthColorB ~= b or
+         frame.healthColorTextured ~= textured then
         frame.healthColorR, frame.healthColorG, frame.healthColorB = r, g, b
+        frame.healthColorTextured = textured
+        U.SetStatusBarTexture(frame.health.bar,
+                              textured and M.unitFrame.statusTexture or M.texture.plain)
         U.SetStatusBarColor(frame.health.bar, r, g, b, 1)
       end
       ClearTexts(frame)
@@ -1658,7 +1870,7 @@ local function BuildDruidManaBar()
   local border = U.BorderSize()
 
   druidBar = CreateBarBox(UIParent, PRIMARY_WIDTH, DRUID_BAR_HEIGHT, border,
-                          M.power[0] or M.power.fallback)
+                          M.power[0] or M.power.fallback, M.unitFrame.statusTexture)
   druidBar:SetFrameStrata("LOW")
   BuildBarLabels(druidBar, { right = "druidmana" }, POWER_LABEL_Y_OFFSET)
   druidBar:Hide()
@@ -1721,6 +1933,7 @@ function U.ApplyUnitFrameColors()
     local frame = frames[frameOrder[i]]
     if frame and frame.data then
       frame.healthColorR, frame.healthColorG, frame.healthColorB = nil, nil, nil
+      frame.healthColorTextured = nil
       frame.powerColorR, frame.powerColorG = nil, nil
       frame.powerColorB, frame.powerColorA = nil, nil
 
@@ -1730,6 +1943,10 @@ function U.ApplyUnitFrameColors()
         ApplyHealthColor(frame)
       else
         local r, g, b = HealthBaseColor()
+        local textured = frame.spec and frame.spec.healthTexture and true or false
+        frame.healthColorTextured = textured
+        U.SetStatusBarTexture(frame.health.bar,
+                              textured and M.unitFrame.statusTexture or M.texture.plain)
         U.SetStatusBarColor(frame.health.bar, r, g, b, 1)
       end
 
@@ -2004,13 +2221,17 @@ local function RegisterEvents()
       for n = 1, PARTY_COUNT do
         QueueUnitToken("party" .. n, "full")
       end
+      classicNative.Reanchor()
     end)
   end
 
   U.RegisterEvent("PLAYER_TARGET_CHANGED", function()
     QueueUnitToken("target", "full")
     QueueUnitToken("targettarget", "full")
+    classicNative.Reanchor()
   end)
+
+  U.RegisterEvent("PLAYER_ENTERING_WORLD", classicNative.Reanchor)
 
   -- Unverified event (see the Rest icon section above) -- an accelerator on
   -- top of the existing 1s full-refresh cycle, which still catches the state
@@ -2105,6 +2326,18 @@ local function BuildUnitFrameColorSettings(parent, y)
   healthPicker.SetPoint("TOPLEFT", parent, "TOPLEFT", 260, y - 26)
   table.insert(widgets, healthPicker)
 
+  local classHealthToggle = U.CreateCheckbox(parent, {
+    name = "UnrealUISettingsClassHealthColors",
+    text = "Use class colors for player health bars",
+    value = ColorConfig().classHealthColors,
+    onChange = function(value)
+      ColorConfig().classHealthColors = value
+      U.ApplyUnitFrameColors()
+    end,
+  })
+  classHealthToggle.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, y - 52)
+  table.insert(widgets, classHealthToggle)
+
   -- One picker per power type. The stored colour is per type because the
   -- config is account-wide: recolouring a priest's mana must not recolour a
   -- rogue's energy.
@@ -2115,7 +2348,7 @@ local function BuildUnitFrameColorSettings(parent, y)
     justify = "LEFT",
   })
   if powerHeader then
-    powerHeader:SetPoint("TOPLEFT", parent, "TOPLEFT", 0, y - 58)
+    powerHeader:SetPoint("TOPLEFT", parent, "TOPLEFT", 0, y - 82)
     powerHeader:SetText("Power bar colors")
     table.insert(widgets, powerHeader)
   end
@@ -2144,7 +2377,7 @@ local function BuildUnitFrameColorSettings(parent, y)
       end,
     })
     picker.SetPoint("TOPLEFT", parent, "TOPLEFT",
-                    12 + (i - 1) * COLUMN_WIDTH, y - 80)
+                    12 + (i - 1) * COLUMN_WIDTH, y - 104)
     table.insert(widgets, picker)
     table.insert(powerPickers, picker)
   end
@@ -2153,6 +2386,7 @@ local function BuildUnitFrameColorSettings(parent, y)
     local cfg = ColorConfig()
     healthPicker.SetValue(ColorValue("healthColor"))
     customToggle.SetValue(cfg.customColors)
+    classHealthToggle.SetValue(cfg.classHealthColors)
 
     local n
     for n = 1, table.getn(POWER_TYPES) do
@@ -2168,7 +2402,8 @@ U.BuildUnitFrameColorSettings = BuildUnitFrameColorSettings
 function UF:OnEnable()
   if table.getn(frameOrder) > 0 then return end
 
-  SuppressStockFrames()
+  local nativeChrome = classicNative.Enabled()
+  if not nativeChrome then SuppressStockFrames() end
 
   frames[PARTY_ANCHOR] = BuildPartyAnchor()
 
@@ -2197,12 +2432,21 @@ function UF:OnEnable()
       })
     end
 
-    EnableMouse(frame)
+    if nativeChrome then
+      classicNative.HideCustomVisuals(frame)
+    else
+      EnableMouse(frame)
+    end
+  end
+
+  if nativeChrome then
+    classicNative.SuppressStockAuras()
+    classicNative.BindAll()
   end
 
   RegisterEvents()
 
-  if frames.player and UnitClassToken("player") == "ROGUE" then
+  if not nativeChrome and frames.player and UnitClassToken("player") == "ROGUE" then
     SuppressStockComboFrame()
     BuildComboPoints(frames.player)
     RegisterComboEvents()
