@@ -335,7 +335,8 @@ local KEY_LABEL = {
   ["DOLLAR"] = "$", ["EXCLAMATION"] = "!", ["EXCLAMATIONMARK"] = "!",
   ["LEFTPARENTHESIS"] = "(", ["RIGHTPARENTHESIS"] = ")",
   ["QUOTE"] = "'", ["APOSTROPHE"] = "'", ["QUOTEDBL"] = "\"",
-  ["MINUS"] = "-", ["HYPHEN"] = "-", ["NEGATIVE"] = "-", ["UNDERSCORE"] = "_",
+  ["MINUS"] = "-", ["HYPHEN"] = "-", ["NEGATIVE"] = "-", ["SUBTRACT"] = "-",
+  ["UNDERSCORE"] = "_",
   ["PLUS"] = "+", ["EQUALS"] = "=", ["GRAVE"] = "`", ["TILDE"] = "~",
   ["COMMA"] = ",", ["PERIOD"] = ".", ["SLASH"] = "/",
   ["SEMICOLON"] = ";", ["LEFTBRACKET"] = "[", ["RIGHTBRACKET"] = "]",
@@ -366,11 +367,21 @@ local AZERTY_NUMBER_LABEL = {
   ["à"] = "0", ["A_GRAVE"] = "0", ["AGRAVE"] = "0", ["A_ACCENTGRAVE"] = "0",
 }
 
+-- The client stores AZERTY's main minus key under an engine identifier rather
+-- than the printed symbol. This is display-only: the original binding remains
+-- intact, including any modifier information the client needs to execute it.
+local AZERTY_BINDING_LABEL = {
+  ["SHIFT-LEFTCOMMAND"] = "-",
+}
+
 -- `full` keeps the normalised key readable at its natural length. The corner
 -- label on a 15px button cannot show more than four characters, but the
 -- quick-binding readout in the middle of a slot and its tooltip can.
 local function CompactBinding(binding, full)
   if type(binding) ~= "string" or binding == "" then return "" end
+
+  local direct = AZERTY_BINDING_LABEL[binding]
+  if direct then return direct end
 
   local text = binding
   local _, _, modifiers, key = string.find(text, "^(.*%-)([^%-]+)$")
