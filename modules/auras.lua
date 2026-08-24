@@ -1,12 +1,13 @@
 -- unrealUI :: modules/auras.lua
 --
--- Buff and debuff icons above the player and target unit frames, each with the
--- radial wipe and countdown number the action bar uses, plus the "Unit Frames"
--- settings page that filters what they show.
+-- Buff and debuff icons around the player, target and party unit frames, each
+-- with the radial wipe and countdown number the action bar uses, plus the
+-- "Unit Frames" settings page that filters what they show.
 --
--- Scope: player and target only. Party/raid auras, weapon enchants, and
--- pfUI's whole buff/debuff module framework are not reproduced here. The
--- player row stays debuffs-only; buffs were requested for the target.
+-- Party members use two compact rows beside the frame: debuffs above buffs so
+-- the actionable row always has the stable, more prominent position. Raid
+-- auras, weapon enchants, and pfUI's whole buff/debuff module framework are not
+-- reproduced here. The player row stays debuffs-only.
 -- Hovering an icon shows the shared client GameTooltip (SetUnitBuff /
 -- SetUnitDebuff), the same native widget xpbar.lua already owns for the rest
 -- tooltip -- not a second private tooltip frame.
@@ -86,11 +87,11 @@
 --     Model/CooldownFrameTemplate swipe draws nothing here, which is why the
 --     radial is U.CreateRadialWipe from core/style.lua -- the same hand-drawn
 --     wipe the action buttons use, per the request that these icons match them.
---   * The icons are deliberately not mouse-interactive (no tooltip on hover).
---     The scanner below is never shown and never owns the shared GameTooltip;
---     rules/unreal-ui-design.md's restriction is on creating an *explanatory*
---     tooltip, and the scanner's create/SetOwner/populate/read sequence is the
---     one the probe above already measured.
+--   * Icons accept hover only to populate the shared GameTooltip; they have no
+--     click handler. Party icons sit wholly outside the unit button, so the
+--     existing targeting/menu surface remains unchanged. The scanner below is
+--     never shown and never owns the shared GameTooltip; its
+--     create/SetOwner/populate/read sequence is the one the probe measured.
 --   * knowledge.json / config.savedvariables_backslash_corruption: only
 --     numbers and booleans are persisted. Neither icon paths nor aura names nor
 --     timer stamps are stored -- every one of them is re-derived at runtime.
@@ -109,6 +110,8 @@ local defaults = {
   playerEnabled     = true,
   targetEnabled     = true,
   targetBuffEnabled = true,
+  partyEnabled      = true,
+  partyBuffEnabled  = true,
   showTimers        = true,
   belowFrame        = false,
   size              = 24,
@@ -198,8 +201,8 @@ end
 -- pcall'd on every call, and every value coerced. An unexpected return degrades
 -- to "no aura here" instead of erroring.
 --
--- The resolve is memoised because these run on a 0.2s tick across three rows;
--- an uncached U.G per read is one extra pcall per index per pass.
+-- The resolve is memoised because these calls run across both primary and
+-- party rows; an uncached U.G per read is one extra pcall per index per pass.
 -- ---------------------------------------------------------------------------
 local resolved = {}
 
@@ -510,6 +513,14 @@ end
 local MAX_SCAN = 24
 local EMPTY_STOP = 2
 
+-- Party rows stay inside the member frame's 47-unit vertical footprint and
+-- extend to its right, matching the requested at-a-glance layout without
+-- covering the unit button. Six 18-unit icons plus the established 2-unit
+-- spacing is compact enough to keep all four members readable as one block.
+local PARTY_COUNT = 4
+local PARTY_SIZE = 18
+local PARTY_MAX = 6
+
 -- Gap between a row and whatever it sits against, on either side.
 local ROW_GAP = 4
 
@@ -593,6 +604,7 @@ local function CreateIcon(row, index)
   local icon = CreateFrame("Frame", "UnrealUIAura" .. row.id .. index, row)
   icon:SetWidth(size)
   icon:SetHeight(size)
+  icon.uuiRadialOnly = row.radialOnly
   U.CreateBackdrop(icon, {})
 
   -- scripts.handler_arguments_direct: handlers close over `row`/`icon` instead
@@ -659,6 +671,12 @@ end
 -- below) and further rows stack away from the frame, so that edge stays put
 -- no matter how many auras are up.
 local function PlaceIcon(row, icon, slot, size, spacing, perRow, below)
+  if row.beside then
+    icon:ClearAllPoints()
+    icon:SetPoint("LEFT", row, "LEFT", (slot - 1) * (size + spacing), 0)
+    return
+  end
+
   local column = math.mod(slot - 1, perRow)
   local line = math.floor((slot - 1) / perRow)
 
@@ -686,6 +704,13 @@ end
 local function PositionRow(row, below, offset)
   offset = offset or 0
   row:ClearAllPoints()
+  if row.beside then
+    local rightOffset = tonumber(row.anchor.uuiAuraRightOffset) or 0
+    row:SetPoint("LEFT", row.anchor, "RIGHT", ROW_GAP + rightOffset,
+                 row.besideY or 0)
+    return
+  end
+
   if below then
     -- Target-of-target hangs directly below the target frame. When it is
     -- visible, target auras must clear that frame rather than claiming the
@@ -693,9 +718,13 @@ local function PositionRow(row, below, offset)
     -- target-of-target, retain their usual close-to-frame position.
     local anchor = row.belowAnchor
     if not anchor or not anchor:IsShown() then anchor = row.anchor end
-    row:SetPoint("TOPLEFT", anchor, "BOTTOMLEFT", 0, -(ROW_GAP + offset))
+    local bottomOffset = tonumber(anchor.uuiAuraBottomOffset) or 0
+    row:SetPoint("TOPLEFT", anchor, "BOTTOMLEFT", 0,
+                 -(ROW_GAP + offset + bottomOffset))
   else
-    row:SetPoint("BOTTOMLEFT", row.anchor, "TOPLEFT", 0, ROW_GAP + offset)
+    local topOffset = tonumber(row.anchor.uuiAuraTopOffset) or 0
+    row:SetPoint("BOTTOMLEFT", row.anchor, "TOPLEFT", 0,
+                 ROW_GAP + offset + topOffset)
   end
 end
 
@@ -707,8 +736,7 @@ end
 -- no client API beyond the clock, while the scan below runs at the slower tick
 -- and does all the reading.
 -- ---------------------------------------------------------------------------
-local function HideTimer(icon)
-  U.HideRadialWipe(icon.wipe)
+local function HideTimerText(icon)
   if icon.timer and icon.uuiTimerShown then
     icon.uuiTimerShown = false
     icon.uuiTimerText = nil
@@ -716,6 +744,11 @@ local function HideTimer(icon)
     icon.timer:SetText("")
     icon.timer:Hide()
   end
+end
+
+local function HideTimer(icon)
+  U.HideRadialWipe(icon.wipe)
+  HideTimerText(icon)
 end
 
 -- `enabled` is passed in rather than read here: this runs once per shown icon
@@ -739,6 +772,13 @@ local function RefreshTimer(icon, now, enabled)
 
   U.SetRadialWipeProgress(icon.wipe, elapsed / entry.duration)
 
+  -- Compact party icons use the radial as their only duration indicator. This
+  -- keeps the artwork readable while preserving the useful expiry motion.
+  if icon.uuiRadialOnly then
+    HideTimerText(icon)
+    return
+  end
+
   if not icon.timer then return end
 
   local text, tier = U.FormatTimeShort(remaining)
@@ -758,9 +798,9 @@ local function RefreshTimer(icon, now, enabled)
 end
 
 -- Everything in ApplyIcon is written only when the value it writes actually
--- changed. RefreshAll runs five times a second and re-derives the same tuple
--- from the client each time, so without these guards a live aura re-issued its
--- own icon path to SetTexture 5x/s per icon, for as long as it was up. On this
+-- changed. Recurring refreshes re-derive the same tuple from the client, so
+-- without these guards a live aura repeatedly re-issued its own icon path to
+-- SetTexture for as long as it was up. On this
 -- client an icon path is a UAsset reference ("/Game/Interface/Icons/..._TEX",
 -- measured in auras.unitbuff_unitdebuff_contract_unverified), not a loose BLP,
 -- so how a repeated set is handled is the renderer's business rather than
@@ -834,6 +874,22 @@ local function UnitExists(unit)
   return (value and value ~= 0) and true or false
 end
 
+-- A party token continues to exist when its character is too far away for the
+-- client to provide live unit-object data. Scanning party auras in that state
+-- was user-observed to render duplicated icons; the exact raw return tuple was
+-- not captured. UnitIsVisible is the documented object-availability check and
+-- is also the guard used by UnrealPfUI's same-client unit paths. If the API
+-- itself is unavailable or errors, do not hide valid rows on an unverified
+-- fallback assumption.
+local function UnitVisible(unit)
+  local fn = Fn("UnitIsVisible")
+  if not fn then return true end
+
+  local ok, value = pcall(fn, unit)
+  if not ok then return true end
+  return (value and value ~= 0) and true or false
+end
+
 -- The name behind one index, cached against the texture that was in that slot
 -- when it was last scanned. Without the cache this would arm and read a tooltip
 -- for every aura on every unit five times a second; with it, a steady row scans
@@ -856,17 +912,19 @@ local function RefreshRow(row, offset)
   if U.PerfDisabled and U.PerfDisabled("auras") then return 0 end
 
   local i
-  if not RowEnabled(row) or not UnitExists(row.unit) then
+  if not RowEnabled(row) or not UnitExists(row.unit) or
+     (row.beside and not UnitVisible(row.unit)) then
     for i = 1, table.getn(row.icons) do HideIcon(row.icons[i]) end
     row:Hide()
     return 0
   end
 
-  local size = U.GetAuraSetting("size")
-  local spacing = U.GetAuraSetting("spacing")
-  local perRow = U.GetAuraSetting("perRow")
-  local maxIcons = U.GetAuraSetting(row.harmful and "maxIcons" or "maxBuffs")
-  local below = U.GetAuraSetting("belowFrame")
+  local size = row.size or U.GetAuraSetting("size")
+  local spacing = row.spacing or U.GetAuraSetting("spacing")
+  local perRow = row.perRow or U.GetAuraSetting("perRow")
+  local maxIcons = row.maxIcons or
+                   U.GetAuraSetting(row.harmful and "maxIcons" or "maxBuffs")
+  local below = not row.beside and U.GetAuraSetting("belowFrame")
   local timers = U.GetAuraSetting("showTimers")
 
   PositionRow(row, below, offset)
@@ -922,6 +980,11 @@ local function RefreshRow(row, offset)
         ApplyIcon(icon, texture, count,
                   row.harmful and TypeColor(debuffType) or BUFF_COLOR,
                   size, entry, now, timers)
+
+        -- Party rows never draw beyond their six visible slots. Stop as soon
+        -- as those slots are full instead of scanning and tooltip-naming up to
+        -- eighteen additional auras that cannot affect the display.
+        if row.stopAtCap and shown >= maxIcons then break end
       end
     end
   end
@@ -951,9 +1014,34 @@ local function RefreshTarget()
   RefreshRow(rows.targetBuff, used > 0 and used + ROW_GAP or 0)
 end
 
-local function RefreshAll()
+local function RefreshPrimary()
   RefreshRow(rows.player, 0)
   RefreshTarget()
+end
+
+local function RefreshPartyUnit(token, clearNames)
+  local debuffs = rows[token]
+  local buffs = rows[token .. "Buff"]
+
+  if clearNames then
+    if debuffs then debuffs.names = {} end
+    if buffs then buffs.names = {} end
+  end
+
+  RefreshRow(debuffs, 0)
+  RefreshRow(buffs, 0)
+end
+
+local function RefreshParty(clearNames)
+  local i
+  for i = 1, PARTY_COUNT do
+    RefreshPartyUnit("party" .. i, clearNames)
+  end
+end
+
+local function RefreshAll()
+  RefreshPrimary()
+  RefreshParty(false)
 end
 
 -- Only the unit the event carries, when it carries a usable token.
@@ -962,8 +1050,12 @@ local function RefreshUnitToken(token)
     RefreshTarget()
   elseif token == "player" then
     RefreshRow(rows.player, 0)
+  elseif type(token) == "string" and rows[token] and rows[token].beside then
+    RefreshPartyUnit(token, false)
   else
-    RefreshAll()
+    -- UNIT_AURA may carry a token for which this module has no row (pet,
+    -- target-of-target, raid). Do not turn that into an eleven-row rescan.
+    RefreshPrimary()
   end
 end
 
@@ -1063,16 +1155,16 @@ end
 -- ---------------------------------------------------------------------------
 -- Build
 -- ---------------------------------------------------------------------------
-local function BuildRow(id, unit, harmful, setting)
+local function BuildRow(id, unit, harmful, setting, options)
   local anchor = U.GetUnitFrame(unit)
   if not anchor then
     U.Debug("no unit frame to anchor auras to: " .. id)
     return nil
   end
 
-  -- A plain Frame, not a Button: nothing here takes mouse input, and the row
-  -- rides the unit frame's mover rather than owning one of its own, so the
-  -- icons cannot drift away from the frame they describe.
+  -- A plain container that rides the unit frame's mover rather than owning one
+  -- of its own, so the icons cannot drift away from the frame they describe.
+  -- Only the child icons accept hover, for their native aura tooltip.
   local row = CreateFrame("Frame", "UnrealUIAuraRow" .. id, anchor)
   row.anchor = anchor
   if unit == "target" then row.belowAnchor = U.GetUnitFrame("targettarget") end
@@ -1084,6 +1176,16 @@ local function BuildRow(id, unit, harmful, setting)
   row.unit = unit
   row.harmful = harmful
   row.setting = setting
+  if options then
+    row.beside = options.beside
+    row.besideY = options.besideY
+    row.size = options.size
+    row.spacing = options.spacing
+    row.perRow = options.perRow
+    row.maxIcons = options.maxIcons
+    row.stopAtCap = options.stopAtCap
+    row.radialOnly = options.radialOnly
+  end
   row.icons = {}
   row.names = {}
   row:Hide()
@@ -1106,16 +1208,18 @@ end
 local PAGE_WIDTH = 484
 local FILTER_COLUMN_X = 200
 
--- Two columns, so five toggles occupy the three rows the previous three did and
--- the sections below them keep their positions.
+-- Two columns keep the seven toggles to four compact rows and leave the colour
+-- controls inside the fixed-height settings panel.
 local TOGGLE_COLUMN_X = 240
 
 local TOGGLES = {
   { key = "playerEnabled",     text = "Player frame debuffs",  column = 0, row = 0 },
   { key = "targetEnabled",     text = "Target frame debuffs",  column = 1, row = 0 },
   { key = "targetBuffEnabled", text = "Target frame buffs",    column = 0, row = 1 },
-  { key = "showTimers",        text = "Timers on aura icons",  column = 1, row = 1 },
-  { key = "belowFrame",        text = "Show auras below the frame", column = 0, row = 2 },
+  { key = "partyEnabled",      text = "Party frame debuffs",   column = 1, row = 1 },
+  { key = "partyBuffEnabled",  text = "Party frame buffs",     column = 0, row = 2 },
+  { key = "showTimers",        text = "Timers on aura icons",  column = 1, row = 2 },
+  { key = "belowFrame",        text = "Player / target auras below frames", column = 0, row = 3 },
 }
 
 -- Laid out 2 per row (column, row) so the list reads as a table instead of a
@@ -1161,7 +1265,7 @@ local function BuildSettingsPage(parent)
   local filterHeader = U.CreateSectionHeader(parent, {
     text = "Show Debuffs By Dispel Type",
     width = PAGE_WIDTH,
-    y = -128,
+    y = -134,
   })
   table.insert(widgets, filterHeader)
 
@@ -1178,7 +1282,7 @@ local function BuildSettingsPage(parent)
       end,
     })
     check.SetPoint("TOPLEFT", parent, "TOPLEFT",
-                   spec.column * FILTER_COLUMN_X, -158 - spec.row * 26)
+                   spec.column * FILTER_COLUMN_X, -164 - spec.row * 26)
     controls[spec.key] = check
     table.insert(widgets, check)
   end
@@ -1214,7 +1318,7 @@ local function BuildSettingsPage(parent)
   local refreshColors
   if type(U.BuildUnitFrameColorSettings) == "function" then
     local colorWidgets
-    colorWidgets, refreshColors = U.BuildUnitFrameColorSettings(parent, -296)
+    colorWidgets, refreshColors = U.BuildUnitFrameColorSettings(parent, -302)
     local n
     for n = 1, table.getn(colorWidgets) do
       table.insert(widgets, colorWidgets[n])
@@ -1243,6 +1347,21 @@ function A:OnEnable()
   BuildRow("target", "target", true, "targetEnabled")
   BuildRow("targetBuff", "target", false, "targetBuffEnabled")
 
+  local i
+  for i = 1, PARTY_COUNT do
+    local unit = "party" .. i
+    BuildRow(unit, unit, true, "partyEnabled", {
+      beside = true, besideY = 10, size = PARTY_SIZE, spacing = 2,
+      perRow = PARTY_MAX, maxIcons = PARTY_MAX, stopAtCap = true,
+      radialOnly = true,
+    })
+    BuildRow(unit .. "Buff", unit, false, "partyBuffEnabled", {
+      beside = true, besideY = -10, size = PARTY_SIZE, spacing = 2,
+      perRow = PARTY_MAX, maxIcons = PARTY_MAX, stopAtCap = true,
+      radialOnly = true,
+    })
+  end
+
   if table.getn(rowOrder) == 0 then
     U.Error("aura rows could not be anchored; unit frames are unavailable")
     return
@@ -1252,7 +1371,9 @@ function A:OnEnable()
   -- (events.json); PLAYER_AURAS_CHANGED registered but was never seen, so it is
   -- registered as a free accelerator rather than relied on.
   U.RegisterEvent("UNIT_AURA", function(event, unit) RefreshUnitToken(unit) end)
-  U.RegisterEvent("PLAYER_AURAS_CHANGED", function() RefreshAll() end)
+  U.RegisterEvent("PLAYER_AURAS_CHANGED", function()
+    RefreshRow(rows.player, 0)
+  end)
   -- round 3: deferred one driver tick, same reasoning as
   -- core/compat.lua's target-group sweep -- this used to scan up to 24 debuff
   -- indices and lay out icon geometry synchronously inside the same frame the
@@ -1267,10 +1388,30 @@ function A:OnEnable()
   end)
   U.RegisterEvent("PLAYER_ENTERING_WORLD", function() RefreshAll() end)
 
-  -- The mechanism, not an optimisation: with no duration return there is
-  -- nothing to expire an icon locally, so an aura that falls off is only
-  -- noticed by re-reading. 0.2s matches the unit frame tick.
-  U.RegisterUpdate("auras.refresh", 0.2, function() RefreshAll() end)
+  -- Party roster events are accelerators on this client, just as they are in
+  -- modules/unitframes.lua. Clear the per-slot tooltip-name cache when a
+  -- different character may now occupy that token.
+  local groupEvents = {
+    "PARTY_MEMBERS_CHANGED", "PARTY_LEADER_CHANGED", "RAID_ROSTER_UPDATE",
+  }
+  for i = 1, table.getn(groupEvents) do
+    U.RegisterEvent(groupEvents[i], function()
+      U.DeferOnce("auras.party-roster-refresh", function()
+        RefreshParty(true)
+      end)
+    end)
+  end
+
+  -- The primary-row mechanism, not an optimisation: with no duration return
+  -- there is nothing to expire an icon locally, so an aura that falls off is
+  -- only noticed by re-reading. 0.2s matches the unit frame tick; party rows
+  -- use their token event plus the slower fallback below.
+  U.RegisterUpdate("auras.refresh", 0.2, function() RefreshPrimary() end)
+  -- UNIT_AURA normally gives an immediate, token-specific party refresh. A
+  -- slower fallback is still required because the compact evidence has only
+  -- captured the event for "target", not for party tokens, and party roster
+  -- events are accepted but unobserved on this client.
+  U.RegisterUpdate("auras.party-refresh", 1.0, function() RefreshParty(false) end)
   U.RegisterUpdate("auras.timers", TIMER_TICK, RefreshTimers)
 
   RefreshAll()
