@@ -60,6 +60,213 @@ local keyringDirty = false
 
 local pending    -- { items, index, mode = "sell"|"delete", startGold }
 
+-- Classic keeps the merged UnrealUI container but paints it from the live
+-- native ContainerFrame texture objects before those stock windows are
+-- suppressed. No client asset path is guessed or bundled: the running client
+-- supplies the exact background, close-button and slot-face textures.
+local classicBag = {
+  active = false,
+  ready = false,
+}
+
+function classicBag.Dimension(region, method)
+  local fn = region and region[method]
+  if type(fn) ~= "function" then return 0 end
+  local ok, value = pcall(fn, region)
+  if not ok then return 0 end
+  return tonumber(value) or 0
+end
+
+function classicBag.Face(regionName, ownerName)
+  local region = U.G(regionName)
+  if not region or type(region.GetTexture) ~= "function" then return nil end
+  local ok, path = pcall(region.GetTexture, region)
+  if not ok or type(path) ~= "string" or path == "" then return nil end
+
+  local owner = U.G(ownerName)
+  local ownerWidth = classicBag.Dimension(owner, "GetWidth")
+  local ownerHeight = classicBag.Dimension(owner, "GetHeight")
+  local width = classicBag.Dimension(region, "GetWidth")
+  local height = classicBag.Dimension(region, "GetHeight")
+  local face = {
+    path = path,
+    width = width,
+    height = height,
+    widthRatio = ownerWidth > 0 and width / ownerWidth or 1,
+    heightRatio = ownerHeight > 0 and height / ownerHeight or 1,
+  }
+
+  -- GetTexture returns the atlas file, not the crop used by FrameXML. Copying
+  -- only that path paints every component in the atlas (header, portrait and
+  -- baked slot rows) over the unified bag. Preserve the native region's UV
+  -- rectangle so every later slice starts from the client's own crop.
+  if type(region.GetTexCoord) == "function" then
+    local coordOk, a, b, c, d, e, f, g, h =
+      pcall(region.GetTexCoord, region)
+    if coordOk and type(a) == "number" and type(b) == "number" and
+       type(c) == "number" and type(d) == "number" then
+      face.cropped = true
+      if type(e) == "number" and type(f) == "number" and
+         type(g) == "number" and type(h) == "number" then
+        face.left = math.min(a, c, e, g)
+        face.right = math.max(a, c, e, g)
+        face.top = math.min(b, d, f, h)
+        face.bottom = math.max(b, d, f, h)
+      else
+        face.left, face.right, face.top, face.bottom = a, b, c, d
+      end
+    end
+  end
+  face.left = face.left or 0
+  face.right = face.right or 1
+  face.top = face.top or 0
+  face.bottom = face.bottom or 1
+  return face
+end
+
+function classicBag.Capture()
+  classicBag.active = type(U.ThemeStyleUsesNativeChrome) == "function" and
+                      U.ThemeStyleUsesNativeChrome() or false
+  classicBag.ready = false
+  if not classicBag.active then return end
+
+  classicBag.backgroundTop = classicBag.Face(
+    "ContainerFrame1BackgroundTop", "ContainerFrame1")
+  classicBag.backgroundBottom = classicBag.Face(
+    "ContainerFrame1BackgroundBottom", "ContainerFrame1")
+  classicBag.background = classicBag.backgroundTop or classicBag.backgroundBottom
+  classicBag.close = classicBag.Face(
+    "ContainerFrame1CloseButtonNormalTexture", "ContainerFrame1CloseButton")
+  classicBag.slot = classicBag.Face(
+    "ContainerFrame1Item1NormalTexture", "ContainerFrame1Item1")
+  classicBag.ready = classicBag.background and true or false
+
+  if not classicBag.ready then
+    U.Debug("Classic bag background texture is unavailable")
+  end
+end
+
+function classicBag.HeaderHeight()
+  if classicBag.ready then return 58 end
+  return HEADER_HEIGHT
+end
+
+function classicBag.CreateFace(parent, face, layer)
+  if not parent or not face then return nil end
+  local texture = parent:CreateTexture(nil, layer or "OVERLAY")
+  if not pcall(texture.SetTexture, texture, face.path) then return nil end
+  texture.uuiClassicFace = face
+  pcall(texture.SetTexCoord, texture,
+        face.left, face.right, face.top, face.bottom)
+  return texture
+end
+
+function classicBag.SetSlice(texture, x1, x2, y1, y2)
+  local face = texture and texture.uuiClassicFace
+  if not face then return end
+  local left = face.left + (face.right - face.left) * (x1 or 0)
+  local right = face.left + (face.right - face.left) * (x2 or 1)
+  local top = face.top + (face.bottom - face.top) * (y1 or 0)
+  local bottom = face.top + (face.bottom - face.top) * (y2 or 1)
+  pcall(texture.SetTexCoord, texture, left, right, top, bottom)
+end
+
+function classicBag.SizeFace(texture, owner)
+  local face = texture and texture.uuiClassicFace
+  if not face or not owner then return end
+  local width = classicBag.Dimension(owner, "GetWidth")
+  local height = classicBag.Dimension(owner, "GetHeight")
+  pcall(texture.ClearAllPoints, texture)
+  pcall(texture.SetPoint, texture, "CENTER", owner, "CENTER", 0, 0)
+  pcall(texture.SetWidth, texture, width * face.widthRatio)
+  pcall(texture.SetHeight, texture, height * face.heightRatio)
+end
+
+function classicBag.StylePanel(panel, main)
+  if not classicBag.ready or not panel then return end
+  -- A unified bag has a variable width and row count, while the native art was
+  -- authored for a fixed stock container. Use a flexible leather center and
+  -- keep the captured atlas only in a three-piece header. The two caps remain
+  -- fixed-size, so the portrait and close-button ornament cannot become oval;
+  -- only the quiet middle band stretches with the merged window.
+  U.SetBackdropShown(panel, true)
+  U.SetBackgroundColor(panel, 0.115, 0.060, 0.018, 0.97)
+  U.CreateBorder(panel, 2)
+  U.SetBorderColor(panel, 0.48, 0.34, 0.13, 1)
+  if not main then return end
+
+  local source = classicBag.backgroundTop or classicBag.background
+  -- If this client does not expose GetTexCoord, retain the flexible leather
+  -- panel rather than ever falling back to the uncropped atlas again.
+  if not source or not source.cropped then return end
+  local left = classicBag.CreateFace(panel, source, "BORDER")
+  local middle = classicBag.CreateFace(panel, source, "BORDER")
+  local right = classicBag.CreateFace(panel, source, "BORDER")
+  if not left or not middle or not right then return end
+
+  classicBag.SetSlice(left, 0, 0.40, 0, 1)
+  left:SetPoint("TOPLEFT", panel, "TOPLEFT", 0, 0)
+  left:SetWidth(82)
+  left:SetHeight(classicBag.HeaderHeight())
+
+  classicBag.SetSlice(right, 0.73, 1, 0, 1)
+  right:SetPoint("TOPRIGHT", panel, "TOPRIGHT", 0, 0)
+  right:SetWidth(56)
+  right:SetHeight(classicBag.HeaderHeight())
+
+  classicBag.SetSlice(middle, 0.40, 0.73, 0, 1)
+  middle:SetPoint("TOPLEFT", left, "TOPRIGHT", 0, 0)
+  middle:SetPoint("BOTTOMRIGHT", right, "BOTTOMLEFT", 0, 0)
+  panel.uuiClassicBackground = { left, middle, right }
+end
+
+function classicBag.StyleButton(button, face)
+  if not classicBag.ready or not button or not face or not face.cropped then
+    return
+  end
+  U.SetBackdropShown(button, false)
+  if button.label then button.label:Hide() end
+  local texture = classicBag.CreateFace(button, face, "OVERLAY")
+  if texture then
+    classicBag.SizeFace(texture, button)
+    button.uuiClassicFace = texture
+  end
+end
+
+function classicBag.StyleHeader(window)
+  if not classicBag.ready or not window then return end
+
+  local portrait = window:CreateTexture(nil, "OVERLAY")
+  portrait:SetWidth(36)
+  portrait:SetHeight(36)
+  portrait:SetPoint("TOPLEFT", window, "TOPLEFT", 5, -4)
+  local setPortrait = U.G("SetBagPortaitTexture")
+  if type(setPortrait) == "function" then pcall(setPortrait, portrait, 0) end
+  window.uuiClassicPortrait = portrait
+
+  local title = U.CreateLabel(window, {
+    text = "Bags",
+    size = M.fontSize.large,
+    color = { 1.00, 0.82, 0.00, 1.00 },
+    inherits = "GameFontNormal",
+  })
+  if title then
+    title:SetPoint("TOPLEFT", window, "TOPLEFT", 46, -7)
+    window.uuiClassicTitle = title
+  end
+end
+
+function classicBag.StyleIconButton(button)
+  if not classicBag.ready or not classicBag.slot or
+     not classicBag.slot.cropped or not button then return end
+  U.SetBackdropShown(button, false)
+  local texture = classicBag.CreateFace(button, classicBag.slot, "OVERLAY")
+  if texture then
+    classicBag.SizeFace(texture, button)
+    button.uuiClassicFace = texture
+  end
+end
+
 -- ---------------------------------------------------------------------------
 -- Grey-item scan, shared by the tooltip, the button state and the action.
 -- ---------------------------------------------------------------------------
@@ -553,7 +760,8 @@ local function LayoutSlots()
   -- The anchor owns the rect; the visible frame is stretched over it, so the
   -- mover handle keeps the same bounds whether or not the bag is open.
   anchor:SetWidth(COLUMNS * (SLOT_SIZE + SLOT_GAP) - SLOT_GAP + PADDING * 2)
-  anchor:SetHeight(HEADER_HEIGHT + y * (SLOT_SIZE + SLOT_GAP) - SLOT_GAP
+  anchor:SetHeight(classicBag.HeaderHeight() +
+                   y * (SLOT_SIZE + SLOT_GAP) - SLOT_GAP
                    + PADDING)
 end
 
@@ -619,6 +827,13 @@ local function ToggleBags()
   if ok and shown then HideBags() else ShowBags() end
 end
 
+-- The equipped-bag buttons use ToggleBag(container). Their contents are
+-- already part of the merged window, so the individual toggle must not close
+-- or reopen that window. This matches UnrealPfUI's working behavior on this
+-- client while leaving backpack/all-bag controls responsible for the window.
+local function IgnoreIndividualBagToggle()
+end
+
 -- Deliberate, one-time override of the stock backpack entry points: opening
 -- bags has to land on unrealUI's merged frame instead of the native
 -- ContainerFrame windows. Reproduces UnrealPfUI's demonstrated approach
@@ -632,7 +847,7 @@ local function InstallToggleOverrides()
   SetGlobal("OpenAllBags", ToggleBags)
   SetGlobal("CloseAllBags", HideBags)
   SetGlobal("ToggleAllBags", ToggleBags)
-  SetGlobal("ToggleBag", ToggleBags)
+  SetGlobal("ToggleBag", IgnoreIndividualBagToggle)
 end
 
 -- ---------------------------------------------------------------------------
@@ -644,6 +859,7 @@ local function BuildTray(name)
     width = TRAY_SLOT + PADDING * 2,
     height = TRAY_SLOT + PADDING * 2,
   })
+  classicBag.StylePanel(tray, false)
   pcall(tray.EnableMouse, tray, true)
   tray:Hide()
   return tray
@@ -658,6 +874,11 @@ local function BuildHeader()
     size = M.fontSize.small,
     onClick = function() HideBags() end,
   })
+  if classicBag.ready and classicBag.close then
+    frame.close:SetWidth(22)
+    frame.close:SetHeight(22)
+    classicBag.StyleButton(frame.close, classicBag.close)
+  end
   frame.close:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -PADDING, -PADDING)
 
   frame.money = BuildMoneyDisplay(frame)
@@ -682,7 +903,12 @@ local function BuildHeader()
       end
     end,
   })
-  frame.keyToggle:SetPoint("TOPLEFT", frame, "TOPLEFT", PADDING, -PADDING)
+  classicBag.StyleIconButton(frame.keyToggle)
+  if classicBag.ready then
+    frame.keyToggle:SetPoint("TOPLEFT", frame, "TOPLEFT", 46, -23)
+  else
+    frame.keyToggle:SetPoint("TOPLEFT", frame, "TOPLEFT", PADDING, -PADDING)
+  end
 
   frame.bagsToggle = U.CreateIconButton(frame, {
     name = "UnrealUIBagBagsToggle",
@@ -701,6 +927,7 @@ local function BuildHeader()
       end
     end,
   })
+  classicBag.StyleIconButton(frame.bagsToggle)
   frame.bagsToggle:SetPoint("LEFT", frame.keyToggle, "RIGHT", 4, 0)
 
   frame.sell = U.CreateIconButton(frame, {
@@ -713,6 +940,7 @@ local function BuildHeader()
       return "Sells grey items at an open vendor; otherwise asks to delete them."
     end,
   })
+  classicBag.StyleIconButton(frame.sell)
   frame.sell:SetPoint("LEFT", frame.bagsToggle, "RIGHT", 4, 0)
 end
 
@@ -723,10 +951,12 @@ local function Build()
   -- anchor's frame level + 10, see core/mover.lua) above the bag's own chrome.
   anchor = CreateFrame("Frame", "UnrealUIBagAnchor", UIParent)
   anchor:SetWidth(COLUMNS * (SLOT_SIZE + SLOT_GAP) - SLOT_GAP + PADDING * 2)
-  anchor:SetHeight(HEADER_HEIGHT + 4 * (SLOT_SIZE + SLOT_GAP) - SLOT_GAP + PADDING)
+  anchor:SetHeight(classicBag.HeaderHeight() +
+                   4 * (SLOT_SIZE + SLOT_GAP) - SLOT_GAP + PADDING)
 
   frame = U.CreatePanel(anchor, { name = "UnrealUIBagFrame" })
   frame:SetAllPoints(anchor)
+  classicBag.StylePanel(frame, true)
   pcall(frame.SetFrameStrata, frame, "MEDIUM")
   pcall(frame.EnableMouse, frame, true)
   frame:Hide()
@@ -737,9 +967,11 @@ local function Build()
   end
 
   BuildHeader()
+  classicBag.StyleHeader(frame)
 
   grid = CreateFrame("Frame", "UnrealUIBagGrid", frame)
-  grid:SetPoint("TOPLEFT", frame, "TOPLEFT", PADDING, -HEADER_HEIGHT)
+  grid:SetPoint("TOPLEFT", frame, "TOPLEFT", PADDING,
+                -classicBag.HeaderHeight())
   grid:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -PADDING, PADDING)
 
   -- Trays sit above the frame: keyring on the left, bag slots on the right,
@@ -777,6 +1009,7 @@ function BG:OnEnable()
   if frame then return end
 
   InstallToggleOverrides()
+  classicBag.Capture()
   Build()
 
   U.RegisterEvent("PLAYER_ENTERING_WORLD", function() layoutDirty = true end)
