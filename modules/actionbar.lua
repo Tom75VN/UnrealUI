@@ -1250,15 +1250,18 @@ end
 -- longer cooldown of its own, which is why GCD_THRESHOLD exists in the first
 -- place -- the countdown text uses it to *reject* these pairs. The same test
 -- read the other way round is the detector: the first sub-threshold pair seen
--- during a sweep is this cast's global cooldown.
+-- during a sweep is this cast's global cooldown. Consumable items can report
+-- the same short pair for their own use delay (notably food and drink), so
+-- they must not be allowed to seed the bar-wide global sweep.
 --
 -- One pair is then shared by every button rather than each button reading its
 -- own, so a slot sitting on a 30s cooldown still sweeps with the rest of the
 -- bar instead of showing nothing -- the global cooldown is a player state, not
 -- a per-slot one, and that is what the feedback is for.
-local function NoteGCD(start, duration)
+local function NoteGCD(slot, start, duration)
   if not (cfg and cfg.showGCD) then return end
   if start <= 0 or duration <= 0 or duration >= GCD_THRESHOLD then return end
+  if Call("IsConsumableAction", slot) then return end
   if gcdStart == start and gcdDuration == duration then return end
 
   local now = tonumber(Call("GetTime"))
@@ -1293,7 +1296,7 @@ local function UpdateCooldown(button)
 
   -- enable == 0 is Vanilla's "this slot has a cooldown but must not display
   -- one" flag; a missing value is read as enabled, the way pfUI reads it.
-  if enable == nil or enable > 0 then NoteGCD(start, duration) end
+  if enable == nil or enable > 0 then NoteGCD(slot, start, duration) end
 
   button.uuiCdStart = start
   button.uuiCdDuration = duration
