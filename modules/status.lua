@@ -208,6 +208,7 @@ local function UpdatePopulationWidth()
 
   local width = HORIZONTAL_PADDING
   width = width + LabelWidth(popDisplay.serverCaption) + 2 + LabelWidth(popDisplay.serverValue)
+  width = width + 2 + LabelWidth(popDisplay.serverSuffix)
   width = width + HORIZONTAL_PADDING
   popAnchor:SetWidth(width)
 end
@@ -226,13 +227,19 @@ local function BuildPopulation()
     size = M.fontSize.normal, inherits = "GameFontNormal", color = M.color.text,
   })
   popDisplay.serverCaption:SetPoint("LEFT", popAnchor, "LEFT", HORIZONTAL_PADDING, 0)
-  popDisplay.serverCaption:SetText("Online:")
+  popDisplay.serverCaption:SetText("Faction:")
 
   popDisplay.serverValue = U.CreateLabel(popAnchor, {
     size = M.fontSize.normal, inherits = "GameFontNormal", color = M.color.text,
   })
   popDisplay.serverValue:SetPoint("LEFT", popDisplay.serverCaption, "RIGHT", 2, 0)
   popDisplay.serverValue:SetText("--")
+
+  popDisplay.serverSuffix = U.CreateLabel(popAnchor, {
+    size = M.fontSize.normal, inherits = "GameFontNormal", color = M.color.text,
+  })
+  popDisplay.serverSuffix:SetPoint("LEFT", popDisplay.serverValue, "RIGHT", 2, 0)
+  popDisplay.serverSuffix:SetText("online")
 
   U.RegisterMover("status.population", popAnchor, {
     label = "Online Count Overlay",
