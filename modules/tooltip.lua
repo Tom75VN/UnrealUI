@@ -132,7 +132,7 @@ local function StyleStatusBar()
     pcall(bar.SetPoint, bar, "TOPRIGHT", tooltip, "BOTTOMRIGHT", 0, 0)
   end
   pcall(bar.SetHeight, bar, BAR_HEIGHT)
-  pcall(bar.SetStatusBarTexture, bar, M.texture.plain)
+  pcall(bar.SetStatusBarTexture, bar, M.texture.statusBar)
 
   -- Flat fill behind the bar so a partially depleted pool reads as dark rather
   -- than transparent, plus the same thin outline the body carries. The bar
@@ -184,7 +184,100 @@ local function StyleFrame()
     U.HideRegion(U.G("GameTooltipTexture" .. i))
   end
 
+  -- Tooltip text is populated into native FontStrings instead of passing
+  -- through U.CreateLabel/U.SetStockFont. Bring every populated line onto the
+  -- same crisp one-pixel shadow as the rest of UnrealUI-styled text.
+  local lineCount = 0
+  local countOk, count = pcall(tooltip.NumLines, tooltip)
+  if countOk and type(count) == "number" then lineCount = count end
+  for i = 1, lineCount do
+    U.SetTextShadow(U.G("GameTooltipTextLeft" .. i))
+    U.SetTextShadow(U.G("GameTooltipTextRight" .. i))
+  end
+
   StyleStatusBar()
+end
+
+-- ShoppingTooltip1/2 are native GameTooltip frames used by item comparison.
+-- They need the same flat body and text treatment as the primary tooltip, but
+-- do not carry GameTooltip's unit-health status bar.
+function U.StyleCompareTooltip(tooltip, name)
+  if not tooltip or type(name) ~= "string" then return end
+  if U.ThemeStyleUsesNativeChrome() then return end
+
+  -- Unlike GameTooltip, the shopping frames retain their native grey
+  -- UI-Tooltip backdrop when a replacement table is applied directly. Clear
+  -- that definition first, then install UnrealUI's flat fill. UnrealPfUI uses
+  -- this same SetBackdrop(nil) sequence for ShoppingTooltip1/2 on this client
+  -- (WORKING_SOURCE; skins/blizzard/tooltips.lua + api/api.lua).
+  if tooltip.SetBackdrop then
+    pcall(tooltip.SetBackdrop, tooltip, nil)
+  end
+
+  U.CreateBackdrop(tooltip, {
+    background = M.color.background,
+    border = M.color.border,
+  })
+  ClearNativeEdge(tooltip)
+
+  local i
+  for i = 1, 3 do
+    U.HideRegion(U.G(name .. "Texture" .. i))
+  end
+
+  local lineCount = 0
+  local countOk, count = pcall(tooltip.NumLines, tooltip)
+  if countOk and type(count) == "number" then lineCount = count end
+  for i = 1, lineCount do
+    U.SetTextShadow(U.G(name .. "TextLeft" .. i))
+    U.SetTextShadow(U.G(name .. "TextRight" .. i))
+  end
+end
+
+-- Comparison tooltips are not owned by the bag module. The client can show
+-- ShoppingTooltip1/2 from merchant, character, auction and other native item
+-- paths, so their modern skin must be driven from the tooltip frames
+-- themselves. A bag-slot-only call leaves every other path in native chrome.
+local compareStyledFor = {}
+
+local function CompareLineText(name, index)
+  local label = U.G(name .. "TextLeft" .. index)
+  if not label or not label.GetText then return nil end
+  local ok, value = pcall(label.GetText, label)
+  if ok and type(value) == "string" then return value end
+  return nil
+end
+
+local function RefreshCompareTooltip(index, force)
+  if U.PerfDisabled and U.PerfDisabled("tooltip") then return end
+
+  local name = "ShoppingTooltip" .. index
+  local tooltip = U.G(name)
+  if not tooltip or not tooltip.IsShown then return end
+
+  local shownOk, shown = pcall(tooltip.IsShown, tooltip)
+  if not shownOk or not shown then
+    compareStyledFor[index] = nil
+    return
+  end
+
+  -- SetInventoryItem uses the item name on line 1; native compare setters add
+  -- CURRENTLY_EQUIPPED first and put the item name on line 2. Track both so a
+  -- visible tooltip repopulated through either path gets a fresh full pass.
+  local subject = (CompareLineText(name, 1) or "?") .. "\n" ..
+                  (CompareLineText(name, 2) or "")
+  if force or compareStyledFor[index] ~= subject then
+    U.StyleCompareTooltip(tooltip, name)
+    compareStyledFor[index] = subject
+  else
+    -- Native population can restore edge/corner art without changing the
+    -- visible subject. Keep the cheap suppression active between full passes.
+    ClearNativeEdge(tooltip)
+    local regionIndex
+    for regionIndex = 1, 3 do
+      U.HideRegion(U.G(name .. "Texture" .. regionIndex))
+    end
+  end
 end
 
 -- ---------------------------------------------------------------------------
@@ -350,6 +443,7 @@ end
 -- ---------------------------------------------------------------------------
 
 local hookFrame
+local compareHookFrames = {}
 
 local function Restyle()
   RefreshTooltip(true)
@@ -380,7 +474,43 @@ local function InstallTriggers()
   return installed
 end
 
+local function InstallCompareTrigger(index)
+  local name = "ShoppingTooltip" .. index
+  local tooltip = U.G(name)
+  if not tooltip then return false end
+
+  local function RestyleCompare()
+    RefreshCompareTooltip(index, true)
+
+    -- A native item setter may keep mutating its tooltip after OnShow returns.
+    -- Reapply once on the shared driver's next tick so that late native work
+    -- cannot become the final visible state.
+    U.DeferOnce("tooltip.compare-restyle." .. index, function()
+      RefreshCompareTooltip(index, true)
+    end)
+  end
+
+  local installed = false
+  if not compareHookFrames[index] then
+    local ok, frame = pcall(CreateFrame, "Frame", nil, tooltip)
+    if ok and frame then
+      pcall(frame.SetAllPoints, frame, tooltip)
+      if pcall(frame.SetScript, frame, "OnShow", RestyleCompare) then
+        installed = true
+      end
+      pcall(frame.SetScript, frame, "OnSizeChanged", RestyleCompare)
+      compareHookFrames[index] = frame
+    end
+  end
+
+  if U.PostHookScript(tooltip, "OnShow", RestyleCompare) then
+    installed = true
+  end
+  return installed
+end
+
 function TT.OnEnable()
+  if U.ThemeStyleUsesNativeChrome() then return end
   -- Style once up front so the very first tooltip is already flat rather than
   -- relying on a trigger that has not fired yet.
   StyleFrame()
@@ -389,7 +519,20 @@ function TT.OnEnable()
     U.Debug("tooltip: no show hook installed, styling is poll-driven only")
   end
 
+  local compareInstalled = false
+  local i
+  for i = 1, 2 do
+    if InstallCompareTrigger(i) then compareInstalled = true end
+  end
+  if not compareInstalled then
+    U.Debug("tooltip: no comparison hooks installed, styling is poll-driven only")
+  end
+
   U.RegisterUpdate("tooltip.player-style", 0.10, function()
     RefreshTooltip(false)
+    local compareIndex
+    for compareIndex = 1, 2 do
+      RefreshCompareTooltip(compareIndex, false)
+    end
   end)
 end

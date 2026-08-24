@@ -70,6 +70,37 @@ function U.StyleItemSlot(button, name)
   if not button then return end
   local edge = U.BorderSize()
 
+  local classic = type(U.ThemeStyleUsesNativeChrome) == "function" and
+                  U.ThemeStyleUsesNativeChrome()
+  button.uuiClassicItemSlot = classic and true or false
+
+  if classic then
+    -- The button was created from the client's real container/bag-slot
+    -- template. Its NormalTexture keeps the stock button's original 32px
+    -- geometry, which becomes a second small square inside UnrealUI's larger
+    -- unified slot. Remove only that redundant layer; highlight, pushed, icon,
+    -- count, click/drag and tooltip behavior remain owned by the template.
+    pcall(button.SetNormalTexture, button, "")
+    U.HideRegion(U.G(name .. "NormalTexture"))
+    button.uuiStockCount = U.G(name .. "Count")
+    if not button.uuiStockCount then
+      button.uuiCount = U.CreateLabel(button, {
+        size = M.fontSize.small,
+        color = M.color.text,
+        inherits = "GameFontNormalSmall",
+      })
+      if button.uuiCount then
+        button.uuiCount:SetPoint("BOTTOMRIGHT", button, "BOTTOMRIGHT", -3, 3)
+        button.uuiCount:Hide()
+      end
+    end
+    U.CreateBackdrop(button, {
+      background = { 0, 0, 0, 0 },
+      border = M.slotBorder.plain,
+    })
+    return
+  end
+
   pcall(button.SetNormalTexture, button, "")
   U.HideRegion(U.G(name .. "NormalTexture"))
 
@@ -91,13 +122,23 @@ function U.StyleItemSlot(button, name)
   -- fonts.stretched_justification_ignored: pfUI stretches the count across the
   -- button and justifies it BOTTOMRIGHT, which is exactly the pattern that
   -- record says can be ignored here. Anchored to the one corner instead.
-  local count = U.G(name .. "Count")
-  if count then
-    U.SetFont(count, M.fontSize.small)
+  local stockCount = U.G(name .. "Count")
+  button.uuiStockCount = stockCount
+  if stockCount then
+    -- Bank and container templates do not expose their count region
+    -- consistently on this client. Hide it and use one owned label below.
+    U.HideRegion(stockCount)
+  end
+
+  button.uuiCount = U.CreateLabel(button, {
+    size = M.fontSize.small, color = M.color.text,
+    inherits = "GameFontNormalSmall",
+  })
+  if button.uuiCount then
     pcall(function()
-      count:ClearAllPoints()
-      count:SetPoint("BOTTOMRIGHT", button, "BOTTOMRIGHT", -3, 3)
+      button.uuiCount:SetPoint("BOTTOMRIGHT", button, "BOTTOMRIGHT", -3, 3)
     end)
+    button.uuiCount:Hide()
   end
 
   local hlOk, highlight = pcall(button.GetHighlightTexture, button)
@@ -130,6 +171,145 @@ end
 -- reported to the player one time instead of once per slot.
 local bankTemplateReported = false
 
+-- GetItemInfo's documented eighth result is its INVTYPE_* token. Each token
+-- maps to its documented paper-doll slot name, which GetInventorySlotInfo
+-- resolves for this client. Rings and trinkets intentionally return both
+-- candidates so the two native shopping tooltips can show both worn items.
+local COMPARE_SLOTS = {
+  INVTYPE_HEAD = { "HeadSlot" },
+  INVTYPE_NECK = { "NeckSlot" },
+  INVTYPE_SHOULDER = { "ShoulderSlot" },
+  INVTYPE_BODY = { "ShirtSlot" },
+  INVTYPE_CHEST = { "ChestSlot" },
+  INVTYPE_ROBE = { "ChestSlot" },
+  INVTYPE_WAIST = { "WaistSlot" },
+  INVTYPE_LEGS = { "LegsSlot" },
+  INVTYPE_FEET = { "FeetSlot" },
+  INVTYPE_WRIST = { "WristSlot" },
+  INVTYPE_HAND = { "HandsSlot" },
+  INVTYPE_FINGER = { "Finger0Slot", "Finger1Slot" },
+  INVTYPE_TRINKET = { "Trinket0Slot", "Trinket1Slot" },
+  INVTYPE_CLOAK = { "BackSlot" },
+  INVTYPE_WEAPON = { "MainHandSlot" },
+  INVTYPE_2HWEAPON = { "MainHandSlot" },
+  INVTYPE_WEAPONMAINHAND = { "MainHandSlot" },
+  INVTYPE_WEAPONOFFHAND = { "SecondaryHandSlot" },
+  INVTYPE_SHIELD = { "SecondaryHandSlot" },
+  INVTYPE_HOLDABLE = { "SecondaryHandSlot" },
+  INVTYPE_RANGED = { "RangedSlot" },
+  INVTYPE_RANGEDRIGHT = { "RangedSlot" },
+  INVTYPE_THROWN = { "RangedSlot" },
+  INVTYPE_RELIC = { "RangedSlot" },
+  INVTYPE_TABARD = { "TabardSlot" },
+  INVTYPE_AMMO = { "AmmoSlot" },
+}
+
+local COMPARE_TEXT_SIDES = { "Left", "Right" }
+
+-- SetInventoryItem builds the equipped item's normal tooltip and therefore
+-- does not prepend the semantic header used by SetMerchantCompareItem. Shift
+-- its populated lines down once and add the same localized stock heading.
+-- This is the narrow AddHeader pattern used by UnrealPfUI's working compare
+-- module on this client (WORKING_SOURCE, modules/eqcompare.lua).
+local function AddItemCompareHeader(tooltip, name)
+  if not tooltip or type(name) ~= "string" then return end
+
+  local header = U.G("CURRENTLY_EQUIPPED")
+  if type(header) ~= "string" or header == "" then
+    header = "Currently Equipped"
+  end
+
+  local first = U.G(name .. "TextLeft1")
+  if not first then return end
+  if first:GetText() == header then return end
+
+  local lineCount = tooltip:NumLines()
+  local lineIndex, sideIndex
+  for lineIndex = lineCount, 1, -1 do
+    for sideIndex = 1, table.getn(COMPARE_TEXT_SIDES) do
+      local side = COMPARE_TEXT_SIDES[sideIndex]
+      local current = U.G(name .. "Text" .. side .. lineIndex)
+      local below = U.G(name .. "Text" .. side .. (lineIndex + 1))
+      if current and below and current:IsShown() then
+        local text = current:GetText()
+        if type(text) == "string" and text ~= "" then
+          local r, g, b = current:GetTextColor()
+          if tooltip:NumLines() < lineIndex + 1 then
+            tooltip:AddLine(text, r, g, b, true)
+          else
+            below:SetText(text)
+            below:SetTextColor(r, g, b)
+            below:Show()
+            current:Hide()
+          end
+        end
+      end
+    end
+  end
+
+  first:SetText(header)
+  first:SetTextColor(M.Unpack(M.color.textDim))
+  first:Show()
+  tooltip:Show()
+end
+
+local function HideItemCompare()
+  local i
+  for i = 1, 2 do
+    local tooltip = U.G("ShoppingTooltip" .. i)
+    if tooltip then pcall(tooltip.Hide, tooltip) end
+  end
+end
+
+local function ShowItemCompare(bag, slot)
+  HideItemCompare()
+
+  local linkOk, link = pcall(GetContainerItemLink, bag, slot)
+  if not linkOk or type(link) ~= "string" then return end
+
+  local infoOk, _, _, _, _, _, _, _, equipLoc = pcall(GetItemInfo, link)
+  if not infoOk or type(equipLoc) ~= "string" then return end
+
+  local slots = COMPARE_SLOTS[equipLoc]
+  if not slots then return end
+
+  local anchor = U.G("GameTooltip")
+  local inventoryLink = U.G("GetInventoryItemLink")
+  local inventorySlotInfo = U.G("GetInventorySlotInfo")
+  if not anchor or type(inventoryLink) ~= "function" or
+     type(inventorySlotInfo) ~= "function" then return end
+
+  local previous = anchor
+  local i
+  for i = 1, table.getn(slots) do
+    local slotOk, inventorySlot = pcall(inventorySlotInfo, slots[i])
+    local hasItem, wornLink = false, nil
+    if slotOk and inventorySlot then
+      hasItem, wornLink = pcall(inventoryLink, "player", inventorySlot)
+    end
+    if hasItem and wornLink then
+      local name = "ShoppingTooltip" .. i
+      local tooltip = U.G(name)
+      if tooltip and type(tooltip.SetInventoryItem) == "function" then
+        pcall(tooltip.SetOwner, tooltip, anchor, "ANCHOR_NONE")
+        pcall(tooltip.ClearAllPoints, tooltip)
+        pcall(tooltip.SetPoint, tooltip, "BOTTOMRIGHT", previous,
+              "BOTTOMLEFT", -3, 0)
+
+        local setOk, populated = pcall(tooltip.SetInventoryItem, tooltip,
+                                       "player", inventorySlot)
+        if setOk and populated then
+          pcall(AddItemCompareHeader, tooltip, name)
+          -- modules/tooltip.lua owns ShoppingTooltip styling for every native
+          -- and addon-driven comparison path.
+          pcall(tooltip.Show, tooltip)
+          previous = tooltip
+        end
+      end
+    end
+  end
+end
+
 function U.CreateItemSlot(parent, name, bag, slot)
   local template = U.ItemSlotTemplate(bag)
 
@@ -159,6 +339,12 @@ function U.CreateItemSlot(parent, name, bag, slot)
 
   button:SetID(slot)
   U.StyleItemSlot(button, name)
+
+  -- The stock template owns the primary item tooltip. These post-hooks run
+  -- after it has populated GameTooltip, then place the equipped counterpart(s)
+  -- to its left. They preserve the template's click, pickup and drag behavior.
+  U.PostHookScript(button, "OnEnter", function() ShowItemCompare(bag, slot) end)
+  U.PostHookScript(button, "OnLeave", HideItemCompare)
 
   -- ContainerFrame_UpdateCooldown resolves the cooldown by frame name. The
   -- container template ships one; the bank template does not, so it gets the
@@ -194,6 +380,19 @@ function U.UpdateItemSlot(button, bag, slot)
   pcall(SetItemButtonTexture, button, texture)
   pcall(SetItemButtonCount, button, count)
   pcall(SetItemButtonDesaturated, button, locked, 0.5, 0.5, 0.5)
+  if not button.uuiClassicItemSlot then U.HideRegion(button.uuiStockCount) end
+
+  -- Do not rely on a Count region supplied by either stock template: the bank
+  -- template can omit it, while the container template names it differently
+  -- on some client builds. The shared owned label keeps every stack count
+  -- visible in both bags and bank slots.
+  if button.uuiCount then
+    local text = ""
+    local n = tonumber(count)
+    if n and n > 0 then text = tostring(n) end
+    button.uuiCount:SetText(text)
+    if text == "" then button.uuiCount:Hide() else button.uuiCount:Show() end
+  end
 
   local color = U.ItemSlotBorderColor(bag, slot, texture, quality)
   U.SetBorderColor(button, color[1], color[2], color[3], color[4] or 1)
