@@ -427,6 +427,9 @@ local function CreateGrid()
   grid = CreateFrame("Frame", "UnrealUIGrid", UIParent)
   grid:SetAllPoints(UIParent)
   pcall(grid.SetFrameStrata, grid, "BACKGROUND")
+  -- Keep the decoration above any BACKGROUND-strata shade (quick binding
+  -- uses one to swallow world clicks) while remaining below normal UI.
+  pcall(grid.SetFrameLevel, grid, 1)
   -- The grid is decoration; it must never eat a click meant for a handle.
   pcall(grid.EnableMouse, grid, false)
 
@@ -594,11 +597,10 @@ end
 -- rendering.parent_alpha_not_propagated: children are shown and hidden
 -- explicitly rather than relying on the parent's visibility carrying.
 local function ShowEditOverlay()
-  if not grid then CreateGrid() end
   if not editPanel then CreateEditPanel() end
   if not editKeys then CreateEditKeys() end
 
-  grid:Show()
+  U.ShowAlignmentGrid()
   editPanel:Show()
   editKeys:Show()
   if editPanel.title then editPanel.title:Show() end
@@ -610,7 +612,7 @@ local function ShowEditOverlay()
 end
 
 local function HideEditOverlay()
-  if grid then grid:Hide() end
+  U.HideAlignmentGrid()
   if editKeys then editKeys:Hide() end
   if not editPanel then return end
 
@@ -625,6 +627,18 @@ end
 
 function U.GridSize()
   return GRID_SIZE
+end
+
+-- The alignment grid is shared by edit mode and other full-screen placement
+-- modes. Callers own their mode lifetime and must hide it when they close.
+function U.ShowAlignmentGrid()
+  if not grid then CreateGrid() end
+  grid:Show()
+  return grid
+end
+
+function U.HideAlignmentGrid()
+  if grid then grid:Hide() end
 end
 
 -- ---------------------------------------------------------------------------
