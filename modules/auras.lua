@@ -687,7 +687,13 @@ local function PositionRow(row, below, offset)
   offset = offset or 0
   row:ClearAllPoints()
   if below then
-    row:SetPoint("TOPLEFT", row.anchor, "BOTTOMLEFT", 0, -(ROW_GAP + offset))
+    -- Target-of-target hangs directly below the target frame. When it is
+    -- visible, target auras must clear that frame rather than claiming the
+    -- same edge. Rows for every other unit, and target auras without a
+    -- target-of-target, retain their usual close-to-frame position.
+    local anchor = row.belowAnchor
+    if not anchor or not anchor:IsShown() then anchor = row.anchor end
+    row:SetPoint("TOPLEFT", anchor, "BOTTOMLEFT", 0, -(ROW_GAP + offset))
   else
     row:SetPoint("BOTTOMLEFT", row.anchor, "TOPLEFT", 0, ROW_GAP + offset)
   end
@@ -1069,6 +1075,7 @@ local function BuildRow(id, unit, harmful, setting)
   -- icons cannot drift away from the frame they describe.
   local row = CreateFrame("Frame", "UnrealUIAuraRow" .. id, anchor)
   row.anchor = anchor
+  if unit == "target" then row.belowAnchor = U.GetUnitFrame("targettarget") end
   row:SetWidth(1)
   row:SetHeight(1)
   PositionRow(row, U.GetAuraSetting("belowFrame"), 0)
