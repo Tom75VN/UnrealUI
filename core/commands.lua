@@ -100,8 +100,10 @@ local function ShowHelp()
   U.Print("  |cffffff00/uui res|r - dump the Character sheet resistance frames")
   U.Print("  |cffffff00/uui movertest|r - foundation mover smoke test")
   U.Print("  |cffffff00/uui perf|r - record frame time around target changes")
+  U.Print("  |cffffff00/uui theme <style>|r - select a theme (needs /reload)")
   U.Print("  |cffffff00/uui nosuppress|r - skip native frame suppression (needs /reload)")
   U.Print("  |cffffff00/uui suppress <0-4>|r - bisect the suppression recipe (needs /reload)")
+  U.Print("  |cffffff00/uui profile create <name>|r - create and select a shared profile")
   U.Print("  |cffffff00/uui debug|r - toggle debug output")
 end
 
@@ -1201,6 +1203,68 @@ handlers["perf"] = function(rest)
     return
   end
   U.PerfCommand(rest)
+end
+
+-- The settings window cannot safely create an EditBox on this client, so its
+-- Create button uses a generated name and this chat command is the supported
+-- path for a custom one. Chat input is owned by the native UI and does not use
+-- unrealUI's known-crashing addon-created text-input path.
+handlers["profile"] = function(rest)
+  local action, name = Split(rest)
+  if action ~= "create" or name == "" then
+    U.Print("current profile: |cffffff00" ..
+            tostring(U.GetCurrentProfileName and U.GetCurrentProfileName() or "") .. "|r")
+    U.Print("  |cffffff00/uui profile create <name>|r")
+    return
+  end
+  if type(U.CreateProfile) ~= "function" then
+    U.Print("profile management is unavailable in this build")
+    return
+  end
+
+  local ok, reason = U.CreateProfile(name)
+  if not ok then
+    if reason == "exists" then
+      U.Print("a profile named |cffffff00" .. name .. "|r already exists")
+    else
+      U.Print("profile names may contain letters, numbers, spaces, hyphens " ..
+              "and underscores (maximum 64 characters)")
+    end
+    return
+  end
+
+  U.Print("created and selected profile |cffffff00" .. name .. "|r - " ..
+          "|cffffff00/reload|r to apply it")
+end
+
+-- Native Classic mode has no UnrealUI settings window by design.  Keep theme
+-- selection available through the existing native chat input so a player can
+-- return to Modern without editing SavedVariables by hand.
+handlers["theme"] = function(rest)
+  local id = string.lower(Trim(rest))
+  local style = U.GetThemeStyleDefinition and U.GetThemeStyleDefinition(id)
+  if not style or not style.available then
+    U.Print("available themes:")
+    local styles = U.GetThemeStyles and U.GetThemeStyles() or {}
+    local i
+    for i = 1, table.getn(styles) do
+      if styles[i].available then
+        U.Print("  |cffffff00" .. styles[i].id .. "|r - " .. styles[i].label)
+      end
+    end
+    return
+  end
+
+  if U.SetThemeStyle(id) then
+    U.ShowConfirm({
+      owner = "commands.theme-reload",
+      centered = true,
+      text = "Theme changed",
+      detail = "Type /reload to apply the " .. style.label .. " theme.",
+      acceptText = "OK",
+      cancelText = "Close",
+    })
+  end
 end
 
 -- Skips core/compat.lua's native-frame suppression on the next load.

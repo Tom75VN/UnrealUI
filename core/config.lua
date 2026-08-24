@@ -15,10 +15,14 @@
 
 local U = UnrealUI
 
-local CONFIG_VERSION = 1
+local CONFIG_VERSION = 4
+local PROFILE_STORE_VERSION = 1
+local MAX_PROFILE_NAME = 64
 
--- Anchor points are the only strings unrealUI persists. Whitelisting them means
--- a corrupted value is rejected rather than fed to SetPoint.
+-- Anchor points are the only persisted strings that are passed to SetPoint.
+-- Whitelisting them means a corrupted value is rejected before it reaches the
+-- frame API. Other stored strings are short identifiers validated by their
+-- owning subsystem (for example core/theme.lua).
 local VALID_POINTS = {
   TOP = true, BOTTOM = true, LEFT = true, RIGHT = true, CENTER = true,
   TOPLEFT = true, TOPRIGHT = true, BOTTOMLEFT = true, BOTTOMRIGHT = true,
@@ -27,6 +31,11 @@ local VALID_POINTS = {
 local defaults = {
   version   = CONFIG_VERSION,
   debug     = false,
+  themeStyle = "modern",
+  -- Stable media ids only. core/media.lua reconstructs the bundled paths so
+  -- the client's unsafe SavedVariables backslash handling never sees them.
+  defaultFont = U.media.defaultFontId,
+  unitFrameFont = U.media.defaultUnitFrameFontId,
   -- Diagnostic only, set by /uui nosuppress. core/compat.lua's native-frame
   -- suppression is applied once at OnEnable and is irreversible within a
   -- session -- Show is replaced by a no-op whose original is not kept, and
@@ -52,6 +61,15 @@ local defaults = {
   modules   = {},       -- module name -> { enabled = true }
 }
 
+-- Profiles live account-wide so any character can select them. Only the
+-- active profile name is character-scoped (UnrealUIProfileDB in the TOC).
+-- UnrealUIDB remains declared account-wide as a read-only migration source
+-- for installations that predate profiles; new settings are written only to
+-- UnrealUIProfiles.profiles[activeName].
+local profiles
+local assignments
+local characterKey
+
 -- ---------------------------------------------------------------------------
 -- Validation
 -- ---------------------------------------------------------------------------
@@ -63,6 +81,30 @@ local function IsSafeString(value)
   if string.find(value, "\\", 1, true) then return false end
   if string.find(value, "%c") then return false end
   return true
+end
+
+local function IsSafeProfileName(value)
+  if not IsSafeString(value) or value == "" then return false end
+  if string.len(value) > MAX_PROFILE_NAME then return false end
+  -- Profile names are rendered in labels and chat. Keep colour escapes and
+  -- punctuation with UI meaning out of that path while allowing the names,
+  -- spaces, hyphens and underscores used by character/realm identifiers.
+  if string.find(value, "[^%w%s%-%_]") then return false end
+  return true
+end
+
+local function CopyTable(source, seen)
+  if type(source) ~= "table" then return source end
+  seen = seen or {}
+  if seen[source] then return seen[source] end
+
+  local copy = {}
+  seen[source] = copy
+  local key, value
+  for key, value in pairs(source) do
+    copy[CopyTable(key, seen)] = CopyTable(value, seen)
+  end
+  return copy
 end
 
 local function IsValidPosition(pos)
@@ -179,27 +221,214 @@ local function SanitizeModules(modules)
   return clean
 end
 
+local function PrepareConfig(stored)
+  local storedVersion = type(stored) == "table" and
+                        tonumber(stored.version) or 0
+  local db = ApplyDefaults(stored, defaults)
+  db.positions = SanitizePositions(db.positions)
+  db.modules = SanitizeModules(db.modules)
+
+  -- Version 2 introduced bundled-font selection with PT Sans Narrow as the
+  -- automatic default. USER_CONFIRMED_INGAME: that made all UnrealUI text
+  -- disappear. Force every existing profile back to the inherited native font
+  -- once; custom faces remain explicit choices for the focused probe work.
+  if storedVersion < 3 then db.defaultFont = U.media.defaultFontId end
+  -- Version 3 still selected Homespun automatically for unit/party frames.
+  -- Keep those native too until the same probe establishes a safe path.
+  if storedVersion < 4 then db.unitFrameFont = U.media.defaultUnitFrameFontId end
+
+  if db.version ~= CONFIG_VERSION then
+    U.Debug("config version " .. tostring(db.version) ..
+            " -> " .. tostring(CONFIG_VERSION))
+    db.version = CONFIG_VERSION
+  end
+  return db
+end
+
+local function CharacterProfileName()
+  -- UnitName/GetRealmName are documented by this client and used by the
+  -- installed UnrealPfUI build. Keep the calls protected because LoadConfig
+  -- can also be reached by the bootstrap fallback before PLAYER_LOGIN.
+  local name, realm
+  if type(UnitName) == "function" then
+    local ok, value = pcall(UnitName, "player")
+    if ok and type(value) == "string" and value ~= "" then name = value end
+  end
+  if type(GetRealmName) == "function" then
+    local ok, value = pcall(GetRealmName)
+    if ok and type(value) == "string" and value ~= "" then realm = value end
+  end
+
+  local candidate
+  if name and realm then
+    candidate = name .. " - " .. realm
+  elseif name then
+    candidate = name
+  else
+    candidate = "Character Profile"
+  end
+  if IsSafeProfileName(candidate) then return candidate end
+  return "Character Profile"
+end
+
+local function SortedProfileNames(exclude)
+  local names, name = {}, nil
+  if type(profiles) ~= "table" then return names end
+  for name in pairs(profiles) do
+    if name ~= exclude then table.insert(names, name) end
+  end
+  table.sort(names)
+  return names
+end
+
+local function SetActiveProfile(name)
+  if type(profiles) ~= "table" or not IsSafeProfileName(name) or
+     type(profiles[name]) ~= "table" then
+    return false
+  end
+  UnrealUIProfileDB.active = name
+  if type(assignments) == "table" and IsSafeProfileName(characterKey) then
+    assignments[characterKey] = name
+  end
+  U.profileDB = UnrealUIProfileDB
+  U.db = profiles[name]
+  return true
+end
+
 -- ---------------------------------------------------------------------------
 -- Load
 -- ---------------------------------------------------------------------------
 function U.LoadConfig()
   if type(UnrealUIDB) ~= "table" then UnrealUIDB = {} end
+  if type(UnrealUIProfiles) ~= "table" then UnrealUIProfiles = {} end
+  if type(UnrealUIProfileDB) ~= "table" then UnrealUIProfileDB = {} end
 
-  local db = ApplyDefaults(UnrealUIDB, defaults)
-  db.positions = SanitizePositions(db.positions)
-  db.modules = SanitizeModules(db.modules)
+  local storedProfiles = UnrealUIProfiles.profiles
+  if type(storedProfiles) ~= "table" then storedProfiles = {} end
+  local storedAssignments = UnrealUIProfiles.assignments
+  if type(storedAssignments) ~= "table" then storedAssignments = {} end
 
-  if db.version ~= CONFIG_VERSION then
-    -- No migrations exist yet; 0.0.1 is the first stored shape. Record the
-    -- version so a future migration has a real starting point.
-    U.Debug("config version " .. tostring(db.version) ..
-            " -> " .. tostring(CONFIG_VERSION))
-    db.version = CONFIG_VERSION
+  profiles = {}
+  local name, stored
+  for name, stored in pairs(storedProfiles) do
+    if IsSafeProfileName(name) and type(stored) == "table" then
+      profiles[name] = PrepareConfig(CopyTable(stored))
+    end
   end
 
-  UnrealUIDB = db
-  U.db = db
-  return db
+  assignments = {}
+  local assignedProfile
+  for name, assignedProfile in pairs(storedAssignments) do
+    if IsSafeProfileName(name) and IsSafeProfileName(assignedProfile) and
+       type(profiles[assignedProfile]) == "table" then
+      assignments[name] = assignedProfile
+    end
+  end
+
+  characterKey = CharacterProfileName()
+  local active = UnrealUIProfileDB.active
+  if not IsSafeProfileName(active) or type(profiles[active]) ~= "table" then
+    active = characterKey
+    if type(profiles[active]) ~= "table" then
+      -- Each character receives an independent copy of the old shared config
+      -- on first load. The old UnrealUIDB is kept untouched as a migration
+      -- backup and is no longer the live settings table.
+      profiles[active] = PrepareConfig(CopyTable(UnrealUIDB))
+    end
+  end
+
+  UnrealUIProfiles = {
+    version = PROFILE_STORE_VERSION,
+    profiles = profiles,
+    assignments = assignments,
+  }
+  SetActiveProfile(active)
+  return U.db
+end
+
+-- ---------------------------------------------------------------------------
+-- Shared profiles
+-- ---------------------------------------------------------------------------
+
+function U.GetCurrentProfileName()
+  return U.profileDB and U.profileDB.active or ""
+end
+
+function U.GetProfileNames(excludeCurrent)
+  return SortedProfileNames(excludeCurrent and U.GetCurrentProfileName() or nil)
+end
+
+function U.GetDeletableProfileNames()
+  local names, result = SortedProfileNames(U.GetCurrentProfileName()), {}
+  local i, key, used
+  for i = 1, table.getn(names) do
+    used = false
+    for key in pairs(assignments or {}) do
+      if assignments[key] == names[i] then used = true end
+    end
+    if not used then table.insert(result, names[i]) end
+  end
+  return result
+end
+
+function U.SelectProfile(name)
+  return SetActiveProfile(name)
+end
+
+function U.CopyProfile(sourceName)
+  local current = U.GetCurrentProfileName()
+  if not IsSafeProfileName(current) or type(profiles[sourceName]) ~= "table" then
+    return false
+  end
+  profiles[current] = PrepareConfig(CopyTable(profiles[sourceName]))
+  return SetActiveProfile(current)
+end
+
+function U.ResetCurrentProfile()
+  local current = U.GetCurrentProfileName()
+  if not IsSafeProfileName(current) then return false end
+  profiles[current] = PrepareConfig({})
+  return SetActiveProfile(current)
+end
+
+function U.DeleteProfile(name)
+  if not IsSafeProfileName(name) or name == U.GetCurrentProfileName() then
+    return false
+  end
+  if type(profiles[name]) ~= "table" then return false end
+  local key
+  for key in pairs(assignments or {}) do
+    if assignments[key] == name then return false end
+  end
+  profiles[name] = nil
+  return true
+end
+
+function U.CreateProfile(name)
+  if not IsSafeProfileName(name) then return false, "invalid" end
+  if type(profiles[name]) == "table" then return false, "exists" end
+  profiles[name] = PrepareConfig(CopyTable(U.db or {}))
+  SetActiveProfile(name)
+  return true
+end
+
+function U.NextProfileName()
+  local base = U.GetCurrentProfileName()
+  if not IsSafeProfileName(base) then base = "New Profile" end
+  base = base .. " Copy"
+  if type(profiles[base]) ~= "table" and string.len(base) <= MAX_PROFILE_NAME then
+    return base
+  end
+
+  local index = 2
+  while index < 100 do
+    local suffix = " " .. tostring(index)
+    local shortBase = string.sub(base, 1, MAX_PROFILE_NAME - string.len(suffix))
+    local candidate = shortBase .. suffix
+    if type(profiles[candidate]) ~= "table" then return candidate end
+    index = index + 1
+  end
+  return nil
 end
 
 -- ---------------------------------------------------------------------------

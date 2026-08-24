@@ -7,8 +7,9 @@
 -- hide its pages, and the selected page filling the rest. The accent colour
 -- (#f5ae0a, core/media.lua) marks headings, groups and the selected row.
 --
--- It is still not a config framework. There is no schema, no profile machinery
--- and no data binding: a module registers a page, builds its own controls with
+-- It is still not a config framework. Profile persistence belongs to
+-- core/config.lua, and there is no general schema or data binding: a module
+-- registers a page, builds its own controls with
 -- core/widgets.lua, and owns its own values. This file only decides what is on
 -- screen.
 --
@@ -44,6 +45,11 @@ local SelectPage
 -- ---------------------------------------------------------------------------
 local function SetShown(region, show)
   if not region then return end
+
+  if type(region.uuiSetShown) == "function" then
+    region.uuiSetShown(show)
+    return
+  end
 
   -- Composite controls from core/widgets.lua are a plain table of parts rather
   -- than a frame, so they are toggled through the list they carry.
@@ -288,7 +294,7 @@ RenderSidebar = function()
 
     row:ClearAllPoints()
     row:SetPoint("TOPLEFT", sidebar, "TOPLEFT", 6,
-                 -6 - (i - 1) * (ROW_HEIGHT + ROW_GAP))
+                 -34 - (i - 1) * (ROW_HEIGHT + ROW_GAP))
 
     -- Pages under a group sit one indent in, so the list reads as a tree
     -- without needing a second column of art.
@@ -486,6 +492,23 @@ local function Build()
   })
   sidebar:SetPoint("TOPLEFT", panel, "TOPLEFT", 12, -HEADER_HEIGHT)
 
+  -- Edit mode is a primary action rather than a setting, so it remains at the
+  -- top of the menu no matter which settings page is selected.
+  sidebar.move = U.CreateButton(sidebar, {
+    name = "UnrealUISettingsMove",
+    text = "Move UI",
+    width = SIDEBAR_WIDTH - 12,
+    height = 22,
+    onClick = function()
+      -- The window would sit on top of the edit panel and the frames being
+      -- placed, so opening edit mode closes it.
+      Hide()
+      U.UnlockUI()
+    end,
+  })
+  sidebar.move:SetPoint("TOPLEFT", sidebar, "TOPLEFT", 6, -6)
+  table.insert(panel.chrome, sidebar.move)
+
   -- The content frame is a positioning anchor. Its children are toggled through
   -- the owning page's widget list, never through this frame.
   content = CreateFrame("Frame", "UnrealUISettingsContent", panel)
@@ -550,10 +573,239 @@ function U.OpenSettings(keepOpen)
 end
 
 -- ---------------------------------------------------------------------------
+-- Profile page
+--
+-- Named profiles are account-wide and selectable by every character. The
+-- active profile assignment and all storage operations stay in core/config.lua;
+-- this page only presents those operations with shared controls.
+-- ---------------------------------------------------------------------------
+local function BuildProfilePage(parent)
+  local widgets = {}
+  local pageWidth = PANEL_WIDTH - SIDEBAR_WIDTH - 36
+
+  local function AddLabel(text, x, y, color, width)
+    local label = U.CreateSettingsLabel(parent, {
+      size = M.fontSize.small,
+      color = color or M.color.text,
+      inherits = "GameFontNormalSmall",
+      justify = "LEFT",
+      width = width,
+    })
+    if label then
+      label:SetPoint("TOPLEFT", parent, "TOPLEFT", x, y)
+      label:SetText(text)
+      table.insert(widgets, label)
+    end
+    return label
+  end
+
+  local function AddHint(text, control)
+    local hint = U.CreateSettingsLabel(parent, {
+      size = M.fontSize.small,
+      color = M.color.textDim,
+      inherits = "GameFontNormalSmall",
+      justify = "LEFT",
+      width = pageWidth,
+    })
+    if hint and control then
+      U.AnchorSettingsDescription(hint, control)
+      hint:SetText(text)
+      table.insert(widgets, hint)
+    end
+    return hint
+  end
+
+  local function ProfileItems(excludeCurrent, deleteOnly)
+    local result = {}
+    local names = deleteOnly and U.GetDeletableProfileNames() or
+                  U.GetProfileNames(excludeCurrent)
+    local i
+    for i = 1, table.getn(names) do
+      table.insert(result, { value = names[i], text = names[i] })
+    end
+    if table.getn(result) == 0 then
+      table.insert(result, {
+        value = "__none__",
+        text = "No other profiles",
+        disabled = true,
+      })
+    end
+    return result
+  end
+
+  local function ReloadNotice(message)
+    U.CloseSettings()
+    U.Print(message .. " - |cffffff00/reload|r to apply it")
+  end
+
+  local header = U.CreateSectionHeader(parent, {
+    text = "Profiles",
+    width = pageWidth,
+    y = -4,
+  })
+  table.insert(widgets, header)
+
+  AddLabel("Select Profile", 0, -32, M.color.accent, 220)
+  local selectProfile = U.CreateDropdown(parent, {
+    name = "UnrealUISettingsSelectProfile",
+    value = U.GetCurrentProfileName(),
+    width = 470,
+    height = 24,
+    rowHeight = 20,
+    items = ProfileItems(false, false),
+    onChange = function(value)
+      if value ~= U.GetCurrentProfileName() and U.SelectProfile(value) then
+        ReloadNotice("selected profile |cffffff00" .. value .. "|r")
+      end
+    end,
+  })
+  selectProfile.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -49)
+  table.insert(widgets, selectProfile)
+  AddHint("Choose a profile created by any character on this account.",
+          selectProfile.button)
+
+  local create = U.CreateButton(parent, {
+    name = "UnrealUISettingsCreateProfile",
+    text = "Create Profile Copy",
+    width = 220,
+    height = 24,
+    onClick = function()
+      local name = U.NextProfileName()
+      if not name then
+        U.Print("could not find an available profile name")
+        return
+      end
+      if U.CreateProfile(name) then
+        ReloadNotice("created and selected profile |cffffff00" .. name .. "|r")
+      end
+    end,
+  })
+  create:SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -105)
+  table.insert(widgets, create)
+  AddHint("Copies the current settings under a generated name. For a custom " ..
+          "name, use /uui profile create <name>.", create)
+
+  AddLabel("Copy From", 0, -164, M.color.accent, 220)
+  local copyFrom = U.CreateDropdown(parent, {
+    name = "UnrealUISettingsCopyProfile",
+    width = 220,
+    height = 24,
+    rowHeight = 20,
+    items = ProfileItems(true, false),
+  })
+  copyFrom.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -181)
+  table.insert(widgets, copyFrom)
+  if not copyFrom.GetValue() and copyFrom.button.label then
+    copyFrom.button.label:SetText("No other profiles")
+  end
+
+  local copyButton = U.CreateButton(parent, {
+    name = "UnrealUISettingsCopyProfileButton",
+    text = "Copy Settings",
+    width = 220,
+    height = 24,
+    onClick = function()
+      local source = copyFrom.GetValue()
+      if source and source ~= "__none__" and U.CopyProfile(source) then
+        ReloadNotice("copied |cffffff00" .. source .. "|r into |cffffff00" ..
+                     U.GetCurrentProfileName() .. "|r")
+      end
+    end,
+  })
+  copyButton:SetPoint("TOPLEFT", parent, "TOPLEFT", 250, -183)
+  table.insert(widgets, copyButton)
+  AddHint("Copies another profile into the currently active profile.",
+          copyFrom.button)
+
+  AddLabel("Delete a Profile", 0, -239, M.color.accent, 220)
+  local deleteProfile = U.CreateDropdown(parent, {
+    name = "UnrealUISettingsDeleteProfile",
+    width = 220,
+    height = 24,
+    rowHeight = 20,
+    items = ProfileItems(true, true),
+  })
+  deleteProfile.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -256)
+  table.insert(widgets, deleteProfile)
+  if not deleteProfile.GetValue() and deleteProfile.button.label then
+    deleteProfile.button.label:SetText("No other profiles")
+  end
+
+  local armedDelete
+  local deleteButton
+  deleteButton = U.CreateButton(parent, {
+    name = "UnrealUISettingsDeleteProfileButton",
+    text = "Delete Profile",
+    textColor = { 1, 0.35, 0.35, 1 },
+    width = 220,
+    height = 24,
+    onClick = function()
+      local name = deleteProfile.GetValue()
+      if not name or name == "__none__" then return end
+      if armedDelete ~= name then
+        armedDelete = name
+        if deleteButton and deleteButton.label then
+          deleteButton.label:SetText("Confirm Delete")
+        end
+        U.Print("click Confirm Delete to remove |cffffff00" .. name .. "|r")
+        return
+      end
+      if U.DeleteProfile(name) then
+        ReloadNotice("deleted profile |cffffff00" .. name .. "|r")
+      end
+    end,
+  })
+  deleteButton:SetPoint("TOPLEFT", parent, "TOPLEFT", 250, -258)
+  table.insert(widgets, deleteButton)
+  AddHint("Deletes a profile not assigned to any character.",
+          deleteProfile.button)
+
+  AddLabel("Reset Current Profile", 0, -314, M.color.accent, 220)
+  local resetArmed = false
+  local reset
+  reset = U.CreateButton(parent, {
+    name = "UnrealUISettingsResetProfile",
+    text = "Reset Profile",
+    width = 220,
+    height = 24,
+    onClick = function()
+      if not resetArmed then
+        resetArmed = true
+        if reset.label then reset.label:SetText("Confirm Reset") end
+        U.Print("click Confirm Reset to restore the current profile defaults")
+        return
+      end
+      local name = U.GetCurrentProfileName()
+      if U.ResetCurrentProfile() then
+        ReloadNotice("reset profile |cffffff00" .. name .. "|r")
+      end
+    end,
+  })
+  reset:SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -331)
+  table.insert(widgets, reset)
+
+  local current = AddLabel("Current Profile: |cfff5ae0a" ..
+                           U.GetCurrentProfileName() .. "|r", 250, -334,
+                           M.color.text, 220)
+  AddHint("Restores defaults. Characters using the same profile share its settings.",
+          reset)
+
+  local function Refresh()
+    selectProfile.SetValue(U.GetCurrentProfileName(), false)
+    if current then
+      current:SetText("Current Profile: |cfff5ae0a" ..
+                      U.GetCurrentProfileName() .. "|r")
+    end
+  end
+
+  return widgets, Refresh
+end
+
+-- ---------------------------------------------------------------------------
 -- General page
 --
--- The original panel's contents: edit mode and the position reset. Registered
--- here rather than in core so the window has no special-cased first page.
+-- Shared settings and controls for features too small to need their own page.
+-- Registered here rather than in core so the window has no special-cased page.
 -- ---------------------------------------------------------------------------
 local function BuildGeneralPage(parent)
   local widgets = {}
@@ -565,42 +817,68 @@ local function BuildGeneralPage(parent)
   })
   table.insert(widgets, header)
 
-  local move = U.CreateButton(parent, {
-    name = "UnrealUISettingsMove",
-    text = "Move UI",
-    width = 220,
-    height = 26,
-    onClick = function()
-      -- The window would sit on top of the edit panel and the frames being
-      -- placed, so opening edit mode closes it.
-      Hide()
-      U.UnlockUI()
+  local themeLabel = U.CreateSettingsLabel(parent, {
+    size = M.fontSize.small,
+    color = M.color.text,
+    inherits = "GameFontNormalSmall",
+    justify = "LEFT",
+  })
+  if themeLabel then
+    themeLabel:SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -32)
+    themeLabel:SetText("Theme style")
+    table.insert(widgets, themeLabel)
+  end
+
+  local themeItems = {}
+  local themeStyles = U.GetThemeStyles()
+  local themeIndex
+  for themeIndex = 1, table.getn(themeStyles) do
+    local style = themeStyles[themeIndex]
+    table.insert(themeItems, {
+      value = style.id,
+      text = style.label .. (style.wip and " (WIP)" or ""),
+      disabled = not style.available,
+    })
+  end
+
+  local themes = U.CreateRadioGroup(parent, {
+    name = "UnrealUISettingsThemeStyle",
+    value = U.GetThemeStyle(),
+    width = 156,
+    columns = 3,
+    columnGap = 6,
+    items = themeItems,
+    onChange = function(value)
+      if U.SetThemeStyle(value) and U.ThemeStyleRequiresReload() then
+        U.ShowConfirm({
+          owner = "settings.theme-reload",
+          centered = true,
+          text = "Theme changed",
+          detail = "Type /reload to apply the " ..
+                   tostring(U.GetThemeStyleLabel(value)) .. " theme.",
+          acceptText = "OK",
+          cancelText = "Close",
+        })
+      end
     end,
   })
-  move:SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -34)
-  table.insert(widgets, move)
+  themes.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -52)
+  table.insert(widgets, themes)
 
-  local reset = U.CreateButton(parent, {
-    name = "UnrealUISettingsReset",
-    text = "Reset frame positions",
-    width = 220,
-    height = 26,
-    onClick = function() U.ResetPositions() end,
-  })
-  reset:SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -66)
-  table.insert(widgets, reset)
-
-  local hint = U.CreateSettingsLabel(parent, {
+  local themeHint = U.CreateSettingsLabel(parent, {
     size = M.fontSize.small,
     color = M.color.textDim,
     inherits = "GameFontNormalSmall",
     justify = "LEFT",
   })
-  if hint then
-    U.AnchorSettingsDescription(hint, reset)
-    hint:SetText("Drag frames onto the grid in edit mode. " ..
-                 "Hold Shift while dropping for free placement.")
-    table.insert(widgets, hint)
+  if themeHint and themes.firstRow then
+    -- The selector uses three columns, but the description spans the whole
+    -- settings page. Anchor it below the leftmost row so its width stays
+    -- within the content panel instead of starting under the last column.
+    U.AnchorSettingsDescription(themeHint, themes.firstRow)
+    themeHint:SetText("Classic WoW restores the original native interface " ..
+                      "after a reload. Modern WoW is still in development.")
+    table.insert(widgets, themeHint)
   end
 
   -- Quick binding (modules/quickbind.lua) is a mode, like edit mode above, so
@@ -621,7 +899,7 @@ local function BuildGeneralPage(parent)
       end
     end,
   })
-  quickbind:SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -140)
+  quickbind:SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -102)
   table.insert(widgets, quickbind)
 
   local quickbindHint = U.CreateSettingsLabel(parent, {
@@ -648,7 +926,7 @@ local function BuildGeneralPage(parent)
       if type(U.ApplyMicroBar) == "function" then U.ApplyMicroBar() end
     end,
   })
-  microbar.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -204)
+  microbar.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -164)
   table.insert(widgets, microbar)
 
   local microbarHint = U.CreateSettingsLabel(parent, {
@@ -676,7 +954,7 @@ local function BuildGeneralPage(parent)
       if type(U.ApplyXPBar) == "function" then U.ApplyXPBar() end
     end,
   })
-  reputation.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -260)
+  reputation.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -220)
   table.insert(widgets, reputation)
 
   -- The minimap settings button (modules/minimap.lua) is the normal way to
@@ -691,10 +969,11 @@ local function BuildGeneralPage(parent)
       if type(U.ApplyMinimapButton) == "function" then U.ApplyMinimapButton() end
     end,
   })
-  minimapButton.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -292)
+  minimapButton.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -252)
   table.insert(widgets, minimapButton)
 
   local function Refresh()
+    themes.SetValue(U.GetThemeStyle(), false)
     microbar.SetValue(U.ModuleConfig("microbar", { enabled = true }).enabled)
     reputation.SetValue(U.ModuleConfig("xpbar", { repEnabled = true }).repEnabled)
     minimapButton.SetValue(U.ModuleConfig("minimap", { enabled = true }).enabled)
@@ -705,6 +984,8 @@ end
 
 function S:OnInit()
   U.RegisterSettingsTab("general", "General", BuildGeneralPage)
+  U.RegisterSettingsTab("profiles", "Profiles", BuildProfilePage,
+                        { after = "general" })
 end
 
 function S:OnEnable()
