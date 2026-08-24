@@ -409,12 +409,59 @@ end
 -- as an item slot. Unlike pfUI this also calls SetID with the inventory id the
 -- stock template derives its bag from, since pfUI leaves it at the default.
 -- ---------------------------------------------------------------------------
+-- The template's bag picture is native button artwork, which StyleItemSlot
+-- deliberately removes with the rest of the stock chrome.  Populate its item
+-- texture explicitly, just as modules/bank.lua does for equipped bank bags.
+-- This also makes a newly equipped bag appear without recreating the tray.
+local function HighlightBagSlots(bag, on)
+  local bagSlots = bag and slots[bag]
+  if not bagSlots then return end
+
+  local slot
+  for slot = 1, table.getn(bagSlots) do
+    local item = bagSlots[slot]
+    if item and item:IsShown() then
+      if on then
+        U.SetBorderColor(item, M.Unpack(M.color.accent))
+      else
+        UpdateSlotAppearance(bag, slot)
+      end
+    end
+  end
+end
+
+local function RefreshBagSlotButton(button)
+  if not button then return end
+
+  local inventoryId = button.uuiInventoryId
+  if not inventoryId then return end
+
+  local texture
+  local ok, value = pcall(GetInventoryItemTexture, "player", inventoryId)
+  if ok then texture = value end
+
+  pcall(SetItemButtonTexture, button, texture)
+  U.SetBorderColor(button, M.Unpack(M.color.border))
+end
+
+local function RefreshBagSlotButtons()
+  local tray = frame and frame.bagslots
+  if not tray or not tray.buttons then return end
+
+  local i
+  for i = 1, BAG_SLOT_COUNT do RefreshBagSlotButton(tray.buttons[i]) end
+end
+
 local function LayoutBagSlots()
   if not frame or not frame.bagslots then return end
 
   local tray = frame.bagslots
-  if tray.built then return end
+  if tray.built then
+    RefreshBagSlotButtons()
+    return
+  end
   tray.built = true
+  tray.buttons = {}
 
   local i
   for i = 1, BAG_SLOT_COUNT do
@@ -426,6 +473,7 @@ local function LayoutBagSlots()
       local idOk, inventoryId = pcall(ContainerIDToInventoryID, i)
       if idOk and tonumber(inventoryId) then
         pcall(button.SetID, button, inventoryId)
+        button.uuiInventoryId = inventoryId
       end
       button.slot = i
 
@@ -435,6 +483,16 @@ local function LayoutBagSlots()
       button:SetWidth(TRAY_SLOT)
       button:SetHeight(TRAY_SLOT)
       U.StyleItemSlot(button, name)
+      tray.buttons[i] = button
+      RefreshBagSlotButton(button)
+      U.PostHookScript(button, "OnEnter", function()
+        U.SetBorderColor(button, M.Unpack(M.color.accentDim))
+        HighlightBagSlots(button.slot, true)
+      end)
+      U.PostHookScript(button, "OnLeave", function()
+        RefreshBagSlotButton(button)
+        HighlightBagSlots(button.slot, false)
+      end)
       button:Show()
     else
       U.Error("bags: BagSlotButtonTemplate unavailable; bag slot " .. i ..
