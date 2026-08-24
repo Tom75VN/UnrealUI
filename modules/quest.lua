@@ -137,7 +137,6 @@ local BUTTONS = {
 -- The per-slot G() guard no-ops for panels that instantiate fewer.
 local ITEM_PREFIXES = { "QuestProgressItem", "QuestDetailItem", "QuestRewardItem" }
 local ITEMS_PER_PANEL = 9
-local REWARD_CARD_WIDTH = 250
 
 -- The parchment fill is a set of Material* textures owned by each panel, and
 -- knowledge.json / frames.stock_singletons_structure_nonvanilla records that
@@ -209,120 +208,115 @@ local function StyleTitleRows()
   end
 end
 
--- Reward/progress/detail item slots.
---
--- These are Buttons whose icon is a separate <name>IconTexture region, so
--- U.RefreshStockButtonArtwork clears the four native button faces while
--- preserving the real item icon.  These buttons are *layout containers* on
--- this client, not compact icon buttons: their native bounds span the reward
--- area while their icon and label live in separately positioned regions.
--- Creating an unrealUI backdrop on the container therefore produced the two
--- large black blocks in the accept screen and visually cut across its reward
--- content.  Keep the container transparent and style only its real content.
--- U.StyleStockButton is likewise deliberately not used here: it centres the
--- button's own fontstring, which would drag the item name off its native
--- left-aligned anchor beside the icon.
+-- Reward/progress/detail item slots use the Quest Log item-cell treatment
+-- directly.  Do not maintain a second card layout here: it let the native
+-- accept-panel refresh leave reward icons on top of one another.
 local function StyleItemSlots()
   local p
   for p = 1, table.getn(ITEM_PREFIXES) do
+    local rowStart
+    local nextIsRight = false
     local i
     for i = 1, ITEMS_PER_PANEL do
       local name = ITEM_PREFIXES[p] .. i
       local button = G(name)
       if button then
         local icon = G(name .. "IconTexture")
-        U.RefreshStockButtonArtwork(button, icon)
-        U.StripStockTextures(button, icon and { icon = icon } or nil)
+        local itemName = G(name .. "Name")
+        local count = G(name .. "Count")
+        local hasItem = false
+        if itemName and itemName.GetText then
+          local textOk, text = pcall(itemName.GetText, itemName)
+          hasItem = textOk and type(text) == "string" and text ~= ""
+        end
 
-        -- Hide a backdrop left by an earlier reload of this module.  Do not
-        -- add a replacement: this frame is the full reward-row container.
-        U.SetBackdropShown(button, false)
+        U.RefreshStockButtonArtwork(button, icon)
+
+        -- A card from an earlier version can still live on an existing stock
+        -- frame after /reload.  It must stay hidden so this exact Quest Log
+        -- treatment is the only reward surface shown.
+        local oldCard = button.uuiQuestRewardCard
+        if oldCard and oldCard.Hide then pcall(oldCard.Hide, oldCard) end
+
+        if not button.uuiQuestItemLayout then
+          button.uuiQuestItemLayout = true
+          -- Copy the actual Quest Log cell dimensions instead of assuming a
+          -- quest-dialog container is already the same shape.
+          local questLogItem = G("QuestLogItem1")
+          local widthOk, width = false, nil
+          local heightOk, height = false, nil
+          if questLogItem then
+            widthOk, width = pcall(questLogItem.GetWidth, questLogItem)
+            heightOk, height = pcall(questLogItem.GetHeight, questLogItem)
+          end
+          if widthOk and tonumber(width) then
+            pcall(button.SetWidth, button, width)
+          else
+            widthOk, width = pcall(button.GetWidth, button)
+            if widthOk and tonumber(width) and width > 12 then
+              pcall(button.SetWidth, button, width - 12)
+            end
+          end
+          if heightOk and tonumber(height) then
+            pcall(button.SetHeight, button, height)
+          end
+        end
+
+        -- The stock accept panel is free to stack all of its wide item
+        -- containers at one position.  Restore the Quest Log's compact,
+        -- two-column item grid for the real entries.
+        if hasItem then
+          if not rowStart then
+            rowStart = button
+            nextIsRight = true
+          elseif nextIsRight then
+            Reposition(button, "TOPLEFT", rowStart, "TOPRIGHT", 4, 0)
+            nextIsRight = false
+          else
+            Reposition(button, "TOPLEFT", rowStart, "BOTTOMLEFT", 0, -4)
+            rowStart = button
+            nextIsRight = true
+          end
+        end
+
+        U.StyleStockButton(button, { icon = icon, fitIcon = false })
 
         if icon then
           pcall(function()
+            local heightOk, height = pcall(button.GetHeight, button)
+            local iconSize = heightOk and tonumber(height) and
+                             math.max(height - 12, 16) or 32
+            icon:ClearAllPoints()
+            icon:SetWidth(iconSize)
+            icon:SetHeight(iconSize)
+            icon:SetPoint("LEFT", button, "LEFT", 6, 0)
             icon:Show()
             icon:SetAlpha(1)
             icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
           end)
         end
 
-        local itemName = G(name .. "Name")
         SetQuestFont(itemName, M.fontSize.normal, WHITE)
-        SetQuestFont(G(name .. "Count"), M.fontSize.small, WHITE)
+        SetQuestFont(count, M.fontSize.small, WHITE)
 
-        -- The accept frame separates each reward label from its icon during
-        -- its native refresh on this client.  The horizontal offset survives,
-        -- but the label is reset near the objectives heading, causing the
-        -- visible overlap in the reward panel.  Re-anchor the real label to
-        -- its real icon after every refresh; do not reposition the container.
+        -- These anchors are deliberately identical to StyleQuestItems in the
+        -- Quest Log: the icon occupies the left inset, the name is constrained
+        -- to the remaining cell, and the count stays on the icon.
         if itemName and icon then
-          Reposition(itemName, "LEFT", icon, "RIGHT", 8, 0)
+          pcall(function()
+            itemName:ClearAllPoints()
+            itemName:SetPoint("TOPLEFT", icon, "TOPRIGHT", 5, 0)
+            itemName:SetPoint("BOTTOMRIGHT", button, "BOTTOMRIGHT", -5, 4)
+            itemName:SetJustifyH("LEFT")
+            itemName:SetJustifyV("MIDDLE")
+          end)
         end
 
-        -- QuestDetailItem/QuestRewardItem are oversized native layout
-        -- containers, so their own backdrop cannot be used for the compact
-        -- reward card requested here. Build a separate, mouse-transparent
-        -- UnrealUI panel around the real icon/name content instead.
-        if p > 1 and icon and itemName then
-          local card = button.uuiQuestRewardCard
-          if not card then
-            local owner = frame
-            if button.GetParent then
-              local parentOk, parent = pcall(button.GetParent, button)
-              if parentOk and parent then owner = parent end
-            end
-
-            local created, owned = pcall(CreateFrame, "Frame", nil, owner)
-            if created and owned then
-              card = owned
-              button.uuiQuestRewardCard = card
-              card:SetWidth(REWARD_CARD_WIDTH)
-              U.CreateBackdrop(card, {
-                background = { 0.01, 0.01, 0.01, 0.88 },
-                border = M.color.border,
-              })
-              pcall(card.EnableMouse, card, false)
-
-              local levelOk, level = pcall(button.GetFrameLevel, button)
-              if levelOk and tonumber(level) then
-                level = tonumber(level)
-                pcall(card.SetFrameLevel, card, level > 0 and level - 1 or 0)
-              end
-
-              if not button.uuiQuestRewardCardHooks then
-                button.uuiQuestRewardCardHooks = true
-                U.PostHookScript(button, "OnEnter", function()
-                  if button.uuiQuestRewardCard then
-                    U.SetBorderColor(button.uuiQuestRewardCard,
-                                     M.Unpack(M.color.accentDim))
-                  end
-                end)
-                U.PostHookScript(button, "OnLeave", function()
-                  if button.uuiQuestRewardCard then
-                    U.SetBorderColor(button.uuiQuestRewardCard,
-                                     M.Unpack(M.color.border))
-                  end
-                end)
-              end
-            end
-          end
-
-          if card then
-            card:ClearAllPoints()
-            card:SetPoint("TOPLEFT", icon, "TOPLEFT", -4, 4)
-            card:SetPoint("BOTTOMLEFT", icon, "BOTTOMLEFT", -4, -4)
-
-            local hasItem = false
-            if itemName.GetText then
-              local textOk, text = pcall(itemName.GetText, itemName)
-              hasItem = textOk and type(text) == "string" and text ~= ""
-            end
-            if hasItem then
-              card:Show()
-            else
-              card:Hide()
-            end
-          end
+        if count and icon then
+          pcall(function()
+            count:ClearAllPoints()
+            count:SetPoint("BOTTOMRIGHT", icon, "BOTTOMRIGHT", -1, 1)
+          end)
         end
       end
     end
