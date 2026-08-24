@@ -3,12 +3,13 @@
 -- The shared mover system. Modules register the frames they want the user to
 -- be able to place; unlocking shows a drag handle over each one.
 --
--- Deliberately small. This is not pfUI's mover/config framework: there are no
--- grids, snapping, nudge keys, per-frame scale editing or profile machinery.
--- Only intended unrealUI elements are ever registered. modules/minimap.lua is
--- the one exception that registers a native frame (MinimapCluster) rather than
--- an unrealUI-owned one: the map itself is still never reskinned or replaced,
--- it is just given a drag handle like everything else here.
+-- Deliberately small. This is not pfUI's mover/config framework: it provides
+-- only an alignment grid, nearby-mover magnets and pixel nudging -- no
+-- per-frame scale editing or configuration machinery. Only intended unrealUI
+-- elements are ever registered. modules/minimap.lua is the one exception that
+-- registers a native frame (MinimapCluster) rather than an unrealUI-owned one:
+-- the map itself is still never reskinned or replaced, it is just given a drag
+-- handle like everything else here.
 
 local U = UnrealUI
 local M = U.media
@@ -16,11 +17,15 @@ local M = U.media
 local movers = {}       -- id -> entry
 local moverOrder = {}
 local unlocked = false
+local activeMover
+local grid, editPanel, editKeys
+local IsEntryVisible
 
 -- Edit-mode grid. Sized in UIParent units, which is the only space layout may
 -- be driven from (frames.json context: GetScreenWidth and UIParent:GetWidth are
 -- not the same unit space on this client).
 local GRID_SIZE = 20
+local MAGNET_DISTANCE = 8
 
 -- ---------------------------------------------------------------------------
 -- Position handling
@@ -80,6 +85,82 @@ local function SnapValue(value)
   return math.floor(value / GRID_SIZE + 0.5) * GRID_SIZE
 end
 
+-- Magnetic snapping uses the stored UIParent-relative positions and frame
+-- dimensions, never GetLeft/GetRight/GetTop/GetBottom. The latter give mixed
+-- coordinate spaces for scaled frames on this client, whereas mover positions
+-- and dimensions are already in UIParent's layout space.
+local function PointFactor(point, low, high)
+  if type(point) ~= "string" then return 0.5 end
+  if string.find(point, low, 1, true) then return 0 end
+  if string.find(point, high, 1, true) then return 1 end
+  return 0.5
+end
+
+local function MoverBounds(entry, position)
+  if not entry or type(position) ~= "table" then return nil end
+
+  local widthOk, width = pcall(entry.frame.GetWidth, entry.frame)
+  local heightOk, height = pcall(entry.frame.GetHeight, entry.frame)
+  width, height = tonumber(width), tonumber(height)
+  if not widthOk or not heightOk or not width or not height or
+     width <= 0 or height <= 0 then return nil end
+
+  local x = tonumber(position.x) or 0
+  local y = tonumber(position.y) or 0
+  local relativePoint = position.relativePoint or position.point
+  local left = U.UIWidth() * PointFactor(relativePoint, "LEFT", "RIGHT") + x -
+               width * PointFactor(position.point, "LEFT", "RIGHT")
+  local bottom = U.UIHeight() * PointFactor(relativePoint, "BOTTOM", "TOP") + y -
+                 height * PointFactor(position.point, "BOTTOM", "TOP")
+  return left, left + width, bottom, bottom + height
+end
+
+local function ClosestMagnet(aLow, aHigh, bLow, bHigh)
+  local best, distance = nil, MAGNET_DISTANCE + 1
+  local delta = bHigh - aLow
+  if math.abs(delta) < distance then best, distance = delta, math.abs(delta) end
+  delta = bLow - aHigh
+  if math.abs(delta) < distance then best, distance = delta, math.abs(delta) end
+  delta = bLow - aLow
+  if math.abs(delta) < distance then best, distance = delta, math.abs(delta) end
+  delta = bHigh - aHigh
+  if math.abs(delta) < distance then best, distance = delta, math.abs(delta) end
+  delta = ((bLow + bHigh) - (aLow + aHigh)) / 2
+  if math.abs(delta) < distance then best, distance = delta, math.abs(delta) end
+  if distance > MAGNET_DISTANCE then return nil end
+  return best
+end
+
+local function SnapToMovers(entry, point, relativePoint, x, y)
+  local moving = { point = point, relativePoint = relativePoint, x = x, y = y }
+  local left, right, bottom, top = MoverBounds(entry, moving)
+  if not left then return x, y, false, false end
+
+  local bestX, bestY, bestXDistance, bestYDistance = nil, nil,
+    MAGNET_DISTANCE + 1, MAGNET_DISTANCE + 1
+  local i
+  for i = 1, table.getn(moverOrder) do
+    local other = movers[moverOrder[i]]
+    if other ~= entry and IsEntryVisible(other) then
+      local position = U.GetPosition(other.id) or other.default
+      local otherLeft, otherRight, otherBottom, otherTop =
+        MoverBounds(other, position)
+      if otherLeft then
+        local dx = ClosestMagnet(left, right, otherLeft, otherRight)
+        if dx and math.abs(dx) < bestXDistance then
+          bestX, bestXDistance = dx, math.abs(dx)
+        end
+        local dy = ClosestMagnet(bottom, top, otherBottom, otherTop)
+        if dy and math.abs(dy) < bestYDistance then
+          bestY, bestYDistance = dy, math.abs(dy)
+        end
+      end
+    end
+  end
+
+  return x + (bestX or 0), y + (bestY or 0), bestX ~= nil, bestY ~= nil
+end
+
 local function ApplyPendingSnap()
   local entry = pendingSnap
   pendingSnap = nil
@@ -105,14 +186,28 @@ local function CapturePosition(entry)
             ": anchored to a non-UIParent frame after drag; storing anyway")
   end
 
-  -- Shift is the escape hatch for placements the grid cannot express. There is
-  -- no compact-DB record for IsShiftKeyDown, so an absent or failing call reads
-  -- as "not held" and the drop simply snaps.
+  -- Shift is the escape hatch for placements the grid or magnets cannot
+  -- express. An absent or failing modifier read safely behaves as "not held".
   local snapped = false
   if not ShiftHeld() then
-    local sx, sy = SnapValue(x), SnapValue(y)
-    snapped = (sx ~= x) or (sy ~= y)
-    x, y = sx, sy
+    local magneticX, magneticY
+    if relative == UIParent then
+      x, y, magneticX, magneticY =
+        SnapToMovers(entry, point, relativePoint, x, y)
+    else
+      magneticX, magneticY = false, false
+    end
+    if not magneticX then
+      local sx = SnapValue(x)
+      snapped = snapped or sx ~= x
+      x = sx
+    end
+    if not magneticY then
+      local sy = SnapValue(y)
+      snapped = snapped or sy ~= y
+      y = sy
+    end
+    snapped = snapped or magneticX or magneticY
   end
 
   local saved = U.SavePosition(entry.id, point, relativePoint, x, y)
@@ -181,6 +276,10 @@ local function StopDrag(entry)
   return CapturePosition(entry)
 end
 
+local function SetActiveMover(entry)
+  activeMover = entry
+end
+
 -- ---------------------------------------------------------------------------
 -- Drag handle
 --
@@ -237,6 +336,7 @@ local function CreateHandle(entry)
   -- knowledge.json / scripts.handler_arguments_direct: handler argument shape
   -- is not guaranteed, so these close over `entry` instead of reading `this`.
   handle:SetScript("OnDragStart", function()
+    SetActiveMover(entry)
     entry.dragStarts = entry.dragStarts + 1
     StartDrag(entry)
   end)
@@ -245,6 +345,8 @@ local function CreateHandle(entry)
     entry.dragStops = entry.dragStops + 1
     StopDrag(entry)
   end)
+
+  handle:SetScript("OnClick", function() SetActiveMover(entry) end)
 
   -- OnEnter is instrumentation as much as highlight: if the enter count stays
   -- at zero the client is not routing mouse input to the handle at all, which
@@ -271,7 +373,7 @@ end
 -- A module may register a frame that is not always part of the layout -- a
 -- disabled action bar keeps its stored position but must not offer a handle to
 -- drag. options.visible is that predicate; without one a mover is always shown.
-local function IsEntryVisible(entry)
+IsEntryVisible = function(entry)
   if type(entry.visible) ~= "function" then return true end
   local ok, visible = pcall(entry.visible)
   if not ok then return true end
@@ -302,7 +404,6 @@ end
 -- and the centre axes land exactly on 0,0 -- the offsets a snapped drop
 -- produces are multiples of GRID_SIZE from that same origin.
 -- ---------------------------------------------------------------------------
-local grid, editPanel
 
 local function CreateGridLine(vertical, offset, color, length, thickness)
   local line = grid:CreateTexture(nil, "BACKGROUND")
@@ -360,19 +461,19 @@ local function CreateEditPanel()
   editPanel = U.CreatePanel(UIParent, {
     name = "UnrealUIEditPanel",
     width = 280,
-    height = 112,
+    height = 128,
   })
   editPanel:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
   pcall(editPanel.SetFrameStrata, editPanel, "HIGH")
 
   local title = U.CreateLabel(editPanel, {
     size = M.fontSize.large,
-    color = M.color.text,
+    color = M.color.accent,
     inherits = "GameFontNormal",
   })
   if title then
     title:SetPoint("TOP", editPanel, "TOP", 0, -12)
-    title:SetText("unrealUI edit mode")
+    title:SetText("Edit UI")
   end
   editPanel.title = title
 
@@ -383,7 +484,7 @@ local function CreateEditPanel()
   })
   if hint then
     hint:SetPoint("TOP", editPanel, "TOP", 0, -34)
-    hint:SetText("Drag a frame to move it. It snaps to the grid.")
+    hint:SetText("|cfff5ae0aShift + drag|r: free movement")
   end
   editPanel.hint = hint
 
@@ -394,9 +495,21 @@ local function CreateEditPanel()
   })
   if hint2 then
     hint2:SetPoint("TOP", editPanel, "TOP", 0, -50)
-    hint2:SetText("Hold Shift while dropping for free placement.")
+    hint2:SetText("|cfff5ae0aNear another element|r: magnet")
   end
   editPanel.hint2 = hint2
+
+  local hint3 = U.CreateLabel(editPanel, {
+    size = M.fontSize.small,
+    color = M.color.textDim,
+    inherits = "GameFontNormalSmall",
+    width = 252,
+  })
+  if hint3 then
+    hint3:SetPoint("TOP", editPanel, "TOP", 0, -67)
+    hint3:SetText("|cfff5ae0aClick a frame|r: keyboard arrows move 1 px")
+  end
+  editPanel.hint3 = hint3
 
   editPanel.save = U.CreateButton(editPanel, {
     name = "UnrealUIEditSave",
@@ -419,28 +532,92 @@ local function CreateEditPanel()
   editPanel:Hide()
 end
 
+-- Keyboard input is deliberately scoped to edit mode. Runtime evidence shows
+-- a shown keyboard-enabled Frame captures every key and cannot propagate the
+-- rest of the input layer, but that is safe while this modal edit mode is open.
+-- It must be a plain Frame and use OnKeyDown; Buttons and OnKeyUp do not work.
+local function ResolveKey(a, b)
+  if type(a) == "string" then return a end
+  if type(b) == "string" then return b end
+  local legacy = U.G("arg1")
+  if type(legacy) == "string" then return legacy end
+  return nil
+end
+
+local function NudgeActiveMover(x, y)
+  local entry = activeMover
+  if not entry or entry.dragging then return false end
+
+  local position = U.GetPosition(entry.id) or entry.default
+  if not position then
+    local point, relative, relativePoint, offsetX, offsetY =
+      U.GetFramePoint(entry.frame, 1)
+    if not point or relative ~= UIParent then
+      U.Print("Drag " .. entry.label .. " once before nudging it.")
+      return false
+    end
+    position = { point = point, relativePoint = relativePoint,
+                 x = offsetX, y = offsetY }
+  end
+
+  local saved = U.SavePosition(entry.id, position.point, position.relativePoint,
+                               (tonumber(position.x) or 0) + x,
+                               (tonumber(position.y) or 0) + y)
+  if saved then U.ApplyFramePoint(entry.frame, U.GetPosition(entry.id)) end
+  return saved
+end
+
+local function CreateEditKeys()
+  editKeys = CreateFrame("Frame", "UnrealUIMoverKeys", UIParent)
+  pcall(editKeys.SetAllPoints, editKeys, UIParent)
+  pcall(editKeys.SetFrameStrata, editKeys, "FULLSCREEN_DIALOG")
+  pcall(editKeys.EnableKeyboard, editKeys, true)
+  pcall(editKeys.EnableMouse, editKeys, false)
+
+  editKeys:SetScript("OnKeyDown", function(a, b)
+    local key = ResolveKey(a, b)
+    if key == "LEFT" then
+      NudgeActiveMover(-1, 0)
+    elseif key == "RIGHT" then
+      NudgeActiveMover(1, 0)
+    elseif key == "UP" then
+      NudgeActiveMover(0, 1)
+    elseif key == "DOWN" then
+      NudgeActiveMover(0, -1)
+    elseif key == "ESCAPE" then
+      U.LockUI()
+    end
+  end)
+  editKeys:Hide()
+end
+
 -- rendering.parent_alpha_not_propagated: children are shown and hidden
 -- explicitly rather than relying on the parent's visibility carrying.
 local function ShowEditOverlay()
   if not grid then CreateGrid() end
   if not editPanel then CreateEditPanel() end
+  if not editKeys then CreateEditKeys() end
 
   grid:Show()
   editPanel:Show()
+  editKeys:Show()
   if editPanel.title then editPanel.title:Show() end
   if editPanel.hint then editPanel.hint:Show() end
   if editPanel.hint2 then editPanel.hint2:Show() end
+  if editPanel.hint3 then editPanel.hint3:Show() end
   if editPanel.save then editPanel.save:Show() end
   if editPanel.reset then editPanel.reset:Show() end
 end
 
 local function HideEditOverlay()
   if grid then grid:Hide() end
+  if editKeys then editKeys:Hide() end
   if not editPanel then return end
 
   if editPanel.title then editPanel.title:Hide() end
   if editPanel.hint then editPanel.hint:Hide() end
   if editPanel.hint2 then editPanel.hint2:Hide() end
+  if editPanel.hint3 then editPanel.hint3:Hide() end
   if editPanel.save then editPanel.save:Hide() end
   if editPanel.reset then editPanel.reset:Hide() end
   editPanel:Hide()
@@ -502,6 +679,7 @@ function U.UnlockUI()
   unlocked = true
   if U.db then U.db.locked = false end
 
+  SetActiveMover(nil)
   ShowEditOverlay()
 
   local i
@@ -509,8 +687,8 @@ function U.UnlockUI()
     ShowHandle(movers[moverOrder[i]])
   end
 
-  U.Print("Edit mode. Drag frames onto the grid, then use " ..
-          "|cffffff00Save and exit|r (or |cffffff00/uui lock|r).")
+  U.Print("Edit mode. Drag, snap, or nudge with arrow keys. " ..
+          "|cffffff00Save and exit|r when done.")
 end
 
 function U.LockUI()
