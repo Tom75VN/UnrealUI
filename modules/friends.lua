@@ -366,6 +366,63 @@ end
 -- rank-editing (GuildControlPopupFrame) dialog stays native, per the scope
 -- trim above.
 -- ---------------------------------------------------------------------------
+local GUILD_HEADER_PREFIXES = {
+  "GuildFrameColumnHeader",
+  "GuildFrameGuildStatusColumnHeader",
+}
+
+-- The stock sort texture is anchored near the header's right edge. That puts
+-- it over longer localized labels once unrealUI narrows the roster columns.
+-- Keep the semantic texture while stripping the decorative header pieces,
+-- then place it from the rendered label width so it follows every locale and
+-- both guild-list header sets.
+local function PositionGuildSortArrows()
+  local prefixIndex, column
+  for prefixIndex = 1, table.getn(GUILD_HEADER_PREFIXES) do
+    local prefix = GUILD_HEADER_PREFIXES[prefixIndex]
+    for column = 1, 4 do
+      local header = G(prefix .. column)
+      local arrow = G(prefix .. column .. "Arrow")
+      local text
+
+      if header and arrow and header.GetFontString then
+        pcall(function() text = header:GetFontString() end)
+      end
+      if not text then text = G(prefix .. column .. "Text") end
+
+      if text and text.GetStringWidth then
+        local widthOk, width = pcall(text.GetStringWidth, text)
+        if widthOk and tonumber(width) then
+          pcall(function()
+            arrow:ClearAllPoints()
+            arrow:SetPoint("LEFT", text, "CENTER",
+                           math.floor(tonumber(width) / 2 + 0.5) + 2, 0)
+          end)
+        end
+      end
+    end
+  end
+end
+
+local function StyleGuildHeaders()
+  local prefixIndex, column
+  for prefixIndex = 1, table.getn(GUILD_HEADER_PREFIXES) do
+    local prefix = GUILD_HEADER_PREFIXES[prefixIndex]
+    for column = 1, 4 do
+      local header = G(prefix .. column)
+      if header then
+        local arrow = G(prefix .. column .. "Arrow")
+        local extra
+        if arrow then extra = { keep = { [arrow] = true } } end
+        U.StripStockTextures(header, extra)
+        SetTextFont(header, M.fontSize.small, DIM)
+      end
+    end
+  end
+
+  PositionGuildSortArrows()
+end
+
 local function StyleGuildTab()
   local scroll = G("GuildListScrollFrame")
   if not scroll then return end
@@ -374,16 +431,8 @@ local function StyleGuildTab()
   U.CreateBackdrop(scroll, { background = { 0.01, 0.01, 0.01, 0.74 } })
   U.StyleStockScrollbar(G("GuildListScrollFrameScrollBar"))
 
-  local headers = { "GuildFrameColumnHeader1", "GuildFrameColumnHeader2",
-                    "GuildFrameColumnHeader3", "GuildFrameColumnHeader4" }
+  StyleGuildHeaders()
   local i
-  for i = 1, table.getn(headers) do
-    local header = G(headers[i])
-    if header then
-      U.StripStockTextures(header)
-      SetTextFont(header, M.fontSize.small, DIM)
-    end
-  end
   Reposition(G("GuildFrameColumnHeader3"), "TOPLEFT", frame, "TOPLEFT", 20, -70)
 
   local toggle = G("GuildFrameGuildListToggleButton")
@@ -470,6 +519,7 @@ local function Reapply()
   U.StripStockTextures(frame)
   if panel then panel:Show() end
   SetTextFont(G("FriendsFrameTitleText"), M.fontSize.large, GOLD)
+  PositionGuildSortArrows()
   LayoutWhoFooter()
 end
 
@@ -566,6 +616,12 @@ local function BuildFrame()
     end)
   end)
 
+  -- WORKING_SOURCE from UnrealPfUI on this same client: GuildStatus_Update is
+  -- the native roster refresh used when sorting and switching guild-list mode.
+  -- Recalculate after it changes the active header so the shown arrow remains
+  -- beside the current label.
+  U.PostHookGlobal("GuildStatus_Update", PositionGuildSortArrows)
+
   if frame.IsShown then
     local ok, shown = pcall(frame.IsShown, frame)
     if ok and shown then Reapply() end
@@ -574,5 +630,8 @@ local function BuildFrame()
 end
 
 function FR:OnEnable()
+  -- Keep the client Friends/Social window intact; the independent windowmove
+  -- module continues to provide the UnrealUI mover in this theme.
+  if U.ThemeStyleUsesNativeChrome() then return end
   BuildFrame()
 end
