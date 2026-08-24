@@ -89,6 +89,97 @@ end
 local fontSample = "MMMMMMMM"
 local fontProbe, resolvedFont
 local fontChecked = {}
+local styledFonts = {}
+local customFontSerial = 0
+
+local FONT_DB_KEYS = {
+  default = "defaultFont",
+  unitframe = "unitFrameFont",
+}
+
+local function NormaliseFontRole(role)
+  if role == "unitframe" then return role end
+  return "default"
+end
+
+-- Returns a validated media id. Both roles default to their inherited native
+-- FontObject; bundled faces remain explicit choices for probe work.
+function U.GetFontChoice(role)
+  role = NormaliseFontRole(role)
+  local fallback = role == "unitframe" and M.defaultUnitFrameFontId or
+                   M.defaultFontId
+  local key = FONT_DB_KEYS[role]
+  local value = U.db and U.db[key] or fallback
+
+  if value == "original" then return value end
+  if M.fontById[value] then return value end
+  return fallback
+end
+
+local function RestoreOriginalFont(record)
+  local fontstring = record.fontstring
+  local original = record.original or U.G("GameFontNormal")
+  if not original or not fontstring.SetFontObject then return false end
+  return pcall(fontstring.SetFontObject, fontstring, original)
+end
+
+local function EnsureCustomFont(record)
+  if record.customFont then return record.customFont end
+
+  local createFont = U.G("CreateFont")
+  if type(createFont) ~= "function" then return nil end
+
+  customFontSerial = customFontSerial + 1
+  local ok, font = pcall(createFont, "UnrealUICustomFont" .. customFontSerial)
+  if not ok or not font then return nil end
+  record.customFont = font
+  return font
+end
+
+local function ApplyFontRecord(record)
+  local fontstring = record.fontstring
+  local choice = U.GetFontChoice(record.role)
+  local applied = false
+
+  if choice == "original" then
+    applied = RestoreOriginalFont(record)
+  else
+    local media = M.fontById[choice]
+    local font = media and EnsureCustomFont(record)
+    if font and font.SetFont and fontstring.SetFontObject then
+      local setOk = pcall(font.SetFont, font, media.path, record.size)
+      local attachOk = false
+      if setOk then
+        attachOk = pcall(fontstring.SetFontObject, fontstring, font)
+      end
+      applied = setOk and attachOk
+    end
+
+    -- A missing or rejected font file must never make text disappear.
+    if not applied then RestoreOriginalFont(record) end
+  end
+
+  return applied
+end
+
+function U.ApplyFontChoice(role)
+  role = NormaliseFontRole(role)
+  local fontstring, record
+  for fontstring, record in pairs(styledFonts) do
+    if record.role == role then ApplyFontRecord(record) end
+  end
+end
+
+function U.SetFontChoice(role, value)
+  role = NormaliseFontRole(role)
+  if type(value) ~= "string" then return false end
+  if value ~= "original" and not M.fontById[value] then return false end
+  if not U.db then return false end
+
+  U.db[FONT_DB_KEYS[role]] = value
+  U.ApplyFontChoice(role)
+  return true
+end
 
 local function PathResizes(path)
   if fontChecked[path] ~= nil then return fontChecked[path] end
@@ -143,20 +234,79 @@ function U.ResolveFont()
   return nil
 end
 
--- Applies a verified font path at the requested size. When no path resizes,
--- the fontstring keeps whatever it inherited rather than being handed a request
--- the client will silently ignore.
+-- Applies a physical-pixel shadow to both owned and restyled stock text. The
+-- default is the shared one-pixel treatment; compact text can request a closer
+-- fractional offset. SetShadowOffset consumes UI units here: at this client's
+-- measured 1920 / 1365.33 scale, an unconverted offset of 1 can rasterise
+-- nearly two screen pixels away. Convert the shared physical-pixel token back
+-- into UI units so the visible separation stays crisp.
 --
--- Note the same probe recorded OUTLINE reading back as NONE, so outline flags
--- are requested but not treated as guaranteed.
-function U.SetFont(fontstring, size, flags)
-  if not fontstring or not fontstring.SetFont then return false end
+-- The methods are documented by this client but not runtime-verified, so each
+-- call remains guarded and a missing method never prevents the text itself
+-- from being styled.
+function U.SetTextShadow(fontstring, physicalOffset, shadowColor)
+  if not fontstring then return false end
 
-  local path = U.ResolveFont()
-  if not path then return false end
+  local color = shadowColor or M.color.shadow
+  local offset = physicalOffset or M.textShadowOffset
+  local pixelScale = U.PixelScale()
+  if pixelScale <= 0 then pixelScale = 1 end
+  local colorOk, offsetOk = false, false
 
-  size = tonumber(size) or M.fontSize.normal
-  return pcall(fontstring.SetFont, fontstring, path, size, flags or "OUTLINE")
+  if fontstring.SetShadowColor then
+    colorOk = pcall(fontstring.SetShadowColor, fontstring, M.Unpack(color))
+  end
+  if fontstring.SetShadowOffset then
+    offsetOk = pcall(fontstring.SetShadowOffset, fontstring,
+                     (tonumber(offset[1]) or 1) / pixelScale,
+                     (tonumber(offset[2]) or -1) / pixelScale)
+  end
+
+  return colorOk and offsetOk
+end
+
+-- A one-pixel offset is a full stroke width at the compact unit-frame font
+-- size and reads as a second copy of each glyph. Components that explicitly
+-- opt out use a transparent, zero-offset shadow rather than inheriting the
+-- stock FontObject's wider treatment.
+function U.ClearTextShadow(fontstring)
+  if not fontstring then return false end
+
+  local colorOk, offsetOk = false, false
+  if fontstring.SetShadowColor then
+    colorOk = pcall(fontstring.SetShadowColor, fontstring, 0, 0, 0, 0)
+  end
+  if fontstring.SetShadowOffset then
+    offsetOk = pcall(fontstring.SetShadowOffset, fontstring, 0, 0)
+  end
+  return colorOk and offsetOk
+end
+
+-- Applies the selected font through a private named Font object. Direct
+-- FontString:SetFont is intentionally not used: that is the silent-failure
+-- path confirmed by fonts.pfui_path_and_measure.v1. Each FontString gets its
+-- own Font object so later text-colour changes cannot leak into another label.
+-- The original inherited object is retained for the "Original" option and as
+-- a safe fallback if the documented custom-font route is unavailable.
+function U.SetFont(fontstring, size, flags, role)
+  if not fontstring then return false end
+
+  local record = styledFonts[fontstring]
+  if not record then
+    record = { fontstring = fontstring }
+    if fontstring.GetFontObject then
+      local ok, original = pcall(fontstring.GetFontObject, fontstring)
+      if ok then record.original = original end
+    end
+    styledFonts[fontstring] = record
+  end
+
+  record.size = tonumber(size) or M.fontSize.normal
+  record.flags = flags
+  record.role = NormaliseFontRole(role)
+  local applied = ApplyFontRecord(record)
+  U.SetTextShadow(fontstring)
+  return applied
 end
 
 -- ---------------------------------------------------------------------------

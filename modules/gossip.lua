@@ -234,6 +234,7 @@ local function TryBuild()
 end
 
 function GS:OnEnable()
+  if U.ThemeStyleUsesNativeChrome() then return end
   if TryBuild() then return end
 
   U.RegisterEvent("ADDON_LOADED", TryBuild)

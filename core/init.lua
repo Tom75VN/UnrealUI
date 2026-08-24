@@ -402,6 +402,7 @@ local function Initialise()
   initialised = true
 
   U.LoadConfig()       -- core/config.lua
+  U.LoadThemeStyle()   -- core/theme.lua; must precede module-owned UI creation
   RunModulePhase("OnInit")
   U.Debug("config loaded, modules initialised")
 end

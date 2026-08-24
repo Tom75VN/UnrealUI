@@ -370,6 +370,7 @@ local function OnMenuShow()
 end
 
 function G:OnEnable()
+  if U.ThemeStyleUsesNativeChrome() then return end
   local frame = U.G("GameMenuFrame")
   if not frame then return end
 

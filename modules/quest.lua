@@ -577,6 +577,7 @@ local function TryBuild()
 end
 
 function QF:OnEnable()
+  if U.ThemeStyleUsesNativeChrome() then return end
   if TryBuild() then return end
 
   local i

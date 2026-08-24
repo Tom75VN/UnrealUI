@@ -4,11 +4,16 @@
 ## Author: unrealUI
 ## Version: 0.1.2
 ## X-License: MIT
-## SavedVariables: UnrealUIDB, UnrealUIDiagDB
+## SavedVariables: UnrealUIDB, UnrealUIProfiles, UnrealUIDiagDB
+## SavedVariablesPerCharacter: UnrealUIProfileDB
 
 core\init.lua
 core\perf.lua
 core\media.lua
+core\theme.lua
+themes\modern.lua
+themes\classic-wow.lua
+themes\modern-wow.lua
 core\auradata.lua
 core\compat.lua
 core\config.lua

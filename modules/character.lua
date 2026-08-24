@@ -1028,5 +1028,8 @@ local function BuildFrame()
 end
 
 function CH:OnEnable()
+  -- The native theme keeps CharacterFrame's own chrome. windowmove.lua still
+  -- supplies its mover, so this does not turn off UnrealUI interaction.
+  if U.ThemeStyleUsesNativeChrome() then return end
   BuildFrame()
 end

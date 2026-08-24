@@ -45,6 +45,7 @@ local function OnDialogShow(dialog, name)
 end
 
 function G:OnEnable()
+  if U.ThemeStyleUsesNativeChrome() then return end
   local max = tonumber(U.G("STATICPOPUP_NUMDIALOGS")) or 4
   local i
   for i = 1, max do

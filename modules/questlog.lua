@@ -804,6 +804,8 @@ function QL:OnInit()
 end
 
 function QL:OnEnable()
-  BuildFrame()
+  -- Quest tracking is feature state rather than chrome, so retain its restore
+  -- path while leaving the client Quest Log visually untouched.
+  if not U.ThemeStyleUsesNativeChrome() then BuildFrame() end
   BeginTrackingRestore()
 end

@@ -1,7 +1,7 @@
 -- unrealUI :: core/widgets.lua
 --
--- Composite controls for the settings panel: sliders, checkboxes, section
--- headings and sidebar rows.
+-- Composite controls for the settings panel: sliders, checkboxes, radio
+-- groups, dropdowns, section headings and sidebar rows.
 --
 -- These sit on top of core/style.lua rather than inside it: style.lua owns the
 -- drawing primitives every module uses (backdrop, border, bar, label, button),
@@ -227,6 +227,386 @@ function U.CreateCheckbox(parent, options)
   end
 
   control.SetValue(options.value)
+  return control
+end
+
+-- ---------------------------------------------------------------------------
+-- Radio group
+--
+-- A compact mutually-exclusive selector built from the same flat primitives
+-- as the settings checkbox. Disabled entries remain visible with dim text but
+-- do not receive mouse input; this is used for choices that explain planned
+-- functionality without pretending it is available.
+--
+-- options: name, value, width, rowHeight, gap, columns, columnGap, rowGap,
+--          items = { { value, text, disabled }, ... }, onChange(value)
+-- ---------------------------------------------------------------------------
+function U.CreateRadioGroup(parent, options)
+  options = options or {}
+
+  local control = { rows = {}, uuiParts = {} }
+  local items = options.items or {}
+  local width = options.width or 220
+  local rowHeight = options.rowHeight or 18
+  local gap = options.gap or 3
+  local columns = math.floor(tonumber(options.columns) or 1)
+  if columns < 1 then columns = 1 end
+  local columnGap = options.columnGap or gap
+  local rowGap = options.rowGap or gap
+  local indicatorSize = options.indicatorSize or 14
+
+  local function ApplyRow(row)
+    local selected = row.item.value == control.value
+    local disabled = row.item.disabled and true or false
+
+    if selected then
+      U.SetBackgroundColor(row, M.Unpack(M.color.accentFill))
+      U.SetBorderColor(row.indicator, M.Unpack(M.color.accent))
+      row.mark:Show()
+    else
+      U.SetBackgroundColor(row, 0, 0, 0, 0)
+      U.SetBorderColor(row.indicator, M.Unpack(M.color.border))
+      row.mark:Hide()
+    end
+
+    if row.label then
+      local color = disabled and M.color.textDim or
+                    (selected and M.color.accent or M.color.text)
+      pcall(row.label.SetTextColor, row.label, M.Unpack(color))
+    end
+
+    -- Button:EnableMouse is the verified input gate used throughout unrealUI;
+    -- the disabled path therefore cannot reach its click closure at all.
+    pcall(row.EnableMouse, row, not disabled)
+  end
+
+  control.Apply = function()
+    local i
+    for i = 1, table.getn(control.rows) do ApplyRow(control.rows[i]) end
+  end
+
+  control.SetValue = function(value, notify)
+    local selected
+    local i
+    for i = 1, table.getn(items) do
+      if items[i].value == value and not items[i].disabled then
+        selected = value
+        break
+      end
+    end
+    if selected == nil then return false end
+
+    local changed = control.value ~= selected
+    control.value = selected
+    control.Apply()
+    if changed and notify and type(options.onChange) == "function" then
+      options.onChange(selected)
+    end
+    return true
+  end
+
+  control.GetValue = function()
+    return control.value
+  end
+
+  control.SetPoint = function(point, relative, relativePoint, x, y)
+    local first = control.rows[1]
+    if not first then return end
+    first:ClearAllPoints()
+    first:SetPoint(point, relative, relativePoint, x, y)
+  end
+
+  local i
+  for i = 1, table.getn(items) do
+    local item = items[i]
+    local row = U.CreateButton(parent, {
+      name = options.name and (options.name .. i) or nil,
+      text = item.text or tostring(item.value or ""),
+      width = width,
+      height = rowHeight,
+      border = false,
+    })
+    row.item = item
+    table.insert(control.rows, row)
+    table.insert(control.uuiParts, row)
+
+    -- The row itself is the hit target; this inset frame only draws the common
+    -- square selection mark and owns no interaction state.
+    local indicator = U.CreatePanel(row, {
+      width = indicatorSize,
+      height = indicatorSize,
+      background = M.color.background,
+    })
+    indicator:SetPoint("LEFT", row, "LEFT", 0, 0)
+    row.indicator = indicator
+
+    local mark = indicator:CreateTexture(nil, "OVERLAY")
+    mark:SetTexture(M.texture.plain)
+    mark:SetPoint("TOPLEFT", indicator, "TOPLEFT", 4, -4)
+    mark:SetPoint("BOTTOMRIGHT", indicator, "BOTTOMRIGHT", -4, 4)
+    U.SetColor(mark, M.Unpack(M.color.accent))
+    row.mark = mark
+
+    if row.label then
+      row.label:ClearAllPoints()
+      row.label:SetPoint("LEFT", indicator, "RIGHT", 6, -1)
+      pcall(row.label.SetWidth, row.label, width - indicatorSize - 6)
+      pcall(row.label.SetJustifyH, row.label, "LEFT")
+    end
+
+    -- A radio row has no outer box; hover and selection are carried by its
+    -- subdued fill while the inset square keeps the visible outline.
+    U.SetBorderColor(row, 0, 0, 0, 0)
+    row:SetScript("OnEnter", function()
+      if row.item.value ~= control.value then
+        U.SetBackgroundColor(row, 1, 1, 1, 0.07)
+      end
+    end)
+    row:SetScript("OnLeave", function()
+      ApplyRow(row)
+    end)
+    row:SetScript("OnClick", function()
+      control.SetValue(row.item.value, true)
+    end)
+
+    if i > 1 then
+      -- Derive the column from the row so this shared component does not add a
+      -- dependency on either Lua's version-specific `%` operator or math.mod.
+      local gridRow = math.floor((i - 1) / columns)
+      local column = (i - 1) - gridRow * columns
+      if column > 0 then
+        row:SetPoint("TOPLEFT", control.rows[i - 1], "TOPRIGHT", columnGap, 0)
+      else
+        row:SetPoint("TOPLEFT", control.rows[i - columns], "BOTTOMLEFT", 0,
+                     -rowGap)
+      end
+    end
+  end
+
+  control.firstRow = control.rows[1]
+  control.lastRow = control.rows[table.getn(control.rows)]
+
+  if not control.SetValue(options.value, false) then
+    for i = 1, table.getn(items) do
+      if not items[i].disabled then
+        control.SetValue(items[i].value, false)
+        break
+      end
+    end
+  end
+
+  return control
+end
+
+-- ---------------------------------------------------------------------------
+-- Dropdown
+--
+-- An owned dropdown for addon settings. Native dropdowns continue to use the
+-- adapter in core/dropdown.lua; new UnrealUI controls use this flat component
+-- so no stock template art or shared native popup state can leak into them.
+-- ---------------------------------------------------------------------------
+local activeDropdown
+
+local function SetDropdownPartShown(region, shown)
+  if not region then return end
+  if shown then region:Show() else region:Hide() end
+  U.SetBackdropShown(region, shown)
+  if region.label then
+    if shown then region.label:Show() else region.label:Hide() end
+  end
+end
+
+function U.CreateDropdown(parent, options)
+  options = options or {}
+
+  local control = { rows = {}, uuiParts = {} }
+  local items = options.items or {}
+  local width = options.width or 220
+  local height = options.height or 28
+  local rowHeight = options.rowHeight or 22
+
+  local button = U.CreateButton(parent, {
+    name = options.name,
+    text = "",
+    width = width,
+    height = height,
+  })
+  control.button = button
+
+  if button.label then
+    button.label:ClearAllPoints()
+    button.label:SetPoint("LEFT", button, "LEFT", 8, U.BUTTON_LABEL_OFFSET_Y)
+    pcall(button.label.SetWidth, button.label, width - 30)
+    pcall(button.label.SetJustifyH, button.label, "LEFT")
+  end
+
+  local arrow = U.CreateLabel(button, {
+    size = M.fontSize.small,
+    color = M.color.accent,
+    inherits = "GameFontNormalSmall",
+    width = 14,
+    height = height - 4,
+    justify = "CENTER",
+  })
+  if arrow then
+    arrow:SetPoint("RIGHT", button, "RIGHT", -5, U.BUTTON_LABEL_OFFSET_Y)
+    arrow:SetText("v")
+  end
+  control.arrow = arrow
+
+  local menuHeight = table.getn(items) * rowHeight + 2
+  local menuBackground = { 0.03, 0.03, 0.03, 0.98 }
+  local menu = U.CreatePanel(parent, {
+    width = width,
+    height = menuHeight,
+    background = menuBackground,
+  })
+  menu:SetPoint("TOPLEFT", button, "BOTTOMLEFT", 0, -1)
+  local levelOk, level = pcall(button.GetFrameLevel, button)
+  if levelOk and tonumber(level) then
+    pcall(menu.SetFrameLevel, menu, level + 40)
+  end
+  control.menu = menu
+
+  local function SetPopupShown(shown)
+    control.open = shown and true or false
+    SetDropdownPartShown(menu, control.open)
+    if control.open then U.SetBackgroundColor(menu, M.Unpack(menuBackground)) end
+    local i
+    for i = 1, table.getn(control.rows) do
+      SetDropdownPartShown(control.rows[i], control.open)
+    end
+    if not control.open and activeDropdown == control then
+      activeDropdown = nil
+    end
+  end
+
+  local function ApplySelection()
+    local selected
+    local i
+    for i = 1, table.getn(items) do
+      if items[i].value == control.value then selected = items[i] end
+    end
+    if button.label then
+      button.label:SetText(selected and selected.text or "")
+    end
+
+    for i = 1, table.getn(control.rows) do
+      local row = control.rows[i]
+      local active = row.item.value == control.value
+      local disabled = row.item.disabled and true or false
+      U.SetBackgroundColor(row, M.Unpack(active and M.color.accentFill or
+                                         M.color.background))
+      U.SetBorderColor(row, M.Unpack(active and M.color.accent or M.color.border))
+      if row.label then
+        pcall(row.label.SetTextColor, row.label,
+              M.Unpack(disabled and M.color.textDim or
+                       (active and M.color.accent or M.color.text)))
+      end
+    end
+  end
+
+  control.SetOpen = function(open)
+    open = open and true or false
+    if open and activeDropdown and activeDropdown ~= control then
+      activeDropdown.SetOpen(false)
+    end
+    if open then activeDropdown = control end
+    SetPopupShown(open)
+    if open then ApplySelection() end
+  end
+
+  control.SetValue = function(value, notify)
+    local valid = false
+    local i
+    for i = 1, table.getn(items) do
+      if items[i].value == value and not items[i].disabled then
+        valid = true
+        break
+      end
+    end
+    if not valid then return false end
+
+    local changed = control.value ~= value
+    control.value = value
+    ApplySelection()
+    if changed and notify and type(options.onChange) == "function" then
+      options.onChange(value)
+    end
+    return true
+  end
+
+  control.GetValue = function()
+    return control.value
+  end
+
+  control.SetPoint = function(point, relative, relativePoint, x, y)
+    button:ClearAllPoints()
+    button:SetPoint(point, relative, relativePoint, x, y)
+  end
+
+  control.uuiSetShown = function(shown)
+    SetDropdownPartShown(button, shown)
+    if arrow then
+      if shown then arrow:Show() else arrow:Hide() end
+    end
+    if not shown then
+      control.SetOpen(false)
+    else
+      SetPopupShown(control.open)
+    end
+  end
+
+  button:SetScript("OnClick", function()
+    control.SetOpen(not control.open)
+  end)
+
+  local i
+  for i = 1, table.getn(items) do
+    local item = items[i]
+    local row = U.CreateButton(menu, {
+      name = options.name and (options.name .. "Item" .. i) or nil,
+      text = item.text or tostring(item.value or ""),
+      width = width - 2,
+      height = rowHeight,
+    })
+    row.item = item
+    pcall(row.EnableMouse, row, not item.disabled)
+    row:SetPoint("TOPLEFT", menu, "TOPLEFT", 1, -1 - (i - 1) * rowHeight)
+    if row.label then
+      row.label:ClearAllPoints()
+      row.label:SetPoint("LEFT", row, "LEFT", 7, U.BUTTON_LABEL_OFFSET_Y)
+      pcall(row.label.SetWidth, row.label, width - 16)
+      pcall(row.label.SetJustifyH, row.label, "LEFT")
+    end
+    if levelOk and tonumber(level) then
+      pcall(row.SetFrameLevel, row, level + 41)
+    end
+    row:SetScript("OnEnter", function()
+      U.SetBorderColor(row, M.Unpack(M.color.accentDim))
+      if row.item.value ~= control.value then
+        U.SetBackgroundColor(row, 1, 1, 1, 0.07)
+      end
+    end)
+    row:SetScript("OnLeave", function()
+      ApplySelection()
+    end)
+    row:SetScript("OnClick", function()
+      control.SetValue(row.item.value, true)
+      control.SetOpen(false)
+    end)
+    table.insert(control.rows, row)
+  end
+
+  if not control.SetValue(options.value, false) then
+    for i = 1, table.getn(items) do
+      if not items[i].disabled then
+        control.SetValue(items[i].value, false)
+        break
+      end
+    end
+  end
+  control.SetOpen(false)
   return control
 end
 
@@ -1522,7 +1902,7 @@ local function BuildConfirmDialog()
   return dialog
 end
 
--- options: text, detail, acceptText, cancelText, onAccept, owner
+-- options: text, detail, acceptText, cancelText, onAccept, owner, centered
 --
 -- `owner` is an opaque tag so a caller can take its own dialog down again
 -- (U.HideConfirm(owner)) without cancelling one another window put up.
@@ -1534,6 +1914,12 @@ function U.ShowConfirm(options)
 
   local dialog = confirmDialog
   dialog.uuiOwner = options.owner
+  dialog:ClearAllPoints()
+  if options.centered then
+    dialog:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
+  else
+    dialog:SetPoint("CENTER", UIParent, "CENTER", 0, 120)
+  end
   if dialog.text then dialog.text:SetText(options.text or "Are you sure?") end
 
   local money = tonumber(options.moneyCopper)

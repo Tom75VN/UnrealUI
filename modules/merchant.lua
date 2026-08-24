@@ -257,5 +257,6 @@ local function BuildFrame()
 end
 
 function MER:OnEnable()
+  if U.ThemeStyleUsesNativeChrome() then return end
   BuildFrame()
 end

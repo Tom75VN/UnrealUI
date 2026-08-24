@@ -18,11 +18,36 @@ local M = U.media
 -- Fonts
 --
 -- behavior.json / fonts.pfui_path_and_measure.v1 is BROKEN with confidence
--- RUNTIME_FAILURE_CONFIRMED: a request for a bundled addon TTF at size 12
--- OUTLINE read back as GameFontNormal / 12 / NONE. unrealUI therefore ships no
--- font of its own and uses stock client fonts, which core/compat.lua verifies
--- by measurement before trusting.
+-- RUNTIME_FAILURE_CONFIRMED: assigning a bundled TTF directly to an inherited
+-- FontString silently kept GameFontNormal. The client documentation records a
+-- named-Font/SetFontObject route, but USER_CONFIRMED_INGAME: selecting a
+-- bundled face through that route made UnrealUI text disappear. Keep the
+-- inherited native FontObject as the safe default until a focused probe
+-- establishes a working custom-font contract. core/compat.lua owns the
+-- guarded experimental adapter used only when a bundled face is selected.
+-- Only these short ids are persisted; asset paths never enter SavedVariables.
 -- ---------------------------------------------------------------------------
+M.defaultFontId = "original"
+M.defaultUnitFrameFontId = "original"
+
+M.fonts = {
+  { id = "action_man",       label = "Action Man",       file = "ActionMan.ttf" },
+  { id = "continuum_medium", label = "Continuum Medium", file = "ContinuumMedium.ttf" },
+  { id = "die_die_die",      label = "Die Die Die",      file = "DieDieDie.ttf" },
+  { id = "expressway",       label = "Expressway",       file = "Expressway.ttf" },
+  { id = "homespun",         label = "Homespun",         file = "Homespun.ttf" },
+  { id = "invisible",        label = "Invisible",        file = "Invisible.ttf" },
+  { id = "pt_sans_narrow",   label = "PT Sans Narrow",   file = "PTSansNarrow.ttf" },
+}
+
+M.fontById = {}
+local fontIndex
+for fontIndex = 1, table.getn(M.fonts) do
+  local font = M.fonts[fontIndex]
+  font.path = "Interface\\AddOns\\unrealUI\\media\\Fonts\\" .. font.file
+  M.fontById[font.id] = font
+end
+
 M.fontCandidates = {
   "Fonts\\FRIZQT__.TTF",
   "Fonts\\ARIALN.TTF",
@@ -37,6 +62,14 @@ M.fontSize = {
   large  = 13,
 }
 
+-- Desired physical-pixel offset for every UnrealUI-styled FontString. The
+-- compatibility layer converts this into UIParent units before applying it,
+-- since one UI unit is wider than one screen pixel on this client.
+M.textShadowOffset = { 1, -1 }
+-- Compact bar text uses a stronger three-quarter-pixel shadow for contrast
+-- over bright semantic health and power fills without a detached appearance.
+M.compactTextShadowOffset = { 0.75, -0.75 }
+
 -- ---------------------------------------------------------------------------
 -- Textures
 --
@@ -48,6 +81,10 @@ M.fontSize = {
 -- ---------------------------------------------------------------------------
 M.texture = {
   plain = "Interface\\BUTTONS\\WHITE8X8",
+  statusBar = "Interface\\AddOns\\unrealUI\\media\\Textures\\normTex2",
+  -- Official client documentation uses this native TargetingFrame texture as
+  -- the StatusBar example; the Classic unit-frame theme reuses it directly.
+  classicStatusBar = "Interface\\TargetingFrame\\UI-StatusBar",
   chatResizeGrip = "Interface\\AddOns\\unrealUI\\media\\chat_resize_grip",
   restIcon = "Interface\\AddOns\\unrealUI\\media\\rest-icon",
 }
@@ -67,7 +104,9 @@ M.texture = {
 M.color = {
   background = { 0.06, 0.06, 0.06, 0.85 },
   border     = { 0.16, 0.16, 0.16, 1.00 },
+  unitFrameBorder = { 0.05, 0.05, 0.05, 1.00 },
   shadow     = { 0.00, 0.00, 0.00, 0.55 },
+  shadowStrong = { 0.00, 0.00, 0.00, 0.90 },
 
   -- #f5ae0a and two derived tones: one dimmed for inactive accents, one
   -- translucent for the fill behind a selected row.
@@ -105,6 +144,15 @@ M.color = {
   gridAxis   = { 0.96, 0.68, 0.04, 0.55 },
 }
 
+-- Unit frames have a small theme-owned style surface. Their geometry,
+-- generated frame names and aura attachment points are deliberately not part
+-- of it: themes may change appearance, never the unit-frame feature contract.
+M.unitFrame = {
+  usePastelGradient = true,
+  statusTexture = M.texture.statusBar,
+  background = { 0.06, 0.06, 0.06, 0.85 },
+}
+
 -- Countdown-number tiers, keyed by the tier U.FormatTimeShort reports. Shared
 -- because two surfaces now draw the same readout -- action-button cooldowns
 -- (modules/actionbar.lua) and aura timers (modules/auras.lua) -- and a second
@@ -124,14 +172,16 @@ M.cooldownText = {
 -- (knowledge.json / unitframes.core_unit_api_contract_partial), so consumers
 -- must fall back rather than assume an index is present.
 --
--- Values are pfUI modern's, taken from its Modern profile rather than from
--- pfUI's brighter stock defaults: manacolor "0.2,0.2,0.4", ragecolor
--- "0.6,0.2,0.2", energycolor and focuscolor "0.6,0.4,0.2".
+-- The first four indices are documented by this client. Runic Power is kept at
+-- its conventional index 6 from the requested palette; the current client
+-- documentation does not list it, but the colour is ready if UnitPowerType
+-- exposes that value on a supported class.
 M.power = {
-  [0] = { 0.20, 0.20, 0.40, 1.00 },   -- mana
-  [1] = { 0.60, 0.20, 0.20, 1.00 },   -- rage
-  [2] = { 0.60, 0.40, 0.20, 1.00 },   -- focus
-  [3] = { 0.60, 0.40, 0.20, 1.00 },   -- energy
+  [0] = { 0.31, 0.45, 0.63, 1.00 },   -- mana
+  [1] = { 0.78, 0.25, 0.25, 1.00 },   -- rage
+  [2] = { 0.71, 0.43, 0.27, 1.00 },   -- focus
+  [3] = { 0.65, 0.63, 0.35, 1.00 },   -- energy
+  [6] = { 0.00, 0.82, 1.00, 1.00 },   -- runic power (undocumented here)
   fallback = { 0.40, 0.40, 0.40, 1.00 },
 }
 
@@ -165,32 +215,26 @@ function M.ReactionColor(index)
   return nil
 end
 
--- Vanilla class colours. RAID_CLASS_COLORS is used when the client provides it,
--- but existence is not assumed.
+-- Authoritative classic class palette shared by every UnrealUI surface. Keep
+-- this local rather than consulting RAID_CLASS_COLORS: the client table can
+-- carry different values, which would make tooltip and unit-frame health bars
+-- vary by runtime instead of using the palette selected for this theme.
 M.class = {
-  WARRIOR = { 0.78, 0.61, 0.43 },
-  MAGE    = { 0.41, 0.80, 0.94 },
-  ROGUE   = { 1.00, 0.96, 0.41 },
-  DRUID   = { 1.00, 0.49, 0.04 },
-  HUNTER  = { 0.67, 0.83, 0.45 },
-  SHAMAN  = { 0.14, 0.35, 1.00 },
-  PRIEST  = { 1.00, 1.00, 1.00 },
-  WARLOCK = { 0.58, 0.51, 0.79 },
-  PALADIN = { 0.96, 0.55, 0.73 },
+  DEATHKNIGHT = { 0.77, 0.12, 0.23 },
+  DRUID       = { 1.00, 0.49, 0.04 },
+  HUNTER      = { 0.67, 0.83, 0.45 },
+  MAGE        = { 0.41, 0.80, 0.94 },
+  PALADIN     = { 0.96, 0.55, 0.73 },
+  PRIEST      = { 1.00, 1.00, 1.00 },
+  ROGUE       = { 1.00, 0.96, 0.41 },
+  SHAMAN      = { 0.00, 0.44, 0.87 },
+  WARLOCK     = { 0.58, 0.51, 0.79 },
+  WARRIOR     = { 0.78, 0.61, 0.43 },
 }
 
 function M.ClassColor(class)
   if type(class) ~= "string" then return nil end
   local key = string.upper(class)
-
-  local stock = U.G("RAID_CLASS_COLORS")
-  if type(stock) == "table" and type(stock[key]) == "table" then
-    local c = stock[key]
-    if tonumber(c.r) and tonumber(c.g) and tonumber(c.b) then
-      return tonumber(c.r), tonumber(c.g), tonumber(c.b)
-    end
-  end
-
   local own = M.class[key]
   if own then return own[1], own[2], own[3] end
   return nil

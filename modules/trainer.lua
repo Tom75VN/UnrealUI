@@ -276,6 +276,7 @@ local function TryBuild()
 end
 
 function TR:OnEnable()
+  if U.ThemeStyleUsesNativeChrome() then return end
   if TryBuild() then return end
 
   U.RegisterEvent("ADDON_LOADED", TryBuild)

@@ -286,7 +286,7 @@ function U.CreateStatusBar(parent, options)
   bar.uuiBackground = bg
 
   local fill = bar:CreateTexture(nil, "ARTWORK")
-  fill:SetTexture(M.texture.plain)
+  fill:SetTexture(options.texture or M.texture.plain)
   U.SetColor(fill, M.Unpack(options.color or M.color.health))
   bar.uuiFillTexture = fill
 
@@ -306,6 +306,11 @@ end
 function U.SetStatusBarColor(bar, r, g, b, a)
   if not bar or not bar.uuiFillTexture then return end
   U.SetColor(bar.uuiFillTexture, r, g, b, a)
+end
+
+function U.SetStatusBarTexture(bar, texture)
+  if not bar or not bar.uuiFillTexture then return end
+  bar.uuiFillTexture:SetTexture(texture or M.texture.plain)
 end
 
 -- ---------------------------------------------------------------------------
@@ -761,7 +766,13 @@ function U.CreateLabel(parent, options)
   end
   if not ok or not label then return nil end
 
-  U.SetFont(label, options.size or M.fontSize.normal, options.flags)
+  U.SetFont(label, options.size or M.fontSize.normal, options.flags,
+            options.fontRole)
+  if options.shadow == false then
+    U.ClearTextShadow(label)
+  elseif options.shadowOffset or options.shadowColor then
+    U.SetTextShadow(label, options.shadowOffset, options.shadowColor)
+  end
 
   local color = options.color or M.color.text
   pcall(label.SetTextColor, label, M.Unpack(color))

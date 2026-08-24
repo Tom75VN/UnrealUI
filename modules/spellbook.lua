@@ -201,5 +201,6 @@ local function BuildFrame()
 end
 
 function SB:OnEnable()
+  if U.ThemeStyleUsesNativeChrome() then return end
   BuildFrame()
 end
