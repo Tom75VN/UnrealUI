@@ -108,15 +108,14 @@ local function ProcessPending()
 
   local item = pending.items[pending.index]
   if not item then
-    local count = pending.index - 1
-    local plural = (count == 1 and "" or "s")
-
     if pending.mode == "sell" then
       local ok, endGold = pcall(GetMoney)
       endGold = (ok and tonumber(endGold)) or pending.startGold
-      U.Print("Sold " .. count .. " grey item" .. plural .. " for " ..
+      U.Print("Sold grey items for " ..
               FormatCopper(endGold - pending.startGold) .. ".")
     else
+      local count = pending.index - 1
+      local plural = (count == 1 and "" or "s")
       U.Print("Deleted " .. count .. " grey item" .. plural .. ".")
     end
 
@@ -653,9 +652,7 @@ local function BuildHeader()
     title = "Vendor / Delete Grays",
     onClick = SellOrDeleteGreys,
     detail = function()
-      local n = table.getn(CollectGreyItems())
-      return n .. " grey item" .. (n == 1 and "" or "s") ..
-             " - sells at an open vendor, otherwise asks to delete."
+      return "Sells grey items at an open vendor; otherwise asks to delete them."
     end,
   })
   frame.sell:SetPoint("LEFT", frame.bagsToggle, "RIGHT", 4, 0)
