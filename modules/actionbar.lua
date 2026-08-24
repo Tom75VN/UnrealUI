@@ -1,8 +1,9 @@
 -- unrealUI :: modules/actionbar.lua
 --
--- Up to ten action bars in the pfUI modern style: flat near-black square buttons with
--- one thin outline, the icon inset inside it, the keybind top-right, the item
--- count bottom-right and the macro name bottom-left.
+-- Up to ten action bars. Modern uses UnrealUI's flat button treatment; Classic
+-- copies the live client's own action-button faces onto the same UnrealUI
+-- buttons. Layout, paging, movers, bindings, cooldowns and interaction remain
+-- owned by this module in both themes.
 --
 -- Only the look and the call shapes are taken from pfUI. None of its bar
 -- architecture is reproduced: no config schema, no secure/TBC state driver, no
@@ -179,6 +180,157 @@ local pressedButtons = {}
 local cfg               -- module settings table (flat; see BuildDefaults)
 local classColor = { 0.5, 0.5, 1.0 }
 local bindingsDirty = false
+
+-- The client exposes only five independent native action-button families while
+-- UnrealUI can show ten independently arranged bars. Reusing the actual stock
+-- buttons would therefore discard bars and their features. Classic instead
+-- reads the native ActionButton1 texture objects before suppression and uses
+-- their exact client texture paths and size ratios as the visual template for
+-- every UnrealUI button, including bars that have no stock counterpart.
+local classicAction = {
+  active = false,
+  ready = false,
+}
+
+function classicAction.Dimension(region, method)
+  local fn = region and region[method]
+  if type(fn) ~= "function" then return 0 end
+  local ok, value = pcall(fn, region)
+  if not ok then return 0 end
+  return tonumber(value) or 0
+end
+
+function classicAction.TexturePath(region)
+  if not region or type(region.GetTexture) ~= "function" then return nil end
+  local ok, path = pcall(region.GetTexture, region)
+  if not ok or type(path) ~= "string" or path == "" then return nil end
+  return path
+end
+
+function classicAction.Face(source, getter, fallback)
+  local region = nil
+  local fn = source and source[getter]
+  if type(fn) == "function" then
+    local ok, value = pcall(fn, source)
+    if ok then region = value end
+  end
+  if not region and fallback then region = U.G(fallback) end
+
+  local path = classicAction.TexturePath(region)
+  if not path then return nil end
+
+  local sourceWidth = classicAction.Dimension(source, "GetWidth")
+  local sourceHeight = classicAction.Dimension(source, "GetHeight")
+  local width = classicAction.Dimension(region, "GetWidth")
+  local height = classicAction.Dimension(region, "GetHeight")
+  return {
+    path = path,
+    widthRatio = sourceWidth > 0 and width / sourceWidth or 1,
+    heightRatio = sourceHeight > 0 and height / sourceHeight or 1,
+  }
+end
+
+function classicAction.Capture()
+  classicAction.active = type(U.ThemeStyleUsesNativeChrome) == "function" and
+                         U.ThemeStyleUsesNativeChrome() or false
+  classicAction.ready = false
+  if not classicAction.active then return end
+
+  local source = U.G("ActionButton1")
+  if not source then
+    U.Debug("Classic action-button template is unavailable")
+    return
+  end
+
+  classicAction.normal = classicAction.Face(
+    source, "GetNormalTexture", "ActionButton1NormalTexture")
+  classicAction.pushed = classicAction.Face(
+    source, "GetPushedTexture", nil)
+  classicAction.highlight = classicAction.Face(
+    source, "GetHighlightTexture", nil)
+
+  local nativeIcon = U.G("ActionButton1Icon")
+  local sourceWidth = classicAction.Dimension(source, "GetWidth")
+  local sourceHeight = classicAction.Dimension(source, "GetHeight")
+  local iconWidth = classicAction.Dimension(nativeIcon, "GetWidth")
+  local iconHeight = classicAction.Dimension(nativeIcon, "GetHeight")
+  classicAction.iconWidthRatio = sourceWidth > 0 and iconWidth / sourceWidth or nil
+  classicAction.iconHeightRatio = sourceHeight > 0 and iconHeight / sourceHeight or nil
+  classicAction.ready = classicAction.normal and true or false
+
+  if not classicAction.ready then
+    U.Debug("Classic action-button normal texture is unavailable")
+  end
+end
+
+
+function classicAction.CreateFace(parent, face, layer, additive)
+  if not face then return nil end
+  local texture = parent:CreateTexture(nil, layer or "OVERLAY")
+  if not pcall(texture.SetTexture, texture, face.path) then return nil end
+  texture.uuiClassicFace = face
+  texture.uuiClassicParent = parent
+  if additive and type(texture.SetBlendMode) == "function" then
+    pcall(texture.SetBlendMode, texture, "ADD")
+  end
+  return texture
+end
+
+function classicAction.SizeFace(texture, size)
+  local face = texture and texture.uuiClassicFace
+  if not face then return end
+  pcall(texture.ClearAllPoints, texture)
+  pcall(texture.SetPoint, texture, "CENTER", texture.uuiClassicParent,
+        "CENTER", 0, 0)
+  pcall(texture.SetWidth, texture, size * face.widthRatio)
+  pcall(texture.SetHeight, texture, size * face.heightRatio)
+end
+
+function classicAction.StyleButton(button, textLayer)
+  if not classicAction.ready then return end
+  button.uuiClassic = true
+
+  -- Native action icons are not cropped; the client normal texture supplies
+  -- the ornamental slot edge over the icon.
+  pcall(button.uuiIcon.SetTexCoord, button.uuiIcon, 0, 1, 0, 1)
+  U.SetBackdropShown(button, false)
+
+  button.uuiClassicNormal = classicAction.CreateFace(
+    button, classicAction.normal, "ARTWORK", false)
+  local highlightFace = classicAction.highlight or classicAction.pushed
+  button.uuiClassicHover = classicAction.CreateFace(
+    textLayer, highlightFace, "OVERLAY", true)
+  button.uuiClassicActive = classicAction.CreateFace(
+    textLayer, highlightFace, "OVERLAY", true)
+  if button.uuiClassicHover then button.uuiClassicHover:Hide() end
+  if button.uuiClassicActive then button.uuiClassicActive:Hide() end
+
+  local pushedFace = classicAction.pushed or classicAction.highlight
+  if pushedFace and button.uuiPressed then
+    pcall(button.uuiPressed.SetTexture, button.uuiPressed,
+          pushedFace.path)
+    U.SetColor(button.uuiPressed, 1, 1, 1, 1)
+    button.uuiPressed.uuiClassicFace = pushedFace
+    button.uuiPressed.uuiClassicParent = textLayer
+  end
+end
+
+function classicAction.SizeButton(button, size)
+  if not button.uuiClassic then return end
+  if classicAction.iconWidthRatio and classicAction.iconHeightRatio then
+    pcall(button.uuiIcon.ClearAllPoints, button.uuiIcon)
+    pcall(button.uuiIcon.SetPoint, button.uuiIcon, "CENTER", button,
+          "CENTER", 0, 0)
+    pcall(button.uuiIcon.SetWidth, button.uuiIcon,
+          size * classicAction.iconWidthRatio)
+    pcall(button.uuiIcon.SetHeight, button.uuiIcon,
+          size * classicAction.iconHeightRatio)
+  end
+  classicAction.SizeFace(button.uuiClassicNormal, size)
+  classicAction.SizeFace(button.uuiClassicHover, size)
+  classicAction.SizeFace(button.uuiClassicActive, size)
+  classicAction.SizeFace(button.uuiPressed, size)
+end
 
 -- The global cooldown currently running, shared by every button. See NoteGCD.
 local gcdStart, gcdDuration, gcdProgress
@@ -569,6 +721,7 @@ local function ButtonSlot(button)
 end
 
 local function ApplyButtonBorder(button)
+  if button.uuiClassic then return end
   if button.uuiPressedShown then
     U.SetBorderColor(button, 1, 1, 1, 1)
   elseif button.uuiActive then
@@ -954,6 +1107,8 @@ local function CreateButton(bar, index)
     button.uuiCooldownText:Hide()
   end
 
+  classicAction.StyleButton(button, textLayer)
+
   -- scripts.handler_arguments_direct: handlers close over `button` instead of
   -- reading `this`, because the argument shape is not guaranteed here.
   button:SetScript("OnClick", function() OnButtonClick(button) end)
@@ -961,11 +1116,13 @@ local function CreateButton(bar, index)
   button:SetScript("OnReceiveDrag", function() OnButtonReceiveDrag(button) end)
   button:SetScript("OnEnter", function()
     button.uuiHover = true
+    ShowRegion(button.uuiClassicHover, true)
     ApplyButtonBorder(button)
     ShowTooltip(button)
   end)
   button:SetScript("OnLeave", function()
     button.uuiHover = false
+    ShowRegion(button.uuiClassicHover, false)
     ApplyButtonBorder(button)
     HideTooltip()
   end)
@@ -1017,6 +1174,8 @@ local function SizeButton(button, size)
     if cdSize > 24 then cdSize = 24 end
     U.SetFont(button.uuiCooldownText, cdSize)
   end
+
+  classicAction.SizeButton(button, size)
 end
 
 local function HideButton(button)
@@ -1028,6 +1187,9 @@ local function HideButton(button)
   ShowRegion(button.uuiMacro, false)
   ShowRegion(button.uuiCooldownText, false)
   ShowRegion(button.uuiPressed, false)
+  ShowRegion(button.uuiClassicNormal, false)
+  ShowRegion(button.uuiClassicHover, false)
+  ShowRegion(button.uuiClassicActive, false)
   button.uuiCdActive = false
   button.uuiCdShown = false
   if button.uuiCooldown then pcall(button.uuiCooldown.Hide, button.uuiCooldown) end
@@ -1059,9 +1221,12 @@ local function UpdateSlot(button)
     button.uuiTint = nil
   end
 
-  -- Counts: consumables report a stack, everything else reports nothing.
+  -- GetActionCount is zero for spells, macros and empty slots, so it is the
+  -- authoritative item check as well as the quantity.  IsConsumableAction
+  -- excludes valid stackable items such as bandages, which left their action
+  -- buttons without a count.
   local count = ""
-  if cfg.showCount and Call("IsConsumableAction", slot) then
+  if cfg.showCount then
     local n = tonumber(Call("GetActionCount", slot))
     if n and n > 0 then count = tostring(n) end
   end
@@ -1150,7 +1315,11 @@ local function UpdateActive(button)
 
   if active == button.uuiActive then return end
   button.uuiActive = active
-  ApplyButtonBorder(button)
+  if button.uuiClassic then
+    ShowRegion(button.uuiClassicActive, active)
+  else
+    ApplyButtonBorder(button)
+  end
 end
 
 -- ---------------------------------------------------------------------------
@@ -1328,6 +1497,14 @@ end
 -- would show, and restored once gridActive drops.
 local function ApplyButtonBackground(button)
   local shown = gridActive or not (HidesBackground(button.uuiBar) and button.uuiEmpty)
+  if button.uuiClassic then
+    U.SetBackdropShown(button, false)
+    ShowRegion(button.uuiClassicNormal, shown)
+    if not shown and button.uuiKeybind then
+      ShowRegion(button.uuiKeybind, false)
+    end
+    return
+  end
   U.SetBackdropShown(button, shown)
   -- A keybind label floating over a background-less slot is the same "empty
   -- box" the setting is meant to remove, so it goes with the background.
@@ -1901,6 +2078,10 @@ function AB:OnEnable()
   local r, g, b = M.ClassColor(class)
   if r then classColor = { r, g, b } end
 
+  -- Read the client's own button faces before the suppression pass makes the
+  -- stock action bars invisible. Modern records no template and follows its
+  -- existing flat rendering path.
+  classicAction.Capture()
   SuppressNativeBars()
   ApplyAll()
 
