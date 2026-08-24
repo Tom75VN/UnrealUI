@@ -2035,6 +2035,10 @@ local function BuildPartyAnchor()
   if not spec then return nil end
 
   local anchor = CreateFrame("Frame", "UnrealUIPartyAnchor", UIParent)
+  -- Keep the party block on the same HUD layer as the other unit frames.
+  -- SetFrameStrata propagates to child frames on this client, so the anchor
+  -- must own LOW before the party members are parented to it.
+  anchor:SetFrameStrata("LOW")
   anchor:SetWidth(FrameWidth(spec))
   anchor:SetHeight(((PARTY_COUNT - 1) * PARTY_SPACING) + FrameHeight(spec))
 
