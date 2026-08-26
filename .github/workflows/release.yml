@@ -33,7 +33,25 @@ jobs:
         shell: bash
         run: |
           mkdir -p package/unrealUI
-          cp -R core media modules unrealUI.toc package/unrealUI/
+
+          # Everything the client loads at runtime. Bindings.xml is absent from
+          # the .toc because the client loads it from the addon folder itself;
+          # locales/ and themes/ are listed in the .toc. A zip missing any of
+          # them installs an addon that silently loses those files.
+          cp -R core locales media modules themes package/unrealUI/
+          cp Bindings.xml unrealUI.toc LICENSE package/unrealUI/
+
+          # Guard against this copy list drifting from the .toc again: every
+          # file the .toc lists must exist inside the package.
+          missing=0
+          for entry in $(sed -e 's/\r$//' -e 's/#.*//' unrealUI.toc | sed 's|\\|/|g'); do
+            if [ ! -f "package/unrealUI/$entry" ]; then
+              echo "missing from package: $entry"
+              missing=1
+            fi
+          done
+          test "$missing" -eq 0
+
           (
             cd package
             zip -r ../UnrealUI.zip unrealUI
