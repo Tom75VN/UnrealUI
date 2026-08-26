@@ -513,6 +513,13 @@ local function Report()
               tostring(stats.lastTargetVisited) .. " visited  (group " ..
               tostring(stats.targetGroupNames) .. " names, " ..
               tostring(stats.registeredNames) .. " registered)")
+      -- The stock aura slots specifically: how many are watched, and how often
+      -- the client had written an icon back into one this adapter had already
+      -- cleared. A non-zero re-clear count is the native aura block being
+      -- caught mid-session rather than only on a target change.
+      U.Print("  stock aura slots: " .. tostring(stats.auraNames) ..
+              " watched, " .. tostring(stats.auraRecleared) ..
+              " re-cleared this session")
     end
   end
 

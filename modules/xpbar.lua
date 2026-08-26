@@ -132,7 +132,7 @@ local function Build()
   end
 
   U.RegisterMover("xpbar.xp", xpAnchor, {
-    label = "Experience Bar",
+    label = U.L("MOVER_LABEL_XP_BAR"),
     default = { point = "BOTTOM", relativePoint = "BOTTOM", x = 0, y = 66 },
   })
 
@@ -143,7 +143,7 @@ local function Build()
   repAnchor, repBar = BuildBar("UnrealUIReputationBarAnchor", COLOR_REP_FALLBACK)
 
   U.RegisterMover("xpbar.reputation", repAnchor, {
-    label = "Reputation Bar",
+    label = U.L("MOVER_LABEL_REP_BAR"),
     default = { point = "BOTTOM", relativePoint = "BOTTOM", x = 0, y = 66 - HEIGHT - GAP },
     -- A disabled bar keeps its stored position but offers no drag handle in
     -- edit mode; see core/mover.lua / modules/microbar.lua.

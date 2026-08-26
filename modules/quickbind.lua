@@ -225,7 +225,7 @@ local function BindKey(command, key)
 
   local set = U.G("SetBinding")
   if type(set) ~= "function" then
-    U.Print("|cffff5555SetBinding is unavailable in this client; quick binding cannot change keys.|r")
+    U.Print(U.L("QUICKBIND_NO_SETBINDING"))
     return false
   end
 
@@ -267,8 +267,7 @@ end
 local function PersistBindings()
   local save = U.G("SaveBindings")
   if type(save) ~= "function" then
-    U.Print("|cffff5555SaveBindings is unavailable in this client:|r your keys " ..
-            "work now but will not survive a logout.")
+    U.Print(U.L("QUICKBIND_SAVE_UNAVAILABLE"))
     return false
   end
 
@@ -277,8 +276,7 @@ local function PersistBindings()
 
   if not pcall(save, set) then
     if not pcall(save) then
-      U.Print("|cffff5555SaveBindings failed;|r your keys work now but may not " ..
-              "survive a logout.")
+      U.Print(U.L("QUICKBIND_SAVE_FAILED"))
       restore = {}
       return false
     end
@@ -621,8 +619,8 @@ function HandleInput(input, map)
     if catcher and Bindable(catcher) then
       if ClearBinding(catcher.command) then
         RefreshShown()
-        U.Print("Cleared the binding on bar " .. tostring(catcher.bar) ..
-                " slot " .. tostring(catcher.index) .. ".")
+        U.Print(U.L("QUICKBIND_CLEARED", tostring(catcher.bar),
+                    tostring(catcher.index)))
       end
       return
     end
@@ -633,8 +631,7 @@ function HandleInput(input, map)
   if not catcher then return end
 
   if not Bindable(catcher) then
-    U.Print("This client has no key command for bar " .. tostring(catcher.bar) ..
-            ". Bars 1-5 are the bindable ones.")
+    U.Print(U.L("QUICKBIND_NO_COMMAND", tostring(catcher.bar)))
     return
   end
 
@@ -721,7 +718,7 @@ local function CreatePanel()
   })
   if title then
     title:SetPoint("TOP", panel, "TOP", 0, -12)
-    title:SetText("Quick Binding")
+    title:SetText(U.L("QUICKBIND_TITLE"))
     table.insert(panel.parts, title)
   end
 
@@ -753,7 +750,7 @@ local function CreatePanel()
 
   panel.save = U.CreateButton(panel, {
     name = "UnrealUIQuickBindSave",
-    text = "Save",
+    text = U.L("COMMON_SAVE"),
     width = 120,
     height = 24,
     onClick = function() Close(true) end,
@@ -763,7 +760,7 @@ local function CreatePanel()
 
   panel.cancel = U.CreateButton(panel, {
     name = "UnrealUIQuickBindCancel",
-    text = "Cancel",
+    text = U.L("COMMON_CANCEL"),
     width = 120,
     height = 24,
     onClick = function() Close(false) end,
@@ -792,7 +789,7 @@ end
 
 local function ShowPanel(count)
   if panel.status then
-    panel.status:SetText(tostring(count) .. " slot(s) in this mode.")
+    panel.status:SetText(U.LN("QUICKBIND_SLOT_COUNT", count))
     pcall(panel.status.SetTextColor, panel.status, M.Unpack(M.color.textDim))
   end
 
@@ -813,7 +810,7 @@ function U.OpenQuickBind()
   if active then return true end
 
   if type(U.ActionBarBindTargets) ~= "function" then
-    U.Print("action bars are not available, so quick binding has nothing to bind.")
+    U.Print(U.L("QUICKBIND_NO_ACTIONBARS"))
     return false
   end
 
@@ -834,7 +831,7 @@ function U.OpenQuickBind()
   local count = ShowCatchers()
   if count == 0 then
     active = false
-    U.Print("no action bar slots are visible, so there is nothing to bind.")
+    U.Print(U.L("QUICKBIND_NO_SLOTS"))
     return false
   end
 
@@ -849,8 +846,7 @@ function U.OpenQuickBind()
   keys:Show()
   ShowPanel(count)
 
-  U.Print("Quick binding. Hover a slot and press a key. " ..
-          "|cffffff00Save|r keeps the changes, |cffffff00Cancel|r or Escape drops them.")
+  U.Print(U.L("QUICKBIND_OPENED"))
   return true
 end
 
@@ -879,19 +875,19 @@ function U.CloseQuickBind(save)
   if save then
     if made > 0 then
       if PersistBindings() then
-        U.Print("Saved " .. made .. " binding change(s).")
+        U.Print(U.LN("QUICKBIND_SAVED", made))
       end
     else
       restore = {}
-      U.Print("Quick binding closed. Nothing changed.")
+      U.Print(U.L("QUICKBIND_NOTHING_CHANGED"))
     end
   else
     if made > 0 then
       RestoreBindings()
-      U.Print("Quick binding cancelled. " .. made .. " change(s) reverted.")
+      U.Print(U.LN("QUICKBIND_REVERTED", made))
     else
       restore = {}
-      U.Print("Quick binding closed.")
+      U.Print(U.L("QUICKBIND_CLOSED"))
     end
   end
 
@@ -941,7 +937,7 @@ function QB:OnEnable()
   local function CombatExit()
     if not active then return end
     U.CloseQuickBind(true)
-    U.Print("Quick binding closed: combat started.")
+    U.Print(U.L("QUICKBIND_COMBAT"))
   end
 
   U.RegisterEvent("PLAYER_REGEN_DISABLED", CombatExit)

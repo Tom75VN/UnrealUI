@@ -66,7 +66,72 @@ end
 -- region as well as the setter (rendering.native_texture_strip_requires_alpha
 -- says a native region can survive Hide() and SetTexture alone).
 -- ---------------------------------------------------------------------------
-function U.StyleItemSlot(button, name)
+-- The count region this component drives.
+--
+-- The player-bag template's stock Count region draws correctly, so retain it.
+-- The bank template's region does not produce a visible count on this client
+-- (confirmed visually in-game). Bank counts are therefore placed on a raised
+-- child frame, using the same proven text-layer pattern as action-bar cooldown
+-- text and unit-frame labels. Keeping the bank button template itself preserves
+-- its native click, drag and tooltip logic.
+local function EnsureSlotCount(button, name, restyle, raised)
+  local region = U.G(name .. "Count")
+
+  if raised then
+    U.HideRegion(region)
+
+    local layer = CreateFrame("Frame", nil, button)
+    pcall(layer.SetAllPoints, layer, button)
+    pcall(layer.EnableMouse, layer, false)
+    local levelOk, level = pcall(button.GetFrameLevel, button)
+    if levelOk and tonumber(level) then
+      pcall(layer.SetFrameLevel, layer, level + 10)
+    end
+
+    button.uuiCountLayer = layer
+    button.uuiCount = U.CreateLabel(layer, {
+      size = M.fontSize.small,
+      color = M.color.text,
+      inherits = "GameFontNormalSmall",
+    })
+    if button.uuiCount then
+      pcall(function()
+        button.uuiCount:SetPoint("BOTTOMRIGHT", layer, "BOTTOMRIGHT", -3, 3)
+      end)
+    end
+  elseif region then
+    button.uuiCount = region
+    if restyle then
+      -- A previous style pass may have taken the region out of the render.
+      pcall(region.SetAlpha, region, 1)
+      U.SetFont(region, M.fontSize.small)
+      pcall(region.SetTextColor, region, M.Unpack(M.color.text))
+      -- fonts.stretched_justification_ignored: the stock region is stretched
+      -- across the button and justified into its corner, which is the pattern
+      -- that record says can be ignored here. Anchor it to the one corner.
+      pcall(function()
+        region:ClearAllPoints()
+        region:SetPoint("BOTTOMRIGHT", button, "BOTTOMRIGHT", -3, 3)
+      end)
+      pcall(region.SetJustifyH, region, "RIGHT")
+    end
+  else
+    button.uuiCount = U.CreateLabel(button, {
+      size = M.fontSize.small,
+      color = M.color.text,
+      inherits = "GameFontNormalSmall",
+    })
+    if button.uuiCount then
+      pcall(function()
+        button.uuiCount:SetPoint("BOTTOMRIGHT", button, "BOTTOMRIGHT", -3, 3)
+      end)
+    end
+  end
+
+  if button.uuiCount then pcall(button.uuiCount.Hide, button.uuiCount) end
+end
+
+function U.StyleItemSlot(button, name, raisedCount)
   if not button then return end
   local edge = U.BorderSize()
 
@@ -82,18 +147,18 @@ function U.StyleItemSlot(button, name)
     -- count, click/drag and tooltip behavior remain owned by the template.
     pcall(button.SetNormalTexture, button, "")
     U.HideRegion(U.G(name .. "NormalTexture"))
-    button.uuiStockCount = U.G(name .. "Count")
-    if not button.uuiStockCount then
-      button.uuiCount = U.CreateLabel(button, {
-        size = M.fontSize.small,
-        color = M.color.text,
-        inherits = "GameFontNormalSmall",
-      })
-      if button.uuiCount then
-        button.uuiCount:SetPoint("BOTTOMRIGHT", button, "BOTTOMRIGHT", -3, 3)
-        button.uuiCount:Hide()
-      end
-    end
+    -- The Classic slot face is painted at BACKGROUND (CLASSIC_FACE_LAYER in
+    -- modules/actionbar.lua) because this client's face art is not clear
+    -- through the middle and dims an icon it covers. Pin the item icon to
+    -- BORDER rather than trusting the container template to declare it there:
+    -- BORDER is above the face and still below the template's ARTWORK count,
+    -- so the stack number stays readable. Vanilla's own ItemButtonTemplate
+    -- already uses BORDER, so this is a no-op wherever that holds here.
+    local slotIcon = U.G(name .. "IconTexture")
+    if slotIcon then pcall(slotIcon.SetDrawLayer, slotIcon, "BORDER") end
+    -- Classic keeps the template's own count exactly where the client puts
+    -- it; only its value is driven, from U.UpdateItemSlot.
+    EnsureSlotCount(button, name, false, raisedCount)
     U.CreateBackdrop(button, {
       background = { 0, 0, 0, 0 },
       border = M.slotBorder.plain,
@@ -119,27 +184,7 @@ function U.StyleItemSlot(button, name)
     end)
   end
 
-  -- fonts.stretched_justification_ignored: pfUI stretches the count across the
-  -- button and justifies it BOTTOMRIGHT, which is exactly the pattern that
-  -- record says can be ignored here. Anchored to the one corner instead.
-  local stockCount = U.G(name .. "Count")
-  button.uuiStockCount = stockCount
-  if stockCount then
-    -- Bank and container templates do not expose their count region
-    -- consistently on this client. Hide it and use one owned label below.
-    U.HideRegion(stockCount)
-  end
-
-  button.uuiCount = U.CreateLabel(button, {
-    size = M.fontSize.small, color = M.color.text,
-    inherits = "GameFontNormalSmall",
-  })
-  if button.uuiCount then
-    pcall(function()
-      button.uuiCount:SetPoint("BOTTOMRIGHT", button, "BOTTOMRIGHT", -3, 3)
-    end)
-    button.uuiCount:Hide()
-  end
+  EnsureSlotCount(button, name, true, raisedCount)
 
   local hlOk, highlight = pcall(button.GetHighlightTexture, button)
   if hlOk and highlight then
@@ -324,8 +369,7 @@ function U.CreateItemSlot(parent, name, bag, slot)
   if (not ok or not button) and template ~= "ContainerFrameItemButtonTemplate" then
     if not bankTemplateReported then
       bankTemplateReported = true
-      U.Print(template .. " is not available on this client; bank slots fall " ..
-              "back to the bag slot template.")
+      U.Print(U.L("BANK_SLOT_TEMPLATE_FALLBACK", template))
     end
     template = "ContainerFrameItemButtonTemplate"
     ok, button = pcall(CreateFrame, "Button", name, parent, template)
@@ -338,13 +382,24 @@ function U.CreateItemSlot(parent, name, bag, slot)
   end
 
   button:SetID(slot)
-  U.StyleItemSlot(button, name)
+  U.StyleItemSlot(button, name,
+                  template == "BankItemButtonGenericTemplate")
 
   -- The stock template owns the primary item tooltip. These post-hooks run
   -- after it has populated GameTooltip, then place the equipped counterpart(s)
   -- to its left. They preserve the template's click, pickup and drag behavior.
-  U.PostHookScript(button, "OnEnter", function() ShowItemCompare(bag, slot) end)
-  U.PostHookScript(button, "OnLeave", HideItemCompare)
+  -- modules/itemprice.lua places its owned price panel after the stock tooltip
+  -- is populated. It identifies the item from this button rather than from the
+  -- tooltip because replacing a GameTooltip method does not persist on this
+  -- client (see that file).
+  U.PostHookScript(button, "OnEnter", function()
+    if type(U.ShowItemPrice) == "function" then U.ShowItemPrice(bag, slot) end
+    ShowItemCompare(bag, slot)
+  end)
+  U.PostHookScript(button, "OnLeave", function()
+    if type(U.HideItemPrice) == "function" then U.HideItemPrice() end
+    HideItemCompare()
+  end)
 
   -- ContainerFrame_UpdateCooldown resolves the cooldown by frame name. The
   -- container template ships one; the bank template does not, so it gets the
@@ -380,18 +435,26 @@ function U.UpdateItemSlot(button, bag, slot)
   pcall(SetItemButtonTexture, button, texture)
   pcall(SetItemButtonCount, button, count)
   pcall(SetItemButtonDesaturated, button, locked, 0.5, 0.5, 0.5)
-  if not button.uuiClassicItemSlot then U.HideRegion(button.uuiStockCount) end
 
-  -- Do not rely on a Count region supplied by either stock template: the bank
-  -- template can omit it, while the container template names it differently
-  -- on some client builds. The shared owned label keeps every stack count
-  -- visible in both bags and bank slots.
+  -- The quantity is then written to the region directly rather than being left
+  -- to SetItemButtonCount: that helper resolves the region by frame name and
+  -- has no compact record on this client, while the region itself is the one
+  -- UnrealPfUI demonstrably drives here. The helper call above still runs
+  -- first so button.count keeps the value stock stack-split code reads.
+  -- Vanilla shows a quantity only for a real stack, so a single item stays
+  -- bare.
   if button.uuiCount then
-    local text = ""
     local n = tonumber(count)
-    if n and n > 0 then text = tostring(n) end
-    button.uuiCount:SetText(text)
-    if text == "" then button.uuiCount:Hide() else button.uuiCount:Show() end
+    local text = (n and n > 1) and tostring(n) or ""
+    pcall(button.uuiCount.SetText, button.uuiCount, text)
+    if text == "" then
+      pcall(button.uuiCount.Hide, button.uuiCount)
+    else
+      -- Set the final display state after the stock helper so the bank and
+      -- player-bag templates receive the same visible stack-count treatment.
+      pcall(button.uuiCount.SetAlpha, button.uuiCount, 1)
+      pcall(button.uuiCount.Show, button.uuiCount)
+    end
   end
 
   local color = U.ItemSlotBorderColor(bag, slot, texture, quality)

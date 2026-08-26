@@ -159,7 +159,7 @@ local function Build()
     size = M.fontSize.normal, inherits = "GameFontNormal", color = M.color.text,
   })
   display.fpsCaption:SetPoint("LEFT", anchor, "LEFT", HORIZONTAL_PADDING, 0)
-  display.fpsCaption:SetText("FPS:")
+  display.fpsCaption:SetText(U.L("STATUS_FPS"))
 
   display.fpsValue = U.CreateLabel(anchor, {
     size = M.fontSize.normal, inherits = "GameFontNormal", color = COLOR_GOOD,
@@ -170,7 +170,7 @@ local function Build()
     size = M.fontSize.normal, inherits = "GameFontNormal", color = M.color.text,
   })
   display.latencyCaption:SetPoint("LEFT", display.fpsValue, "RIGHT", MODULE_GAP, 0)
-  display.latencyCaption:SetText("MS:")
+  display.latencyCaption:SetText(U.L("STATUS_LATENCY"))
 
   display.latencyValue = U.CreateLabel(anchor, {
     size = M.fontSize.normal, inherits = "GameFontNormal", color = COLOR_GOOD,
@@ -181,7 +181,7 @@ local function Build()
     size = M.fontSize.normal, inherits = "GameFontNormal", color = M.color.text,
   })
   display.durabilityCaption:SetPoint("LEFT", display.latencyValue, "RIGHT", MODULE_GAP, 0)
-  display.durabilityCaption:SetText("Durability:")
+  display.durabilityCaption:SetText(U.L("STATUS_DURABILITY"))
 
   display.durabilityValue = U.CreateLabel(anchor, {
     size = M.fontSize.normal, inherits = "GameFontNormal", color = COLOR_GOOD,
@@ -198,7 +198,7 @@ local function Build()
   display.copper:SetPoint("LEFT", display.silver, "RIGHT", COIN_GAP, 0)
 
   U.RegisterMover("status.overlay", anchor, {
-    label = "Status Overlay",
+    label = U.L("MOVER_LABEL_STATUS"),
     default = { point = "BOTTOMLEFT", relativePoint = "BOTTOMLEFT", x = 20, y = 20 },
   })
 end
@@ -227,7 +227,7 @@ local function BuildPopulation()
     size = M.fontSize.normal, inherits = "GameFontNormal", color = M.color.text,
   })
   popDisplay.serverCaption:SetPoint("LEFT", popAnchor, "LEFT", HORIZONTAL_PADDING, 0)
-  popDisplay.serverCaption:SetText("Faction:")
+  popDisplay.serverCaption:SetText(U.L("STATUS_FACTION"))
 
   popDisplay.serverValue = U.CreateLabel(popAnchor, {
     size = M.fontSize.normal, inherits = "GameFontNormal", color = M.color.text,
@@ -239,10 +239,10 @@ local function BuildPopulation()
     size = M.fontSize.normal, inherits = "GameFontNormal", color = M.color.text,
   })
   popDisplay.serverSuffix:SetPoint("LEFT", popDisplay.serverValue, "RIGHT", 2, 0)
-  popDisplay.serverSuffix:SetText("online")
+  popDisplay.serverSuffix:SetText(U.L("STATUS_ONLINE"))
 
   U.RegisterMover("status.population", popAnchor, {
-    label = "Online Count Overlay",
+    label = U.L("MOVER_LABEL_ONLINE_COUNT"),
     default = { point = "BOTTOMLEFT", relativePoint = "BOTTOMLEFT", x = 20, y = 20 + HEIGHT + 6 },
   })
 

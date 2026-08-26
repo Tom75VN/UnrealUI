@@ -67,6 +67,7 @@ local pending    -- { items, index, mode = "sell"|"delete", startGold }
 local classicBag = {
   active = false,
   ready = false,
+  nativeHeaderHeight = 58,
 }
 
 function classicBag.Dimension(region, method)
@@ -147,8 +148,17 @@ function classicBag.Capture()
 end
 
 function classicBag.HeaderHeight()
-  if classicBag.ready then return 58 end
+  -- Keep both themes on the shared compact container rhythm. The native bag
+  -- art is scaled into this strip instead of making Classic reserve a second
+  -- row above the item grid.
   return HEADER_HEIGHT
+end
+
+function classicBag.SlotGap()
+  -- The native action-button rim extends beyond the clickable slot. Give
+  -- Classic two extra pixels so adjacent rims remain visually distinct.
+  if classicBag.ready then return SLOT_GAP + 2 end
+  return SLOT_GAP
 end
 
 function classicBag.CreateFace(parent, face, layer)
@@ -186,8 +196,8 @@ function classicBag.StylePanel(panel, main)
   if not classicBag.ready or not panel then return end
   -- A unified bag has a variable width and row count, while the native art was
   -- authored for a fixed stock container. Use a flexible leather center and
-  -- keep the captured atlas only in a three-piece header. The two caps remain
-  -- fixed-size, so the portrait and close-button ornament cannot become oval;
+  -- keep the captured atlas only in a three-piece header. Scale both caps with
+  -- the compact header so their ornaments retain their native proportions;
   -- only the quiet middle band stretches with the merged window.
   U.SetBackdropShown(panel, true)
   U.SetBackgroundColor(panel, 0.115, 0.060, 0.018, 0.97)
@@ -203,15 +213,16 @@ function classicBag.StylePanel(panel, main)
   local middle = classicBag.CreateFace(panel, source, "BORDER")
   local right = classicBag.CreateFace(panel, source, "BORDER")
   if not left or not middle or not right then return end
+  local headerScale = classicBag.HeaderHeight() / classicBag.nativeHeaderHeight
 
   classicBag.SetSlice(left, 0, 0.40, 0, 1)
   left:SetPoint("TOPLEFT", panel, "TOPLEFT", 0, 0)
-  left:SetWidth(82)
+  left:SetWidth(82 * headerScale)
   left:SetHeight(classicBag.HeaderHeight())
 
   classicBag.SetSlice(right, 0.73, 1, 0, 1)
   right:SetPoint("TOPRIGHT", panel, "TOPRIGHT", 0, 0)
-  right:SetWidth(56)
+  right:SetWidth(56 * headerScale)
   right:SetHeight(classicBag.HeaderHeight())
 
   classicBag.SetSlice(middle, 0.40, 0.73, 0, 1)
@@ -237,21 +248,21 @@ function classicBag.StyleHeader(window)
   if not classicBag.ready or not window then return end
 
   local portrait = window:CreateTexture(nil, "OVERLAY")
-  portrait:SetWidth(36)
-  portrait:SetHeight(36)
-  portrait:SetPoint("TOPLEFT", window, "TOPLEFT", 5, -4)
+  portrait:SetWidth(18)
+  portrait:SetHeight(18)
+  portrait:SetPoint("LEFT", window.sell, "RIGHT", 7, 0)
   local setPortrait = U.G("SetBagPortaitTexture")
   if type(setPortrait) == "function" then pcall(setPortrait, portrait, 0) end
   window.uuiClassicPortrait = portrait
 
   local title = U.CreateLabel(window, {
-    text = "Bags",
-    size = M.fontSize.large,
+    text = U.L("BAGS_TITLE"),
+    size = M.fontSize.normal,
     color = { 1.00, 0.82, 0.00, 1.00 },
     inherits = "GameFontNormal",
   })
   if title then
-    title:SetPoint("TOPLEFT", window, "TOPLEFT", 46, -7)
+    title:SetPoint("LEFT", portrait, "RIGHT", 5, 0)
     window.uuiClassicTitle = title
   end
 end
@@ -260,11 +271,22 @@ function classicBag.StyleIconButton(button)
   if not classicBag.ready or not classicBag.slot or
      not classicBag.slot.cropped or not button then return end
   U.SetBackdropShown(button, false)
-  local texture = classicBag.CreateFace(button, classicBag.slot, "OVERLAY")
+  -- Below the button's own ARTWORK icon, for the reason CLASSIC_FACE_LAYER in
+  -- modules/actionbar.lua records: this client's slot faces are not clear
+  -- through the middle, so one painted over an icon dims it.
+  local texture = classicBag.CreateFace(button, classicBag.slot, "BACKGROUND")
   if texture then
     classicBag.SizeFace(texture, button)
     button.uuiClassicFace = texture
   end
+end
+
+function classicBag.StyleItemSlot(button, size)
+  if not classicBag.ready or
+     type(U.StyleClassicActionButtonBorder) ~= "function" then return end
+  -- No layer argument: the shared helper owns the one that keeps the item icon
+  -- above the slot face.
+  U.StyleClassicActionButtonBorder(button, size)
 end
 
 -- ---------------------------------------------------------------------------
@@ -318,12 +340,11 @@ local function ProcessPending()
     if pending.mode == "sell" then
       local ok, endGold = pcall(GetMoney)
       endGold = (ok and tonumber(endGold)) or pending.startGold
-      U.Print("Sold grey items for " ..
-              FormatCopper(endGold - pending.startGold) .. ".")
+      U.Print(U.L("BAGS_SOLD_GREYS",
+                  FormatCopper(endGold - pending.startGold)))
     else
       local count = pending.index - 1
-      local plural = (count == 1 and "" or "s")
-      U.Print("Deleted " .. count .. " grey item" .. plural .. ".")
+      U.Print(U.LN("BAGS_DELETED_GREYS", count))
     end
 
     pending = nil
@@ -358,9 +379,9 @@ local function ShowDeleteConfirm(items)
   local n = table.getn(items)
 
   U.ShowConfirm({
-    text = "Delete " .. n .. " grey item" .. (n == 1 and "" or "s") .. "?",
-    detail = "This cannot be undone.",
-    acceptText = "Delete",
+    text = U.LN("BAGS_DELETE_CONFIRM", n),
+    detail = U.L("COMMON_CANNOT_BE_UNDONE"),
+    acceptText = U.L("COMMON_DELETE"),
     onAccept = function()
       pending = { items = items, index = 1, mode = "delete" }
       U.RegisterUpdate("bags.sellDelete", 0.15, ProcessPending)
@@ -373,7 +394,7 @@ local function SellOrDeleteGreys()
 
   local items = CollectGreyItems()
   if table.getn(items) == 0 then
-    U.Print("No grey items found.")
+    U.Print(U.L("BAGS_NO_GREYS"))
     return
   end
 
@@ -576,6 +597,7 @@ local function LayoutKeyring()
   local tray = frame.keyring
   local n = KeyringSize()
   local shown = 0
+  local slotGap = classicBag.SlotGap()
   local slot
 
   for slot = 1, n do
@@ -583,9 +605,10 @@ local function LayoutKeyring()
     if button then
       button:ClearAllPoints()
       button:SetPoint("TOPLEFT", tray, "TOPLEFT",
-                      PADDING + shown * (TRAY_SLOT + SLOT_GAP), -PADDING)
+                      PADDING + shown * (TRAY_SLOT + slotGap), -PADDING)
       button:SetWidth(TRAY_SLOT)
       button:SetHeight(TRAY_SLOT)
+      classicBag.StyleItemSlot(button, TRAY_SLOT)
       UpdateSlotAppearance(KEYRING_BAG, slot)
       button:Show()
       shown = shown + 1
@@ -602,7 +625,7 @@ local function LayoutKeyring()
   if shown == 0 then
     tray:SetWidth(TRAY_SLOT + PADDING * 2)
   else
-    tray:SetWidth(shown * (TRAY_SLOT + SLOT_GAP) - SLOT_GAP + PADDING * 2)
+    tray:SetWidth(shown * (TRAY_SLOT + slotGap) - slotGap + PADDING * 2)
   end
   tray:SetHeight(TRAY_SLOT + PADDING * 2)
 end
@@ -669,6 +692,7 @@ local function LayoutBagSlots()
   end
   tray.built = true
   tray.buttons = {}
+  local slotGap = classicBag.SlotGap()
 
   local i
   for i = 1, BAG_SLOT_COUNT do
@@ -686,10 +710,11 @@ local function LayoutBagSlots()
 
       button:ClearAllPoints()
       button:SetPoint("TOPLEFT", tray, "TOPLEFT",
-                      PADDING + (i - 1) * (TRAY_SLOT + SLOT_GAP), -PADDING)
+                      PADDING + (i - 1) * (TRAY_SLOT + slotGap), -PADDING)
       button:SetWidth(TRAY_SLOT)
       button:SetHeight(TRAY_SLOT)
       U.StyleItemSlot(button, name)
+      classicBag.StyleItemSlot(button, TRAY_SLOT)
       tray.buttons[i] = button
       RefreshBagSlotButton(button)
       U.PostHookScript(button, "OnEnter", function()
@@ -707,7 +732,7 @@ local function LayoutBagSlots()
     end
   end
 
-  tray:SetWidth(BAG_SLOT_COUNT * (TRAY_SLOT + SLOT_GAP) - SLOT_GAP + PADDING * 2)
+  tray:SetWidth(BAG_SLOT_COUNT * (TRAY_SLOT + slotGap) - slotGap + PADDING * 2)
   tray:SetHeight(TRAY_SLOT + PADDING * 2)
 end
 
@@ -716,6 +741,7 @@ end
 -- ---------------------------------------------------------------------------
 local function LayoutSlots()
   local x, y = 0, 0
+  local slotGap = classicBag.SlotGap()
   local i
 
   for i = 1, table.getn(BAG_IDS) do
@@ -729,10 +755,11 @@ local function LayoutSlots()
       if button then
         button:ClearAllPoints()
         button:SetPoint("TOPLEFT", grid, "TOPLEFT",
-                        x * (SLOT_SIZE + SLOT_GAP),
-                        -(y * (SLOT_SIZE + SLOT_GAP)))
+                        x * (SLOT_SIZE + slotGap),
+                        -(y * (SLOT_SIZE + slotGap)))
         button:SetWidth(SLOT_SIZE)
         button:SetHeight(SLOT_SIZE)
+        classicBag.StyleItemSlot(button, SLOT_SIZE)
         UpdateSlotAppearance(bag, slot)
         button:Show()
 
@@ -759,9 +786,9 @@ local function LayoutSlots()
 
   -- The anchor owns the rect; the visible frame is stretched over it, so the
   -- mover handle keeps the same bounds whether or not the bag is open.
-  anchor:SetWidth(COLUMNS * (SLOT_SIZE + SLOT_GAP) - SLOT_GAP + PADDING * 2)
+  anchor:SetWidth(COLUMNS * (SLOT_SIZE + slotGap) - slotGap + PADDING * 2)
   anchor:SetHeight(classicBag.HeaderHeight() +
-                   y * (SLOT_SIZE + SLOT_GAP) - SLOT_GAP
+                   y * (SLOT_SIZE + slotGap) - slotGap
                    + PADDING)
 end
 
@@ -875,8 +902,6 @@ local function BuildHeader()
     onClick = function() HideBags() end,
   })
   if classicBag.ready and classicBag.close then
-    frame.close:SetWidth(22)
-    frame.close:SetHeight(22)
     classicBag.StyleButton(frame.close, classicBag.close)
   end
   frame.close:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -PADDING, -PADDING)
@@ -890,8 +915,8 @@ local function BuildHeader()
     name = "UnrealUIBagKeyToggle",
     texture = "Interface\\Icons\\INV_Misc_Key_03",
     fallback = "K",
-    title = "Toggle Keyring",
-    detail = function() return "Show the keyring." end,
+    title = U.L("BAGS_TOGGLE_KEYRING"),
+    detail = function() return U.L("BAGS_KEYRING_HINT") end,
     onClick = function()
       local tray = frame.keyring
       local ok, shown = pcall(tray.IsShown, tray)
@@ -904,18 +929,14 @@ local function BuildHeader()
     end,
   })
   classicBag.StyleIconButton(frame.keyToggle)
-  if classicBag.ready then
-    frame.keyToggle:SetPoint("TOPLEFT", frame, "TOPLEFT", 46, -23)
-  else
-    frame.keyToggle:SetPoint("TOPLEFT", frame, "TOPLEFT", PADDING, -PADDING)
-  end
+  frame.keyToggle:SetPoint("TOPLEFT", frame, "TOPLEFT", PADDING, -PADDING)
 
   frame.bagsToggle = U.CreateIconButton(frame, {
     name = "UnrealUIBagBagsToggle",
     texture = "Interface\\Icons\\INV_Misc_Bag_08",
     fallback = "B",
-    title = "Toggle Bags",
-    detail = function() return "Show the equipped bag slots." end,
+    title = U.L("BAGS_TOGGLE_BAGS"),
+    detail = function() return U.L("BAGS_BAG_SLOTS_HINT") end,
     onClick = function()
       local tray = frame.bagslots
       local ok, shown = pcall(tray.IsShown, tray)
@@ -934,11 +955,9 @@ local function BuildHeader()
     name = "UnrealUIBagSell",
     texture = "Interface\\Icons\\INV_Misc_Coin_02",
     fallback = "$",
-    title = "Vendor / Delete Grays",
+    title = U.L("BAGS_VENDOR_GRAYS"),
     onClick = SellOrDeleteGreys,
-    detail = function()
-      return "Sells grey items at an open vendor; otherwise asks to delete them."
-    end,
+    detail = function() return U.L("BAGS_GREYS_HINT") end,
   })
   classicBag.StyleIconButton(frame.sell)
   frame.sell:SetPoint("LEFT", frame.bagsToggle, "RIGHT", 4, 0)
@@ -949,10 +968,11 @@ local function Build()
   -- the bag with the bag itself closed. The visible frame is its child and is
   -- stretched over it, which also keeps the drag handle (created at the
   -- anchor's frame level + 10, see core/mover.lua) above the bag's own chrome.
+  local slotGap = classicBag.SlotGap()
   anchor = CreateFrame("Frame", "UnrealUIBagAnchor", UIParent)
-  anchor:SetWidth(COLUMNS * (SLOT_SIZE + SLOT_GAP) - SLOT_GAP + PADDING * 2)
+  anchor:SetWidth(COLUMNS * (SLOT_SIZE + slotGap) - slotGap + PADDING * 2)
   anchor:SetHeight(classicBag.HeaderHeight() +
-                   4 * (SLOT_SIZE + SLOT_GAP) - SLOT_GAP + PADDING)
+                   4 * (SLOT_SIZE + slotGap) - slotGap + PADDING)
 
   frame = U.CreatePanel(anchor, { name = "UnrealUIBagFrame" })
   frame:SetAllPoints(anchor)
@@ -991,7 +1011,7 @@ local function Build()
   end)
 
   U.RegisterMover("bags.main", anchor, {
-    label = "Bags",
+    label = U.L("MOVER_LABEL_BAGS"),
     default = { point = "BOTTOMRIGHT", relativePoint = "BOTTOMRIGHT",
                 x = -20, y = 20 },
   })

@@ -42,8 +42,44 @@ local function StyleSlot(slotName)
   local slot = G("Character" .. slotName)
   if not slot then return end
 
+  -- GetInventorySlotInfo/GetInventoryItemQuality are documented by this
+  -- client but not yet runtime-verified. Keep both guarded: an unavailable
+  -- call leaves the slot on the neutral empty border instead of interrupting
+  -- the character-sheet refresh.
+  --
+  -- The table is deliberately persistent. StyleStockButton's OnLeave hook
+  -- closes over it on the first styling pass, so mutating the same table when
+  -- equipment changes makes hover restore the current rarity colour rather
+  -- than the original neutral outline.
+  local border = slot.uuiCharacterBorder
+  if not border then
+    border = { M.Unpack(M.slotBorder.empty) }
+    slot.uuiCharacterBorder = border
+  end
+
+  local color = M.slotBorder.empty
+  local getSlot = G("GetInventorySlotInfo")
+  local getQuality = G("GetInventoryItemQuality")
+  if type(getSlot) == "function" and type(getQuality) == "function" then
+    local slotOk, inventorySlot = pcall(getSlot, slotName)
+    if slotOk and tonumber(inventorySlot) then
+      local qualityOk, quality = pcall(getQuality, "player", inventorySlot)
+      quality = qualityOk and tonumber(quality) or nil
+      if quality then
+        if quality > M.qualityLimit then
+          color = U.ItemQualityColor(quality) or M.slotBorder.plain
+        else
+          color = M.slotBorder.plain
+        end
+      end
+    end
+  end
+
+  border[1], border[2], border[3], border[4] = M.Unpack(color)
+
   local icon = G("Character" .. slotName .. "IconTexture")
-  U.StyleStockButton(slot, { icon = icon })
+  U.StyleStockButton(slot, { icon = icon, border = border })
+  U.SetBorderColor(slot, M.Unpack(border))
 end
 
 local function StyleSlots()

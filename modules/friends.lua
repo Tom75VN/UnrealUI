@@ -404,7 +404,41 @@ local function PositionGuildSortArrows()
   end
 end
 
-local function StyleGuildHeaders()
+local function LayoutGuildHeaderSet(prefix, scroll)
+  if not scroll then return end
+
+  local level = G(prefix .. "3")
+  local class = G(prefix .. "4")
+  local name = G(prefix .. "1")
+  local zone = G(prefix .. "2")
+
+  if level then
+    pcall(level.SetWidth, level, 20)
+    Reposition(level, "BOTTOMLEFT", scroll, "TOPLEFT", 8, 4)
+  end
+  if class and level then
+    pcall(class.SetWidth, class, 54)
+    Reposition(class, "LEFT", level, "RIGHT", 5, 0)
+  end
+  if name and class then
+    pcall(name.SetWidth, name, 120)
+    Reposition(name, "LEFT", class, "RIGHT", 4, 0)
+  end
+  if zone and name then
+    pcall(zone.SetWidth, zone, 160)
+    Reposition(zone, "LEFT", name, "RIGHT", 4, 0)
+  end
+end
+
+local function LayoutGuildHeaders(scroll)
+  local prefixIndex
+  for prefixIndex = 1, table.getn(GUILD_HEADER_PREFIXES) do
+    LayoutGuildHeaderSet(GUILD_HEADER_PREFIXES[prefixIndex], scroll)
+  end
+  PositionGuildSortArrows()
+end
+
+local function StyleGuildHeaders(scroll)
   local prefixIndex, column
   for prefixIndex = 1, table.getn(GUILD_HEADER_PREFIXES) do
     local prefix = GUILD_HEADER_PREFIXES[prefixIndex]
@@ -420,7 +454,163 @@ local function StyleGuildHeaders()
     end
   end
 
-  PositionGuildSortArrows()
+  LayoutGuildHeaders(scroll)
+end
+
+-- The client roster template is Name / Zone / Level / Class, while the modern
+-- header treatment is Level / Class / Name / Zone. Moving only the Level
+-- header leaves it on top of Name and drags Class away from its row -- exactly
+-- the collision visible in the guild screenshot. Keep both headers and rows on
+-- one explicit chain, and reapply it after every native roster refresh.
+local function StyleGuildRows()
+  local count = N("GUILDMEMBERS_TO_DISPLAY", 13)
+  local i
+  for i = 1, count do
+    local row = G("GuildFrameButton" .. i)
+    local level = G("GuildFrameButton" .. i .. "Level")
+    local class = G("GuildFrameButton" .. i .. "Class")
+    local name = G("GuildFrameButton" .. i .. "Name")
+    local zone = G("GuildFrameButton" .. i .. "Zone")
+
+    if level and row then
+      pcall(level.SetWidth, level, 20)
+      Reposition(level, "TOPLEFT", row, "TOPLEFT", 10, -3)
+    end
+    if class and level then
+      pcall(class.SetWidth, class, 54)
+      Reposition(class, "LEFT", level, "RIGHT", 5, 0)
+    end
+    if name and class then
+      pcall(name.SetWidth, name, 120)
+      Reposition(name, "LEFT", class, "RIGHT", 4, 0)
+    end
+    if zone and name then
+      pcall(zone.SetWidth, zone, 160)
+      Reposition(zone, "LEFT", name, "RIGHT", 4, 0)
+    end
+  end
+end
+
+local function LayoutGuildMemberDetail(detail)
+  if not detail then return end
+
+  -- Dock the panel to the same top edge as the Social window instead of the
+  -- lower native anchor. All child anchors below are cleared before being set;
+  -- adding a RIGHT point to the stock LEFT point stretched Rank/Online values
+  -- across their labels and made the two strings render on top of each other.
+  Reposition(detail, "TOPLEFT", panel or frame, "TOPRIGHT", 2, 0)
+
+  local name = G("GuildMemberDetailName")
+  local levelClass = G("GuildMemberDetailLevelClass")
+  if name then
+    Reposition(name, "TOPLEFT", detail, "TOPLEFT", 20, -16)
+    SetTextFont(name, M.fontSize.large, GOLD)
+  end
+  if levelClass then
+    Reposition(levelClass, "TOPLEFT", name or detail,
+               name and "BOTTOMLEFT" or "TOPLEFT", 0, name and -2 or -36)
+    SetTextFont(levelClass, M.fontSize.small, WHITE)
+  end
+
+  local labelRows = {
+    { "ZoneLabel", -70 },
+    { "RankLabel", -95 },
+    { "OnlineLabel", -120 },
+  }
+  local i
+  for i = 1, table.getn(labelRows) do
+    local label = G("GuildMemberDetail" .. labelRows[i][1])
+    if label then
+      pcall(label.SetWidth, label, 80)
+      pcall(label.SetJustifyH, label, "LEFT")
+      Reposition(label, "TOPLEFT", detail, "TOPLEFT", 20, labelRows[i][2])
+      SetTextFont(label, M.fontSize.small, GOLD)
+    end
+  end
+
+  local valueRows = {
+    { "ZoneText", -70 },
+    { "OnlineText", -120 },
+  }
+  for i = 1, table.getn(valueRows) do
+    local value = G("GuildMemberDetail" .. valueRows[i][1])
+    if value then
+      pcall(value.SetWidth, value, 160)
+      pcall(value.SetJustifyH, value, "RIGHT")
+      Reposition(value, "TOPRIGHT", detail, "TOPRIGHT", -20, valueRows[i][2])
+      SetTextFont(value, M.fontSize.small, WHITE)
+    end
+  end
+
+  local promote = G("GuildFramePromoteButton")
+  local demote = G("GuildFrameDemoteButton")
+  if demote then Reposition(demote, "TOPRIGHT", detail, "TOPRIGHT", -20, -91) end
+  if promote and demote then
+    -- Leave the two expanded mouse targets disjoint as well as the visible
+    -- buttons, so the boundary can never dispatch to the wrong rank action.
+    Reposition(promote, "RIGHT", demote, "LEFT", -7, 0)
+  elseif promote then
+    Reposition(promote, "TOPRIGHT", detail, "TOPRIGHT", -20, -91)
+  end
+
+  local rank = G("GuildMemberDetailRankText")
+  if rank then
+    pcall(rank.SetWidth, rank, 120)
+    pcall(rank.SetJustifyH, rank, "RIGHT")
+    Reposition(rank, "RIGHT", promote or demote or detail,
+               (demote or promote) and "LEFT" or "RIGHT",
+               (demote or promote) and -6 or -20, 0)
+    SetTextFont(rank, M.fontSize.small, WHITE)
+  end
+
+  local noteLabel = G("GuildMemberNoteLabel")
+  if noteLabel then
+    Reposition(noteLabel, "TOPLEFT", detail, "TOPLEFT", 20, -148)
+    SetTextFont(noteLabel, M.fontSize.small, GOLD)
+  end
+  local note = G("GuildMemberNoteBackground")
+  if note then
+    pcall(function()
+      note:ClearAllPoints()
+      note:SetPoint("TOPLEFT", detail, "TOPLEFT", 18, -164)
+      note:SetPoint("TOPRIGHT", detail, "TOPRIGHT", -20, -164)
+      note:SetHeight(54)
+    end)
+  end
+
+  local officerLabel = G("GuildMemberOfficerNoteLabel")
+  if officerLabel then
+    Reposition(officerLabel, "TOPLEFT", detail, "TOPLEFT", 20, -221)
+    SetTextFont(officerLabel, M.fontSize.small, GOLD)
+  end
+  local officerNote = G("GuildMemberOfficerNoteBackground")
+  if officerNote then
+    pcall(function()
+      officerNote:ClearAllPoints()
+      officerNote:SetPoint("TOPLEFT", detail, "TOPLEFT", 18, -237)
+      officerNote:SetPoint("TOPRIGHT", detail, "TOPRIGHT", -20, -237)
+      officerNote:SetHeight(54)
+    end)
+  end
+
+  local remove = G("GuildMemberRemoveButton")
+  if remove then
+    pcall(function()
+      remove:ClearAllPoints()
+      remove:SetPoint("BOTTOMLEFT", detail, "BOTTOMLEFT", 12, 16)
+      remove:SetPoint("BOTTOMRIGHT", detail, "BOTTOM", -2, 16)
+      remove:SetHeight(22)
+    end)
+  end
+  local invite = G("GuildMemberGroupInviteButton")
+  if invite then
+    pcall(function()
+      invite:ClearAllPoints()
+      invite:SetPoint("BOTTOMLEFT", detail, "BOTTOM", 2, 16)
+      invite:SetPoint("BOTTOMRIGHT", detail, "BOTTOMRIGHT", -12, 16)
+      invite:SetHeight(22)
+    end)
+  end
 end
 
 local function StyleGuildTab()
@@ -431,14 +621,27 @@ local function StyleGuildTab()
   U.CreateBackdrop(scroll, { background = { 0.01, 0.01, 0.01, 0.74 } })
   U.StyleStockScrollbar(G("GuildListScrollFrameScrollBar"))
 
-  StyleGuildHeaders()
-  local i
-  Reposition(G("GuildFrameColumnHeader3"), "TOPLEFT", frame, "TOPLEFT", 20, -70)
+  StyleGuildHeaders(scroll)
+  StyleGuildRows()
 
   local toggle = G("GuildFrameGuildListToggleButton")
   if toggle then
     U.StyleStockArrowButton(toggle, "right", 16)
-    Reposition(toggle, "TOPLEFT", scroll, "BOTTOMRIGHT", -20, 20)
+    Reposition(toggle, "TOPRIGHT", scroll, "BOTTOMRIGHT", -4, 18)
+
+    -- StyleStockArrowButton deliberately centres a button's native fontstring;
+    -- this composite control also owns a long status label, so centring both it
+    -- and the glyph in 16px puts the glyph through the words. Keep the dynamic
+    -- native text, but give it a separate anchor immediately left of the arrow.
+    local toggleText
+    if toggle.GetFontString then
+      pcall(function() toggleText = toggle:GetFontString() end)
+    end
+    if not toggleText then toggleText = G("GuildFrameGuildListToggleButtonText") end
+    if toggleText then
+      Reposition(toggleText, "RIGHT", toggle, "LEFT", -5, 0)
+      SetTextFont(toggleText, M.fontSize.small, GOLD)
+    end
   end
 
   local motd = G("GuildMOTDEditButton")
@@ -450,9 +653,19 @@ local function StyleGuildTab()
   end
 
   local notesLabel = G("GuildFrameNotesLabel")
-  if notesLabel then SetTextFont(notesLabel, M.fontSize.small, DIM) end
+  if notesLabel and motd then
+    Reposition(notesLabel, "TOPLEFT", motd, "TOPLEFT", 4, -4)
+    SetTextFont(notesLabel, M.fontSize.small, DIM)
+  end
   local notesText = G("GuildFrameNotesText")
-  if notesText then SetTextFont(notesText, M.fontSize.small, WHITE) end
+  if notesText and motd then
+    pcall(function()
+      notesText:ClearAllPoints()
+      notesText:SetPoint("TOPLEFT", motd, "TOPLEFT", 4, -21)
+      notesText:SetPoint("BOTTOMRIGHT", motd, "BOTTOMRIGHT", -4, 4)
+    end)
+    SetTextFont(notesText, M.fontSize.small, WHITE)
+  end
 
   local info = U.StyleStockButton(G("GuildFrameGuildInformationButton"))
   local addMember = U.StyleStockButton(G("GuildFrameAddMemberButton"))
@@ -477,18 +690,8 @@ local function StyleGuildTab()
     U.CreateBackdrop(detail, { background = { 0.01, 0.01, 0.01, 0.82 } })
     U.StyleStockCloseButton(G("GuildMemberDetailCloseButton"), detail, -6, -6)
 
-    local fields = { "ZoneText", "RankText", "OnlineText" }
-    for i = 1, table.getn(fields) do
-      local text = G("GuildMemberDetail" .. fields[i])
-      if text then
-        pcall(text.SetPoint, text, "RIGHT", -20, 0)
-        pcall(text.SetJustifyH, text, "RIGHT")
-        SetTextFont(text, M.fontSize.small, WHITE)
-      end
-    end
-
-    U.StyleStockArrowButton(G("GuildFramePromoteButton"), "up", 12)
-    U.StyleStockArrowButton(G("GuildFrameDemoteButton"), "down", 12)
+    U.StyleStockArrowButton(G("GuildFramePromoteButton"), "up", 16)
+    U.StyleStockArrowButton(G("GuildFrameDemoteButton"), "down", 16)
 
     U.StripStockTextures(G("GuildMemberNoteBackground"))
     U.CreateBackdrop(G("GuildMemberNoteBackground"), {})
@@ -497,6 +700,10 @@ local function StyleGuildTab()
 
     U.StyleStockButton(G("GuildMemberRemoveButton"))
     U.StyleStockButton(G("GuildMemberGroupInviteButton"))
+    LayoutGuildMemberDetail(detail)
+    U.PostHookScript(detail, "OnShow", function()
+      LayoutGuildMemberDetail(detail)
+    end)
   end
 
   -- Guild info (MOTD editor) dock.
@@ -519,7 +726,9 @@ local function Reapply()
   U.StripStockTextures(frame)
   if panel then panel:Show() end
   SetTextFont(G("FriendsFrameTitleText"), M.fontSize.large, GOLD)
-  PositionGuildSortArrows()
+  LayoutGuildHeaders(G("GuildListScrollFrame"))
+  StyleGuildRows()
+  LayoutGuildMemberDetail(G("GuildMemberDetailFrame"))
   LayoutWhoFooter()
 end
 
@@ -620,7 +829,12 @@ local function BuildFrame()
   -- the native roster refresh used when sorting and switching guild-list mode.
   -- Recalculate after it changes the active header so the shown arrow remains
   -- beside the current label.
-  U.PostHookGlobal("GuildStatus_Update", PositionGuildSortArrows)
+  U.PostHookGlobal("GuildStatus_Update", function()
+    DeferOnce("friends.restyle-guild-roster", function()
+      LayoutGuildHeaders(G("GuildListScrollFrame"))
+      StyleGuildRows()
+    end)
+  end)
 
   if frame.IsShown then
     local ok, shown = pcall(frame.IsShown, frame)

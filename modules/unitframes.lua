@@ -137,14 +137,16 @@ local SPECS = {
     -- Compact primary bars.
     -- No values strip: text lives on the health/power bars themselves --
     -- level+health on the health bar, power on the power bar, by request.
-    id = "player", unit = "player", name = "Player", label = "Player",
+    id = "player", unit = "player", name = "Player",
+    labelKey = "MOVER_LABEL_PLAYER",
     width = PRIMARY_WIDTH, health = 34, power = 10, gap = 0,
     healthLabels = { left = "level", right = "healthdyn" },
     powerLabels = { right = "powerdyn" },
     default = { point = "BOTTOMRIGHT", relativePoint = "BOTTOM", x = -75, y = 125 },
   },
   {
-    id = "target", unit = "target", name = "Target", label = "Target",
+    id = "target", unit = "target", name = "Target",
+    labelKey = "MOVER_LABEL_TARGET",
     width = PRIMARY_WIDTH, health = 34, power = 10, gap = 0,
     healthTexture = true,
     healthLabels = { left = "healthdyn", right = "unitrev" },
@@ -154,7 +156,7 @@ local SPECS = {
   {
     -- width matches target's, by request -- see PRIMARY_WIDTH above.
     id = "targettarget", unit = "targettarget", name = "TargetTarget",
-    label = "Target of target",
+    labelKey = "MOVER_LABEL_TARGET_TARGET",
     -- One health bar only: its fixed-colour name is centred above the fill,
     -- on a raised child layer within the target-of-target frame.
     -- 18px is half the previous 35px height, rounded to an integer pixel.
@@ -168,7 +170,8 @@ local SPECS = {
     -- stacked to its right. Only built and shown while a pet is actually out
     -- -- RefreshFrame's existing UnitExists gate already hides any frame with
     -- no unit, so this needs no pet-specific visibility logic of its own.
-    id = "pet", unit = "pet", name = "Pet", label = "Pet",
+    id = "pet", unit = "pet", name = "Pet",
+    labelKey = "MOVER_LABEL_PET",
     width = 120, health = 20, power = 8, gap = 0,
     healthLabels = { left = "unit", right = "healthdyn" },
     powerLabels = { right = "powerdyn" },
@@ -178,16 +181,24 @@ local SPECS = {
 }
 
 local PARTY_COUNT = 4
--- Top-of-frame to top-of-frame, so the visible gap between two members is
--- this minus a member's own height (36 health + 8 power + 3 visible border =
--- 47 at the default 1px border). Keep the requested 5px visible gap, hence 52.
-local PARTY_SPACING = 52
+-- Visible gap between one member's block and the next. A member's own height
+-- is read from FrameHeight rather than written down here, so the gap stays 5
+-- at any border size and stays correct when an optional pet row is stacked
+-- under a member.
+local PARTY_GAP = 5
+-- Shared by a member frame and the pet row that hangs off it, so the two can
+-- never be built at different widths.
+local PARTY_WIDTH = 164
 
 -- The party frames are laid out inside one anchor frame and moved as a block:
 -- a party is a single unit of layout, and dragging four frames into alignment
 -- by hand is exactly what the grid exists to avoid. Only the anchor gets a
--- mover; the members keep fixed offsets inside it.
+-- mover; the members keep offsets inside it.
 local PARTY_ANCHOR = "party"
+
+-- Defined next to BuildPartyAnchor, but the refresh scheduler above it drives
+-- the reflow, so the name has to exist before that function is written.
+local LayoutParty
 
 do
   local i
@@ -196,17 +207,38 @@ do
       id = "party" .. i,
       unit = "party" .. i,
       name = "Party" .. i,
-      label = "Party " .. i,
+      labelKey = "MOVER_LABEL_PARTY_N", labelArg = i,
       -- Same treatment as player/target/pet: no separate values strip -- the
       -- text lives on the bars themselves, name+health on the health bar and
       -- power on the power bar. health doubled from 18 to 36, by request.
-      width = 164, health = 36, power = 8, gap = 0,
+      width = PARTY_WIDTH, health = 36, power = 8, gap = 0,
       healthTexture = true,
       healthLabels = { left = "unit", right = "healthdyn" },
       powerLabels = { right = "powerdyn" },
       anchorTo = PARTY_ANCHOR,
+      -- No fixed offset: LayoutParty owns every position inside the block,
+      -- because a member's place depends on whether the members above it are
+      -- currently showing a pet row.
       anchorPoint = "TOPLEFT", anchorRelativePoint = "TOPLEFT",
-      anchorOffsetX = 0, anchorOffsetY = -((i - 1) * PARTY_SPACING),
+    })
+
+    -- The member's pet, off by default and toggled from the Unit Frames
+    -- settings page. Health only and a fraction of the member's height, so it
+    -- reads as belonging to the member above it rather than as another party
+    -- slot. partypet1-4 are documented unit IDs (documentation.json /
+    -- reference:Conventions:Unit IDs, DOCUMENTED_NOT_RUNTIME_VERIFIED); the
+    -- frame simply stays hidden if this client does not resolve them, the
+    -- same as any other unit that does not exist.
+    table.insert(SPECS, {
+      id = "partypet" .. i,
+      unit = "partypet" .. i,
+      name = "PartyPet" .. i,
+      width = PARTY_WIDTH, health = 14, gap = 0,
+      healthTexture = true,
+      healthLabels = { left = "unit", right = "healthdyn" },
+      anchorTo = PARTY_ANCHOR,
+      anchorPoint = "TOPLEFT", anchorRelativePoint = "TOPLEFT",
+      partyPet = true, partyIndex = i,
     })
   end
 end
@@ -908,8 +940,6 @@ end
 -- solution, the call is guarded on existing at all; a client without it drops
 -- the portrait rather than guessing at an alternative.
 -- ---------------------------------------------------------------------------
-local PORTRAIT_GAP = 6
-
 local function BuildPortraitBox(parent, size, border)
   local box = CreateFrame("Frame", nil, parent)
   box:SetWidth(size)
@@ -1139,14 +1169,17 @@ local function BuildFrame(spec, parent)
   frame:SetFrameStrata("LOW")
 
   -- The portrait sits to the left of the bar stack on its own square, sized to
-  -- match the stack's full height, and widens the frame by that square plus a
-  -- fixed gap. hasPortrait can still be false with spec.portrait set: per
-  -- knowledge.json / unitframes.portrait_model_crash, a client without
-  -- SetPortraitTexture drops the portrait rather than guessing at a
-  -- replacement, and the frame is simply bars-only in that case.
+  -- match the stack's full height, and widens the frame by that square less the
+  -- one border unit the two share. That is the same overlap the stacked rows
+  -- use (see FrameHeight): the portrait has to read as part of the frame, and
+  -- butting the boxes edge to edge instead would draw its right outline and the
+  -- bars' left outline as a 2-unit band. hasPortrait can still be false with
+  -- spec.portrait set: per knowledge.json / unitframes.portrait_model_crash, a
+  -- client without SetPortraitTexture drops the portrait rather than guessing
+  -- at a replacement, and the frame is simply bars-only in that case.
   local portraitSize = FrameHeight(spec)
   local hasPortrait = spec.portrait and ResolveApiFn("SetPortraitTexture") ~= nil
-  local barOffsetX = hasPortrait and (portraitSize + PORTRAIT_GAP) or 0
+  local barOffsetX = hasPortrait and (portraitSize - border) or 0
 
   frame:SetWidth(FrameWidth(spec) + barOffsetX)
   frame:SetHeight(FrameHeight(spec))
@@ -1359,10 +1392,10 @@ end
 -- config is account-wide, so a single "power bar colour" would have meant
 -- recolouring a priest's mana also recoloured a rogue's energy.
 local POWER_TYPES = {
-  { type = 0, key = "powerMana",   label = "Mana" },
-  { type = 1, key = "powerRage",   label = "Rage" },
-  { type = 2, key = "powerFocus",  label = "Focus" },
-  { type = 3, key = "powerEnergy", label = "Energy" },
+  { type = 0, key = "powerMana",   labelKey = "UF_POWER_MANA" },
+  { type = 1, key = "powerRage",   labelKey = "UF_POWER_RAGE" },
+  { type = 2, key = "powerFocus",  labelKey = "UF_POWER_FOCUS" },
+  { type = 3, key = "powerEnergy", labelKey = "UF_POWER_ENERGY" },
 }
 
 local POWER_KEY_BY_TYPE = {}
@@ -1628,6 +1661,16 @@ function U.UnitFrameStats()
 end
 
 local function RefreshFrame(frame, mode)
+  -- A frame the configuration has switched off stays hidden whatever its unit
+  -- is doing, and is not worth an API read. This is checked ahead of the
+  -- unlocked-shell branch below on purpose: edit mode must not put a handle-
+  -- less shell on screen for a frame the user has turned off.
+  if frame.uuiDisabled then
+    frame.data.initialised = false
+    SetFrameShown(frame, false)
+    return false
+  end
+
   statFrameRefreshes = statFrameRefreshes + 1
   if mode == "full" then statFullRefreshes = statFullRefreshes + 1 end
 
@@ -1877,7 +1920,7 @@ local function BuildDruidManaBar()
   druidBar.uuiShown = false
 
   U.RegisterMover("unitframes.druidmana", druidBar, {
-    label = "Druid Mana",
+    label = U.L("MOVER_LABEL_DRUID_MANA"),
     default = { point = "BOTTOMRIGHT", relativePoint = "BOTTOM", x = -75,
                 y = 125 - (DRUID_BAR_HEIGHT + 2 * border) - 2 },
   })
@@ -2012,6 +2055,12 @@ local function RefreshScheduledUnits()
   -- rides the same tick the frames do.
   RefreshDruidMana()
 
+  -- Reflows the party block when a member's pet appears or disappears, and
+  -- when edit mode opens or closes. Nothing here has an event either, and the
+  -- call is a cheap visibility comparison that returns before touching a
+  -- single SetPoint unless the block's shape actually changed.
+  LayoutParty()
+
   if refreshCycle >= 5 then
     refreshCycle = 0
     local i
@@ -2033,6 +2082,19 @@ local function RefreshScheduledUnits()
       RefreshFrame(frames[id], "full")
     else
       RefreshFrame(frames[id], "vitals")
+    end
+
+    -- The member's pet rides the same cadence for the same reason the
+    -- player's own pet does below: no pet unit token has an observed event on
+    -- this client. With the option off the frame is flagged disabled and
+    -- RefreshFrame returns before reading anything.
+    local petId = "partypet" .. i
+    local petMode = dirtyUnits[petId]
+    dirtyUnits[petId] = nil
+    if petMode == "full" then
+      RefreshFrame(frames[petId], "full")
+    else
+      RefreshFrame(frames[petId], "vitals")
     end
   end
 
@@ -2246,25 +2308,20 @@ end
 -- ---------------------------------------------------------------------------
 -- The party block. An invisible frame sized to hold every member: it carries
 -- the mover and the members ride along, so the four frames can never drift out
--- of alignment with each other.
+-- of alignment with each other. Its size is finished by LayoutParty, which is
+-- what keeps the mover handle over the block's real extent once the optional
+-- pet rows are in play.
 local function BuildPartyAnchor()
-  local spec = nil
-  local i
-  for i = 1, table.getn(SPECS) do
-    if SPECS[i].id == "party1" then spec = SPECS[i] end
-  end
-  if not spec then return nil end
-
   local anchor = CreateFrame("Frame", "UnrealUIPartyAnchor", UIParent)
   -- Keep the party block on the same HUD layer as the other unit frames.
   -- SetFrameStrata propagates to child frames on this client, so the anchor
   -- must own LOW before the party members are parented to it.
   anchor:SetFrameStrata("LOW")
-  anchor:SetWidth(FrameWidth(spec))
-  anchor:SetHeight(((PARTY_COUNT - 1) * PARTY_SPACING) + FrameHeight(spec))
+  anchor:SetWidth(PARTY_WIDTH + 2 * U.BorderSize())
+  anchor:SetHeight(1)
 
   U.RegisterMover("unitframes.party", anchor, {
-    label = "Party",
+    label = U.L("MOVER_LABEL_PARTY"),
     default = { point = "TOPLEFT", relativePoint = "TOPLEFT", x = 5, y = -5 },
   })
 
@@ -2275,18 +2332,155 @@ local function BuildPartyAnchor()
 end
 
 -- ---------------------------------------------------------------------------
+-- Party block layout
+--
+-- Everything inside the party anchor is positioned here rather than from a
+-- fixed per-member offset in SPECS, because the optional pet row makes a
+-- member's place depend on the members above it. A member with no pet costs
+-- nothing: the row is skipped and the rest of the block closes up.
+--
+-- The party anchor is resized to whatever the block actually occupies, so the
+-- mover handle and the snap edges the grid uses stay over the visible frames
+-- instead of over a rectangle sized for a layout that is not on screen.
+-- ---------------------------------------------------------------------------
+local PARTY_DEFAULTS = { partyPets = false }
+
+-- Same "unitframes" store the colour settings use -- U.ModuleConfig only fills
+-- in the keys of the defaults table it is handed, so the two views never
+-- overwrite each other. Read partyPets through this one.
+local function PartyConfig()
+  return U.ModuleConfig("unitframes", PARTY_DEFAULTS)
+end
+
+-- Whether member i's pet row occupies space this pass. Edit mode shows every
+-- enabled row whether or not a pet is out, so the block that is dragged into
+-- place is the tallest one it can become rather than whatever the current
+-- roster happens to produce.
+local function PartyPetShown(index)
+  if not PartyConfig().partyPets then return false end
+  -- The Classic theme hands the party over to the client's own frames, which
+  -- draw their own nested pet frames. Ours would be invisible anchors with
+  -- nothing to anchor, so the option simply does not apply there.
+  if classicNative.active then return false end
+  if U.IsUnlocked() then return true end
+  return ApiTruth("UnitExists", "partypet" .. index) and true or false
+end
+
+-- Recomputed every scheduler tick, so it has to be cheap when nothing moved:
+-- the pass builds a short shape string and returns before touching a frame
+-- unless that string changed.
+local partyLayoutShape = nil
+
+LayoutParty = function(force)
+  local anchor = frames[PARTY_ANCHOR]
+  if not anchor then return end
+
+  local border = U.BorderSize()
+  local shown, shape, i = {}, border .. ":", nil
+  for i = 1, PARTY_COUNT do
+    shown[i] = PartyPetShown(i)
+    shape = shape .. (shown[i] and "1" or "0")
+  end
+  if not force and shape == partyLayoutShape then return end
+  partyLayoutShape = shape
+
+  local offset, width = 0, 0
+  for i = 1, PARTY_COUNT do
+    local member = frames["party" .. i]
+    local pet = frames["partypet" .. i]
+
+    if member then
+      if i > 1 then offset = offset + PARTY_GAP end
+      member:ClearAllPoints()
+      member:SetPoint("TOPLEFT", anchor, "TOPLEFT", 0, -offset)
+      offset = offset + FrameHeight(member.spec)
+      if FrameWidth(member.spec) > width then width = FrameWidth(member.spec) end
+    end
+
+    if pet then
+      pet.uuiDisabled = not shown[i]
+      if shown[i] then
+        -- Overlapped by one border unit, the same trick the stacked bars
+        -- inside a single frame use: without it the member's bottom outline
+        -- and the pet's top outline draw as one 2-unit band.
+        pet:ClearAllPoints()
+        pet:SetPoint("TOPLEFT", anchor, "TOPLEFT", 0, -(offset - border))
+        offset = offset + FrameHeight(pet.spec) - border
+        if FrameWidth(pet.spec) > width then width = FrameWidth(pet.spec) end
+      else
+        SetFrameShown(pet, false)
+      end
+    end
+  end
+
+  anchor:SetWidth(width > 0 and width or (PARTY_WIDTH + 2 * U.BorderSize()))
+  anchor:SetHeight(offset > 0 and offset or 1)
+end
+
+-- Re-lays the block and refreshes the pet rows immediately, so ticking the
+-- option does not leave the user watching for the next scheduler tick.
+local function ApplyPartyPets()
+  LayoutParty(true)
+
+  local i
+  for i = 1, PARTY_COUNT do
+    local pet = frames["partypet" .. i]
+    if pet then RefreshFrame(pet, "full") end
+  end
+end
+
+-- ---------------------------------------------------------------------------
 -- Settings
 -- ---------------------------------------------------------------------------
 -- Used by the Unit Frames settings page, which is registered by auras.lua.
--- Keep the controls here because this module owns the colour configuration and
--- the live frame refresh.
-local function BuildUnitFrameColorSettings(parent, y)
+-- Keep the controls here because this module owns the party layout, the colour
+-- configuration and the live frame refresh.
+--
+-- The party section is the first block on that page, so its height is what
+-- auras.lua shifts its own controls down by. One checkbox under one heading:
+-- 18 for the heading, 12 clear of it and 14 for the box.
+local PARTY_SETTINGS_HEIGHT = 44
+
+local function BuildUnitFramePartySettings(parent, y, width)
   y = y or -4
   local widgets = {}
 
   local header = U.CreateSectionHeader(parent, {
-    text = "Unit Frame Colors",
-    width = 496,
+    text = U.L("UF_PARTY_HEADER"),
+    width = width or 496,
+    y = y,
+  })
+  table.insert(widgets, header)
+
+  local petToggle = U.CreateCheckbox(parent, {
+    name = "UnrealUISettingsPartyPets",
+    text = U.L("UF_PARTY_PETS"),
+    value = PartyConfig().partyPets,
+    onChange = function(value)
+      PartyConfig().partyPets = value and true or false
+      ApplyPartyPets()
+    end,
+  })
+  petToggle.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, y - 30)
+  table.insert(widgets, petToggle)
+
+  local function Refresh()
+    petToggle.SetValue(PartyConfig().partyPets)
+  end
+
+  return widgets, Refresh
+end
+
+-- width is the page's own section width, so every heading on the page draws its
+-- rules to the same edges. It falls back to the historical 496 for a caller
+-- that does not pass one.
+local function BuildUnitFrameColorSettings(parent, y, width)
+  y = y or -4
+  local widgets = {}
+
+  local header = U.CreateSectionHeader(parent, {
+    text = U.L("UF_COLORS_HEADER"),
+    width = width or 496,
     y = y,
   })
   table.insert(widgets, header)
@@ -2299,7 +2493,7 @@ local function BuildUnitFrameColorSettings(parent, y)
 
   local customToggle = U.CreateCheckbox(parent, {
     name = "UnrealUISettingsCustomColors",
-    text = "Use custom bar colors",
+    text = U.L("UF_CUSTOM_BAR_COLORS"),
     value = ColorConfig().customColors,
     onChange = function(value)
       ColorConfig().customColors = value
@@ -2311,7 +2505,7 @@ local function BuildUnitFrameColorSettings(parent, y)
 
   local healthPicker = U.CreateColorPicker(parent, {
     name = "UnrealUISettingsHealthColor",
-    text = "Health bar color",
+    text = U.L("UF_HEALTH_BAR_COLOR"),
     value = ColorValue("healthColor"),
     hasOpacity = false,
     onChange = function(color)
@@ -2328,7 +2522,7 @@ local function BuildUnitFrameColorSettings(parent, y)
 
   local classHealthToggle = U.CreateCheckbox(parent, {
     name = "UnrealUISettingsClassHealthColors",
-    text = "Use class colors for player health bars",
+    text = U.L("UF_CLASS_COLORS"),
     value = ColorConfig().classHealthColors,
     onChange = function(value)
       ColorConfig().classHealthColors = value
@@ -2349,7 +2543,7 @@ local function BuildUnitFrameColorSettings(parent, y)
   })
   if powerHeader then
     powerHeader:SetPoint("TOPLEFT", parent, "TOPLEFT", 0, y - 82)
-    powerHeader:SetText("Power bar colors")
+    powerHeader:SetText(U.L("UF_POWER_BAR_COLORS"))
     table.insert(widgets, powerHeader)
   end
 
@@ -2363,8 +2557,8 @@ local function BuildUnitFrameColorSettings(parent, y)
   for i = 1, table.getn(POWER_TYPES) do
     local entry = POWER_TYPES[i]
     local picker = U.CreateColorPicker(parent, {
-      name = "UnrealUISettingsPowerColor" .. entry.label,
-      text = entry.label,
+      name = "UnrealUISettingsPowerColor" .. entry.key,
+      text = U.L(entry.labelKey),
       value = ColorValue(entry.key),
       hasOpacity = false,
       textWidth = COLUMN_WIDTH - 28,
@@ -2398,6 +2592,10 @@ local function BuildUnitFrameColorSettings(parent, y)
 end
 
 U.BuildUnitFrameColorSettings = BuildUnitFrameColorSettings
+U.BuildUnitFramePartySettings = BuildUnitFramePartySettings
+-- The vertical space BuildUnitFramePartySettings occupies, so the page that
+-- stacks the other sections under it never has to restate the number.
+U.UnitFramePartySettingsHeight = PARTY_SETTINGS_HEIGHT
 
 function UF:OnEnable()
   if table.getn(frameOrder) > 0 then return end
@@ -2427,7 +2625,7 @@ function UF:OnEnable()
                      spec.anchorOffsetX or 0, spec.anchorOffsetY or 0)
     else
       U.RegisterMover("unitframes." .. spec.id, frame, {
-        label = spec.label,
+        label = U.L(spec.labelKey, spec.labelArg),
         default = spec.default,
       })
     end
@@ -2443,6 +2641,10 @@ function UF:OnEnable()
     classicNative.SuppressStockAuras()
     classicNative.BindAll()
   end
+
+  -- After BindAll, so PartyPetShown sees the final classicNative.active state
+  -- and the pet rows stay off in the Classic theme.
+  LayoutParty(true)
 
   RegisterEvents()
 

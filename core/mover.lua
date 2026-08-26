@@ -21,6 +21,13 @@ local activeMover
 local grid, editPanel, editKeys
 local IsEntryVisible
 
+-- Frames that are drag-placed outside this system still store their position
+-- through U.SavePosition, so /uui reset has to be able to put them back. They
+-- register a callback rather than a mover entry because their default anchor
+-- is not UIParent-relative and cannot be expressed as a mover default -- the
+-- minimap settings button sits beside Minimap, not at a screen coordinate.
+local resetHooks = {}
+
 -- Edit-mode grid. Sized in UIParent units, which is the only space layout may
 -- be driven from (frames.json context: GetScreenWidth and UIParent:GetWidth are
 -- not the same unit space on this client).
@@ -476,7 +483,7 @@ local function CreateEditPanel()
   })
   if title then
     title:SetPoint("TOP", editPanel, "TOP", 0, -12)
-    title:SetText("Edit UI")
+    title:SetText(U.L("MOVER_TITLE"))
   end
   editPanel.title = title
 
@@ -487,7 +494,7 @@ local function CreateEditPanel()
   })
   if hint then
     hint:SetPoint("TOP", editPanel, "TOP", 0, -34)
-    hint:SetText("|cfff5ae0aShift + drag|r: free movement")
+    hint:SetText(U.L("MOVER_HINT_FREE"))
   end
   editPanel.hint = hint
 
@@ -498,7 +505,7 @@ local function CreateEditPanel()
   })
   if hint2 then
     hint2:SetPoint("TOP", editPanel, "TOP", 0, -50)
-    hint2:SetText("|cfff5ae0aNear another element|r: magnet")
+    hint2:SetText(U.L("MOVER_HINT_MAGNET"))
   end
   editPanel.hint2 = hint2
 
@@ -510,13 +517,13 @@ local function CreateEditPanel()
   })
   if hint3 then
     hint3:SetPoint("TOP", editPanel, "TOP", 0, -67)
-    hint3:SetText("|cfff5ae0aClick a frame|r: keyboard arrows move 1 px")
+    hint3:SetText(U.L("MOVER_HINT_ARROWS"))
   end
   editPanel.hint3 = hint3
 
   editPanel.save = U.CreateButton(editPanel, {
     name = "UnrealUIEditSave",
-    text = "Save and exit",
+    text = U.L("MOVER_SAVE_EXIT"),
     width = 140,
     height = 24,
     onClick = function() U.LockUI() end,
@@ -525,7 +532,7 @@ local function CreateEditPanel()
 
   editPanel.reset = U.CreateButton(editPanel, {
     name = "UnrealUIEditReset",
-    text = "Reset",
+    text = U.L("MOVER_RESET"),
     width = 68,
     height = 24,
     onClick = function() U.ResetPositions() end,
@@ -556,7 +563,7 @@ local function NudgeActiveMover(x, y)
     local point, relative, relativePoint, offsetX, offsetY =
       U.GetFramePoint(entry.frame, 1)
     if not point or relative ~= UIParent then
-      U.Print("Drag " .. entry.label .. " once before nudging it.")
+      U.Print(U.L("MOVER_DRAG_FIRST", entry.label))
       return false
     end
     position = { point = point, relativePoint = relativePoint,
@@ -701,8 +708,7 @@ function U.UnlockUI()
     ShowHandle(movers[moverOrder[i]])
   end
 
-  U.Print("Edit mode. Drag, snap, or nudge with arrow keys. " ..
-          "|cffffff00Save and exit|r when done.")
+  U.Print(U.L("MOVER_ENTERED"))
 end
 
 function U.LockUI()
@@ -716,11 +722,23 @@ function U.LockUI()
     HideHandle(movers[moverOrder[i]])
   end
 
-  U.Print("Layout saved. Edit mode closed.")
+  U.Print(U.L("MOVER_SAVED"))
 end
 
 function U.ToggleUI()
   if unlocked then U.LockUI() else U.UnlockUI() end
+end
+
+-- Called after /uui reset has cleared the position store, so a callback can
+-- re-anchor its frame from scratch. Return true when a frame was restored, so
+-- it is counted in the same total the movers are.
+function U.OnPositionReset(callback)
+  if type(callback) ~= "function" then
+    U.Error("OnPositionReset requires a function")
+    return false
+  end
+  table.insert(resetHooks, callback)
+  return true
 end
 
 -- Drops every saved position and puts each registered frame back on its
@@ -734,7 +752,12 @@ function U.ResetPositions()
     if ApplyStoredPosition(entry) then restored = restored + 1 end
   end
 
-  U.Print("Reset " .. restored .. " frame position(s) to defaults.")
+  for i = 1, table.getn(resetHooks) do
+    local ok, handled = pcall(resetHooks[i])
+    if ok and handled then restored = restored + 1 end
+  end
+
+  U.Print(U.LN("MOVER_RESET", restored))
   return restored
 end
 

@@ -243,7 +243,7 @@ local function CreateBar()
   for i = 1, MAX_SLOTS do buttons[i] = CreateButton(i) end
 
   U.RegisterMover("stancebar", frame, {
-    label = "Stance Bar",
+    label = U.L("MOVER_LABEL_STANCE_BAR"),
     default = { point = "BOTTOM", relativePoint = "BOTTOM", x = -120, y = 64 },
   })
 end

@@ -1,21 +1,18 @@
-## UnrealUI 0.2.0
+## UnrealUI 0.2.1
 
-- UI Edit improvement: magnet elements together and move them pixel by pixel for better grip.
-- Added an option to select the theme style: Modern, Classic WoW, or Modern WoW.
-- Added Classic WoW theme style. (still early and need test)
-- Improved Party Frame buff/debuff display.
-- Added item comparison tooltips on mouseover.
-- Improved Unit Frame design.
-- Added an option to set the unit frame color based on class.
-- Added profile management to keep UI settings separate per character on the same account, with profiles that can be applied to any character. (need a test)
-- Party Frame colors are now based on class.
-- Highlighting an extra bag now also highlights its corresponding slot.
-- Fixed quest reward cells sometimes overlapping.
-- Food and drink no longer trigger the global cooldown.
-- Debuffs shown below the Target Bar no longer overlap Target of Target.
-- Fixed incorrect grey item counts; items without a valid count no longer show a number, including in chat.
-- Opening or closing an additional bag now also opens or closes the main player bag. Also fixed for the bank.
-- Bandages, potions, and other stackable items now show their quantity on the Action Bar, including items in the bank. (need a test)
-- Assigning "-" now shows the panel call "6" on Russian keyboards.
-- Improved keybind mapping for AZERTY and QWERTY keyboards.
-- Fixed the sort arrow overlapping the Guild panel. (need a test)
+- Zone levels are now shown on the map.
+- Addon now available in EN / CN / RU / FR.
+- Fixed action bar highlight for the Classic WoW theme.
+- Show item prices in tooltips.
+- Added an option to show the pet frame in the party frame.
+- Fixed overlap in the Guild interface. (need a test)
+- Setting icon is now movable.
+- Fixed changing items in the unified bank sometimes causing an error when moving items between bags. (need a test)
+- Added map coordinates based on your cursor position.
+- Fixed the mail interface calling action bar keybinds.
+- Added item rarity-colored borders to items in the character panel: green / blue / purple etc. (need a test)
+- Improved bag windows for the Classic WoW theme.
+- Added Classic slot borders to bags in the Classic WoW theme.
+- Fixed Curse of Agony not showing on the target. (need a test)
+- Added Quick Binding and an UnrealUI button to the main menu for the Classic WoW theme.
+- Fixed Rend and Hamstring not showing in the Classic theme. (need a test)

@@ -25,10 +25,10 @@ local COLUMN_X = 258
 local SLIDER_WIDTH = 200
 
 local SLIDERS = {
-  { key = "Buttons", text = "Buttons",         column = 0, row = 0 },
-  { key = "PerRow",  text = "Buttons Per Row", column = 1, row = 0 },
-  { key = "Size",    text = "Button Size",     column = 0, row = 1 },
-  { key = "Spacing", text = "Button Spacing",  column = 1, row = 1 },
+  { key = "Buttons", textKey = "ABC_BUTTONS",         column = 0, row = 0 },
+  { key = "PerRow",  textKey = "ABC_BUTTONS_PER_ROW", column = 1, row = 0 },
+  { key = "Size",    textKey = "ABC_BUTTON_SIZE",     column = 0, row = 1 },
+  { key = "Spacing", textKey = "ABC_BUTTON_SPACING",  column = 1, row = 1 },
 }
 
 local ROW_Y = { -104, -180 }
@@ -41,7 +41,7 @@ local function BuildBarPage(parent, bar)
   local controls = {}
 
   local header = U.CreateSectionHeader(parent, {
-    text = "Bar " .. bar,
+    text = U.L("ABC_BAR_N", bar),
     width = PAGE_WIDTH,
     y = -4,
   })
@@ -49,7 +49,7 @@ local function BuildBarPage(parent, bar)
 
   local enable = U.CreateCheckbox(parent, {
     name = "UnrealUIActionBarConfigEnable" .. bar,
-    text = "Enable",
+    text = U.L("COMMON_ENABLE"),
     value = U.GetActionBarSetting(bar, "Enabled"),
     onChange = function(value)
       U.SetActionBarSetting(bar, "Enabled", value)
@@ -60,7 +60,7 @@ local function BuildBarPage(parent, bar)
 
   local hideBackground = U.CreateCheckbox(parent, {
     name = "UnrealUIActionBarConfigHideBackground" .. bar,
-    text = "Hide Slot Background",
+    text = U.L("ABC_HIDE_SLOT_BACKGROUND"),
     value = U.GetActionBarSetting(bar, "HideBackground"),
     onChange = function(value)
       U.SetActionBarSetting(bar, "HideBackground", value)
@@ -78,12 +78,11 @@ local function BuildBarPage(parent, bar)
   if hint then
     U.AnchorSettingsDescription(hint, enable.box)
     if bar == 1 then
-      hint:SetText("Bar 1 follows the action page and the stock bar keybinds.")
+      hint:SetText(U.L("ABC_HINT_BAR1"))
     elseif bar >= 2 and bar <= 5 then
-      hint:SetText("Uses the stock multi-bar keybinds for these slots.")
+      hint:SetText(U.L("ABC_HINT_MULTIBAR"))
     else
-      hint:SetText("Page-only bar: this client has no keybind command for it, " ..
-                   "so its slots are mouse-only.")
+      hint:SetText(U.L("ABC_HINT_PAGE_ONLY"))
     end
     table.insert(widgets, hint)
   end
@@ -95,7 +94,7 @@ local function BuildBarPage(parent, bar)
 
     local slider = U.CreateSlider(parent, {
       name = "UnrealUIActionBarConfig" .. spec.key .. bar,
-      text = spec.text,
+      text = U.L(spec.textKey),
       width = SLIDER_WIDTH,
       min = min,
       max = max,
@@ -132,7 +131,7 @@ local function BuildReservedBarPage(parent, bar, reason)
   local widgets = {}
 
   local header = U.CreateSectionHeader(parent, {
-    text = "Bar " .. bar,
+    text = U.L("ABC_BAR_N", bar),
     width = PAGE_WIDTH,
     y = -4,
   })
@@ -147,7 +146,7 @@ local function BuildReservedBarPage(parent, bar, reason)
   })
   if status then
     status:SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -38)
-    status:SetText("Reserved for " .. reason)
+    status:SetText(U.L("ABC_RESERVED_FOR", reason))
     table.insert(widgets, status)
   end
 
@@ -159,11 +158,7 @@ local function BuildReservedBarPage(parent, bar, reason)
   })
   if explanation then
     U.AnchorSettingsDescription(explanation, status)
-    explanation:SetText(
-      "This action page is used automatically by Bar 1 while " .. reason ..
-      " is active. Showing it as another physical bar would expose the same " ..
-      "action slots twice, so its layout controls are locked on this character."
-    )
+    explanation:SetText(U.L("ABC_RESERVED_EXPLANATION", reason))
     table.insert(widgets, explanation)
   end
 
@@ -175,10 +170,7 @@ local function BuildReservedBarPage(parent, bar, reason)
   })
   if saved then
     U.AnchorSettingsDescription(saved, explanation)
-    saved:SetText(
-      "Account-wide settings for this page are preserved. They remain " ..
-      "available on characters whose class does not reserve it."
-    )
+    saved:SetText(U.L("ABC_RESERVED_SAVED"))
     table.insert(widgets, saved)
   end
 
@@ -193,11 +185,11 @@ end
 -- option is listed here that unrealUI does not actually implement.
 -- ---------------------------------------------------------------------------
 local GLOBALS = {
-  { key = "showKeybind",  text = "Show keybinds" },
-  { key = "showMacro",    text = "Show macro names" },
-  { key = "showCount",    text = "Show item counts" },
-  { key = "showCooldown", text = "Show cooldown timers" },
-  { key = "showGCD",      text = "Show global cooldown wipe" },
+  { key = "showKeybind",  textKey = "ABC_SHOW_KEYBIND" },
+  { key = "showMacro",    textKey = "ABC_SHOW_MACRO" },
+  { key = "showCount",    textKey = "ABC_SHOW_COUNT" },
+  { key = "showCooldown", textKey = "ABC_SHOW_COOLDOWN" },
+  { key = "showGCD",      textKey = "ABC_SHOW_GCD" },
 }
 
 local function BuildGeneralPage(parent)
@@ -205,7 +197,7 @@ local function BuildGeneralPage(parent)
   local controls = {}
 
   local header = U.CreateSectionHeader(parent, {
-    text = "General Options",
+    text = U.L("ABC_GENERAL"),
     width = PAGE_WIDTH,
     y = -4,
   })
@@ -217,7 +209,7 @@ local function BuildGeneralPage(parent)
 
     local check = U.CreateCheckbox(parent, {
       name = "UnrealUIActionBarConfigGlobal" .. spec.key,
-      text = spec.text,
+      text = U.L(spec.textKey),
       value = U.GetActionBarGlobal(spec.key),
       onChange = function(value)
         U.SetActionBarGlobal(spec.key, value)
@@ -237,8 +229,7 @@ local function BuildGeneralPage(parent)
   })
   if hint then
     U.AnchorSettingsDescription(hint, controls[GLOBALS[table.getn(GLOBALS)].key].box)
-    hint:SetText(tostring(U.ActionBarCount()) .. " independent bars are available. " ..
-                 "Pages used by this class's forms are shown only on Bar 1.")
+    hint:SetText(U.L("ABC_GENERAL_HINT", U.ActionBarCount()))
     table.insert(widgets, hint)
   end
 
@@ -248,14 +239,14 @@ local function BuildGeneralPage(parent)
 
   local quickbind = U.CreateButton(parent, {
     name = "UnrealUIActionBarConfigQuickBind",
-    text = "Quick Binding",
+    text = U.L("SETTINGS_QUICKBIND"),
     width = 220,
     height = 26,
     onClick = function()
       if type(U.OpenQuickBind) == "function" then
         U.OpenQuickBind()
       else
-        U.Error("quick binding is not available in this build")
+        U.Error(U.L("QUICKBIND_UNAVAILABLE"))
       end
     end,
   })
@@ -270,10 +261,7 @@ local function BuildGeneralPage(parent)
   })
   if bindHint then
     U.AnchorSettingsDescription(bindHint, quickbind)
-    bindHint:SetText("Hover a slot and press a key to bind it. Escape over a " ..
-                     "slot clears it. Bars 1-5 are bindable; bars 6-10 have no " ..
-                     "key command in this client, so they are shown but cannot " ..
-                     "take one.")
+    bindHint:SetText(U.L("ABC_BIND_HINT"))
     table.insert(widgets, bindHint)
   end
 
@@ -299,9 +287,9 @@ function ABC:OnInit()
     return
   end
 
-  U.RegisterSettingsGroup(GROUP, "ActionBars")
+  U.RegisterSettingsGroup(GROUP, U.L("ABC_GROUP"))
 
-  U.RegisterSettingsTab(GROUP .. ".general", "General Options", BuildGeneralPage,
+  U.RegisterSettingsTab(GROUP .. ".general", U.L("ABC_GENERAL"), BuildGeneralPage,
                         { parent = GROUP })
 
   local total = type(U.ActionBarTotal) == "function" and U.ActionBarTotal() or
@@ -312,15 +300,14 @@ function ABC:OnInit()
     local reservation = type(U.ActionBarReservation) == "function" and
                         U.ActionBarReservation(bar) or nil
     if reservation then
-      local tooltip = "Reserved for " .. reservation ..
-                      ". Bar 1 uses this page automatically."
-      U.RegisterSettingsTab(GROUP .. ".bar" .. bar, "Bar " .. bar,
+      local tooltip = U.L("ABC_RESERVED_TOOLTIP", reservation)
+      U.RegisterSettingsTab(GROUP .. ".bar" .. bar, U.L("ABC_BAR_N", bar),
         function(parent)
           return BuildReservedBarPage(parent, bar, reservation)
         end,
         { parent = GROUP, muted = true, tooltip = tooltip })
     else
-      U.RegisterSettingsTab(GROUP .. ".bar" .. bar, "Bar " .. bar,
+      U.RegisterSettingsTab(GROUP .. ".bar" .. bar, U.L("ABC_BAR_N", bar),
         function(parent)
           return BuildBarPage(parent, bar)
         end,

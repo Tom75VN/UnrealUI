@@ -8,8 +8,9 @@
 -- spellbook.lua need.
 --
 -- WorldMapFrame is not registered here: it needs the fullscreen panel layout
--- undone before a header drag means anything, so modules/worldmap.lua owns
--- both that and its own U.MakeWindowDraggable call.
+-- undone before a header drag means anything, and unrealUI does not do that --
+-- modules/worldmap.lua leaves the native map's layout alone and only draws the
+-- zone level range beside the hovered zone name.
 
 local U = UnrealUI
 local WM = U.RegisterModule("windowmove")

@@ -2,12 +2,23 @@
 ## Title: |cffffffffUnreal |cfff5ae0aUI
 ## Notes: Unreal Azeroth native UI addon.
 ## Author: unrealUI
-## Version: 0.2.0
+## Version: 0.2.1
 ## X-License: MIT
-## SavedVariables: UnrealUIDB, UnrealUIProfiles, UnrealUIDiagDB
+## SavedVariables: UnrealUIDB, UnrealUIProfiles, UnrealUIDiagDB, UnrealUIPriceDB
 ## SavedVariablesPerCharacter: UnrealUIProfileDB
 
 core\init.lua
+
+# Translation layer. locale.lua only needs the UnrealUI table, and every
+# locales\ file only needs U.RegisterLocale, so both load before anything that
+# might want a string. The language itself is not selected here: U.LoadLanguage
+# runs from core/init.lua once SavedVariables are readable.
+core\locale.lua
+locales\enUS.lua
+locales\zhCN.lua
+locales\ruRU.lua
+locales\frFR.lua
+
 core\perf.lua
 core\media.lua
 core\theme.lua
@@ -15,6 +26,7 @@ themes\modern.lua
 themes\classic-wow.lua
 themes\modern-wow.lua
 core\auradata.lua
+core\pricedata.lua
 core\compat.lua
 core\config.lua
 core\style.lua
@@ -30,6 +42,7 @@ modules\settings.lua
 modules\gamemenu.lua
 modules\logout.lua
 modules\minimap.lua
+modules\worldmap.lua
 modules\microbar.lua
 modules\xpbar.lua
 modules\chat.lua
@@ -37,6 +50,7 @@ modules\unitframes.lua
 modules\auras.lua
 modules\nameplates.lua
 modules\tooltip.lua
+modules\itemprice.lua
 modules\castbar.lua
 modules\actionbar.lua
 modules\actionbarconfig.lua

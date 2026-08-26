@@ -144,7 +144,7 @@ local function BuildQuestLevelToggle(collapseAll)
 
   local text = G("UnrealUIQuestLogLevelsText")
   if text then
-    text:SetText("Levels")
+    text:SetText(U.L("QUESTLOG_LEVELS"))
     SetQuestFont(text, M.fontSize.small, M.color.textDim)
   end
 
@@ -482,7 +482,7 @@ local function RegisterQuestWatchMover()
   pcall(watch.SetFrameStrata, watch, "LOW")
 
   U.RegisterMover("questwatch.frame", watch, {
-    label = "Quest Tracker",
+    label = U.L("MOVER_LABEL_QUEST_TRACKER"),
   })
   return true
 end

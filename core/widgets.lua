@@ -854,7 +854,7 @@ local function EnsureColorDialog()
   })
   if dialog.title then
     dialog.title:SetPoint("TOP", dialog, "TOP", 0, -8)
-    dialog.title:SetText("Select colour")
+    dialog.title:SetText(U.L("COMMON_SELECT_COLOUR"))
   end
 
   -- Live preview of the colour every control currently describes.
@@ -1153,7 +1153,7 @@ local function EnsureColorDialog()
 
   local accept = U.CreateButton(dialog, {
     name = "UnrealUIColorPickerOkay",
-    text = "Okay",
+    text = U.L("COMMON_OK"),
     width = 100,
     height = 22,
     onClick = function() U.CloseColorPicker(true) end,
@@ -1163,7 +1163,7 @@ local function EnsureColorDialog()
 
   local cancel = U.CreateButton(dialog, {
     name = "UnrealUIColorPickerCancel",
-    text = "Cancel",
+    text = U.L("COMMON_CANCEL"),
     width = 100,
     height = 22,
     onClick = function() U.CloseColorPicker(false) end,
@@ -1281,7 +1281,7 @@ function U.CreateColorPicker(parent, options)
     d.onPreview = function(color) Publish(color, true) end
     d.onFinish = function(color) Publish(color, true) end
 
-    if d.title then d.title:SetText(options.text or "Select colour") end
+    if d.title then d.title:SetText(options.text or U.L("COMMON_SELECT_COLOUR")) end
 
     -- Every region is shown by hand: knowledge.json /
     -- rendering.parent_alpha_not_propagated means a container's visibility
@@ -1612,11 +1612,12 @@ end
 -- ---------------------------------------------------------------------------
 -- Money readout
 --
--- One coin (a number plus its g/s/c letter suffix, e.g. "12g", coloured as one
--- label) and a gold/silver/copper row built from three of them, both driven by
--- core/media.lua's M.money so a colour cannot drift between callers. An icon
--- atlas was tried first and silently failed to render in game (see M.money's
--- comment); text needs no texture and cannot fail the same way.
+-- One denomination (number plus coin icon) and a gold/silver/copper row built
+-- from three of them, both driven by core/media.lua's M.money so colours cannot
+-- drift between callers. The confirmed rendering path is one UI-MoneyIcons
+-- atlas sliced horizontally; the separate per-denomination texture paths were
+-- the paths that failed, not the atlas (knowledge.json /
+-- textures.separate_coin_paths_not_rendered).
 -- ---------------------------------------------------------------------------
 local function LabelWidth(label)
   if not label then return 0 end
@@ -1627,13 +1628,26 @@ end
 -- denom: "gold" | "silver" | "copper"
 function U.CreateMoneyCoin(parent, denom, size)
   local spec = M.money[denom]
-  if not spec then return nil end
+  local coords = spec and spec.coords
+  if not spec or not coords then return nil end
 
   size = size or 14
   local holder = CreateFrame("Frame", nil, parent)
   holder:SetHeight(size)
   holder:SetWidth(size)
-  holder.suffix = spec.suffix
+
+  local iconSize = size - 2
+  local icon = holder:CreateTexture(nil, "ARTWORK")
+  icon:SetWidth(iconSize)
+  icon:SetHeight(iconSize)
+  -- The artwork sits low inside each atlas slice; raise the texture while the
+  -- number remains on the common text baseline used by bags and status.
+  icon:SetPoint("RIGHT", holder, "RIGHT", 0, 2)
+  pcall(icon.SetTexture, icon, M.moneyTexture)
+  pcall(icon.SetTexCoord, icon,
+        coords[1], coords[2], coords[3], coords[4])
+  holder.icon = icon
+  holder.iconWidth = iconSize
 
   holder.label = U.CreateLabel(holder, {
     size = M.fontSize.small,
@@ -1641,7 +1655,7 @@ function U.CreateMoneyCoin(parent, denom, size)
     inherits = "GameFontNormalSmall",
   })
   if holder.label then
-    holder.label:SetPoint("RIGHT", holder, "RIGHT", 0, 0)
+    holder.label:SetPoint("RIGHT", icon, "LEFT", -1, -2)
   end
 
   return holder
@@ -1649,13 +1663,13 @@ end
 
 function U.SetMoneyCoin(coin, value)
   if not coin or not coin.label then return end
-  coin.label:SetText(tostring(value) .. (coin.suffix or ""))
+  coin.label:SetText(tostring(value))
 
   -- Sized to the rendered amount rather than a reserved width, so adjacent
   -- denominations sit with a small, constant gap between them.
   local width = LabelWidth(coin.label)
   if width == 0 then width = string.len(tostring(value)) * 7 end
-  coin.contentWidth = math.ceil(width) + 4
+  coin.contentWidth = math.ceil(width) + 1 + (coin.iconWidth or 0)
   coin:SetWidth(coin.contentWidth)
 end
 
@@ -1670,8 +1684,8 @@ function U.CreateMoneyReadout(parent)
   row.silver = U.CreateMoneyCoin(row, "silver")
   row.copper = U.CreateMoneyCoin(row, "copper")
   row.gold:SetPoint("LEFT", row, "LEFT", 0, 0)
-  row.silver:SetPoint("LEFT", row.gold, "RIGHT", 1, 0)
-  row.copper:SetPoint("LEFT", row.silver, "RIGHT", 1, 0)
+  row.silver:SetPoint("LEFT", row.gold, "RIGHT", 3, 0)
+  row.copper:SetPoint("LEFT", row.silver, "RIGHT", 3, 0)
 
   function row:SetAmount(copper)
     copper = tonumber(copper) or 0
@@ -1681,8 +1695,8 @@ function U.CreateMoneyReadout(parent)
     U.SetMoneyCoin(row.silver, tostring(math.floor(math.mod(copper, 10000) / 100)))
     U.SetMoneyCoin(row.copper, tostring(math.mod(copper, 100)))
 
-    row.contentWidth = (row.gold.contentWidth or 0) + 1 +
-                        (row.silver.contentWidth or 0) + 1 +
+    row.contentWidth = (row.gold.contentWidth or 0) + 3 +
+                        (row.silver.contentWidth or 0) + 3 +
                         (row.copper.contentWidth or 0)
     row:SetWidth(row.contentWidth)
   end
@@ -1700,51 +1714,189 @@ end
 -- guess at undocumented tooltip internals. One instance is reused by every
 -- caller, the same singleton pattern as the confirm dialog below.
 -- ---------------------------------------------------------------------------
-local pricePanel
+-- USER_CONFIRMED_INGAME (2026-08-26): the note above is not just caution, it
+-- is measured. Lines appended to a populated GameTooltip from Lua are accepted
+-- and counted -- NumLines went 1 -> 3, and both GameTooltipTextLeft3 and
+-- TextRight3 read back the intended text with IsShown true -- yet the tooltip
+-- kept rendering a single line, before and after an unconditional Show(). The
+-- client lays a tooltip out inside its own item builders and does not relayout
+-- for a Lua caller. Anything this addon wants to add to a tooltip therefore
+-- belongs in an owned frame like this one, never in a tooltip line.
+-- USER_CONFIRMED_INGAME (2026-08-26): this owned panel renders with real item
+-- values. Item tooltips request the stock tooltip's width and share
+-- its bottom edge so the two frames read as one continuous surface.
+local moneyPanel
 
-local function BuildPricePanel()
+local MONEY_ROW_HEIGHT = 14
+local MONEY_PANEL_INSET = 6
+local MONEY_COLUMN_GAP = 10
+
+local function BuildMoneyPanel()
   local panel = U.CreatePanel(UIParent, {
-    name = "UnrealUIPricePanel",
+    name = "UnrealUIMoneyPanel",
     width = 10,
-    height = 22,
+    height = 10,
   })
   pcall(panel.SetFrameStrata, panel, "TOOLTIP")
 
-  panel.caption = U.CreateLabel(panel, {
-    size = M.fontSize.small,
-    color = M.color.textDim,
-    inherits = "GameFontNormalSmall",
-  })
-  if panel.caption then
-    panel.caption:SetText("Cost:")
-    panel.caption:SetPoint("LEFT", panel, "LEFT", 6, 0)
-  end
-
-  panel.readout = U.CreateMoneyReadout(panel)
-  if panel.caption then
-    panel.readout:SetPoint("LEFT", panel.caption, "RIGHT", 4, 0)
-  else
-    panel.readout:SetPoint("LEFT", panel, "LEFT", 6, 0)
-  end
-
+  panel.rows = {}
   panel:Hide()
   return panel
 end
 
-local function ShowPricePanel(anchorFrame, copper)
-  if not pricePanel then pricePanel = BuildPricePanel() end
+local function MoneyPanelRow(panel, index)
+  local row = panel.rows[index]
+  if row then return row end
 
-  pricePanel.readout:SetAmount(copper)
-  local width = LabelWidth(pricePanel.caption) + 4 +
-                (pricePanel.readout.contentWidth or 0) + 12
-  pricePanel:SetWidth(width)
-  pricePanel:ClearAllPoints()
-  pricePanel:SetPoint("TOP", anchorFrame, "BOTTOM", 0, -4)
-  pricePanel:Show()
+  row = CreateFrame("Frame", nil, panel)
+  row:SetHeight(MONEY_ROW_HEIGHT)
+
+  row.label = U.CreateLabel(row, {
+    size = M.fontSize.small,
+    color = M.color.textDim,
+    inherits = "GameFontNormalSmall",
+  })
+  if row.label then row.label:SetPoint("LEFT", row, "LEFT", 0, 0) end
+
+  row.readout = U.CreateMoneyReadout(row)
+  panel.rows[index] = row
+  return row
+end
+
+-- Width sync
+--
+-- matchAnchor callers want the panel to span the frame it hangs under so the
+-- two read as one surface. That width cannot be taken once while the panel is
+-- being placed: an item tooltip is laid out by the client after the OnEnter
+-- chain that places this panel has returned, so a width read there still
+-- describes the *previous* tooltip. That is what produced an oversized price
+-- cell -- a short item name inheriting the width of whatever wider tooltip was
+-- hovered before it.
+--
+-- The panel therefore opens at its own content width, which is always right,
+-- and follows the anchor from the next shared-driver tick onwards. A frame
+-- that never reports a usable width just keeps the content width. The ticker
+-- runs only while the panel is shown, which is only while an item is hovered,
+-- and the applied numbers stay on the frame for /uui price to read back.
+local MONEY_WIDTH_TICKER = "widgets.money-width"
+
+local function ApplyMoneyPanelWidth()
+  if not moneyPanel then return end
+
+  local width = moneyPanel.contentWidth or 0
+  local anchor = moneyPanel.matchFrame
+  local anchorWidth = nil
+
+  if anchor then
+    local ok, value = pcall(anchor.GetWidth, anchor)
+    if ok then anchorWidth = tonumber(value) end
+    if anchorWidth and anchorWidth > width then width = anchorWidth end
+  end
+
+  moneyPanel.anchorWidth = anchorWidth
+  if width <= 0 or width == moneyPanel.appliedWidth then return end
+
+  moneyPanel.appliedWidth = width
+  moneyPanel:SetWidth(width)
+end
+
+-- One owned panel of labelled money rows, anchored under whatever frame is
+-- being described -- a hovered button, or GameTooltip itself. rows is an array
+-- of { label = string, copper = number }; the money column is aligned across
+-- every row. The anchor defaults to sitting flush under the frame's left edge;
+-- callers that want it centred pass their own points. matchAnchor makes an
+-- attached section track a wider anchor without changing compact button-price
+-- panels.
+function U.ShowMoneyRows(anchorFrame, rows, point, relativePoint, x, y,
+                         matchAnchor)
+  if not anchorFrame or type(rows) ~= "table" then
+    U.HideMoneyRows()
+    return
+  end
+
+  local total = table.getn(rows)
+  if total == 0 then
+    U.HideMoneyRows()
+    return
+  end
+
+  if not moneyPanel then moneyPanel = BuildMoneyPanel() end
+
+  local widest, i = 0, nil
+  for i = 1, total do
+    local row = MoneyPanelRow(moneyPanel, i)
+    if row.label then row.label:SetText(rows[i].label or "") end
+    row.readout:SetAmount(rows[i].copper)
+
+    local labelWidth = LabelWidth(row.label)
+    if labelWidth > widest then widest = labelWidth end
+    row:Show()
+  end
+
+  for i = total + 1, table.getn(moneyPanel.rows) do
+    moneyPanel.rows[i]:Hide()
+  end
+
+  -- Second pass: the money column starts past the widest label, so the amounts
+  -- line up instead of stepping with the text beside them.
+  local content = 0
+  for i = 1, total do
+    local row = moneyPanel.rows[i]
+    row.readout:ClearAllPoints()
+    row.readout:SetPoint("LEFT", row, "LEFT", widest + MONEY_COLUMN_GAP, 0)
+
+    local rowWidth = widest + MONEY_COLUMN_GAP + (row.readout.contentWidth or 0)
+    if rowWidth > content then content = rowWidth end
+
+    row:ClearAllPoints()
+    row:SetPoint("TOPLEFT", moneyPanel, "TOPLEFT", MONEY_PANEL_INSET,
+                 -(MONEY_PANEL_INSET + (i - 1) * (MONEY_ROW_HEIGHT + 1)))
+  end
+
+  for i = 1, total do
+    moneyPanel.rows[i]:SetWidth(content)
+  end
+
+  -- Opened at the content width with no anchor consulted: whatever the anchor
+  -- reports during this call belongs to its previous contents.
+  moneyPanel.contentWidth = content + MONEY_PANEL_INSET * 2
+  moneyPanel.matchFrame = nil
+  ApplyMoneyPanelWidth()
+
+  moneyPanel:SetHeight(total * MONEY_ROW_HEIGHT + (total - 1) +
+                       MONEY_PANEL_INSET * 2)
+  moneyPanel:ClearAllPoints()
+  moneyPanel:SetPoint(point or "TOPLEFT", anchorFrame,
+                      relativePoint or "BOTTOMLEFT", x or 0, y or -3)
+  moneyPanel:Show()
+
+  if matchAnchor then
+    moneyPanel.matchFrame = anchorFrame
+    U.RegisterUpdate(MONEY_WIDTH_TICKER, 0, ApplyMoneyPanelWidth)
+  else
+    U.UnregisterUpdate(MONEY_WIDTH_TICKER)
+  end
+
+  return moneyPanel
+end
+
+function U.HideMoneyRows()
+  U.UnregisterUpdate(MONEY_WIDTH_TICKER)
+  if moneyPanel then
+    moneyPanel.matchFrame = nil
+    moneyPanel:Hide()
+  end
+end
+
+-- The bank purchase hover is one row of the same panel. It keeps its own
+-- centred anchor so the confirmed placement under that button does not move.
+local function ShowPricePanel(anchorFrame, copper)
+  U.ShowMoneyRows(anchorFrame, { { label = U.L("COMMON_COST"), copper = copper } },
+                  "TOP", "BOTTOM", 0, -4)
 end
 
 local function HidePricePanel()
-  if pricePanel then pricePanel:Hide() end
+  U.HideMoneyRows()
 end
 
 -- ---------------------------------------------------------------------------
@@ -1868,7 +2020,7 @@ local function BuildConfirmDialog()
     inherits = "GameFontNormalSmall",
   })
   if dialog.priceCaption then
-    dialog.priceCaption:SetText("Cost:")
+    dialog.priceCaption:SetText(U.L("COMMON_COST"))
     dialog.priceCaption:SetPoint("LEFT", dialog.priceRow, "LEFT", 0, 0)
   end
 
@@ -1883,7 +2035,7 @@ local function BuildConfirmDialog()
 
   dialog.cancel = U.CreateButton(dialog, {
     name = "UnrealUIConfirmCancel",
-    text = "Cancel",
+    text = U.L("COMMON_CANCEL"),
     width = 110,
     height = 24,
     onClick = function() dialog:Hide() end,
@@ -1892,7 +2044,7 @@ local function BuildConfirmDialog()
 
   dialog.accept = U.CreateButton(dialog, {
     name = "UnrealUIConfirmAccept",
-    text = "Accept",
+    text = U.L("COMMON_ACCEPT"),
     width = 110,
     height = 24,
   })
@@ -1920,16 +2072,16 @@ function U.ShowConfirm(options)
   else
     dialog:SetPoint("CENTER", UIParent, "CENTER", 0, 120)
   end
-  if dialog.text then dialog.text:SetText(options.text or "Are you sure?") end
+  if dialog.text then dialog.text:SetText(options.text or U.L("COMMON_ARE_YOU_SURE")) end
 
   local money = tonumber(options.moneyCopper)
   if dialog.detail then dialog.detail:SetText(options.detail or "") end
 
   if dialog.accept.label then
-    dialog.accept.label:SetText(options.acceptText or "Accept")
+    dialog.accept.label:SetText(options.acceptText or U.L("COMMON_ACCEPT"))
   end
   if dialog.cancel.label then
-    dialog.cancel.label:SetText(options.cancelText or "Cancel")
+    dialog.cancel.label:SetText(options.cancelText or U.L("COMMON_CANCEL"))
   end
 
   dialog.accept:SetScript("OnClick", function()

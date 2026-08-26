@@ -9,7 +9,7 @@ UnrealUI = {}
 local U = UnrealUI
 
 U.name      = "unrealUI"
-U.version   = "0.2.0"
+U.version   = "0.2.1"
 U.modules   = {}       -- name -> module table
 U.moduleOrder = {}     -- load/enable order, registration order
 U.ready     = false    -- set once PLAYER_LOGIN work has run
@@ -402,6 +402,9 @@ local function Initialise()
   initialised = true
 
   U.LoadConfig()       -- core/config.lua
+  -- core/locale.lua; must precede every module-owned UI creation, because a
+  -- label is translated once when it is built and never re-read afterwards.
+  U.LoadLanguage()
   U.LoadThemeStyle()   -- core/theme.lua; must precede module-owned UI creation
   RunModulePhase("OnInit")
   U.Debug("config loaded, modules initialised")

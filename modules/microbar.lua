@@ -161,7 +161,7 @@ local function Build()
   pcall(anchor.SetFrameStrata, anchor, "MEDIUM")
 
   U.RegisterMover("microbar", anchor, {
-    label = "Micro Bar",
+    label = U.L("MOVER_LABEL_MICRO_BAR"),
     default = { point = "TOPRIGHT", relativePoint = "TOPRIGHT", x = -190, y = -70 },
     -- A disabled bar keeps its stored position but offers no drag handle in
     -- edit mode; see core/mover.lua.

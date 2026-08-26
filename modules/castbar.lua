@@ -300,7 +300,7 @@ local function ApplyIdlePlaceholder()
   U.SetStatusBarColor(bar.bar, M.Unpack(M.color.cast))
   pcall(bar.bar.SetMinMaxValues, bar.bar, 0, 1)
   pcall(bar.bar.SetValue, bar.bar, 0.4)
-  if bar.name then bar.name:SetText("Cast bar") end
+  if bar.name then bar.name:SetText(U.L("MOVER_LABEL_CASTBAR")) end
   if bar.icon then pcall(bar.icon.SetTexture, bar.icon, FALLBACK_ICON) end
   bar.showIcon = true
   -- Applied immediately rather than waiting for the next Tick's
@@ -488,7 +488,7 @@ local function Build()
   SetCellsShown(false)
 
   U.RegisterMover("castbar.player", bar, {
-    label = "Cast bar",
+    label = U.L("MOVER_LABEL_CASTBAR"),
     default = { point = "CENTER", relativePoint = "CENTER", x = 0, y = -220 },
   })
 
@@ -501,12 +501,12 @@ local function Build()
   U.SetStatusBarColor(targetBar.bar, M.Unpack(M.color.cast))
   pcall(targetBar.bar.SetMinMaxValues, targetBar.bar, 0, 1)
   pcall(targetBar.bar.SetValue, targetBar.bar, 0.4)
-  if targetBar.name then targetBar.name:SetText("Target cast bar") end
+  if targetBar.name then targetBar.name:SetText(U.L("MOVER_LABEL_TARGET_CASTBAR")) end
   if targetBar.time then targetBar.time:SetText("0.0") end
   targetBar:Hide()
 
   U.RegisterMover("castbar.target", targetBar, {
-    label = "Target cast bar",
+    label = U.L("MOVER_LABEL_TARGET_CASTBAR"),
     default = { point = "CENTER", relativePoint = "CENTER", x = 0, y = -250 },
   })
 end

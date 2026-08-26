@@ -71,6 +71,169 @@ local bagDirty = {}
 local closing = false
 local emptyReported = false
 
+-- The Azeroth bank backend rejects a cursor item picked up from one bank
+-- container when it is dropped directly into a different bank container
+-- ("Item not found").  The same item succeeds after it has passed through a
+-- player-bag slot, so remember which bank container supplied the cursor item
+-- and use that proven route only for cross-container bank transfers.
+local cursorBankBag
+
+local function CursorHasInventoryItem()
+  local fn = U.G("CursorHasItem")
+  if type(fn) ~= "function" then return false end
+  local ok, hasItem = pcall(fn)
+  return ok and hasItem and true or false
+end
+
+-- Specialty bags cannot accept every item.  Prefer the backpack, then bags
+-- which the working Vanilla-shaped GetBagFamily helper identifies as normal.
+-- If that optional helper is absent, try the empty slots and let the cursor
+-- state tell us whether the client accepted the temporary drop.
+local function PlayerBagCanStage(bag)
+  if bag == 0 then return true end
+
+  local familyFn = U.G("GetBagFamily")
+  if type(familyFn) ~= "function" then return true end
+
+  local ok, family = pcall(familyFn, bag)
+  return ok and family == "BAG"
+end
+
+-- Put the cursor item into an empty player slot and pick it straight back up.
+-- This changes the cursor item's source from a bank container to player
+-- inventory without changing the item or its final destination.
+local function StageCursorThroughPlayerBags()
+  local bag
+  for bag = 0, 4 do
+    if PlayerBagCanStage(bag) then
+      local sizeOk, size = pcall(GetContainerNumSlots, bag)
+      size = (sizeOk and tonumber(size)) or 0
+
+      local slot
+      for slot = 1, size do
+        local infoOk, texture = pcall(GetContainerItemInfo, bag, slot)
+        if infoOk and not texture then
+          pcall(PickupContainerItem, bag, slot)
+          if not CursorHasInventoryItem() then
+            -- The temporary drop succeeded. Pick the same item back up so the
+            -- caller can place it in the requested bank destination.
+            pcall(PickupContainerItem, bag, slot)
+            if CursorHasInventoryItem() then return true end
+
+            -- The item is safe in player inventory, but the second pickup did
+            -- not complete. Do not pretend the bank transfer succeeded.
+            U.Print(U.L("BANK_TRANSFER_PICKUP"))
+            cursorBankBag = nil
+            return false
+          end
+        end
+      end
+    end
+  end
+
+  U.Print(U.L("BANK_TRANSFER_EMPTY_SLOT"))
+  return false
+end
+
+local function TransferCursorToBank(bag, drop)
+  if not CursorHasInventoryItem() then
+    cursorBankBag = nil
+    return false
+  end
+
+  if cursorBankBag and cursorBankBag ~= bag then
+    if not StageCursorThroughPlayerBags() then return false end
+  end
+
+  -- Let the destination's original template perform the final drop.  The main
+  -- bank and purchased bank bags use different stock templates, and retaining
+  -- their own destination call avoids substituting one API for the other.
+  if type(drop) ~= "function" then return false end
+  drop()
+
+  -- An occupied destination leaves its previous item on the cursor.  That
+  -- item's new source is the destination container, so a following cross-bank
+  -- drop must use the workaround again.
+  if CursorHasInventoryItem() then
+    cursorBankBag = bag
+  else
+    cursorBankBag = nil
+  end
+  return true
+end
+
+local function MouseButton(a1, a2)
+  if type(a1) == "string" then return a1 end
+  if type(a2) == "string" then return a2 end
+  return U.G("arg1")
+end
+
+-- Wrap the stock template rather than discarding it: modifier clicks, stack
+-- splitting, right-click use, repair targeting and tooltips remain native.
+-- Only a left-button drop whose cursor source is a different bank container
+-- takes the inventory-staging route above.
+local function InstallBankTransfer(button, bag)
+  if not button or button.uuiBankTransfer then return end
+  button.uuiBankTransfer = true
+
+  local click = button:GetScript("OnClick")
+  button:SetScript("OnClick",
+    function(a1, a2, a3, a4, a5, a6, a7, a8, a9)
+      local hadItem = CursorHasInventoryItem()
+      local left = MouseButton(a1, a2) == "LeftButton"
+
+      if left and hadItem and cursorBankBag and cursorBankBag ~= bag then
+        TransferCursorToBank(bag, function()
+          if click then click(a1, a2, a3, a4, a5, a6, a7, a8, a9) end
+        end)
+        return
+      end
+
+      if click then click(a1, a2, a3, a4, a5, a6, a7, a8, a9) end
+
+      if left then
+        if CursorHasInventoryItem() then
+          cursorBankBag = bag
+        else
+          cursorBankBag = nil
+        end
+      end
+    end)
+
+  local dragStart = button:GetScript("OnDragStart")
+  button:SetScript("OnDragStart",
+    function(a1, a2, a3, a4, a5, a6, a7, a8, a9)
+      if dragStart then
+        dragStart(a1, a2, a3, a4, a5, a6, a7, a8, a9)
+      end
+      if CursorHasInventoryItem() then cursorBankBag = bag end
+    end)
+
+  local receiveDrag = button:GetScript("OnReceiveDrag")
+  button:SetScript("OnReceiveDrag",
+    function(a1, a2, a3, a4, a5, a6, a7, a8, a9)
+      if CursorHasInventoryItem() and cursorBankBag and
+         cursorBankBag ~= bag then
+        TransferCursorToBank(bag, function()
+          if receiveDrag then
+            receiveDrag(a1, a2, a3, a4, a5, a6, a7, a8, a9)
+          end
+        end)
+        return
+      end
+
+      if receiveDrag then
+        receiveDrag(a1, a2, a3, a4, a5, a6, a7, a8, a9)
+      end
+
+      if CursorHasInventoryItem() then
+        cursorBankBag = bag
+      else
+        cursorBankBag = nil
+      end
+    end)
+end
+
 -- ---------------------------------------------------------------------------
 -- Bank state
 -- ---------------------------------------------------------------------------
@@ -179,6 +342,8 @@ local function EnsureSlot(bag, slot, parent)
   local button = U.CreateItemSlot(root, name, bag, slot)
   if not button then return nil end
 
+  InstallBankTransfer(button, bag)
+
   slots[bag][slot] = button
   return button
 end
@@ -285,7 +450,7 @@ local function RefreshBankBagButton(index)
     if type(fn) == "function" then pcall(fn, button) end
   end
 
-  button.tooltipText = U.G("BANK_BAG") or "Bank Bag"
+  button.tooltipText = U.L("BANK_BAG_LABEL")
   U.SetBorderColor(button, M.Unpack(M.color.border))
 end
 
@@ -296,9 +461,9 @@ end
 
 local function BuyBankSlot()
   U.ShowConfirm({
-    text = "Purchase another bank bag slot?",
+    text = U.L("BANK_BUY_SLOT"),
     moneyCopper = BankSlotCost(),
-    acceptText = "Purchase",
+    acceptText = U.L("BANK_PURCHASE"),
     owner = "bank",
     onAccept = function()
       pcall(PurchaseSlot)
@@ -320,7 +485,7 @@ local function EnsureBuyButton()
     texture = "Interface\\Icons\\INV_Misc_Bag_08",
     fallback = "+",
     size = BAG_BUTTON,
-    title = U.G("BANK_BAG_PURCHASE") or "Purchase Bank Bag",
+    title = U.L("BANK_PURCHASE_TITLE"),
     price = BankSlotCost,
     onClick = BuyBankSlot,
   })
@@ -452,6 +617,8 @@ end
 local function ProcessDirty()
   if U.PerfDisabled and U.PerfDisabled("bank") then return end
 
+  if not CursorHasInventoryItem() then cursorBankBag = nil end
+
   NeutraliseNativeBank()
 
   if headerDirty then
@@ -469,8 +636,7 @@ local function ProcessDirty()
       emptyReported = false
     elseif not emptyReported then
       emptyReported = true
-      U.Print("bank: the client reported no slots for the bank container yet; " ..
-              "retrying while the window is open.")
+      U.Print(U.L("BANK_SLOTS_LOADING"))
     end
   end
 
@@ -539,7 +705,7 @@ local function BuildHeader()
     inherits = "GameFontNormal",
   })
   if frame.title then
-    frame.title:SetText("Bank")
+    frame.title:SetText(U.L("BANK_TITLE"))
     frame.title:SetPoint("RIGHT", frame.close, "LEFT", -8, 0)
   end
 
@@ -636,6 +802,7 @@ local function Build()
   frame:SetScript("OnHide", function()
     U.UnregisterUpdate("bank.refresh")
     U.HideConfirm("bank")
+    cursorBankBag = nil
     if closing then return end
     closing = true
     pcall(CloseBankFrame)
@@ -643,7 +810,7 @@ local function Build()
   end)
 
   U.RegisterMover("bank.main", anchor, {
-    label = "Bank",
+    label = U.L("MOVER_LABEL_BANK"),
     default = { point = "BOTTOMLEFT", relativePoint = "BOTTOMLEFT",
                 x = 20, y = 20 },
   })

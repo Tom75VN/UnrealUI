@@ -68,9 +68,9 @@ local CLASS_RESERVED_PAGES = {
 }
 
 local CLASS_RESERVED_REASON = {
-  ROGUE = "Rogue Stealth",
-  WARRIOR = "Warrior stances",
-  DRUID = "Druid forms",
+  ROGUE = "ABC_RESERVED_ROGUE",
+  WARRIOR = "ABC_RESERVED_WARRIOR",
+  DRUID = "ABC_RESERVED_DRUID",
 }
 
 local reservedPages = {}
@@ -146,6 +146,21 @@ local DECLARED_PREFIX = {
 
 local ICON_INSET = 2
 local PRESS_FLASH_DURATION = 0.16
+-- The ordinary Lua-created highlight remains only as a safe fallback if the
+-- native bag-slot hover proxy cannot be made. The normal path uses the real
+-- ContainerFrameItemButtonTemplate highlight, so it needs no artificial icon
+-- dimming or brightening.
+local CLASSIC_HIGHLIGHT_ALPHA = 0.35
+local CLASSIC_HOVER_BRIGHTEN = 1
+local CLASSIC_REST_DIM = 1
+-- Draw layer of every Classic slot face. This client's action-button normal
+-- texture is not clear through its centre the way stock Vanilla's is: painted
+-- over an icon it reads as a dark wash, which is what made Classic action and
+-- bag icons look dimmed. The face therefore sits below the icon -- under this
+-- module's ARTWORK icon and under the container template's BORDER one -- so
+-- only the rim outside the icon is left showing, which is where the stock
+-- button's visible slot edge is anyway.
+local CLASSIC_FACE_LAYER = "BACKGROUND"
 
 local COLOR = {
   usable    = { 1.00, 1.00, 1.00, 1.00 },
@@ -247,7 +262,7 @@ function classicAction.Capture()
   classicAction.pushed = classicAction.Face(
     source, "GetPushedTexture", nil)
   classicAction.highlight = classicAction.Face(
-    source, "GetHighlightTexture", nil)
+    source, "GetHighlightTexture", "ActionButton1HighlightTexture")
 
   local nativeIcon = U.G("ActionButton1Icon")
   local sourceWidth = classicAction.Dimension(source, "GetWidth")
@@ -264,15 +279,15 @@ function classicAction.Capture()
 end
 
 
-function classicAction.CreateFace(parent, face, layer, additive)
+-- No additive option: this client ignores SetBlendMode("ADD")
+-- (rendering.setblendmode_add_inert), so a face needing it has to be dimmed
+-- with alpha by its caller instead.
+function classicAction.CreateFace(parent, face, layer)
   if not face then return nil end
   local texture = parent:CreateTexture(nil, layer or "OVERLAY")
   if not pcall(texture.SetTexture, texture, face.path) then return nil end
   texture.uuiClassicFace = face
   texture.uuiClassicParent = parent
-  if additive and type(texture.SetBlendMode) == "function" then
-    pcall(texture.SetBlendMode, texture, "ADD")
-  end
   return texture
 end
 
@@ -286,26 +301,140 @@ function classicAction.SizeFace(texture, size)
   pcall(texture.SetHeight, texture, size * face.heightRatio)
 end
 
+-- Shared by Classic surfaces that need the exact same live action-button rim.
+-- The face is still captured and owned here; consumers only ask this module to
+-- apply or resize it, so the action bar and bag slots cannot drift apart.
+function U.StyleClassicActionButtonBorder(button, size, layer)
+  if not classicAction.ready or not button then return nil end
+
+  local texture = button.uuiClassicActionBorder
+  if not texture then
+    texture = classicAction.CreateFace(
+      button, classicAction.normal, layer or CLASSIC_FACE_LAYER)
+    button.uuiClassicActionBorder = texture
+  end
+  if not texture then return nil end
+
+  U.SetBackdropShown(button, false)
+  classicAction.SizeFace(
+    texture, tonumber(size) or classicAction.Dimension(button, "GetWidth"))
+  return texture
+end
+
+-- Hover and active-action glow are handed to the client's own highlight slot
+-- rather than rebuilt as regions of ours, so the client keeps ownership of the
+-- mouseover show/hide and the sizing exactly as it has them for a stock action
+-- button.
+--
+-- The stock look cannot be reproduced faithfully, because this client ignores
+-- SetBlendMode("ADD") -- see rendering.setblendmode_add_inert, established by a
+-- four-way in-game A/B where an owned texture asking for ADD still drew as an
+-- opaque white square. ButtonHilight-Square at full opacity is that square, so
+-- it is dimmed with alpha instead: the same texture the client uses, composited
+-- the only way this build allows.
+function classicAction.ApplyNativeHighlight(button)
+  local face = classicAction.highlight
+  if not face or type(button.SetHighlightTexture) ~= "function" then return false end
+  if not pcall(button.SetHighlightTexture, button, face.path) then return false end
+
+  local ok, texture = pcall(button.GetHighlightTexture, button)
+  if ok and texture then
+    -- U.SetColor, not SetAlpha. Through SetAlpha this texture got darker as the
+    -- value dropped -- white at 1.0, grey at 0.3, darker still at 0.22 -- which
+    -- is a colour scale toward black, not transparency, and is why the hovered
+    -- slot read darker than an unhovered one at every value tried. U.SetColor
+    -- goes through SetVertexColor's alpha component, which is how this module's
+    -- own press flash already draws a working translucent white fill.
+    U.SetColor(texture, 1, 1, 1, CLASSIC_HIGHLIGHT_ALPHA)
+    -- The stock template's highlight covers the button exactly, unlike the
+    -- normal face, which overflows it; SizeButton therefore leaves this alone.
+    pcall(texture.ClearAllPoints, texture)
+    pcall(texture.SetAllPoints, texture, button)
+  end
+  return true
+end
+
+-- rendering.setblendmode_add_inert proves that copying ButtonHilight-Square to
+-- a Lua-created texture cannot reproduce the native bag-slot glow. Keep the
+-- template's XML-owned highlight intact instead: a mouse-transparent child
+-- contributes only that highlight, while the action button retains all input,
+-- action state, cooldown and text ownership. Created lazily so untouched action
+-- buttons do not pay for another template instance.
+function classicAction.EnsureBagHighlight(button)
+  if button.uuiClassicBagHighlight ~= nil then
+    return button.uuiClassicBagHighlight or nil
+  end
+
+  local name = button.uuiName .. "BagHighlight"
+  local ok, proxy = pcall(CreateFrame, "Button", name, button,
+                          "ContainerFrameItemButtonTemplate")
+  if not ok or not proxy then
+    local partial = U.G(name)
+    if partial then pcall(partial.Hide, partial) end
+    button.uuiClassicBagHighlight = false
+    button.uuiClassicHighlightFallback =
+      classicAction.ApplyNativeHighlight(button)
+    return nil
+  end
+
+  pcall(proxy.SetAllPoints, proxy, button)
+  pcall(proxy.EnableMouse, proxy, false)
+  pcall(proxy.SetNormalTexture, proxy, "")
+
+  local normalOk, normal = pcall(proxy.GetNormalTexture, proxy)
+  if normalOk then U.HideRegion(normal) end
+  local pushedOk, pushed = pcall(proxy.GetPushedTexture, proxy)
+  if pushedOk then U.HideRegion(pushed) end
+
+  local suffixes = { "NormalTexture", "IconTexture", "Count", "Cooldown" }
+  local i
+  for i = 1, table.getn(suffixes) do
+    local region = U.G(name .. suffixes[i])
+    U.HideRegion(region)
+  end
+
+  button.uuiClassicBagHighlight = proxy
+  return proxy
+end
+
+function classicAction.RefreshHighlight(button)
+  if not button or not button.uuiClassicHighlight then return end
+  local wanted = button.uuiHover or button.uuiActive
+  if not wanted and button.uuiClassicBagHighlight == nil and
+     not button.uuiClassicHighlightFallback then return end
+  local proxy = classicAction.EnsureBagHighlight(button)
+  local owner = proxy
+  if not owner and button.uuiClassicHighlightFallback then owner = button end
+  if not owner then return end
+
+  if wanted then
+    if proxy then pcall(proxy.Show, proxy) end
+    pcall(owner.LockHighlight, owner)
+  else
+    pcall(owner.UnlockHighlight, owner)
+  end
+end
+
 function classicAction.StyleButton(button, textLayer)
   if not classicAction.ready then return end
   button.uuiClassic = true
 
   -- Native action icons are not cropped; the client normal texture supplies
-  -- the ornamental slot edge over the icon.
+  -- the ornamental slot edge around the icon, which overflows the button on
+  -- every side and so stays visible with the icon drawn on top of it.
   pcall(button.uuiIcon.SetTexCoord, button.uuiIcon, 0, 1, 0, 1)
   U.SetBackdropShown(button, false)
 
-  button.uuiClassicNormal = classicAction.CreateFace(
-    button, classicAction.normal, "ARTWORK", false)
-  local highlightFace = classicAction.highlight or classicAction.pushed
-  button.uuiClassicHover = classicAction.CreateFace(
-    textLayer, highlightFace, "OVERLAY", true)
-  button.uuiClassicActive = classicAction.CreateFace(
-    textLayer, highlightFace, "OVERLAY", true)
-  if button.uuiClassicHover then button.uuiClassicHover:Hide() end
-  if button.uuiClassicActive then button.uuiClassicActive:Hide() end
+  button.uuiClassicNormal = U.StyleClassicActionButtonBorder(
+    button, classicAction.Dimension(button, "GetWidth"))
+  button.uuiClassicHighlight = true
 
-  local pushedFace = classicAction.pushed or classicAction.highlight
+  -- The press flash keeps its owned region, because it is driven by keybind
+  -- timing rather than by a real mouse press (see ShowButtonPress). It does not
+  -- fall back to the highlight face: that one is only legible additively
+  -- (rendering.setblendmode_add_inert), so without a native pushed face the
+  -- flash stays the modern translucent fill rather than becoming a white square.
+  local pushedFace = classicAction.pushed
   if pushedFace and button.uuiPressed then
     pcall(button.uuiPressed.SetTexture, button.uuiPressed,
           pushedFace.path)
@@ -327,8 +456,6 @@ function classicAction.SizeButton(button, size)
           size * classicAction.iconHeightRatio)
   end
   classicAction.SizeFace(button.uuiClassicNormal, size)
-  classicAction.SizeFace(button.uuiClassicHover, size)
-  classicAction.SizeFace(button.uuiClassicActive, size)
   classicAction.SizeFace(button.uuiPressed, size)
 end
 
@@ -720,6 +847,28 @@ local function ButtonSlot(button)
   return SlotFor(button.uuiBar, button.uuiIndex)
 end
 
+-- The icon's colour is its state tint (COLOR.*) scaled by the classic hover
+-- brighten. Every writer goes through here for two reasons: a hover applied
+-- directly to the icon would be stomped within a second by the slot sweep's
+-- unconditional white write, and button.uuiTint has to keep caching the pure
+-- state colour, because UpdateUsable compares against it to decide whether a
+-- re-apply is needed at all.
+--
+-- Whether scaling above 1 actually brightens is a client question, not a
+-- settled one: this client documents SetVertexColor components as 0-1, so the
+-- scale may simply clamp. /uui abhl <alpha> <brighten> tunes both live to
+-- answer it in game rather than across reloads.
+local function ApplyIconTint(button)
+  local color = button.uuiTint
+  if not color then return end
+  local scale = 1
+  if button.uuiClassic then
+    scale = button.uuiHover and CLASSIC_HOVER_BRIGHTEN or CLASSIC_REST_DIM
+  end
+  U.SetColor(button.uuiIcon, color[1] * scale, color[2] * scale,
+             color[3] * scale, color[4])
+end
+
 local function ApplyButtonBorder(button)
   if button.uuiClassic then return end
   if button.uuiPressedShown then
@@ -828,10 +977,12 @@ end
 -- Native text-entry frames whose visibility means typed keys are text, not an
 -- action. This client has no keyboard-focus query API (no compat evidence for
 -- GetCurrentKeyBoardFocus/HasFocus), so shown-ness is the only safe signal
--- available; unlike ChatFrameEditBox, AuctionFrame's search box stays shown
--- for the whole AH session, so this suppresses action-bar keys for as long as
--- the window is open, not just while actively typing.
-local TEXT_INPUT_OWNER_FRAMES = { "ChatFrameEditBox", "AuctionFrame" }
+-- available; unlike ChatFrameEditBox, the Auction and Mail text inputs stay
+-- shown with their parent windows, so those windows suppress action-bar keys
+-- for the whole session, not just while actively typing.
+local TEXT_INPUT_OWNER_FRAMES = {
+  "ChatFrameEditBox", "AuctionFrame", "MailFrame",
+}
 
 local function TextInputBlocksActionKey()
   local i
@@ -1114,15 +1265,19 @@ local function CreateButton(bar, index)
   button:SetScript("OnClick", function() OnButtonClick(button) end)
   button:SetScript("OnDragStart", function() OnButtonDragStart(button) end)
   button:SetScript("OnReceiveDrag", function() OnButtonReceiveDrag(button) end)
+  -- Classic drives the real bag-slot highlight proxy explicitly because it is
+  -- mouse-transparent; Modern continues to use the owned outline.
   button:SetScript("OnEnter", function()
     button.uuiHover = true
-    ShowRegion(button.uuiClassicHover, true)
+    classicAction.RefreshHighlight(button)
+    ApplyIconTint(button)
     ApplyButtonBorder(button)
     ShowTooltip(button)
   end)
   button:SetScript("OnLeave", function()
     button.uuiHover = false
-    ShowRegion(button.uuiClassicHover, false)
+    classicAction.RefreshHighlight(button)
+    ApplyIconTint(button)
     ApplyButtonBorder(button)
     HideTooltip()
   end)
@@ -1188,8 +1343,21 @@ local function HideButton(button)
   ShowRegion(button.uuiCooldownText, false)
   ShowRegion(button.uuiPressed, false)
   ShowRegion(button.uuiClassicNormal, false)
-  ShowRegion(button.uuiClassicHover, false)
-  ShowRegion(button.uuiClassicActive, false)
+  -- A locked highlight would otherwise still be held when this button is
+  -- recycled into a slot whose action is not active. Clearing the cached flag
+  -- with it keeps UpdateActive from short-circuiting and leaving a button that
+  -- is still active after the recycle without its lock.
+  if button.uuiClassicBagHighlight then
+    pcall(button.uuiClassicBagHighlight.UnlockHighlight,
+          button.uuiClassicBagHighlight)
+    pcall(button.uuiClassicBagHighlight.Hide,
+          button.uuiClassicBagHighlight)
+  end
+  if button.uuiClassicHighlightFallback then
+    pcall(button.UnlockHighlight, button)
+  end
+  button.uuiHover = false
+  button.uuiActive = nil
   button.uuiCdActive = false
   button.uuiCdShown = false
   if button.uuiCooldown then pcall(button.uuiCooldown.Hide, button.uuiCooldown) end
@@ -1206,14 +1374,14 @@ local function UpdateSlot(button)
   local texture = Call("GetActionTexture", slot)
   if type(texture) == "string" and texture ~= "" then
     pcall(button.uuiIcon.SetTexture, button.uuiIcon, texture)
-    U.SetColor(button.uuiIcon, 1, 1, 1, 1)
     button.uuiIcon:Show()
     button.uuiEmpty = false
-    -- The white write above is the tint, so the cache has to agree with it.
-    -- Without this the next UpdateUsable sees its own stale colour and skips
-    -- the re-apply, which left an out-of-range button white until its state
-    -- changed to something else and back.
+    -- The cache has to agree with what is actually written below. Without this
+    -- the next UpdateUsable sees its own stale colour and skips the re-apply,
+    -- which left an out-of-range button white until its state changed to
+    -- something else and back.
     button.uuiTint = COLOR.usable
+    ApplyIconTint(button)
   else
     pcall(button.uuiIcon.SetTexture, button.uuiIcon, nil)
     button.uuiIcon:Hide()
@@ -1304,7 +1472,7 @@ local function UpdateUsable(button)
 
   if button.uuiTint ~= color then
     button.uuiTint = color
-    U.SetColor(button.uuiIcon, color[1], color[2], color[3], color[4])
+    ApplyIconTint(button)
   end
 end
 
@@ -1316,7 +1484,7 @@ local function UpdateActive(button)
   if active == button.uuiActive then return end
   button.uuiActive = active
   if button.uuiClassic then
-    ShowRegion(button.uuiClassicActive, active)
+    classicAction.RefreshHighlight(button)
   else
     ApplyButtonBorder(button)
   end
@@ -1630,7 +1798,7 @@ local function CreateBar(bar)
   end
 
   U.RegisterMover("actionbar.bar" .. bar, frame, {
-    label = "Bar " .. bar,
+    label = U.L("MOVER_LABEL_ACTION_BAR", bar),
     default = DefaultPosition(bar),
     -- Disabled bars keep their stored position but must not offer a drag
     -- handle in edit mode; see core/mover.lua.
@@ -1717,7 +1885,7 @@ end
 function U.ActionBarReservation(bar)
   bar = tonumber(bar)
   if not bar or not reservedPages[bar] then return nil end
-  return CLASS_RESERVED_REASON[playerClass] or "class/form paging"
+  return U.L(CLASS_RESERVED_REASON[playerClass] or "ABC_RESERVED_GENERIC")
 end
 
 function U.ActionBarIDs()
@@ -2140,4 +2308,152 @@ function U.ActionBarReport()
     })
   end
   return report
+end
+
+-- Applied by /uui abhl <alpha> [brighten].
+--
+-- The hover treatment is a judgement call the client forces on us: with no
+-- additive blend available (rendering.setblendmode_add_inert) there is no
+-- single correct pair of numbers, only the pair that reads closest to the stock
+-- glow. Tuning both live beats another reload-and-look cycle, and it doubles as
+-- the test for whether scaling a vertex colour above 1 brightens at all on this
+-- client -- `/uui abhl 0 2` removes the wash entirely, so if hovering still
+-- lights the icon, overbright works.
+--
+-- Values are not persisted: whatever reads right gets baked into the constants.
+function U.ActionBarHighlightTune(alpha, brighten, rest)
+  if alpha then CLASSIC_HIGHLIGHT_ALPHA = alpha end
+  if brighten then CLASSIC_HOVER_BRIGHTEN = brighten end
+  if rest then CLASSIC_REST_DIM = rest end
+
+  ForEachVisibleButton(function(button)
+    if not button.uuiClassic then return end
+    local ok, texture = pcall(button.GetHighlightTexture, button)
+    if ok and texture then
+      U.SetColor(texture, 1, 1, 1, CLASSIC_HIGHLIGHT_ALPHA)
+    end
+    ApplyIconTint(button)
+  end)
+
+  U.Print("classic hover: alpha=" .. tostring(CLASSIC_HIGHLIGHT_ALPHA) ..
+          " hover=" .. tostring(CLASSIC_HOVER_BRIGHTEN) ..
+          " rest=" .. tostring(CLASSIC_REST_DIM))
+end
+
+-- Reported by /uui abhl.
+--
+-- USER_CONFIRMED_INGAME under the classic theme: hovering an action button
+-- covers the icon with an opaque white square. Removing both owned highlight
+-- regions did not change it, so the region responsible is not the one the hover
+-- code was written against and guessing at further candidates is not warranted.
+--
+-- The first run of this dump reported tex=nil for every region including ones
+-- that are shown and clearly textured, while GetDrawLayer and GetObjectType
+-- answered normally through the same accessor -- so the GetTexture roundtrip
+-- check below leads, being what classicAction.Capture stakes every face on.
+-- Hover state is then reported as a before/after diff of the shown flags so the
+-- raised layer's ~45 radial-wipe strips cannot bury the one region that moved.
+function U.ActionBarHighlightDump()
+  local function Ask(object, method)
+    if not object or type(object[method]) ~= "function" then return nil end
+    local ok, value = pcall(object[method], object)
+    if not ok then return nil end
+    return value
+  end
+
+  local function Collect(into, label, frame, own)
+    if not frame or type(frame.GetRegions) ~= "function" then return end
+    local ok, regions = pcall(function() return { frame:GetRegions() } end)
+    if not ok then return end
+    local i
+    for i = 1, table.getn(regions) do
+      table.insert(into, { label = label .. i, region = regions[i], own = own })
+    end
+  end
+
+  local function Describe(entry)
+    return entry.label ..
+           " " .. tostring(Ask(entry.region, "GetObjectType")) ..
+           " layer=" .. tostring(Ask(entry.region, "GetDrawLayer")) ..
+           " shown=" .. tostring(Ask(entry.region, "IsShown")) ..
+           " r=" .. tostring(Ask(entry.region, "GetVertexColor")) ..
+           " tex=" .. tostring(Ask(entry.region, "GetTexture"))
+  end
+
+  -- Does GetTexture report a path back at all on this client? Every classic
+  -- face is read through it, so a nil answer here disables the whole template
+  -- silently and no amount of highlight work downstream can matter.
+  local parent = U.G("UIParent")
+  if parent and type(parent.CreateTexture) == "function" then
+    local madeOk, probe = pcall(parent.CreateTexture, parent, nil, "BACKGROUND")
+    if madeOk and probe then
+      pcall(probe.SetTexture, probe, "Interface\\Buttons\\ButtonHilight-Square")
+      U.Print("GetTexture roundtrip=" .. tostring(Ask(probe, "GetTexture")))
+      pcall(probe.Hide, probe)
+    end
+  end
+
+  local source = U.G("ActionButton1")
+  U.Print("ActionButton1=" .. tostring(source ~= nil) ..
+          " normal=" .. tostring(Ask(Ask(source, "GetNormalTexture"), "GetTexture")) ..
+          " highlight=" .. tostring(Ask(Ask(source, "GetHighlightTexture"), "GetTexture")))
+
+  U.Print("classic active=" .. tostring(classicAction.active) ..
+          " ready=" .. tostring(classicAction.ready) ..
+          " normal=" .. tostring(classicAction.normal and classicAction.normal.path) ..
+          " highlight=" .. tostring(classicAction.highlight and classicAction.highlight.path))
+
+  local button = bars[1] and bars[1].buttons[1]
+  if not button then
+    U.Print("bar 1 button 1 does not exist")
+    return
+  end
+  U.Print("button uuiClassic=" .. tostring(button.uuiClassic) ..
+          " uuiClassicHighlight=" .. tostring(button.uuiClassicHighlight) ..
+          " empty=" .. tostring(button.uuiEmpty))
+
+  local entries, i = {}, nil
+  Collect(entries, "btn", button, true)
+  Collect(entries, "layer", button.uuiCooldownLayer, false)
+
+  local before = {}
+  for i = 1, table.getn(entries) do
+    before[i] = Ask(entries[i].region, "IsShown") and true or false
+  end
+
+  local enter, leave = nil, nil
+  if type(button.GetScript) == "function" then
+    local ok, value = pcall(button.GetScript, button, "OnEnter")
+    if ok then enter = value end
+    ok, value = pcall(button.GetScript, button, "OnLeave")
+    if ok then leave = value end
+  end
+  if type(enter) ~= "function" then
+    U.Print("no OnEnter handler to fire")
+    return
+  end
+
+  local fired, err = pcall(enter, button)
+  if not fired then U.Print("OnEnter error: " .. tostring(err)) end
+
+  -- Only what hover actually changed, so the 45 radial-wipe strips on the
+  -- raised layer cannot bury the one region that matters.
+  U.Print("-- changed by hover --")
+  local changed = 0
+  for i = 1, table.getn(entries) do
+    local now = Ask(entries[i].region, "IsShown") and true or false
+    if now ~= before[i] then
+      changed = changed + 1
+      U.Print("  " .. tostring(before[i]) .. "->" .. tostring(now) ..
+              " " .. Describe(entries[i]))
+    end
+  end
+  if changed == 0 then U.Print("  nothing changed shown state") end
+
+  if type(leave) == "function" then pcall(leave, button) end
+
+  U.Print("-- button's own regions --")
+  for i = 1, table.getn(entries) do
+    if entries[i].own then U.Print("  " .. Describe(entries[i])) end
+  end
 end

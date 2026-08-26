@@ -113,6 +113,13 @@ local function StyleInboxRow(i)
   U.StripStockTextures(row)
   TintRow(row)
   SetMailFont(row, M.fontSize.small, WHITE)
+  -- Same defect as the Open Mail popup, one level down: a row's sender,
+  -- subject and expiry are separate FontStrings owned by the row, not the
+  -- row's own text, so the SetMailFont call above never reached them and they
+  -- kept stock gold. Recursed per row rather than from MailFrame so the Send
+  -- Mail tab's native EditBoxes are never walked into -- rules/
+  -- unreal-ui-design.md excludes this client's text inputs from every pass.
+  U.ForceStockTextWhite(row, WHITE, M.fontSize.small)
 
   local button = G("MailItem" .. i .. "Button")
   if button then
@@ -196,9 +203,32 @@ end
 -- ---------------------------------------------------------------------------
 local openMailPanel
 
+-- USER_REPORTED_INGAME: the previous pass only recursed from
+-- OpenMailScrollFrame, which left the popup reading as three different text
+-- styles at once -- the "From:"/"Subject:" labels in stock white, their
+-- sender/subject values in stock gold (GameFontNormal), and the letter body
+-- still in the decorative parchment book font at its dark ink colour. Requested
+-- fix: the whole letter reads as one white block in unrealUI's font, the way
+-- modules/questlog.lua drives every objective/description/reward FontString
+-- through one SetQuestFont(..., QUEST_WHITE) pass.
+--
+-- Recursing from OpenMailFrame itself is the same shape modules/trainer.lua's
+-- ReapplyAllText already uses, and it is deliberately name-free: query_compat.py
+-- has no record of any OpenMail child (checked), so enumerating
+-- OpenMailSender/OpenMailSubject/OpenMailAttachmentText by their Vanilla names
+-- would be a guess, while GetRegions/GetChildren walking finds whatever this
+-- client actually built. OpenMailBodyText is then re-driven by name as a belt-
+-- and-braces target for the one FontString the scroll-frame walk demonstrably
+-- failed to reach; if the name is wrong G() returns nil and nothing happens.
+--
+-- Order matters: the recursion whitens every FontString it finds, the title
+-- included, so the accent heading is restored after it -- not before. The title
+-- stays accent rather than white because it is addon chrome, matching
+-- QuestLogQuestTitle and every other unrealUI window heading.
 local function ReapplyOpenMailText()
+  U.ForceStockTextWhite(G("OpenMailFrame"), WHITE, M.fontSize.normal)
+  SetMailFont(G("OpenMailBodyText"), M.fontSize.normal, WHITE)
   SetMailFont(G("OpenMailTitleText"), M.fontSize.large, M.color.accent)
-  U.ForceStockTextWhite(G("OpenMailScrollFrame"), WHITE, M.fontSize.normal)
 end
 
 local function BuildOpenMailFrame()
@@ -249,6 +279,15 @@ local function BuildOpenMailFrame()
   U.StyleStockScrollbar(G("OpenMailScrollFrameScrollBar"))
 
   U.PostHookScript(openFrame, "OnShow", ReapplyOpenMailText)
+
+  -- The native populate step is what assigns the letter body its parchment
+  -- font object and ink colour, so re-running the text pass straight after it
+  -- is the one trigger guaranteed to land last. InboxFrame_OnClick (hooked in
+  -- BuildFrame) covers the "click another letter while the popup is already
+  -- open" case; this covers every other path that refills the popup -- taking
+  -- an attachment, an invoice refresh -- without relying on that one entry
+  -- point being the only one. PostHookGlobal no-ops if the name is absent.
+  U.PostHookGlobal("OpenMail_Update", ReapplyOpenMailText)
 end
 
 -- ---------------------------------------------------------------------------

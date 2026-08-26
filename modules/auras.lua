@@ -506,12 +506,39 @@ end
 -- ---------------------------------------------------------------------------
 -- Icons
 -- ---------------------------------------------------------------------------
--- How far to walk before giving up on a unit. Vanilla indices are contiguous,
--- but that is not verified here (the probe only ever had one debuff live), so
--- the walk tolerates a single gap and stops on two consecutive empty slots --
--- the same heuristic the probe itself used.
-local MAX_SCAN = 24
-local EMPTY_STOP = 2
+-- How far to walk on a unit, and why the walk no longer stops early.
+--
+-- These lists are slot-indexed, not compacted. The client documents index as a
+-- slot in a fixed range -- UnitDebuff "index is 1-based. Valid range is 1 ... 16"
+-- and UnitBuff "1 ... 32" -- and documents an unused slot answering nil/0(/nil)
+-- *at that slot*, which is the shape of a list that can carry holes rather than
+-- one that ends at the first gap.
+--
+-- The previous walk stopped after two consecutive empty slots, on the
+-- assumption that indices are contiguous. That assumption was never verified
+-- (the probe only ever had one debuff live) and it silently dropped every aura
+-- sitting behind a two-slot hole: reported in game as a debuff that
+-- intermittently never appeared on the target frame at all, while the debuffs
+-- ahead of it showed normally. UnrealPfUI, a working implementation on this
+-- same client, scans both lists flat and never breaks on an empty slot
+-- (api/unitframes.lua: "for i=1,16" for debuffs, "for i=1,32" for buffs) --
+-- WORKING_SOURCE evidence per .claude/rules/unreal-pfui.md, not runtime
+-- verification, but it is the only evidence either way and it agrees with the
+-- documented slot ranges.
+--
+-- So the walk is flat now, bounded only by the documented slot count. The cost
+-- is the empty slots it no longer skips: one pcall'd read each, at most 16 on a
+-- debuff row and 32 on a buff row, which the primary rows pay 5 times a second
+-- and the party rows once a second. Nothing else got more expensive -- the
+-- tooltip name scan, the icon writes and the timer tick all still run only for
+-- slots that actually hold an aura, and the party rows still stop as soon as
+-- their six visible slots are full.
+local MAX_DEBUFF_SLOTS = 16
+local MAX_BUFF_SLOTS = 32
+
+local function ScanLimit(harmful)
+  return harmful and MAX_DEBUFF_SLOTS or MAX_BUFF_SLOTS
+end
 
 -- Party rows stay inside the member frame's 47-unit vertical footprint and
 -- extend to its right, matching the requested at-a-glance layout without
@@ -941,8 +968,8 @@ local function RefreshRow(row, offset)
   passCount = passCount + 1
   local pass = passCount
 
-  local shown, empty = 0, 0
-  for i = 1, MAX_SCAN do
+  local shown = 0
+  for i = 1, ScanLimit(row.harmful) do
     statScans = statScans + 1
     local texture, count, debuffType, timeLeft
     if native then
@@ -951,12 +978,10 @@ local function RefreshRow(row, offset)
       texture, count, debuffType = ReadAura(row.unit, i, row.harmful)
     end
 
-    if not texture then
-      empty = empty + 1
-      if empty >= EMPTY_STOP then break end
-    else
-      empty = 0
-
+    -- An empty slot is skipped, not an end of list. The drawn row stays
+    -- gapless because icons are placed by `shown`, which only advances for an
+    -- aura that was actually found.
+    if texture then
       -- Tracking runs for every aura on the unit, not only the drawn ones. A
       -- filtered-out debuff that stopped being tracked would be stamped anew
       -- the moment its filter was switched back on, and one past the icon cap
@@ -982,8 +1007,8 @@ local function RefreshRow(row, offset)
                   size, entry, now, timers)
 
         -- Party rows never draw beyond their six visible slots. Stop as soon
-        -- as those slots are full instead of scanning and tooltip-naming up to
-        -- eighteen additional auras that cannot affect the display.
+        -- as those slots are full instead of scanning and tooltip-naming the
+        -- rest of the slot range, which cannot affect the display.
         if row.stopAtCap and shown >= maxIcons then break end
       end
     end
@@ -1101,9 +1126,34 @@ local function ShortTexture(texture)
   return tail
 end
 
+-- Where a row actually sits, and what native art shares that space. Only
+-- meaningful under Classic, where the client's own unit frame is drawn over the
+-- anchor: it reports the two layers side by side, so "the icons are behind the
+-- native frame" can be confirmed or ruled out from one report instead of a
+-- probe run. rowLevel > nativeLevel on a shared strata means the row is on top;
+-- differing strata means the strata decides and the level is irrelevant.
+local function LayerLine(row)
+  local native = row.anchor and row.anchor.classicNativeFrame
+  if not native then return nil end
+
+  local function Read(object, method)
+    local fn = object[method]
+    if type(fn) ~= "function" then return "?" end
+    local ok, value = pcall(fn, object)
+    if not ok or value == nil then return "?" end
+    return tostring(value)
+  end
+
+  return string.format("    layer: row %s/%s  native %s/%s",
+                       Read(row, "GetFrameStrata"), Read(row, "GetFrameLevel"),
+                       Read(native, "GetFrameStrata"),
+                       Read(native, "GetFrameLevel"))
+end
+
 function U.AuraDebugDump()
   U.Print("aura dump - duration table holds " .. U.AuraDurationCount() ..
-          " entries")
+          " entries  (theme " .. tostring(U.GetActiveThemeStyle()) ..
+          ", below frame " .. tostring(U.GetAuraSetting("belowFrame")) .. ")")
 
   local r
   for r = 1, table.getn(rowOrder) do
@@ -1117,10 +1167,14 @@ function U.AuraDebugDump()
                           native and "GetPlayerBuff (client time)"
                                  or "tooltip name + duration table"))
 
+    local layer = LayerLine(row)
+    if layer then U.Print(layer) end
+
     if exists then
-      local empty = 0
       local i
-      for i = 1, MAX_SCAN do
+      -- Walks every slot the display path walks, so a hole in the list reads
+      -- the same here as it draws on the frame.
+      for i = 1, ScanLimit(row.harmful) do
         local texture, count, debuffType, timeLeft
         if native then
           texture, count, debuffType, timeLeft = ReadPlayerAura(i, row.harmful)
@@ -1128,12 +1182,7 @@ function U.AuraDebugDump()
           texture, count, debuffType = ReadAura(row.unit, i, row.harmful)
         end
 
-        if not texture then
-          empty = empty + 1
-          if empty >= EMPTY_STOP then break end
-        else
-          empty = 0
-
+        if texture then
           local name = nil
           if not native then name = ScanName(row.unit, i, row.harmful) end
 
@@ -1155,6 +1204,33 @@ end
 -- ---------------------------------------------------------------------------
 -- Build
 -- ---------------------------------------------------------------------------
+-- Classic draws the client's own unit frame over this row's anchor, so the row
+-- shares its screen area with native art that UnrealUI does not own. The anchor
+-- is deliberately on the LOW strata (modules/unitframes.lua) so UnrealUI's
+-- frames stay under interface windows, and a row left at the anchor's own frame
+-- level can be covered by the native frame that sits on top of it.
+--
+-- The raise is level-only, and only when the two are already on the same
+-- strata. That is the case it can fix; it is also the only case where changing
+-- anything is safe. Matching the native frame's strata instead would be the
+-- complete fix, but it can push a row onto MEDIUM, where UnrealUI's own bag
+-- window lives -- trading a Classic-only aura bug for aura icons drawn over the
+-- bags for everyone. Do not make that trade without a measurement: what the
+-- native frame's strata actually is here has never been read, and /uui aura
+-- now prints it precisely so one report can settle it.
+local function RaiseAboveNativeFrame(row, anchor)
+  local native = anchor and anchor.classicNativeFrame
+  if not native then return end
+
+  local rowOk, rowStrata = pcall(row.GetFrameStrata, row)
+  local nativeOk, nativeStrata = pcall(native.GetFrameStrata, native)
+  if not rowOk or not nativeOk or rowStrata ~= nativeStrata then return end
+
+  local levelOk, level = pcall(native.GetFrameLevel, native)
+  if not levelOk or not tonumber(level) then return end
+  pcall(row.SetFrameLevel, row, level + 10)
+end
+
 local function BuildRow(id, unit, harmful, setting, options)
   local anchor = U.GetUnitFrame(unit)
   if not anchor then
@@ -1168,6 +1244,7 @@ local function BuildRow(id, unit, harmful, setting, options)
   local row = CreateFrame("Frame", "UnrealUIAuraRow" .. id, anchor)
   row.anchor = anchor
   if unit == "target" then row.belowAnchor = U.GetUnitFrame("targettarget") end
+  RaiseAboveNativeFrame(row, anchor)
   row:SetWidth(1)
   row:SetHeight(1)
   PositionRow(row, U.GetAuraSetting("belowFrame"), 0)
@@ -1208,28 +1285,36 @@ end
 local PAGE_WIDTH = 484
 local FILTER_COLUMN_X = 200
 
+-- The Unit Frames page opens with the party-frame section, which is owned by
+-- modules/unitframes.lua because that module owns the layout it changes. Every
+-- offset below is measured from the bottom of that section plus the 8-unit gap
+-- the other section headings use, so the aura controls keep their own spacing
+-- whatever is stacked above them.
+local SECTION_TOP = (U.UnitFramePartySettingsHeight or 0)
+if SECTION_TOP > 0 then SECTION_TOP = SECTION_TOP + 8 end
+
 -- Two columns keep the seven toggles to four compact rows and leave the colour
 -- controls inside the fixed-height settings panel.
 local TOGGLE_COLUMN_X = 240
 
 local TOGGLES = {
-  { key = "playerEnabled",     text = "Player frame debuffs",  column = 0, row = 0 },
-  { key = "targetEnabled",     text = "Target frame debuffs",  column = 1, row = 0 },
-  { key = "targetBuffEnabled", text = "Target frame buffs",    column = 0, row = 1 },
-  { key = "partyEnabled",      text = "Party frame debuffs",   column = 1, row = 1 },
-  { key = "partyBuffEnabled",  text = "Party frame buffs",     column = 0, row = 2 },
-  { key = "showTimers",        text = "Timers on aura icons",  column = 1, row = 2 },
-  { key = "belowFrame",        text = "Player / target auras below frames", column = 0, row = 3 },
+  { key = "playerEnabled",     textKey = "AURAS_PLAYER_DEBUFFS", column = 0, row = 0 },
+  { key = "targetEnabled",     textKey = "AURAS_TARGET_DEBUFFS", column = 1, row = 0 },
+  { key = "targetBuffEnabled", textKey = "AURAS_TARGET_BUFFS",   column = 0, row = 1 },
+  { key = "partyEnabled",      textKey = "AURAS_PARTY_DEBUFFS",  column = 1, row = 1 },
+  { key = "partyBuffEnabled",  textKey = "AURAS_PARTY_BUFFS",    column = 0, row = 2 },
+  { key = "showTimers",        textKey = "AURAS_SHOW_TIMERS",    column = 1, row = 2 },
+  { key = "belowFrame",        textKey = "AURAS_BELOW_FRAME",    column = 0, row = 3 },
 }
 
 -- Laid out 2 per row (column, row) so the list reads as a table instead of a
 -- single tall column.
 local FILTERS = {
-  { key = "showMagic",   text = "Magic",           column = 0, row = 0 },
-  { key = "showCurse",   text = "Curse",           column = 1, row = 0 },
-  { key = "showPoison",  text = "Poison",          column = 0, row = 1 },
-  { key = "showDisease", text = "Disease",         column = 1, row = 1 },
-  { key = "showOther",   text = "Physical / other", column = 0, row = 2 },
+  { key = "showMagic",   textKey = "AURAS_MAGIC",   column = 0, row = 0 },
+  { key = "showCurse",   textKey = "AURAS_CURSE",   column = 1, row = 0 },
+  { key = "showPoison",  textKey = "AURAS_POISON",  column = 0, row = 1 },
+  { key = "showDisease", textKey = "AURAS_DISEASE", column = 1, row = 1 },
+  { key = "showOther",   textKey = "AURAS_OTHER",   column = 0, row = 2 },
 }
 
 local function BuildSettingsPage(parent)
@@ -1237,9 +1322,9 @@ local function BuildSettingsPage(parent)
   local controls = {}
 
   local header = U.CreateSectionHeader(parent, {
-    text = "Unit Frame Auras",
+    text = U.L("AURAS_HEADER"),
     width = PAGE_WIDTH,
-    y = -4,
+    y = -4 - SECTION_TOP,
   })
   table.insert(widgets, header)
 
@@ -1248,7 +1333,7 @@ local function BuildSettingsPage(parent)
     local spec = TOGGLES[i]
     local check = U.CreateCheckbox(parent, {
       name = "UnrealUIAuraToggle" .. spec.key,
-      text = spec.text,
+      text = U.L(spec.textKey),
       textWidth = TOGGLE_COLUMN_X - 26,
       value = U.GetAuraSetting(spec.key),
       onChange = function(value)
@@ -1257,15 +1342,16 @@ local function BuildSettingsPage(parent)
       end,
     })
     check.SetPoint("TOPLEFT", parent, "TOPLEFT",
-                   spec.column * TOGGLE_COLUMN_X, -34 - spec.row * 26)
+                   spec.column * TOGGLE_COLUMN_X,
+                   -34 - SECTION_TOP - spec.row * 26)
     controls[spec.key] = check
     table.insert(widgets, check)
   end
 
   local filterHeader = U.CreateSectionHeader(parent, {
-    text = "Show Debuffs By Dispel Type",
+    text = U.L("AURAS_DISPEL_HEADER"),
     width = PAGE_WIDTH,
-    y = -134,
+    y = -134 - SECTION_TOP,
   })
   table.insert(widgets, filterHeader)
 
@@ -1273,7 +1359,7 @@ local function BuildSettingsPage(parent)
     local spec = FILTERS[i]
     local check = U.CreateCheckbox(parent, {
       name = "UnrealUIAuraFilter" .. spec.key,
-      text = spec.text,
+      text = U.L(spec.textKey),
       textWidth = FILTER_COLUMN_X - 26,
       value = U.GetAuraSetting(spec.key),
       onChange = function(value)
@@ -1282,7 +1368,8 @@ local function BuildSettingsPage(parent)
       end,
     })
     check.SetPoint("TOPLEFT", parent, "TOPLEFT",
-                   spec.column * FILTER_COLUMN_X, -164 - spec.row * 26)
+                   spec.column * FILTER_COLUMN_X,
+                   -164 - SECTION_TOP - spec.row * 26)
     controls[spec.key] = check
     table.insert(widgets, check)
   end
@@ -1299,12 +1386,7 @@ local function BuildSettingsPage(parent)
   })
   if hint then
     U.AnchorSettingsDescription(hint, controls[FILTERS[table.getn(FILTERS)].key].box)
-    hint:SetText("Your own auras are timed by the client and are exact. " ..
-                 "For any other unit this client reports no duration, so " ..
-                 "those timers are rebuilt from a spell duration table and " ..
-                 "the moment the aura was first seen: one already running " ..
-                 "when you target reads as fresh, and one the table does not " ..
-                 "list shows no timer. Use /uui aura to see which is which.")
+    hint:SetText(U.L("AURAS_HINT"))
     table.insert(widgets, hint)
   end
 
@@ -1315,10 +1397,22 @@ local function BuildSettingsPage(parent)
     end
   end
 
+  local refreshParty
+  if type(U.BuildUnitFramePartySettings) == "function" then
+    local partyWidgets
+    partyWidgets, refreshParty =
+      U.BuildUnitFramePartySettings(parent, -4, PAGE_WIDTH)
+    local n
+    for n = 1, table.getn(partyWidgets) do
+      table.insert(widgets, partyWidgets[n])
+    end
+  end
+
   local refreshColors
   if type(U.BuildUnitFrameColorSettings) == "function" then
     local colorWidgets
-    colorWidgets, refreshColors = U.BuildUnitFrameColorSettings(parent, -302)
+    colorWidgets, refreshColors =
+      U.BuildUnitFrameColorSettings(parent, -302 - SECTION_TOP, PAGE_WIDTH)
     local n
     for n = 1, table.getn(colorWidgets) do
       table.insert(widgets, colorWidgets[n])
@@ -1327,6 +1421,7 @@ local function BuildSettingsPage(parent)
 
   local function Refresh()
     RefreshAuraControls()
+    if refreshParty then refreshParty() end
     if refreshColors then refreshColors() end
   end
 
@@ -1338,7 +1433,7 @@ end
 -- ---------------------------------------------------------------------------
 function A:OnInit()
   if type(U.RegisterSettingsTab) == "function" then
-    U.RegisterSettingsTab("unitframes", "Unit Frames", BuildSettingsPage)
+    U.RegisterSettingsTab("unitframes", U.L("UF_PAGE"), BuildSettingsPage)
   end
 end
 
@@ -1375,9 +1470,9 @@ function A:OnEnable()
     RefreshRow(rows.player, 0)
   end)
   -- round 3: deferred one driver tick, same reasoning as
-  -- core/compat.lua's target-group sweep -- this used to scan up to 24 debuff
-  -- indices and lay out icon geometry synchronously inside the same frame the
-  -- client re-shows the native TargetFrame in.
+  -- core/compat.lua's target-group sweep -- this used to scan the whole debuff
+  -- slot range and lay out icon geometry synchronously inside the same frame
+  -- the client re-shows the native TargetFrame in.
   U.RegisterEvent("PLAYER_TARGET_CHANGED", function()
     U.DeferOnce("auras.target-refresh", function()
       -- A new target is a new set of indices, so every cached name is stale.

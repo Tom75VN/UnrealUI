@@ -505,6 +505,20 @@ local visualOnlyNames = {}
 local visualOnlyKinds = {}
 local visualObjectEpoch = {}
 local targetVisualEpoch = 0
+-- The one suppressed family whose content the client rewrites *between* target
+-- changes: the stock frame's own buff/debuff icon block. Everything else in the
+-- visual-only set is written when the target is acquired and then left alone,
+-- which is why one clear per target epoch is enough for it. An aura block is
+-- re-laid-out every time the unit's auras change -- casting Rend on the target
+-- you already have re-issues an icon path into a slot this adapter had already
+-- cleared -- and the epoch stamp then says "already current" and refuses to
+-- clear it again for the rest of that target.
+--
+-- These names therefore verify the content instead of trusting the stamp, and
+-- get their own UNIT_AURA-driven sweep so the re-clear lands on the event that
+-- caused the rewrite rather than waiting for the periodic batch.
+local volatileNames = {}
+local volatileList = {}
 -- TargetLevelText is rewritten a few render ticks after the target event on
 -- this client. Retry only this text for a short bounded window; keeping the
 -- target frame lifecycle intact remains mandatory for the confirmed Tab-spam
@@ -591,6 +605,29 @@ end
 -- keeps taking the full re-apply exactly as it did before.
 local shownKnown, shownAnswer
 local alphaKnown, alphaAnswer
+local contentKnown, contentAnswer
+
+-- Texture:GetTexture is BEHAVIOR_VERIFIED on this client (behavior.json /
+-- textures.pfui_bar_path.v1 read a path straight back off a texture) and is
+-- documented to answer nil when nothing is bound, so an empty answer is a
+-- cleared slot. Same shape as ReadShown: contentKnown separates "the client
+-- says it is empty" from "this object cannot answer", and only the first may
+-- skip the re-clear.
+local function ReadTextureContent(object)
+  local fn = object.GetTexture
+  if not fn then return end
+  local value = fn(object)
+  contentAnswer = (value == nil or value == "")
+  contentKnown = true
+end
+
+local function ReadTextContent(object)
+  local fn = object.GetText
+  if not fn then return end
+  local value = fn(object)
+  contentAnswer = (value == nil or value == "")
+  contentKnown = true
+end
 
 local function ReadShown(object)
   local fn = object.IsShown
@@ -626,6 +663,12 @@ end
 -- ~4-native-call teardown, as opposed to being confirmed already hidden.
 local statVisited, statTornDown = 0, 0
 local lastTargetVisited, lastTargetTornDown = 0, 0
+-- How many times an already-suppressed aura slot had to be cleared again
+-- because the client had written a stock icon back into it. Zero means either
+-- the client never rewrites these (and the volatile path costs nothing) or the
+-- readback cannot see the rewrite; anything above zero is the Rend/Hamstring
+-- case being caught. Reported by /uui debug.
+local statAuraRecleared = 0
 -- ---------------------------------------------------------------------------
 -- When the recipe is applied, and why it is not applied at load
 --
@@ -696,7 +739,32 @@ end
 -- at level 1 would never receive level 2's SetAlpha(0).
 local forceFullApply = false
 
-local function KillNativeObject(object, visualOnly, visualKind)
+-- "Is this object's visible content still the empty thing the adapter left
+-- behind?" A per-target-epoch stamp answers that for every family the client
+-- writes once per target. It is wrong for the aura block (see volatileNames),
+-- which is re-laid-out on every aura change, so those objects are asked
+-- directly. An object that cannot answer falls back to re-clearing, which is
+-- correct-but-repeated work rather than a stale icon left on screen.
+local function ContentCleared(object, visualKind, volatile)
+  if not visualKind then return true end
+  if not volatile then
+    return visualObjectEpoch[object] == targetVisualEpoch
+  end
+
+  contentKnown, contentAnswer = false, false
+  if visualKind == "texture" then
+    pcall(ReadTextureContent, object)
+  elseif visualKind == "text" then
+    pcall(ReadTextContent, object)
+  else
+    -- "bar" keeps the stamp: ClearBarVisual walks regions and children, so
+    -- there is no single cheap readback for it, and no bar is in the aura set.
+    return visualObjectEpoch[object] == targetVisualEpoch
+  end
+  return contentKnown and contentAnswer
+end
+
+local function KillNativeObject(object, visualOnly, visualKind, volatile)
   if not object then return end
 
   local level = SuppressLevel()
@@ -718,17 +786,27 @@ local function KillNativeObject(object, visualOnly, visualKind)
   -- propagate parent alpha. Mouse input is dropped once, but the widget stays
   -- shown and subscribed so native code can recycle it normally. Some native
   -- StatusBar/FontString/Texture renderers ignore UIObject alpha, so their
-  -- content is cleared once per target-change epoch without touching lifecycle.
+  -- content is cleared without touching lifecycle -- once per target-change
+  -- epoch for the families the client only writes on target acquisition, and
+  -- whenever the readback says it came back for the aura slots, which it
+  -- rewrites inside a target (see ContentCleared and volatileNames).
   if visualOnly then
-    local contentCurrent = (not visualKind or
-                            visualObjectEpoch[object] == targetVisualEpoch)
     if alreadyMarked then
       alphaKnown, alphaAnswer = false, nil
       pcall(ReadAlpha, object)
-      if alphaKnown and alphaAnswer == 0 and contentCurrent then return end
+      -- The content check is second on purpose: for a volatile object it is a
+      -- real readback, and an object the client has already re-alpha'd needs
+      -- the full re-apply regardless of what its content says.
+      if alphaKnown and alphaAnswer == 0 and
+         ContentCleared(object, visualKind, volatile) then
+        return
+      end
     end
 
     statTornDown = statTornDown + 1
+    if volatile and alreadyMarked then
+      statAuraRecleared = statAuraRecleared + 1
+    end
     suppressedObjects[object] = true
     pcall(ZeroAlpha, object)
     if not alreadyMarked then pcall(DropMouse, object) end
@@ -805,7 +883,7 @@ local function SweepNames(names)
   for i = 1, table.getn(names) do
     local name = names[i]
     KillNativeObject(ResolveNativeObject(name), visualOnlyNames[name],
-                     visualOnlyKinds[name])
+                     visualOnlyKinds[name], volatileNames[name])
   end
 end
 
@@ -817,7 +895,7 @@ local function SweepNameRange(names, first, last)
   for i = first, last do
     local name = names[i]
     KillNativeObject(ResolveNativeObject(name), visualOnlyNames[name],
-                     visualOnlyKinds[name])
+                     visualOnlyKinds[name], volatileNames[name])
   end
 end
 
@@ -860,7 +938,7 @@ local function ApplyNativeSuppressionBatch()
     if suppressionCursor > count then suppressionCursor = 1 end
     local name = suppressedNames[suppressionCursor]
     KillNativeObject(ResolveNativeObject(name), visualOnlyNames[name],
-                     visualOnlyKinds[name])
+                     visualOnlyKinds[name], volatileNames[name])
     suppressionCursor = suppressionCursor + 1
     processed = processed + 1
   end
@@ -957,6 +1035,15 @@ function U.SuppressNativeFrame(names, group)
              string.find(name, "Border$") then
         visualOnlyKinds[name] = "texture"
       end
+
+      -- The aura block, and only it: "[Bb]uff%d" matches TargetFrameBuff1 and
+      -- TargetFrameDebuff12Icon alike while missing every other name this
+      -- group carries (bars, portrait, name, level, frame art). These are the
+      -- slots the client rewrites without a target change; see volatileNames.
+      if not volatileNames[name] and string.find(name, "[Bb]uff%d") then
+        volatileNames[name] = true
+        table.insert(volatileList, name)
+      end
     end
     if type(name) == "string" and not suppressedSeen[name] then
       suppressedSeen[name] = true
@@ -1014,6 +1101,32 @@ function U.SuppressNativeFrame(names, group)
         lastTargetTornDown = statTornDown - torn
       end)
     end)
+    -- The aura block's own event. PLAYER_TARGET_CHANGED is not the only thing
+    -- that repopulates the stock frame's buff/debuff slots -- an aura landing
+    -- on the target you already have does it too, and until this existed that
+    -- rewrite was never undone, because the epoch stamp said the slot had
+    -- already been cleared for this target. In the Classic theme that is
+    -- directly visible: the native target frame is re-anchored onto UnrealUI's
+    -- own anchor, so its aura block lands exactly where modules/auras.lua
+    -- draws the target debuff row when "below frame" is on, and a stock icon
+    -- left in that slot sits over UnrealUI's own. A warrior sees it as Rend and
+    -- Hamstring -- their own casts, on their current target -- never appearing.
+    --
+    -- UNIT_AURA is the one aura event observed firing on this client
+    -- (events.json; modules/auras.lua is built on the same fact). Filtered to
+    -- the two tokens whose frames are in this set and deferred exactly like
+    -- the target sweep, so an aura storm collapses to one sweep per tick. The
+    -- bounded periodic batch stays the guarantee if it does not fire.
+    local function auraSweep()
+      if U.PerfDisabled and U.PerfDisabled("sweep") then return end
+      if SuppressLevel() < 4 then return end
+      SweepNames(volatileList)
+    end
+    U.RegisterEvent("UNIT_AURA", function(event, unit)
+      if unit ~= "target" and unit ~= "targettarget" then return end
+      U.DeferOnce("compat.aura-sweep", auraSweep)
+    end)
+
     -- Deferred and coalesced for the same reason the target sweep above is,
     -- and more urgently: PARTY_MEMBERS_CHANGED is by far the noisiest event
     -- this client emits while grouped. Measured in the reporter's runs, 130
@@ -1118,6 +1231,8 @@ function U.SuppressionStats()
     lastTargetTornDown = lastTargetTornDown,
     registeredNames = table.getn(suppressedNames),
     targetGroupNames = table.getn(suppressedGroups["target"] or {}),
+    auraNames = table.getn(volatileList),
+    auraRecleared = statAuraRecleared,
   }
 end
 

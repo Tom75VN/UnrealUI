@@ -442,6 +442,14 @@ end
 function U.StyleStockArrowButton(button, direction, size)
   if not button then return nil end
   U.StyleStockButton(button)
+
+  -- Arrow buttons are commonly reduced from their native dimensions. Preserve
+  -- a usable mouse target instead of carrying the old positive insets into the
+  -- smaller frame (which can collapse the clickable rectangle completely).
+  -- Official client documentation confirms negative insets expand the hit
+  -- rectangle; UnrealPfUI's working same-client SkinArrowButton uses -3 here.
+  pcall(button.SetHitRectInsets, button, -3, -3, -3, -3)
+
   if size then
     pcall(button.SetWidth, button, size)
     pcall(button.SetHeight, button, size)

@@ -89,6 +89,20 @@ M.texture = {
   restIcon = "Interface\\AddOns\\unrealUI\\media\\rest-icon",
 }
 
+-- Flag artwork for the settings language selector, keyed by the locale codes
+-- core/locale.lua registers. A code without artwork falls back to its ASCII
+-- two-letter badge, so the selector remains usable if another locale is added
+-- before its flag is available.
+--
+-- Paths are rebuilt here at runtime and never persisted, per
+-- knowledge.json / config.savedvariables_backslash_corruption.
+M.languageFlag = {
+  ["enUS"] = "Interface\\AddOns\\unrealUI\\media\\Flags\\en",
+  ["zhCN"] = "Interface\\AddOns\\unrealUI\\media\\Flags\\cn",
+  ["ruRU"] = "Interface\\AddOns\\unrealUI\\media\\Flags\\ru",
+  ["frFR"] = "Interface\\AddOns\\unrealUI\\media\\Flags\\fr",
+}
+
 -- ---------------------------------------------------------------------------
 -- Colours
 --
@@ -165,6 +179,17 @@ M.cooldownText = {
   minute = { 0.20, 1.00, 1.00, 1.00 },
   hour   = { 0.20, 0.50, 1.00, 1.00 },
   day    = { 0.20, 0.20, 1.00, 1.00 },
+}
+
+-- How a zone's level range reads against the player's own level, drawn beside
+-- the hovered zone name on the world map (modules/worldmap.lua). Game state
+-- rather than unrealUI chrome, so these are semantic colours and never the
+-- accent; they live here because rules/unreal-ui-design.md keeps shared colour
+-- values central even while one surface draws them.
+M.zoneLevel = {
+  ready   = { 0.25, 0.75, 0.30, 1.00 },   -- player is above the zone range
+  caution = { 1.00, 0.50, 0.10, 1.00 },   -- player is inside the zone range
+  danger  = { 1.00, 0.20, 0.20, 1.00 },   -- zone is above the player
 }
 
 -- Power colours keyed by the numeric UnitPowerType index used by Vanilla.
@@ -302,14 +327,21 @@ M.slot = {
 -- a second consumer cannot drift from the first; see
 -- .claude/rules/unreal-ui.md on shared media/state placement.
 -- ---------------------------------------------------------------------------
--- The icon atlas did not render in the tooltip/modal price readouts in game
--- (USER_CONFIRMED_INGAME): the texture path was written with single
--- backslashes, an invalid Lua escape that this client silently drops rather
--- than rejecting, so SetTexture got a path with no separators at all and
--- failed inside its pcall with nothing visible to explain why. A coloured
--- number plus letter suffix needs no texture and cannot fail the same way.
+-- USER_CONFIRMED_INGAME: UI-MoneyIcons renders when the path uses valid Lua
+-- backslashes and the atlas is sliced horizontally. The separate UI-GoldIcon,
+-- UI-SilverIcon and UI-CopperIcon paths do not render on this client.
+M.moneyTexture = "Interface\\MoneyFrame\\UI-MoneyIcons"
 M.money = {
-  gold   = { suffix = "g", color = { 1.00, 0.82, 0.00, 1.00 } },
-  silver = { suffix = "s", color = { 0.75, 0.75, 0.75, 1.00 } },
-  copper = { suffix = "c", color = { 0.80, 0.47, 0.29, 1.00 } },
+  gold = {
+    coords = { 0.00, 0.25, 0, 1 },
+    color = { 1.00, 0.82, 0.00, 1.00 },
+  },
+  silver = {
+    coords = { 0.25, 0.50, 0, 1 },
+    color = { 0.75, 0.75, 0.75, 1.00 },
+  },
+  copper = {
+    coords = { 0.50, 0.75, 0, 1 },
+    color = { 0.80, 0.47, 0.29, 1.00 },
+  },
 }

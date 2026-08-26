@@ -354,7 +354,7 @@ local function CreateBar()
   for i = 1, slotCount do buttons[i] = CreateButton(i) end
 
   U.RegisterMover("petbar", frame, {
-    label = "Pet Bar",
+    label = U.L("MOVER_LABEL_PET_BAR"),
     default = { point = "BOTTOM", relativePoint = "BOTTOM", x = 0, y = 64 },
     visible = function() return IsEnabled() end,
   })
@@ -462,22 +462,22 @@ end
 -- ---------------------------------------------------------------------------
 local PAGE_WIDTH = 484
 local SLIDERS = {
-  { key = "perRow",  text = "Buttons Per Row" },
-  { key = "size",    text = "Button Size" },
-  { key = "spacing", text = "Button Spacing" },
+  { key = "perRow",  textKey = "PETBAR_BUTTONS_PER_ROW" },
+  { key = "size",    textKey = "PETBAR_BUTTON_SIZE" },
+  { key = "spacing", textKey = "PETBAR_BUTTON_SPACING" },
 }
 
 local function BuildSettingsPage(parent)
   local widgets, controls = {}, {}
 
   local header = U.CreateSectionHeader(parent, {
-    text = "Pet Bar", width = PAGE_WIDTH, y = -4,
+    text = U.L("PETBAR_PAGE"), width = PAGE_WIDTH, y = -4,
   })
   table.insert(widgets, header)
 
   local enable = U.CreateCheckbox(parent, {
     name = "UnrealUIPetBarConfigEnable",
-    text = "Enable",
+    text = U.L("COMMON_ENABLE"),
     value = U.GetPetBarSetting("enabled"),
     onChange = function(value) U.SetPetBarSetting("enabled", value) end,
   })
@@ -486,7 +486,7 @@ local function BuildSettingsPage(parent)
 
   local autocast = U.CreateCheckbox(parent, {
     name = "UnrealUIPetBarConfigAutocast",
-    text = "Highlight auto-cast abilities",
+    text = U.L("PETBAR_AUTOCAST"),
     value = U.GetPetBarSetting("showAutocast"),
     onChange = function(value) U.SetPetBarSetting("showAutocast", value) end,
   })
@@ -500,7 +500,7 @@ local function BuildSettingsPage(parent)
 
     local slider = U.CreateSlider(parent, {
       name = "UnrealUIPetBarConfig" .. spec.key,
-      text = spec.text,
+      text = U.L(spec.textKey),
       width = 200,
       min = min, max = max, step = step,
       value = U.GetPetBarSetting(spec.key),
@@ -520,7 +520,7 @@ local function BuildSettingsPage(parent)
     local finalSlider = controls[SLIDERS[table.getn(SLIDERS)].key]
     U.AnchorSettingsDescription(hint, finalSlider.box,
                                 -math.floor((finalSlider.width - finalSlider.boxWidth) / 2))
-    hint:SetText("Shown only while you have an active pet with its own action bar.")
+    hint:SetText(U.L("PETBAR_HINT"))
     table.insert(widgets, hint)
   end
 
@@ -556,7 +556,7 @@ function PB:OnInit()
   cfg = U.ModuleConfig("petbar", DEFAULTS)
 
   if type(U.RegisterSettingsTab) == "function" then
-    U.RegisterSettingsTab("petbar", "Pet Bar", BuildSettingsPage, {
+    U.RegisterSettingsTab("petbar", U.L("PETBAR_PAGE"), BuildSettingsPage, {
       parent = "actionbars",
       after = "actionbars.general",
     })

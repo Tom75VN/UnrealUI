@@ -23,7 +23,11 @@ local M = U.media
 local S = U.RegisterModule("settings")
 
 local PANEL_WIDTH = 700
-local PANEL_HEIGHT = 520
+-- Content area is PANEL_HEIGHT less the header and footer, and the fullest
+-- page in the addon (Unit Frames: party, auras, dispel types and colours) is
+-- what sets the floor. Raised from 520 when the party-frame section was added
+-- to that page; every other page simply gains bottom margin.
+local PANEL_HEIGHT = 580
 local SIDEBAR_WIDTH = 168
 local ROW_HEIGHT = 18
 local ROW_GAP = 1
@@ -388,6 +392,131 @@ function U.OpenSettingsPage(id)
 end
 
 -- ---------------------------------------------------------------------------
+-- Language selector
+--
+-- Four flat badges in the top-right of the header, opposite the addon name.
+-- Not a dropdown: there are only four languages, and a player who has just
+-- landed in one they cannot read needs the way back to be visible on screen
+-- rather than one click inside a closed control.
+--
+-- Each registered locale uses its flag from M.languageFlag. The ASCII language
+-- code remains the fallback for a future locale whose artwork is not available.
+--
+-- Changing language does not retranslate what is already on screen: every
+-- label in this addon is written once when its page is built. The reload
+-- prompt is the same one core/theme.lua's theme switch uses.
+-- ---------------------------------------------------------------------------
+local LANGUAGE_BUTTON_WIDTH = 18
+local LANGUAGE_BUTTON_HEIGHT = 14
+local LANGUAGE_BUTTON_GAP = 3
+local LANGUAGE_BUTTON_RIGHT_INSET = 14
+local LANGUAGE_BUTTON_TOP_INSET = 10
+
+local function LanguageSelectorInset()
+  local count = table.getn(U.GetLanguages())
+  -- The drag handle is raised above normal header children. Reserve the
+  -- selector's full width plus its right margin and one gap, otherwise the
+  -- handle intercepts every language-button click.
+  return LANGUAGE_BUTTON_RIGHT_INSET +
+         count * LANGUAGE_BUTTON_WIDTH + count * LANGUAGE_BUTTON_GAP
+end
+
+local languageButtons = {}
+
+local function RefreshLanguageButtons()
+  local active = U.GetLanguage()
+  local i
+  for i = 1, table.getn(languageButtons) do
+    local button = languageButtons[i]
+    local selected = button.uuiLanguage == active
+
+    -- The flags have no added chrome. Selection is communicated only through
+    -- opacity: full for the active language and 30% for the other choices.
+    -- SetVertexColor alpha goes through U.SetColor because Texture:SetAlpha
+    -- darkens instead of compositing reliably on this client.
+    if button.uuiFlag then
+      U.SetColor(button.uuiFlag, 1, 1, 1, selected and 1 or 0.3)
+    end
+    if button.label then
+      pcall(button.label.SetTextColor, button.label,
+            M.Unpack(selected and M.color.accent or M.color.textDim))
+    end
+    button.uuiSelected = selected
+  end
+end
+
+local function BuildLanguageSelector(parent)
+  local languages = U.GetLanguages()
+  local count = table.getn(languages)
+  local i
+
+  for i = 1, count do
+    local entry = languages[i]
+
+    local button = U.CreateButton(parent, {
+      name = "UnrealUISettingsLanguage" .. entry.code,
+      -- A flag texture owns the whole face, so the badge text is dropped for
+      -- any code that has artwork.
+      text = M.languageFlag[entry.code] and "" or entry.short,
+      size = M.fontSize.tiny,
+      width = LANGUAGE_BUTTON_WIDTH,
+      height = LANGUAGE_BUTTON_HEIGHT,
+      background = { 0, 0, 0, 0 },
+      border = false,
+    })
+    button.uuiLanguage = entry.code
+
+    -- Right to left from the header's right edge, so the row keeps the 14px
+    -- title inset no matter how many languages are registered. The flags use
+    -- a compact 18x14 footprint, twenty percent smaller than the previous size.
+    button:SetPoint("TOPRIGHT", parent, "TOPRIGHT",
+                    -LANGUAGE_BUTTON_RIGHT_INSET - (count - i) *
+                          (LANGUAGE_BUTTON_WIDTH + LANGUAGE_BUTTON_GAP),
+                    -LANGUAGE_BUTTON_TOP_INSET)
+
+    if M.languageFlag[entry.code] and button.CreateTexture then
+      local flag = button:CreateTexture(nil, "ARTWORK")
+      flag:SetTexture(M.languageFlag[entry.code])
+      flag:SetAllPoints(button)
+      button.uuiFlag = flag
+    end
+
+    -- Inactive flags brighten to 95% while hovered. The selected flag remains
+    -- at 100%, so pointing at it never makes the current choice look weaker.
+    button:SetScript("OnEnter", function()
+      if button.uuiSelected then return end
+      if button.uuiFlag then U.SetColor(button.uuiFlag, 1, 1, 1, 0.95) end
+    end)
+    button:SetScript("OnLeave", function()
+      if button.uuiSelected then return end
+      if button.uuiFlag then U.SetColor(button.uuiFlag, 1, 1, 1, 0.3) end
+    end)
+
+    button:SetScript("OnClick", function()
+      if not U.SetLanguage(entry.code) then return end
+      RefreshLanguageButtons()
+      -- Deliberately confirmed in the language just chosen. If the client's
+      -- font has no glyphs for it the dialog comes up blank, which is the
+      -- fastest possible signal that this language will not render -- and the
+      -- English flag remains one visible click away.
+      U.ShowConfirm({
+        owner = "settings.language-reload",
+        centered = true,
+        text = U.L("SETTINGS_LANGUAGE_CHANGED"),
+        detail = U.L("SETTINGS_LANGUAGE_RELOAD", entry.label),
+        acceptText = U.L("COMMON_OK_SHORT"),
+        cancelText = U.L("COMMON_CLOSE"),
+      })
+    end)
+
+    table.insert(languageButtons, button)
+    table.insert(parent.chrome, button)
+  end
+
+  RefreshLanguageButtons()
+end
+
+-- ---------------------------------------------------------------------------
 -- Panel
 -- ---------------------------------------------------------------------------
 local function HideContents()
@@ -429,7 +558,8 @@ local function Build()
   panel:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
   pcall(panel.SetFrameStrata, panel, "HIGH")
   U.MakeWindowDraggable("settings", panel,
-                         { headerHeight = HEADER_HEIGHT, headerInset = 0 })
+                         { headerHeight = HEADER_HEIGHT,
+                           headerInset = LanguageSelectorInset() })
 
   panel.chrome = {}
 
@@ -477,6 +607,8 @@ local function Build()
     table.insert(panel.chrome, panel.version)
   end
 
+  BuildLanguageSelector(panel)
+
   local rule = U.CreateRule(panel, { color = M.color.accentDim })
   if rule then
     rule:SetPoint("TOPLEFT", panel, "TOPLEFT", 12, -(HEADER_HEIGHT - 12))
@@ -496,7 +628,7 @@ local function Build()
   -- top of the menu no matter which settings page is selected.
   sidebar.move = U.CreateButton(sidebar, {
     name = "UnrealUISettingsMove",
-    text = "Move UI",
+    text = U.L("SETTINGS_MOVE_UI"),
     width = SIDEBAR_WIDTH - 12,
     height = 22,
     onClick = function()
@@ -517,7 +649,7 @@ local function Build()
 
   panel.close = U.CreateButton(panel, {
     name = "UnrealUISettingsClose",
-    text = "Close",
+    text = U.L("COMMON_CLOSE"),
     width = 100,
     height = 24,
     onClick = function() Hide() end,
@@ -626,7 +758,7 @@ local function BuildProfilePage(parent)
     if table.getn(result) == 0 then
       table.insert(result, {
         value = "__none__",
-        text = "No other profiles",
+        text = U.L("PROFILE_NONE_OTHER"),
         disabled = true,
       })
     end
@@ -635,17 +767,17 @@ local function BuildProfilePage(parent)
 
   local function ReloadNotice(message)
     U.CloseSettings()
-    U.Print(message .. " - |cffffff00/reload|r to apply it")
+    U.Print(U.L("PROFILE_RELOAD_NOTICE", message))
   end
 
   local header = U.CreateSectionHeader(parent, {
-    text = "Profiles",
+    text = U.L("SETTINGS_PAGE_PROFILES"),
     width = pageWidth,
     y = -4,
   })
   table.insert(widgets, header)
 
-  AddLabel("Select Profile", 0, -32, M.color.accent, 220)
+  AddLabel(U.L("PROFILE_SELECT"), 0, -32, M.color.accent, 220)
   local selectProfile = U.CreateDropdown(parent, {
     name = "UnrealUISettingsSelectProfile",
     value = U.GetCurrentProfileName(),
@@ -655,37 +787,35 @@ local function BuildProfilePage(parent)
     items = ProfileItems(false, false),
     onChange = function(value)
       if value ~= U.GetCurrentProfileName() and U.SelectProfile(value) then
-        ReloadNotice("selected profile |cffffff00" .. value .. "|r")
+        ReloadNotice(U.L("PROFILE_SELECTED", value))
       end
     end,
   })
   selectProfile.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -49)
   table.insert(widgets, selectProfile)
-  AddHint("Choose a profile created by any character on this account.",
-          selectProfile.button)
+  AddHint(U.L("PROFILE_SELECT_HINT"), selectProfile.button)
 
   local create = U.CreateButton(parent, {
     name = "UnrealUISettingsCreateProfile",
-    text = "Create Profile Copy",
+    text = U.L("PROFILE_CREATE_COPY"),
     width = 220,
     height = 24,
     onClick = function()
       local name = U.NextProfileName()
       if not name then
-        U.Print("could not find an available profile name")
+        U.Print(U.L("PROFILE_NO_NAME_FREE"))
         return
       end
       if U.CreateProfile(name) then
-        ReloadNotice("created and selected profile |cffffff00" .. name .. "|r")
+        ReloadNotice(U.L("PROFILE_CREATED", name))
       end
     end,
   })
   create:SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -105)
   table.insert(widgets, create)
-  AddHint("Copies the current settings under a generated name. For a custom " ..
-          "name, use /uui profile create <name>.", create)
+  AddHint(U.L("PROFILE_CREATE_HINT"), create)
 
-  AddLabel("Copy From", 0, -164, M.color.accent, 220)
+  AddLabel(U.L("PROFILE_COPY_FROM"), 0, -164, M.color.accent, 220)
   local copyFrom = U.CreateDropdown(parent, {
     name = "UnrealUISettingsCopyProfile",
     width = 220,
@@ -696,28 +826,27 @@ local function BuildProfilePage(parent)
   copyFrom.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -181)
   table.insert(widgets, copyFrom)
   if not copyFrom.GetValue() and copyFrom.button.label then
-    copyFrom.button.label:SetText("No other profiles")
+    copyFrom.button.label:SetText(U.L("PROFILE_NONE_OTHER"))
   end
 
   local copyButton = U.CreateButton(parent, {
     name = "UnrealUISettingsCopyProfileButton",
-    text = "Copy Settings",
+    text = U.L("PROFILE_COPY_SETTINGS"),
     width = 220,
     height = 24,
     onClick = function()
       local source = copyFrom.GetValue()
       if source and source ~= "__none__" and U.CopyProfile(source) then
-        ReloadNotice("copied |cffffff00" .. source .. "|r into |cffffff00" ..
-                     U.GetCurrentProfileName() .. "|r")
+        ReloadNotice(U.L("PROFILE_COPIED", source,
+                         U.GetCurrentProfileName()))
       end
     end,
   })
   copyButton:SetPoint("TOPLEFT", parent, "TOPLEFT", 250, -183)
   table.insert(widgets, copyButton)
-  AddHint("Copies another profile into the currently active profile.",
-          copyFrom.button)
+  AddHint(U.L("PROFILE_COPY_HINT"), copyFrom.button)
 
-  AddLabel("Delete a Profile", 0, -239, M.color.accent, 220)
+  AddLabel(U.L("PROFILE_DELETE_SECTION"), 0, -239, M.color.accent, 220)
   local deleteProfile = U.CreateDropdown(parent, {
     name = "UnrealUISettingsDeleteProfile",
     width = 220,
@@ -728,14 +857,14 @@ local function BuildProfilePage(parent)
   deleteProfile.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -256)
   table.insert(widgets, deleteProfile)
   if not deleteProfile.GetValue() and deleteProfile.button.label then
-    deleteProfile.button.label:SetText("No other profiles")
+    deleteProfile.button.label:SetText(U.L("PROFILE_NONE_OTHER"))
   end
 
   local armedDelete
   local deleteButton
   deleteButton = U.CreateButton(parent, {
     name = "UnrealUISettingsDeleteProfileButton",
-    text = "Delete Profile",
+    text = U.L("PROFILE_DELETE"),
     textColor = { 1, 0.35, 0.35, 1 },
     width = 220,
     height = 24,
@@ -745,56 +874,52 @@ local function BuildProfilePage(parent)
       if armedDelete ~= name then
         armedDelete = name
         if deleteButton and deleteButton.label then
-          deleteButton.label:SetText("Confirm Delete")
+          deleteButton.label:SetText(U.L("PROFILE_CONFIRM_DELETE"))
         end
-        U.Print("click Confirm Delete to remove |cffffff00" .. name .. "|r")
+        U.Print(U.L("PROFILE_CLICK_CONFIRM_DELETE", name))
         return
       end
       if U.DeleteProfile(name) then
-        ReloadNotice("deleted profile |cffffff00" .. name .. "|r")
+        ReloadNotice(U.L("PROFILE_DELETED", name))
       end
     end,
   })
   deleteButton:SetPoint("TOPLEFT", parent, "TOPLEFT", 250, -258)
   table.insert(widgets, deleteButton)
-  AddHint("Deletes a profile not assigned to any character.",
-          deleteProfile.button)
+  AddHint(U.L("PROFILE_DELETE_HINT"), deleteProfile.button)
 
-  AddLabel("Reset Current Profile", 0, -314, M.color.accent, 220)
+  AddLabel(U.L("PROFILE_RESET_SECTION"), 0, -314, M.color.accent, 220)
   local resetArmed = false
   local reset
   reset = U.CreateButton(parent, {
     name = "UnrealUISettingsResetProfile",
-    text = "Reset Profile",
+    text = U.L("PROFILE_RESET"),
     width = 220,
     height = 24,
     onClick = function()
       if not resetArmed then
         resetArmed = true
-        if reset.label then reset.label:SetText("Confirm Reset") end
-        U.Print("click Confirm Reset to restore the current profile defaults")
+        if reset.label then reset.label:SetText(U.L("PROFILE_CONFIRM_RESET")) end
+        U.Print(U.L("PROFILE_CLICK_CONFIRM_RESET"))
         return
       end
       local name = U.GetCurrentProfileName()
       if U.ResetCurrentProfile() then
-        ReloadNotice("reset profile |cffffff00" .. name .. "|r")
+        ReloadNotice(U.L("PROFILE_WAS_RESET", name))
       end
     end,
   })
   reset:SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -331)
   table.insert(widgets, reset)
 
-  local current = AddLabel("Current Profile: |cfff5ae0a" ..
-                           U.GetCurrentProfileName() .. "|r", 250, -334,
-                           M.color.text, 220)
-  AddHint("Restores defaults. Characters using the same profile share its settings.",
-          reset)
+  local current = AddLabel(U.L("PROFILE_CURRENT", U.GetCurrentProfileName()),
+                           250, -334, M.color.text, 220)
+  AddHint(U.L("PROFILE_RESET_HINT"), reset)
 
   local function Refresh()
     selectProfile.SetValue(U.GetCurrentProfileName(), false)
     if current then
-      current:SetText("Current Profile: |cfff5ae0a" ..
-                      U.GetCurrentProfileName() .. "|r")
+      current:SetText(U.L("PROFILE_CURRENT", U.GetCurrentProfileName()))
     end
   end
 
@@ -811,7 +936,7 @@ local function BuildGeneralPage(parent)
   local widgets = {}
 
   local header = U.CreateSectionHeader(parent, {
-    text = "General",
+    text = U.L("SETTINGS_PAGE_GENERAL"),
     width = PANEL_WIDTH - SIDEBAR_WIDTH - 36,
     y = -4,
   })
@@ -825,7 +950,7 @@ local function BuildGeneralPage(parent)
   })
   if themeLabel then
     themeLabel:SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -32)
-    themeLabel:SetText("Theme style")
+    themeLabel:SetText(U.L("SETTINGS_THEME_STYLE"))
     table.insert(widgets, themeLabel)
   end
 
@@ -836,7 +961,7 @@ local function BuildGeneralPage(parent)
     local style = themeStyles[themeIndex]
     table.insert(themeItems, {
       value = style.id,
-      text = style.label .. (style.wip and " (WIP)" or ""),
+      text = style.label .. (style.wip and U.L("SETTINGS_THEME_WIP") or ""),
       disabled = not style.available,
     })
   end
@@ -853,11 +978,11 @@ local function BuildGeneralPage(parent)
         U.ShowConfirm({
           owner = "settings.theme-reload",
           centered = true,
-          text = "Theme changed",
-          detail = "Type /reload to apply the " ..
-                   tostring(U.GetThemeStyleLabel(value)) .. " theme.",
-          acceptText = "OK",
-          cancelText = "Close",
+          text = U.L("SETTINGS_THEME_CHANGED"),
+          detail = U.L("SETTINGS_THEME_RELOAD",
+                       tostring(U.GetThemeStyleLabel(value))),
+          acceptText = U.L("COMMON_OK_SHORT"),
+          cancelText = U.L("COMMON_CLOSE"),
         })
       end
     end,
@@ -876,8 +1001,7 @@ local function BuildGeneralPage(parent)
     -- settings page. Anchor it below the leftmost row so its width stays
     -- within the content panel instead of starting under the last column.
     U.AnchorSettingsDescription(themeHint, themes.firstRow)
-    themeHint:SetText("Classic WoW restores the original native interface " ..
-                      "after a reload. Modern WoW is still in development.")
+    themeHint:SetText(U.L("SETTINGS_THEME_HINT"))
     table.insert(widgets, themeHint)
   end
 
@@ -887,7 +1011,7 @@ local function BuildGeneralPage(parent)
   -- failed to load, the button still shows and says so instead of vanishing.
   local quickbind = U.CreateButton(parent, {
     name = "UnrealUISettingsQuickBind",
-    text = "Quick Binding",
+    text = U.L("SETTINGS_QUICKBIND"),
     width = 220,
     height = 26,
     onClick = function()
@@ -895,7 +1019,7 @@ local function BuildGeneralPage(parent)
       if type(U.OpenQuickBind) == "function" then
         U.OpenQuickBind()
       else
-        U.Error("quick binding is not available in this build")
+        U.Error(U.L("QUICKBIND_UNAVAILABLE"))
       end
     end,
   })
@@ -910,8 +1034,7 @@ local function BuildGeneralPage(parent)
   })
   if quickbindHint then
     U.AnchorSettingsDescription(quickbindHint, quickbind)
-    quickbindHint:SetText("Hover an action bar slot and press a key to bind it. " ..
-                          "Escape over a slot clears it.")
+    quickbindHint:SetText(U.L("SETTINGS_QUICKBIND_HINT"))
     table.insert(widgets, quickbindHint)
   end
 
@@ -919,7 +1042,7 @@ local function BuildGeneralPage(parent)
   -- lives here rather than on a dedicated tab of its own.
   local microbar = U.CreateCheckbox(parent, {
     name = "UnrealUISettingsMicroBar",
-    text = "Enable micro bar",
+    text = U.L("SETTINGS_MICROBAR"),
     value = U.ModuleConfig("microbar", { enabled = true }).enabled,
     onChange = function(value)
       U.ModuleConfig("microbar", { enabled = true }).enabled = value
@@ -937,9 +1060,7 @@ local function BuildGeneralPage(parent)
   })
   if microbarHint then
     U.AnchorSettingsDescription(microbarHint, microbar.box)
-    microbarHint:SetText("Pulls the native character/spellbook/talent/quest " ..
-                         "log/social/map/menu/help buttons into one movable " ..
-                         "row. Disabling returns them to their stock location.")
+    microbarHint:SetText(U.L("SETTINGS_MICROBAR_HINT"))
     table.insert(widgets, microbarHint)
   end
 
@@ -947,7 +1068,7 @@ local function BuildGeneralPage(parent)
   -- overlay; the XP bar itself is required scope and has no toggle.
   local reputation = U.CreateCheckbox(parent, {
     name = "UnrealUISettingsReputationBar",
-    text = "Show reputation bar",
+    text = U.L("SETTINGS_REPUTATION_BAR"),
     value = U.ModuleConfig("xpbar", { repEnabled = true }).repEnabled,
     onChange = function(value)
       U.ModuleConfig("xpbar", { repEnabled = true }).repEnabled = value
@@ -962,7 +1083,7 @@ local function BuildGeneralPage(parent)
   -- slash command still opens settings.
   local minimapButton = U.CreateCheckbox(parent, {
     name = "UnrealUISettingsMinimapButton",
-    text = "Show minimap settings button",
+    text = U.L("SETTINGS_MINIMAP_BUTTON"),
     value = U.ModuleConfig("minimap", { enabled = true }).enabled,
     onChange = function(value)
       U.ModuleConfig("minimap", { enabled = true }).enabled = value
@@ -972,19 +1093,49 @@ local function BuildGeneralPage(parent)
   minimapButton.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -252)
   table.insert(widgets, minimapButton)
 
+  -- The world map zone level ranges (modules/worldmap.lua) are a single
+  -- readout on an otherwise untouched native screen, so like the micro bar and
+  -- the reputation bar their toggle lives here instead of on a tab of its own.
+  local zoneLevels = U.CreateCheckbox(parent, {
+    name = "UnrealUISettingsZoneLevels",
+    text = U.L("SETTINGS_ZONE_LEVELS"),
+    value = U.ModuleConfig("worldmap", { zoneLevels = true }).zoneLevels,
+    onChange = function(value)
+      U.ModuleConfig("worldmap", { zoneLevels = true }).zoneLevels = value
+      if type(U.ApplyWorldMapZoneLevels) == "function" then
+        U.ApplyWorldMapZoneLevels()
+      end
+    end,
+  })
+  zoneLevels.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -284)
+  table.insert(widgets, zoneLevels)
+
+  local zoneLevelsHint = U.CreateSettingsLabel(parent, {
+    size = M.fontSize.small,
+    color = M.color.textDim,
+    inherits = "GameFontNormalSmall",
+    justify = "LEFT",
+  })
+  if zoneLevelsHint then
+    U.AnchorSettingsDescription(zoneLevelsHint, zoneLevels.box)
+    zoneLevelsHint:SetText(U.L("SETTINGS_ZONE_LEVELS_HINT"))
+    table.insert(widgets, zoneLevelsHint)
+  end
+
   local function Refresh()
     themes.SetValue(U.GetThemeStyle(), false)
     microbar.SetValue(U.ModuleConfig("microbar", { enabled = true }).enabled)
     reputation.SetValue(U.ModuleConfig("xpbar", { repEnabled = true }).repEnabled)
     minimapButton.SetValue(U.ModuleConfig("minimap", { enabled = true }).enabled)
+    zoneLevels.SetValue(U.ModuleConfig("worldmap", { zoneLevels = true }).zoneLevels)
   end
 
   return widgets, Refresh
 end
 
 function S:OnInit()
-  U.RegisterSettingsTab("general", "General", BuildGeneralPage)
-  U.RegisterSettingsTab("profiles", "Profiles", BuildProfilePage,
+  U.RegisterSettingsTab("general", U.L("SETTINGS_PAGE_GENERAL"), BuildGeneralPage)
+  U.RegisterSettingsTab("profiles", U.L("SETTINGS_PAGE_PROFILES"), BuildProfilePage,
                         { after = "general" })
 end
 

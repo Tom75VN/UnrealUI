@@ -93,6 +93,15 @@ local function IsSafeProfileName(value)
   return true
 end
 
+-- A stored language is only ever one of the codes core/locale.lua registered.
+-- U.IsValidLanguage is the authority; the IsSafeString check in front of it
+-- keeps a mangled value from being compared at all.
+local function IsSafeLanguage(value)
+  if not IsSafeString(value) then return false end
+  if type(U.IsValidLanguage) ~= "function" then return false end
+  return U.IsValidLanguage(value) and true or false
+end
+
 local function CopyTable(source, seen)
   if type(source) ~= "table" then return source end
   seen = seen or {}
@@ -337,13 +346,42 @@ function U.LoadConfig()
     end
   end
 
+  -- The language is account-wide, not part of a profile: switching profile is
+  -- a layout decision and must not change what language the interface is in.
+  -- It therefore has to survive this wholesale rebuild of the store.
+  local storedLanguage = UnrealUIProfiles.language
+
   UnrealUIProfiles = {
     version = PROFILE_STORE_VERSION,
     profiles = profiles,
     assignments = assignments,
+    language = IsSafeLanguage(storedLanguage) and storedLanguage or nil,
   }
   SetActiveProfile(active)
   return U.db
+end
+
+-- ---------------------------------------------------------------------------
+-- Language
+--
+-- core/locale.lua owns the lookup; this owns where the choice is kept. Only
+-- the four-letter code is persisted, and it is checked against the registered
+-- languages on the way in and on the way out, so a corrupted or hand-edited
+-- value falls back to English instead of reaching a lookup as a bad key
+-- (knowledge.json / config.savedvariables_backslash_corruption).
+-- ---------------------------------------------------------------------------
+function U.StoredLanguage()
+  if type(UnrealUIProfiles) ~= "table" then return nil end
+  local code = UnrealUIProfiles.language
+  if IsSafeLanguage(code) then return code end
+  return nil
+end
+
+function U.StoreLanguage(code)
+  if not IsSafeLanguage(code) then return false end
+  if type(UnrealUIProfiles) ~= "table" then UnrealUIProfiles = {} end
+  UnrealUIProfiles.language = code
+  return true
 end
 
 -- ---------------------------------------------------------------------------

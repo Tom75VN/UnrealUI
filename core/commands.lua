@@ -84,27 +84,46 @@ local function Split(text)
          Trim(string.sub(text, space + 1))
 end
 
-local function ShowHelp()
-  U.Print("v" .. U.version .. " commands:")
-  U.Print("  |cffffff00/uui|r - open settings")
-  U.Print("  |cffffff00/uui unlock|r - unlock frames for moving")
-  U.Print("  |cffffff00/uui lock|r - lock frames")
-  U.Print("  |cffffff00/uui reset|r - reset all frame positions")
-  U.Print("  |cffffff00/uui bind|r - open quick binding")
-  U.Print("  |cffffff00/uui bindscan|r - dump the client binding table")
-  U.Print("  |cffffff00/uui keytest|r - measure whether key events reach addon frames")
-  U.Print("  |cffffff00/uui check|r - runtime self-check")
-  U.Print("  |cffffff00/uui elite|r - cycle the classification icon test")
-  U.Print("  |cffffff00/uui np|r - dump WorldFrame children (nameplates)")
-  U.Print("  |cffffff00/uui aura|r - dump the aura rows and why a timer is missing")
-  U.Print("  |cffffff00/uui res|r - dump the Character sheet resistance frames")
-  U.Print("  |cffffff00/uui movertest|r - foundation mover smoke test")
-  U.Print("  |cffffff00/uui perf|r - record frame time around target changes")
-  U.Print("  |cffffff00/uui theme <style>|r - select a theme (needs /reload)")
-  U.Print("  |cffffff00/uui nosuppress|r - skip native frame suppression (needs /reload)")
-  U.Print("  |cffffff00/uui suppress <0-4>|r - bisect the suppression recipe (needs /reload)")
-  U.Print("  |cffffff00/uui profile create <name>|r - create and select a shared profile")
-  U.Print("  |cffffff00/uui debug|r - toggle debug output")
+-- The diagnostic dumps stay in English in every language and are not part of
+-- the translated catalog. They exist to be pasted into a bug report, where a
+-- translated field name is worse than useless, and they are behind
+-- `/uui help diag` so the listing a player actually reads stays short.
+local DIAGNOSTIC_HELP = {
+  "  |cffffff00/uui menu|r - dump the game menu rows and the UnrealUI entries",
+  "  |cffffff00/uui bindscan|r - dump the client binding table",
+  "  |cffffff00/uui keytest|r - measure whether key events reach addon frames",
+  "  |cffffff00/uui elite|r - cycle the classification icon test",
+  "  |cffffff00/uui np|r - dump WorldFrame children (nameplates)",
+  "  |cffffff00/uui aura|r - dump the aura rows and why a timer is missing",
+  "  |cffffff00/uui map|r - arm the map hover watch before opening it",
+  "  |cffffff00/uui res|r - dump the Character sheet resistance frames",
+  "  |cffffff00/uui abhl [alpha] [hover] [rest]|r - dump or tune the classic hover highlight",
+  "  |cffffff00/uui movertest|r - foundation mover smoke test",
+  "  |cffffff00/uui perf|r - record frame time around target changes",
+  "  |cffffff00/uui nosuppress|r - skip native frame suppression (needs /reload)",
+  "  |cffffff00/uui suppress <0-4>|r - bisect the suppression recipe (needs /reload)",
+}
+
+local function ShowHelp(rest)
+  if type(rest) == "string" and string.lower(Trim(rest)) == "diag" then
+    U.Print("diagnostic dumps (English only, for bug reports):")
+    local d
+    for d = 1, table.getn(DIAGNOSTIC_HELP) do U.Print(DIAGNOSTIC_HELP[d]) end
+    return
+  end
+
+  U.Print(U.L("CMD_HEADER", U.version))
+  U.Print(U.L("CMD_SETTINGS"))
+  U.Print(U.L("CMD_UNLOCK"))
+  U.Print(U.L("CMD_LOCK"))
+  U.Print(U.L("CMD_RESET"))
+  U.Print(U.L("CMD_BIND"))
+  U.Print(U.L("CMD_CHECK"))
+  U.Print(U.L("CMD_THEME"))
+  U.Print(U.L("CMD_LANGUAGE"))
+  U.Print(U.L("CMD_PROFILE"))
+  U.Print(U.L("CMD_DEBUG"))
+  U.Print(U.L("CMD_DIAGNOSTICS"))
 end
 
 -- Unit API readout.
@@ -514,7 +533,7 @@ local function ShowMoverTest()
     -- No label of its own: the mover handle covers this panel and centres its
     -- own label, and two centred fontstrings just overprint each other.
     U.RegisterMover("debug.movertest", testPanel, {
-      label = "Mover test",
+      label = U.L("MOVER_LABEL_MOVER_TEST"),
       default = { point = "CENTER", relativePoint = "CENTER", x = 0, y = 0 },
     })
   end
@@ -893,7 +912,7 @@ handlers["lock"]   = function() U.LockUI() end
 handlers["toggle"] = function() U.ToggleUI() end
 handlers["reset"]  = function() U.ResetPositions() end
 handlers["check"]  = function() ShowSelfCheck() end
-handlers["help"]   = function() ShowHelp() end
+handlers["help"]   = function(rest) ShowHelp(rest) end
 handlers["movertest"] = function() ShowMoverTest() end
 handlers["np"] = function() ShowNameplateDump() end
 -- Live readout, printed straight to chat: an aura timer that does not appear
@@ -906,6 +925,26 @@ handlers["aura"] = function()
   end
   U.AuraDebugDump()
 end
+-- Whether the hovered zone name reaches unrealUI at all. The command being
+-- unavailable is itself the first answer: it means modules/worldmap.lua did not
+-- load, which no amount of reading the map code would have shown.
+handlers["map"] = function()
+  if type(U.WorldMapDebugDump) ~= "function" then
+    U.Print("map dump unavailable - modules/worldmap.lua did not load")
+    return
+  end
+  U.WorldMapDebugDump()
+end
+-- Which stage of the tooltip price readout stopped, for the item hovered last.
+-- The command being unavailable is the first answer by itself: modules/
+-- itemprice.lua did not load.
+handlers["price"] = function()
+  if type(U.PriceDebugDump) ~= "function" then
+    U.Print("price dump unavailable - modules/itemprice.lua did not load")
+    return
+  end
+  U.PriceDebugDump()
+end
 handlers["res"] = function(rest)
   local mode = Trim(rest or "")
   if mode == "hover" then
@@ -917,6 +956,25 @@ handlers["res"] = function(rest)
   end
 end
 handlers["elite"] = function(rest) HandleElite(rest) end
+handlers["abhl"] = function(rest)
+  if type(U.ActionBarHighlightDump) ~= "function" then
+    U.Print("highlight dump unavailable - modules/actionbar.lua did not load")
+    return
+  end
+  local first, remainder = Split(rest)
+  if first == "" then
+    U.ActionBarHighlightDump()
+    return
+  end
+  local alpha = tonumber(first)
+  if not alpha then
+    U.Print("  |cffffff00/uui abhl|r - dump, or " ..
+            "|cffffff00/uui abhl <alpha> [hover] [rest]|r")
+    return
+  end
+  local second, third = Split(remainder)
+  U.ActionBarHighlightTune(alpha, tonumber(second), tonumber(third))
+end
 
 -- Binding-table readout.
 --
@@ -1002,6 +1060,14 @@ local function ShowBindingScan()
   U.Print("  GetBindingKey(UNREALUIBAR2BUTTON1): " .. tostring(key1) ..
           ", " .. tostring(key2))
   U.Print("  UnrealUIActionButton: " .. type(U.G("UnrealUIActionButton")))
+end
+
+handlers["menu"] = function()
+  if type(U.DumpGameMenu) == "function" then
+    U.DumpGameMenu()
+  else
+    U.Print("the game menu module is not loaded.")
+  end
 end
 
 handlers["bindscan"] = function() ShowBindingScan() end
@@ -1191,7 +1257,7 @@ handlers["keytest"] = function() StartKeyTest() end
 
 handlers["bind"] = function()
   if type(U.OpenQuickBind) ~= "function" then
-    U.Print("quick binding is not available in this build.")
+    U.Print(U.L("QUICKBIND_UNAVAILABLE"))
     return
   end
   U.OpenQuickBind()
@@ -1212,29 +1278,28 @@ end
 handlers["profile"] = function(rest)
   local action, name = Split(rest)
   if action ~= "create" or name == "" then
-    U.Print("current profile: |cffffff00" ..
-            tostring(U.GetCurrentProfileName and U.GetCurrentProfileName() or "") .. "|r")
-    U.Print("  |cffffff00/uui profile create <name>|r")
+    U.Print(U.L("CMD_PROFILE_CURRENT",
+                tostring(U.GetCurrentProfileName and
+                         U.GetCurrentProfileName() or "")))
+    U.Print(U.L("CMD_PROFILE_CREATE_USAGE"))
     return
   end
   if type(U.CreateProfile) ~= "function" then
-    U.Print("profile management is unavailable in this build")
+    U.Print(U.L("CMD_PROFILE_UNAVAILABLE"))
     return
   end
 
   local ok, reason = U.CreateProfile(name)
   if not ok then
     if reason == "exists" then
-      U.Print("a profile named |cffffff00" .. name .. "|r already exists")
+      U.Print(U.L("CMD_PROFILE_EXISTS", name))
     else
-      U.Print("profile names may contain letters, numbers, spaces, hyphens " ..
-              "and underscores (maximum 64 characters)")
+      U.Print(U.L("CMD_PROFILE_NAME_RULES"))
     end
     return
   end
 
-  U.Print("created and selected profile |cffffff00" .. name .. "|r - " ..
-          "|cffffff00/reload|r to apply it")
+  U.Print(U.L("CMD_PROFILE_CREATED", name))
 end
 
 -- Native Classic mode has no UnrealUI settings window by design.  Keep theme
@@ -1244,7 +1309,7 @@ handlers["theme"] = function(rest)
   local id = string.lower(Trim(rest))
   local style = U.GetThemeStyleDefinition and U.GetThemeStyleDefinition(id)
   if not style or not style.available then
-    U.Print("available themes:")
+    U.Print(U.L("SETTINGS_THEMES_AVAILABLE"))
     local styles = U.GetThemeStyles and U.GetThemeStyles() or {}
     local i
     for i = 1, table.getn(styles) do
@@ -1259,11 +1324,48 @@ handlers["theme"] = function(rest)
     U.ShowConfirm({
       owner = "commands.theme-reload",
       centered = true,
-      text = "Theme changed",
-      detail = "Type /reload to apply the " .. style.label .. " theme.",
-      acceptText = "OK",
-      cancelText = "Close",
+      text = U.L("SETTINGS_THEME_CHANGED"),
+      detail = U.L("SETTINGS_THEME_RELOAD", style.label),
+      acceptText = U.L("COMMON_OK_SHORT"),
+      cancelText = U.L("COMMON_CLOSE"),
     })
+  end
+end
+
+-- Language selection from chat, for the same reason `theme` exists here: the
+-- Classic theme has no UnrealUI settings window, and a player who has ended up
+-- in a language whose glyphs their client cannot draw needs a way back that
+-- does not depend on reading the interface. Both the two-letter badge (en) and
+-- the full locale code (enUS) are accepted, since the badge is what is on the
+-- selector and the code is what is in SavedVariables.
+handlers["lang"] = function(rest)
+  local wanted = string.lower(Trim(rest))
+  local languages = U.GetLanguages()
+  local i
+
+  for i = 1, table.getn(languages) do
+    local entry = languages[i]
+    if wanted ~= "" and (wanted == string.lower(entry.short) or
+                         wanted == string.lower(entry.code)) then
+      if U.SetLanguage(entry.code) then
+        U.ShowConfirm({
+          owner = "commands.language-reload",
+          centered = true,
+          text = U.L("SETTINGS_LANGUAGE_CHANGED"),
+          detail = U.L("SETTINGS_LANGUAGE_RELOAD", entry.label),
+          acceptText = U.L("COMMON_OK_SHORT"),
+          cancelText = U.L("COMMON_CLOSE"),
+        })
+      end
+      return
+    end
+  end
+
+  U.Print(U.L("CMD_LANGUAGE_CURRENT", U.GetLanguageLabel()))
+  U.Print(U.L("CMD_LANGUAGE_AVAILABLE"))
+  for i = 1, table.getn(languages) do
+    local entry = languages[i]
+    U.Print("  |cffffff00" .. string.lower(entry.short) .. "|r - " .. entry.label)
   end
 end
 
@@ -1357,7 +1459,7 @@ local function HandleCommand(message)
     if type(U.OpenSettings) == "function" then
       U.OpenSettings()
     else
-      U.Print("settings interface is not available yet in this build.")
+      U.Print(U.L("CMD_SETTINGS_UNAVAILABLE"))
       ShowHelp()
     end
     return
@@ -1369,7 +1471,7 @@ local function HandleCommand(message)
     return
   end
 
-  U.Print("unknown command: " .. command)
+  U.Print(U.L("CMD_UNKNOWN", command))
   ShowHelp()
 end
 
