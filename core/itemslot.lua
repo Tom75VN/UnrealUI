@@ -382,6 +382,9 @@ function U.CreateItemSlot(parent, name, bag, slot)
   end
 
   button:SetID(slot)
+  -- Empty-stack default for the stock stack-split path, in case the button is
+  -- clicked before U.UpdateItemSlot has run on it for the first time.
+  button.count = 0
   U.StyleItemSlot(button, name,
                   template == "BankItemButtonGenericTemplate")
 
@@ -436,11 +439,22 @@ function U.UpdateItemSlot(button, bag, slot)
   pcall(SetItemButtonCount, button, count)
   pcall(SetItemButtonDesaturated, button, locked, 0.5, 0.5, 0.5)
 
+  -- The stock shift-click stack-split path reads button.count directly
+  -- (ContainerFrameItemButton_OnClick passes it to OpenStackSplitFrame, which
+  -- compares it against 2 with no nil guard). SetItemButtonCount above is the
+  -- call that would normally set it, but it is pcall'd and has no compact
+  -- record on this client, so a missing or throwing helper leaves the field
+  -- nil and shift-clicking a stack errors inside StackSplitFrame. Assign it
+  -- here from the same GetContainerItemInfo result so the field is populated
+  -- regardless of whether the helper works. Vanilla's helper stores 0 for an
+  -- empty slot, so an absent count matches that rather than staying nil.
+  button.count = tonumber(count) or 0
+
   -- The quantity is then written to the region directly rather than being left
   -- to SetItemButtonCount: that helper resolves the region by frame name and
   -- has no compact record on this client, while the region itself is the one
-  -- UnrealPfUI demonstrably drives here. The helper call above still runs
-  -- first so button.count keeps the value stock stack-split code reads.
+  -- UnrealPfUI demonstrably drives here. The explicit assignment above keeps
+  -- button.count holding the value stock stack-split code reads.
   -- Vanilla shows a quantity only for a real stack, so a single item stays
   -- bare.
   if button.uuiCount then
