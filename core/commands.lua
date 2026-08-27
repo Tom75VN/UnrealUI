@@ -221,6 +221,20 @@ local function ShowUnitFrameCheck()
               ", forms " .. tostring(sb.slotCount))
     end
   end
+
+  -- The pet bar is the client's own frame; unrealUI only places it. "placed"
+  -- false with "driving" false is the untouched-interface state, and means the
+  -- bar is sitting wherever the client anchored it.
+  if type(U.PetBarReport) == "function" then
+    local pb = U.PetBarReport()
+    if pb then
+      U.Print("pet bar: native " .. tostring(pb.native) ..
+              ", has bar " .. tostring(pb.hasPetBar) ..
+              ", placed " .. tostring(pb.placed) ..
+              ", driving " .. tostring(pb.driving) ..
+              ", native anchor " .. tostring(pb.nativeAnchorCaptured))
+    end
+  end
 end
 
 -- Nameplate readout.

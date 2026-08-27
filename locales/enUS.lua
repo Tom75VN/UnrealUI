@@ -215,16 +215,6 @@ AURAS_OTHER               = "Physical / other",
 AURAS_HINT                = "Your own auras are timed by the client and are exact. For any other unit this client reports no duration, so those timers are rebuilt from a spell duration table and the moment the aura was first seen: one already running when you target reads as fresh, and one the table does not list shows no timer. Use /uui aura to see which is which.",
 
 -- ---------------------------------------------------------------------------
--- Pet bar (modules/petbar.lua)
--- ---------------------------------------------------------------------------
-PETBAR_PAGE               = "Pet Bar",
-PETBAR_BUTTONS_PER_ROW    = "Buttons Per Row",
-PETBAR_BUTTON_SIZE        = "Button Size",
-PETBAR_BUTTON_SPACING     = "Button Spacing",
-PETBAR_AUTOCAST           = "Highlight auto-cast abilities",
-PETBAR_HINT               = "Shown only while you have an active pet with its own action bar.",
-
--- ---------------------------------------------------------------------------
 -- Bags and bank (modules/bags.lua, modules/bank.lua)
 -- ---------------------------------------------------------------------------
 BAGS_TITLE                = "Bags",

@@ -1,81 +1,86 @@
 -- unrealUI :: modules/petbar.lua
 --
--- A single pet action bar in the pfUI-modern button style shared with
--- modules/actionbar.lua: flat near-black square buttons, one thin outline,
--- the icon inset inside it. Pet action slots carry no keybind, macro name or
--- item count in Vanilla, so those corner labels are omitted entirely rather
--- than built and left empty. Only the look and the pet-specific call shapes
--- are taken from pfUI-modern; none of its bar architecture is reproduced.
+-- The native pet action bar, left exactly as the client draws it, with one
+-- unrealUI addition: a mover handle so it can be placed like the rest of the
+-- interface.
+--
+-- Why there is no unrealUI pet bar any more
+--
+--   documentation.json / global:Pet:CastPetAction (OFFICIAL_CLIENT_DOCUMENTATION)
+--   marks the call this client uses to activate a pet action as *protected*:
+--   "addons cannot call this; only the default FrameXML UI can", and
+--   documentation.json / reference:Conventions states the failure mode plainly
+--   -- "Addons cannot call them; the call errors."
+--
+--   The unprotected substitutes cover the command and stance slots only:
+--   PetAttack (documented as "Same as CastPetAction(1), but not protected"),
+--   PetFollow, PetWait, PetAggressiveMode, PetDefensiveMode, PetPassiveMode
+--   -- slots 1-3 and 8-10. There is no unprotected route to the *spell* slots
+--   4-7, which is where a warlock's Torment / Suffering / Consume Shadows /
+--   Sacrifice and a hunter's pet abilities live. A custom pet bar on this
+--   client therefore cannot cast them at all, and the previous version of this
+--   module made that worse by also suppressing (hide + alpha 0 + neutralised
+--   Show + EnableMouse(false)) the native bar that can.
+--
+--   That is a client capability limit, not a bug with a workaround, so the
+--   feature is gone rather than emulated. Per .claude/rules/unreal-ui.md: a
+--   pfUI behaviour with no reliable Unreal equivalent is omitted, not faked.
+--
+-- What is left
+--
+--   The native bar is never hidden, reskinned, re-parented or click-handled.
+--   An unrealUI-owned anchor frame carries the mover handle, and the native
+--   bar is pointed at it only once the player has actually placed it. Until
+--   then the anchor follows the native bar and nothing is written at all, so
+--   an untouched interface keeps the client's own pet bar position.
 --
 -- Compatibility notes that shaped this file:
 --
---   * query_compat.py has no compact record for GetPetActionInfo,
---     GetPetActionCooldown, CastPetAction, PickupPetAction, PetHasActionBar,
---     GetPetActionsUsable, IsPetAttackActive, PetStopAttack,
---     TogglePetAutocast, UNIT_PET or the PET_BAR_* events -- an evidence
---     gap, not a confirmed incompatibility. Every call shape below matches
---     UnrealPfUI's working modules/actionbar.lua pet-bar branch (bar == 12),
---     which is WORKING_SOURCE evidence only, not runtime-verified on this
---     client. Confirm the bar in game; if a call misbehaves, do not guess a
---     second variant blind -- collect a focused probe first and feed the
---     result back into knowledge.json.
---   * scripts.handler_arguments_direct: OnClick's mouse-button argument is
---     not guaranteed to arrive as a direct parameter here. ResolveClickButton
---     mirrors modules/unitframes.lua's own resolver rather than importing it,
---     since it is a three-line pure function local to each caller's frame.
---   * actionbars.native_stock_children_suppression: the stock pet bar and
---     its buttons need the same explicit suppress-and-reapply treatment as
---     the main action bars; kept local to this file since it only owns the
---     pet-bar native names, not modules/actionbar.lua's list.
---   * Cooldown display is the native swipe only (CooldownFrameTemplate), not
---     a numeric countdown: duplicating actionbar.lua's clock-wrap-corrected
---     countdown engine for a bar whose cooldowns are short and rarely cross
---     that edge case would be exactly the fragile emulation the project
---     guidance says to omit rather than build for feature-count parity.
+--   * The handle lives on an unrealUI frame rather than on PetActionBarFrame
+--     directly (the way modules/minimap.lua registers MinimapCluster). The
+--     mover handle is SetAllPoints to the frame it is registered on, and this
+--     client's pet bar reports no dependable size for that to cover -- there
+--     is no runtime record for PetActionBarFrame at all (frames.json and
+--     interface.json contain no pet capture). An owned frame has a size we
+--     set, so the handle is always there to grab.
+--   * The native bar's own anchor is not UIParent-relative, so it cannot be
+--     expressed as a mover `default`. core/mover.lua documents U.OnPositionReset
+--     as the route for exactly that case; the anchor read at load is replayed
+--     from there so /uui reset really does put the bar back where the client
+--     had it.
+--   * knowledge.json / frames.getpoint_relative_name_y_inverted: anchors are
+--     read through U.GetFramePoint, which hands back values in the shape
+--     SetPoint expects. The captured native anchor is replayed with those
+--     values unchanged.
+--   * UNIT_PET and the PET_BAR_* events have no compact record on this client
+--     (query_compat.py returns no match, events.json holds no pet capture), so
+--     they are accelerators only. The slow shared updater is the guarantee.
 
 local U = UnrealUI
-local M = U.media
 
 local PB = U.RegisterModule("petbar")
 
-local ICON_INSET = 2
+local NATIVE_NAME = "PetActionBarFrame"
 
-local LIMITS = {
-  perRow  = { min = 1,  max = 10, step = 1 },
-  size    = { min = 15, max = 60, step = 1 },
-  spacing = { min = -3, max = 20, step = 1 },
-}
+-- Used only until the native bar reports its own size, and as the handle's
+-- footprint if it never does: ten stock pet buttons in a row.
+local FALLBACK_WIDTH  = 320
+local FALLBACK_HEIGHT = 36
 
-local DEFAULTS = {
-  enabled      = true,
-  perRow       = 10,
-  size         = 24,
-  spacing      = 2,
-  showAutocast = true,
-}
+-- Anchor offsets below this are treated as "unchanged" rather than drift.
+local DRIFT_EPSILON = 0.5
 
-local COLOR = {
-  cooldown = { 1.00, 0.20, 0.20, 1.00 },
-  active   = { 0.20, 1.00, 0.20, 1.00 },
-  autocast = { 0.30, 0.75, 1.00, 1.00 },
-}
-
-local frame, buttons = nil, {}
-local shown = false
-local cfg
-local slotCount = 10
-local gridActive = false
+local anchor = nil
+local native = nil
+local nativeAnchor = nil
+local driving = false
 
 -- ---------------------------------------------------------------------------
 -- Client calls
 --
--- Resolved by name and pcall'd, same pattern as modules/actionbar.lua: a
--- missing call degrades one part of the bar rather than erroring the module.
+-- Same resolve-by-name-and-pcall shape as modules/actionbar.lua: a missing call
+-- costs one behaviour rather than erroring the module.
 -- ---------------------------------------------------------------------------
--- Memoized for the reason recorded in knowledge.json /
--- compat.native_suppression_pcall_burst_stutter: U.G is itself a pcall, so
--- resolving the name on every call doubled the cost of every read in the
--- recurring sweeps below.
 local apiFnCache = {}
 
 local function ResolveApiFn(name)
@@ -94,504 +99,240 @@ local function ResolveApiFn(name)
   return nil
 end
 
-local function Call(name, a, b, c)
+local function Call(name, a)
   local fn = ResolveApiFn(name)
   if not fn then return nil end
-  local ok, r1, r2, r3 = pcall(fn, a, b, c)
+  local ok, result = pcall(fn, a)
   if not ok then return nil end
-  return r1, r2, r3
+  return result
 end
 
-local function Has(name)
-  return ResolveApiFn(name) and true or false
-end
-
--- GetPetActionInfo returns seven values; the shared Call() above only
--- forwards three, so this gets its own fixed-arity wrapper instead of a
--- variadic one (the rest of this addon avoids `...` through pcall).
-local function GetPetInfo(id)
-  local fn = ResolveApiFn("GetPetActionInfo")
-  if not fn then return nil end
-  local ok, name, subtext, texture, token, active, castable, autocast =
-    pcall(fn, id)
-  if not ok then return nil end
-  return name, subtext, texture, token, active, castable, autocast
-end
-
-local function Clamp(name, value)
-  local limit = LIMITS[name]
+local function Number(value)
   value = tonumber(value)
-  if not limit then return value end
-  if not value then return limit.min end
-  value = U.Round(value)
-  if value < limit.min then value = limit.min end
-  if value > limit.max then value = limit.max end
+  if not value or value <= 0 then return nil end
   return value
 end
 
-local function Number(name)
-  if not cfg then return LIMITS[name] and LIMITS[name].min or 0 end
-  return Clamp(name, cfg[name])
+-- ---------------------------------------------------------------------------
+-- The client's own anchor
+--
+-- Captured once, before the mover is registered and therefore before anything
+-- of ours can have moved the bar. Replayed on /uui reset. U.GetFramePoint
+-- already returns the relative frame resolved and Y in the sign SetPoint wants
+-- (knowledge.json / frames.getpoint_relative_name_y_inverted), so the capture
+-- goes straight back through SetPoint unchanged.
+-- ---------------------------------------------------------------------------
+local function CaptureNativeAnchor()
+  if not native then return nil end
+
+  local point, relative, relativePoint, x, y = U.GetFramePoint(native, 1)
+  if type(point) ~= "string" then
+    U.Debug("petbar: no readable native anchor to capture")
+    return nil
+  end
+
+  if not relative then
+    local ok, parent = pcall(native.GetParent, native)
+    if ok then relative = parent end
+  end
+  if not relative then relative = UIParent end
+
+  return {
+    point = point,
+    relative = relative,
+    relativePoint = relativePoint or point,
+    x = x,
+    y = y,
+  }
 end
 
-local function IsEnabled()
-  return cfg and cfg.enabled and true or false
+local function RestoreNativeAnchor()
+  if not native or not nativeAnchor then return false end
+
+  local ok = pcall(function()
+    native:ClearAllPoints()
+    native:SetPoint(nativeAnchor.point, nativeAnchor.relative,
+                    nativeAnchor.relativePoint, nativeAnchor.x, nativeAnchor.y)
+  end)
+
+  if ok then
+    driving = false
+    U.Debug("petbar: native pet bar anchor restored")
+  end
+  return ok
 end
 
--- query_compat.py: PetHasActionBar has no compact record. UnitExists("pet")
--- is the fallback proxy if this client does not expose it at all.
-local function HasPetBar()
-  if Has("PetHasActionBar") then return Call("PetHasActionBar") and true or false end
-  return Call("UnitExists", "pet") and true or false
+-- ---------------------------------------------------------------------------
+-- Placement
+--
+-- Two modes, decided only by whether the player has ever dropped this mover:
+--
+--   no stored position -- the anchor follows the native bar and the native bar
+--     is never written to. An interface nobody has rearranged keeps the
+--     client's pet bar exactly where the client puts it.
+--   stored position    -- the mover owns the anchor (UIParent-relative) and the
+--     native bar is pointed at it.
+--
+-- The two are never active at once, so the frames cannot chase each other.
+-- ---------------------------------------------------------------------------
+local function StoredPosition()
+  local ok, position = pcall(U.GetPosition, "petbar")
+  if not ok or type(position) ~= "table" then return nil end
+  if type(position.point) ~= "string" then return nil end
+  return position
 end
 
--- Mirrors modules/unitframes.lua's ResolveClickButton: try direct OnClick
--- arguments first, then the legacy `arg1` global.
-local function ResolveClickButton(a, b)
-  if type(a) == "string" then return a end
-  if type(b) == "string" then return b end
-  return U.G("arg1")
+local function MirrorNativeSize()
+  if not anchor or not native then return end
+
+  local okW, w = pcall(native.GetWidth, native)
+  local okH, h = pcall(native.GetHeight, native)
+  local width = (okW and Number(w)) or FALLBACK_WIDTH
+  local height = (okH and Number(h)) or FALLBACK_HEIGHT
+
+  -- Only written when it actually changes: this runs on the shared tick, and
+  -- the handle is SetAllPoints to this frame, so a size write is a handle
+  -- relayout every second for nothing.
+  if anchor.uuiWidth ~= width then
+    anchor:SetWidth(width)
+    anchor.uuiWidth = width
+  end
+  if anchor.uuiHeight ~= height then
+    anchor:SetHeight(height)
+    anchor.uuiHeight = height
+  end
 end
 
-local function CursorHoldsAction()
-  if gridActive then return true end
-  if Call("CursorHasItem") then return true end
-  if Call("CursorHasSpell") then return true end
-  if Call("CursorHasMacro") then return true end
+local function AnchorDrifted(frame, position)
+  local point, relative, relativePoint, x, y = U.GetFramePoint(frame, 1)
+  if type(point) ~= "string" then return true end
+  if relative and relative ~= UIParent then return true end
+  if point ~= position.point then return true end
+  if relativePoint ~= (position.relativePoint or position.point) then return true end
+  if math.abs(x - (tonumber(position.x) or 0)) > DRIFT_EPSILON then return true end
+  if math.abs(y - (tonumber(position.y) or 0)) > DRIFT_EPSILON then return true end
   return false
 end
 
--- ---------------------------------------------------------------------------
--- Buttons
--- ---------------------------------------------------------------------------
-local function ApplyBorder(button)
-  if button.uuiCdActive then
-    U.SetBorderColor(button, COLOR.cooldown[1], COLOR.cooldown[2], COLOR.cooldown[3], 1)
-  elseif button.uuiActive then
-    U.SetBorderColor(button, COLOR.active[1], COLOR.active[2], COLOR.active[3], 1)
-  elseif button.uuiAutocast and cfg and cfg.showAutocast then
-    U.SetBorderColor(button, COLOR.autocast[1], COLOR.autocast[2], COLOR.autocast[3], 1)
-  else
-    U.SetBorderColor(button, M.Unpack(M.color.border))
-  end
+-- Is the native bar still sitting on our anchor, or has the client re-anchored
+-- it (a pet summon, a bar page change, a zone-in)?
+local function NativeDrifted()
+  local point, relative, relativePoint, x, y = U.GetFramePoint(native, 1)
+  if type(point) ~= "string" then return true end
+  if relative ~= anchor then return true end
+  if point ~= "CENTER" or relativePoint ~= "CENTER" then return true end
+  if math.abs(x) > DRIFT_EPSILON or math.abs(y) > DRIFT_EPSILON then return true end
+  return false
 end
 
-local function OnButtonClick(button, a, b)
-  local mouseButton = ResolveClickButton(a, b)
-
-  if CursorHoldsAction() then
-    Call("PickupPetAction", button.uuiIndex)
-    return
-  end
-
-  if mouseButton == "RightButton" then
-    Call("TogglePetAutocast", button.uuiIndex)
-    return
-  end
-
-  if Call("IsPetAttackActive", button.uuiIndex) then
-    Call("PetStopAttack")
-  else
-    Call("CastPetAction", button.uuiIndex)
-  end
-end
-
--- pfUI's working pet-bar branch calls PickupPetAction on both drag start and
--- receive drag (unlike normal actions, which pair PickupAction/PlaceAction).
-local function OnButtonDrag(button)
-  Call("PickupPetAction", button.uuiIndex)
-end
-
--- GetPetActionInfo's isToken flag marks the three fixed actions (Attack,
--- Follow, Stay): the working pfUI path reads their display name through a
--- second _G lookup rather than the plain string it returns for an actual pet
--- ability. Reproduced as-is; see the WORKING_SOURCE note in the file header.
-local function ShowTooltip(button)
-  local tooltip = U.G("GameTooltip")
-  if not tooltip then return end
-  pcall(tooltip.SetOwner, tooltip, button, "ANCHOR_RIGHT")
-  pcall(tooltip.ClearLines, tooltip)
-
-  local name, _, _, token = GetPetInfo(button.uuiIndex)
-  if token and type(name) == "string" then
-    pcall(tooltip.AddLine, tooltip, U.G(name))
-    pcall(tooltip.Show, tooltip)
-  elseif type(tooltip.SetPetAction) == "function" then
-    if not pcall(tooltip.SetPetAction, tooltip, button.uuiIndex) then
-      pcall(tooltip.Hide, tooltip)
-    end
-  end
-end
-
-local function HideTooltip()
-  local tooltip = U.G("GameTooltip")
-  if tooltip then pcall(tooltip.Hide, tooltip) end
-end
-
-local function CreateButton(index)
-  local name = "UnrealUIPetBarButton" .. index
-  local button = CreateFrame("Button", name, frame)
-  button.uuiIndex = index
-
-  U.CreateBackdrop(button, {})
-  pcall(button.EnableMouse, button, true)
-  pcall(button.RegisterForClicks, button, "LeftButtonUp", "RightButtonUp")
-  pcall(button.RegisterForDrag, button, "LeftButton", "RightButton")
-
-  local icon = button:CreateTexture(nil, "ARTWORK")
-  pcall(icon.SetTexCoord, icon, 0.08, 0.92, 0.08, 0.92)
-  button.uuiIcon = icon
-
-  -- Same Model-frame cooldown swipe as modules/actionbar.lua; see that file's
-  -- header note for why this is the native Vanilla-shaped primitive rather
-  -- than a synthetic overlay.
-  local ok, cooldown = pcall(CreateFrame, "Model", name .. "Cooldown", button,
-                             "CooldownFrameTemplate")
-  if ok and cooldown and Has("CooldownFrame_SetTimer") then
-    pcall(cooldown.SetAllPoints, cooldown, button)
-    button.uuiCooldown = cooldown
-  end
-
-  button:SetScript("OnClick", function(a, b) OnButtonClick(button, a, b) end)
-  button:SetScript("OnDragStart", function() OnButtonDrag(button) end)
-  button:SetScript("OnReceiveDrag", function() OnButtonDrag(button) end)
-  button:SetScript("OnEnter", function()
-    button.uuiHover = true
-    ShowTooltip(button)
+-- Size-agnostic on purpose: centre-on-centre needs neither frame to know how
+-- wide the other is, which matters because the native bar's size is exactly
+-- what this client has no record for.
+local function DriveNative()
+  pcall(function()
+    native:ClearAllPoints()
+    native:SetPoint("CENTER", anchor, "CENTER", 0, 0)
   end)
-  button:SetScript("OnLeave", function()
-    button.uuiHover = false
-    HideTooltip()
+  driving = true
+end
+
+local function FollowNative()
+  pcall(function()
+    anchor:ClearAllPoints()
+    anchor:SetPoint("CENTER", native, "CENTER", 0, 0)
   end)
-
-  return button
-end
-
-local function SizeButton(button, size)
-  button:SetWidth(size)
-  button:SetHeight(size)
-  button.uuiIcon:ClearAllPoints()
-  button.uuiIcon:SetPoint("TOPLEFT", button, "TOPLEFT", ICON_INSET, -ICON_INSET)
-  button.uuiIcon:SetPoint("BOTTOMRIGHT", button, "BOTTOMRIGHT", -ICON_INSET, ICON_INSET)
-end
-
-local function HideButton(button)
-  if button.uuiIcon then button.uuiIcon:Hide() end
-  button.uuiCdActive = false
-  if button.uuiCooldown then pcall(button.uuiCooldown.Hide, button.uuiCooldown) end
-  button:Hide()
-end
-
--- ---------------------------------------------------------------------------
--- State
--- ---------------------------------------------------------------------------
-local function UpdateSlot(button)
-  local name, _, texture, token, active, castable, autocast =
-    GetPetInfo(button.uuiIndex)
-
-  if token and type(texture) == "string" then texture = U.G(texture) end
-
-  if type(texture) == "string" and texture ~= "" then
-    pcall(button.uuiIcon.SetTexture, button.uuiIcon, texture)
-    button.uuiIcon:Show()
-  else
-    pcall(button.uuiIcon.SetTexture, button.uuiIcon, nil)
-    button.uuiIcon:Hide()
-  end
-
-  local usable = true
-  if Has("GetPetActionsUsable") then
-    usable = Call("GetPetActionsUsable") and true or false
-  end
-  pcall(button.uuiIcon.SetDesaturated, button.uuiIcon, not usable)
-
-  button.uuiActive = active and true or false
-  button.uuiAutocast = autocast and true or false
-  ApplyBorder(button)
-end
-
-local function UpdateCooldown(button)
-  local start, duration, enable = Call("GetPetActionCooldown", button.uuiIndex)
-  start = tonumber(start) or 0
-  duration = tonumber(duration) or 0
-
-  if button.uuiCooldown then
-    local fn = ResolveApiFn("CooldownFrame_SetTimer")
-    if fn then
-      pcall(fn, button.uuiCooldown, start, duration, tonumber(enable) or 1)
-    end
-  end
-
-  button.uuiCdActive = (start > 0 and duration > 0) and true or false
-  ApplyBorder(button)
-end
-
-local function FullUpdate(button)
-  UpdateSlot(button)
-  UpdateCooldown(button)
-end
-
-local function ForEachButton(callback)
-  -- /uui perf petbar. Both recurring sweeps walk the buttons through here.
-  if U.PerfDisabled and U.PerfDisabled("petbar") then return end
-  if not shown then return end
-  local i
-  for i = 1, table.getn(buttons) do callback(buttons[i]) end
-end
-
--- ---------------------------------------------------------------------------
--- Layout
--- ---------------------------------------------------------------------------
-local function CreateBar()
-  frame = CreateFrame("Frame", "UnrealUIPetBar", UIParent)
-  -- Match the main action bars: the persistent pet HUD must stay below
-  -- overlapping native interface windows.
-  pcall(frame.SetFrameStrata, frame, "LOW")
-  frame:SetWidth(100)
-  frame:SetHeight(30)
-
-  local i
-  for i = 1, slotCount do buttons[i] = CreateButton(i) end
-
-  U.RegisterMover("petbar", frame, {
-    label = U.L("MOVER_LABEL_PET_BAR"),
-    default = { point = "BOTTOM", relativePoint = "BOTTOM", x = 0, y = 64 },
-    visible = function() return IsEnabled() end,
-  })
-end
-
-local function Layout()
-  if not frame then return end
-
-  -- A bar that only exists while it has an active pet could never be dragged
-  -- into place: modules/castbar.lua and modules/unitframes.lua force the same
-  -- kind of conditional frame shown (with an idle placeholder) while the UI
-  -- is unlocked, and the mover handle -- a child of this frame -- only
-  -- renders while its parent is shown, so this bar needs the same rule.
-  local visible = IsEnabled() and (HasPetBar() or U.IsUnlocked())
-  local perRow = Number("perRow")
-  local size = Number("size")
-  local spacing = Number("spacing")
-
-  if perRow > slotCount then perRow = slotCount end
-  local rows = math.ceil(slotCount / perRow)
-
-  frame:SetWidth(perRow * size + (perRow - 1) * spacing)
-  frame:SetHeight(rows * size + (rows - 1) * spacing)
-
-  local i
-  for i = 1, slotCount do
-    local button = buttons[i]
-    if visible then
-      local row = math.floor((i - 1) / perRow)
-      local column = (i - 1) - row * perRow
-
-      SizeButton(button, size)
-      button:ClearAllPoints()
-      button:SetPoint("TOPLEFT", frame, "TOPLEFT",
-                      column * (size + spacing), -row * (size + spacing))
-      button:Show()
-      FullUpdate(button)
-    else
-      HideButton(button)
-    end
-  end
-
-  shown = visible
-  if visible then frame:Show() else frame:Hide() end
 end
 
 local function Apply()
-  if not frame then
-    if not IsEnabled() then return end
-    CreateBar()
+  if U.PerfDisabled and U.PerfDisabled("petbar") then return end
+  if not anchor or not native then return end
+
+  MirrorNativeSize()
+
+  local position = StoredPosition()
+  local unlocked = U.IsUnlocked()
+
+  if not position then
+    -- Never placed, or /uui reset: give the bar back to the client once, then
+    -- keep the handle shadowing it. Not while the handle is being dragged --
+    -- re-anchoring it to the native bar mid-drag would snap it out of the
+    -- player's hand.
+    if driving then RestoreNativeAnchor() end
+    if not unlocked then FollowNative() end
+    return
   end
-  Layout()
+
+  -- The mover owns the anchor's position between StartMoving and
+  -- StopMovingOrSizing, so it is only re-applied while locked. The native bar
+  -- is anchored *to* the anchor rather than positioned alongside it, so it
+  -- tracks the handle live during the drag with no second write.
+  if not unlocked and AnchorDrifted(anchor, position) then
+    U.ApplyFramePoint(anchor, position)
+  end
+
+  if NativeDrifted() then DriveNative() end
 end
 
 -- ---------------------------------------------------------------------------
--- Native bar
+-- Setup
 -- ---------------------------------------------------------------------------
-local NATIVE_PARTS = {
-  "Icon", "NormalTexture", "NormalTexture2", "HotKey", "Count",
-  "Border", "Cooldown", "Flash", "Name", "AutoCast", "AutoCastable",
-}
+local function CreateAnchor()
+  anchor = CreateFrame("Frame", "UnrealUIPetBarAnchor", UIParent)
+  anchor:SetWidth(FALLBACK_WIDTH)
+  anchor:SetHeight(FALLBACK_HEIGHT)
 
-local function SuppressNativeBar()
-  local names = { "PetActionBarFrame" }
-  local i, j
-  for i = 1, slotCount do
-    local base = "PetActionButton" .. i
-    table.insert(names, base)
-    for j = 1, table.getn(NATIVE_PARTS) do
-      table.insert(names, base .. NATIVE_PARTS[j])
-    end
-  end
-  U.SuppressNativeFrame(names, "petbar")
+  -- Carries a mover handle and nothing else: no backdrop, no mouse, no strata
+  -- of its own. It must never sit in front of the bar it is placing.
+  MirrorNativeSize()
+  FollowNative()
+  anchor:Show()
 end
 
--- ---------------------------------------------------------------------------
--- Public API (settings tab)
--- ---------------------------------------------------------------------------
-function U.PetBarLimits(name)
-  local limit = LIMITS[name]
-  if not limit then return nil end
-  return limit.min, limit.max, limit.step
-end
-
-function U.GetPetBarSetting(name)
-  if not cfg then return nil end
-  if name == "enabled" or name == "showAutocast" then return cfg[name] and true or false end
-  return Number(name)
-end
-
-function U.SetPetBarSetting(name, value)
-  if not cfg then return nil end
-  if name == "enabled" or name == "showAutocast" then
-    cfg[name] = value and true or false
-  else
-    if not LIMITS[name] then return nil end
-    cfg[name] = Clamp(name, value)
-  end
-  Apply()
-  return U.GetPetBarSetting(name)
-end
-
--- ---------------------------------------------------------------------------
--- Settings page
--- ---------------------------------------------------------------------------
-local PAGE_WIDTH = 484
-local SLIDERS = {
-  { key = "perRow",  textKey = "PETBAR_BUTTONS_PER_ROW" },
-  { key = "size",    textKey = "PETBAR_BUTTON_SIZE" },
-  { key = "spacing", textKey = "PETBAR_BUTTON_SPACING" },
-}
-
-local function BuildSettingsPage(parent)
-  local widgets, controls = {}, {}
-
-  local header = U.CreateSectionHeader(parent, {
-    text = U.L("PETBAR_PAGE"), width = PAGE_WIDTH, y = -4,
-  })
-  table.insert(widgets, header)
-
-  local enable = U.CreateCheckbox(parent, {
-    name = "UnrealUIPetBarConfigEnable",
-    text = U.L("COMMON_ENABLE"),
-    value = U.GetPetBarSetting("enabled"),
-    onChange = function(value) U.SetPetBarSetting("enabled", value) end,
-  })
-  enable.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -34)
-  table.insert(widgets, enable)
-
-  local autocast = U.CreateCheckbox(parent, {
-    name = "UnrealUIPetBarConfigAutocast",
-    text = U.L("PETBAR_AUTOCAST"),
-    value = U.GetPetBarSetting("showAutocast"),
-    onChange = function(value) U.SetPetBarSetting("showAutocast", value) end,
-  })
-  autocast.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -58)
-  table.insert(widgets, autocast)
-
-  local i
-  for i = 1, table.getn(SLIDERS) do
-    local spec = SLIDERS[i]
-    local min, max, step = U.PetBarLimits(spec.key)
-
-    local slider = U.CreateSlider(parent, {
-      name = "UnrealUIPetBarConfig" .. spec.key,
-      text = U.L(spec.textKey),
-      width = 200,
-      min = min, max = max, step = step,
-      value = U.GetPetBarSetting(spec.key),
-      onChange = function(value) U.SetPetBarSetting(spec.key, value) end,
-    })
-    slider.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -102 - (i - 1) * 44)
-
-    controls[spec.key] = slider
-    table.insert(widgets, slider)
-  end
-
-  local hint = U.CreateSettingsLabel(parent, {
-    size = M.fontSize.small, color = M.color.textDim,
-    inherits = "GameFontNormalSmall", justify = "LEFT",
-  })
-  if hint then
-    local finalSlider = controls[SLIDERS[table.getn(SLIDERS)].key]
-    U.AnchorSettingsDescription(hint, finalSlider.box,
-                                -math.floor((finalSlider.width - finalSlider.boxWidth) / 2))
-    hint:SetText(U.L("PETBAR_HINT"))
-    table.insert(widgets, hint)
-  end
-
-  local function Refresh()
-    enable.SetValue(U.GetPetBarSetting("enabled"))
-    autocast.SetValue(U.GetPetBarSetting("showAutocast"))
-    local j
-    for j = 1, table.getn(SLIDERS) do
-      local key = SLIDERS[j].key
-      if controls[key] then controls[key].SetValue(U.GetPetBarSetting(key)) end
-    end
-  end
-
-  return widgets, Refresh
-end
-
--- ---------------------------------------------------------------------------
--- Events and refresh
--- ---------------------------------------------------------------------------
 local function RegisterEvents()
-  U.RegisterEvent("UNIT_PET", function(event, unit)
-    if not unit or unit == "player" then Apply() end
-  end)
-  U.RegisterEvent("PLAYER_ENTERING_WORLD", function() Apply() end)
-  U.RegisterEvent("PET_BAR_UPDATE", function() ForEachButton(UpdateSlot) end)
-  U.RegisterEvent("PET_BAR_UPDATE_COOLDOWN", function() ForEachButton(UpdateCooldown) end)
-  U.RegisterEvent("PET_BAR_SHOWGRID", function() gridActive = true end)
-  U.RegisterEvent("PET_BAR_HIDEGRID", function() gridActive = false end)
-end
-
-function PB:OnInit()
-  slotCount = tonumber(U.G("NUM_PET_ACTION_SLOTS")) or 10
-  cfg = U.ModuleConfig("petbar", DEFAULTS)
-
-  if type(U.RegisterSettingsTab) == "function" then
-    U.RegisterSettingsTab("petbar", U.L("PETBAR_PAGE"), BuildSettingsPage, {
-      parent = "actionbars",
-      after = "actionbars.general",
-    })
-  end
+  -- Accelerators only. None of these has a runtime record on this client, so a
+  -- pet summon that fires nothing is still corrected by the shared updater
+  -- below within its interval.
+  local refresh = function() Apply() end
+  U.RegisterEvent("PLAYER_ENTERING_WORLD", refresh)
+  U.RegisterEvent("UNIT_PET", refresh)
+  U.RegisterEvent("PET_BAR_UPDATE", refresh)
 end
 
 function PB:OnEnable()
-  if not cfg then cfg = U.ModuleConfig("petbar", DEFAULTS) end
-  if not slotCount or slotCount < 1 then slotCount = 10 end
+  native = U.G(NATIVE_NAME)
+  if not native then
+    U.Debug("petbar: " .. NATIVE_NAME .. " not found; no pet bar mover")
+    return
+  end
 
-  SuppressNativeBar()
+  -- Before RegisterMover, which is what may apply a stored position.
+  nativeAnchor = CaptureNativeAnchor()
+
+  CreateAnchor()
+
+  -- No `default`: the client's own anchor is not UIParent-relative and cannot
+  -- be written as one. U.OnPositionReset replays it instead, which is the case
+  -- core/mover.lua documents that hook for.
+  U.RegisterMover("petbar", anchor, { label = U.L("MOVER_LABEL_PET_BAR") })
+  U.OnPositionReset(function() return RestoreNativeAnchor() end)
+
   Apply()
   RegisterEvents()
 
-  -- Two rates, same reasoning as modules/actionbar.lua: state (cooldown/
-  -- active/autocast border) is what the eye tracks and ticks faster; the full
-  -- slot contents + visibility sweep is the low-frequency safety net that
-  -- catches anything the accelerator events above missed.
-  U.RegisterUpdate("petbar.cooldown", 0.5, function() ForEachButton(UpdateCooldown) end)
-  -- Faster than modules/actionbar.lua's equivalent sweep: this one also
-  -- catches a pet summon/dismiss and an edit-mode lock/unlock, both of which
-  -- should not take up to 2 seconds to show or hide the bar/handle.
-  U.RegisterUpdate("petbar.slots", 0.5, function() Apply() end)
+  -- One anchor read per tick against a bar that changes position rarely. The
+  -- old module swept ten buttons twice a second; this is the whole cost of the
+  -- feature now.
+  U.RegisterUpdate("petbar.anchor", 1.0, Apply)
 end
 
 -- Reported by /uui check.
 function U.PetBarReport()
   return {
-    enabled = IsEnabled(),
-    hasPetBar = HasPetBar(),
-    created = frame and true or false,
-    shown = shown,
-    slotCount = slotCount,
-    perRow = Number("perRow"),
-    size = Number("size"),
-    spacing = Number("spacing"),
+    native = native and true or false,
+    anchor = anchor and true or false,
+    hasPetBar = Call("PetHasActionBar") and true or false,
+    placed = StoredPosition() and true or false,
+    driving = driving,
+    nativeAnchorCaptured = nativeAnchor and true or false,
   }
 end

@@ -205,16 +205,6 @@ AURAS_OTHER               = "Physique / autre",
 AURAS_HINT                = "Vos propres auras sont minutees par le client et sont exactes. Pour toute autre unite, ce client ne rapporte aucune duree : ces minuteurs sont donc reconstruits a partir d'une table de durees de sorts et du moment ou l'aura a ete vue pour la premiere fois. Une aura deja active au moment ou vous ciblez parait fraiche, et une aura absente de la table n'affiche aucun minuteur. Utilisez /uui aura pour voir laquelle est laquelle.",
 
 -- ---------------------------------------------------------------------------
--- Pet bar
--- ---------------------------------------------------------------------------
-PETBAR_PAGE               = "Barre du familier",
-PETBAR_BUTTONS_PER_ROW    = "Boutons par rangee",
-PETBAR_BUTTON_SIZE        = "Taille des boutons",
-PETBAR_BUTTON_SPACING     = "Espacement des boutons",
-PETBAR_AUTOCAST           = "Mettre en evidence les capacites en lancement automatique",
-PETBAR_HINT               = "Affichee uniquement lorsque vous avez un familier actif disposant de sa propre barre d'action.",
-
--- ---------------------------------------------------------------------------
 -- Bags and bank
 -- ---------------------------------------------------------------------------
 BAGS_TITLE                = "Sacs",
