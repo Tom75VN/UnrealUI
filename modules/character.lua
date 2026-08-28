@@ -38,7 +38,7 @@ local function SetTextFont(object, size, color)
   U.SetStockFont(object, size or M.fontSize.normal, color or WHITE)
 end
 
-local function StyleSlot(slotName)
+local function StyleSlot(slotName, keepNativeChrome)
   local slot = G("Character" .. slotName)
   if not slot then return end
 
@@ -77,16 +77,41 @@ local function StyleSlot(slotName)
 
   border[1], border[2], border[3], border[4] = M.Unpack(color)
 
-  local icon = G("Character" .. slotName .. "IconTexture")
-  U.StyleStockButton(slot, { icon = icon, border = border })
+  if keepNativeChrome then
+    -- Classic keeps the client's paper-doll artwork and button states intact.
+    -- Add only UnrealUI's semantic outline above that native slot so equipped
+    -- item rarity remains visible without turning the character sheet Modern.
+    U.CreateBorder(slot)
+  else
+    local icon = G("Character" .. slotName .. "IconTexture")
+    U.StyleStockButton(slot, { icon = icon, border = border })
+  end
   U.SetBorderColor(slot, M.Unpack(border))
 end
 
-local function StyleSlots()
+local function StyleSlots(keepNativeChrome)
   local i
   for i = 1, table.getn(SLOTS) do
-    StyleSlot(SLOTS[i])
+    StyleSlot(SLOTS[i], keepNativeChrome)
   end
+end
+
+local function BuildClassicSlotBorders()
+  frame = G("CharacterFrame")
+  if not frame then
+    U.Debug("character: native frame unavailable")
+    return false
+  end
+
+  local function RefreshClassicSlotBorders()
+    StyleSlots(true)
+  end
+
+  RefreshClassicSlotBorders()
+  U.PostHookScript(frame, "OnShow", RefreshClassicSlotBorders)
+  U.PostHookGlobal("PaperDollItemSlotButton_Update",
+                   RefreshClassicSlotBorders)
+  return true
 end
 
 -- Resistance readouts (MagicResFrame1-5).
@@ -1065,7 +1090,11 @@ end
 
 function CH:OnEnable()
   -- The native theme keeps CharacterFrame's own chrome. windowmove.lua still
-  -- supplies its mover, so this does not turn off UnrealUI interaction.
-  if U.ThemeStyleUsesNativeChrome() then return end
+  -- supplies its mover. Only the semantic rarity outlines are layered above
+  -- the stock item slots.
+  if U.ThemeStyleUsesNativeChrome() then
+    BuildClassicSlotBorders()
+    return
+  end
   BuildFrame()
 end

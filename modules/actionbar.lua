@@ -146,11 +146,11 @@ local DECLARED_PREFIX = {
 
 local ICON_INSET = 2
 local PRESS_FLASH_DURATION = 0.16
--- The ordinary Lua-created highlight remains only as a safe fallback if the
--- native bag-slot hover proxy cannot be made. The normal path uses the real
--- ContainerFrameItemButtonTemplate highlight, so it needs no artificial icon
--- dimming or brightening.
-local CLASSIC_HIGHLIGHT_ALPHA = 0.35
+-- Classic installs the captured native highlight directly on the action button
+-- so it cannot interfere with spell drops. Hover is intentionally brighter
+-- than the persistent active-action glow, making the pointed-at slot obvious.
+local CLASSIC_HIGHLIGHT_ALPHA = 0.55
+local CLASSIC_ACTIVE_HIGHLIGHT_ALPHA = 0.35
 local CLASSIC_HOVER_BRIGHTEN = 1
 local CLASSIC_REST_DIM = 1
 -- Draw layer of every Classic slot face. This client's action-button normal
@@ -354,65 +354,74 @@ function classicAction.ApplyNativeHighlight(button)
   return true
 end
 
--- rendering.setblendmode_add_inert proves that copying ButtonHilight-Square to
--- a Lua-created texture cannot reproduce the native bag-slot glow. Keep the
--- template's XML-owned highlight intact instead: a mouse-transparent child
--- contributes only that highlight, while the action button retains all input,
--- action state, cooldown and text ownership. Created lazily so untouched action
--- buttons do not pay for another template instance.
-function classicAction.EnsureBagHighlight(button)
-  if button.uuiClassicBagHighlight ~= nil then
-    return button.uuiClassicBagHighlight or nil
+function classicAction.SetHighlightAlpha(button, alpha)
+  local ok, texture = pcall(button.GetHighlightTexture, button)
+  if ok and texture then U.SetColor(texture, 1, 1, 1, alpha) end
+end
+
+-- Hover and held state for any Classic slot. The outline is never tinted in
+-- Classic -- ApplyButtonBorder returns early for one -- so the client's own
+-- highlight carries both, hover deliberately brighter than a held state.
+-- Shared, because modules/stancebar.lua needs the same two states on buttons
+-- that own no action and therefore have no uuiHover/uuiActive contract with
+-- this module.
+function U.SetClassicActionButtonHighlight(button, hover, active)
+  if not button or not button.uuiClassicHighlight then return end
+  if hover or active then
+    classicAction.SetHighlightAlpha(
+      button, hover and CLASSIC_HIGHLIGHT_ALPHA or
+              CLASSIC_ACTIVE_HIGHLIGHT_ALPHA)
+    pcall(button.LockHighlight, button)
+  else
+    pcall(button.UnlockHighlight, button)
   end
-
-  local name = button.uuiName .. "BagHighlight"
-  local ok, proxy = pcall(CreateFrame, "Button", name, button,
-                          "ContainerFrameItemButtonTemplate")
-  if not ok or not proxy then
-    local partial = U.G(name)
-    if partial then pcall(partial.Hide, partial) end
-    button.uuiClassicBagHighlight = false
-    button.uuiClassicHighlightFallback =
-      classicAction.ApplyNativeHighlight(button)
-    return nil
-  end
-
-  pcall(proxy.SetAllPoints, proxy, button)
-  pcall(proxy.EnableMouse, proxy, false)
-  pcall(proxy.SetNormalTexture, proxy, "")
-
-  local normalOk, normal = pcall(proxy.GetNormalTexture, proxy)
-  if normalOk then U.HideRegion(normal) end
-  local pushedOk, pushed = pcall(proxy.GetPushedTexture, proxy)
-  if pushedOk then U.HideRegion(pushed) end
-
-  local suffixes = { "NormalTexture", "IconTexture", "Count", "Cooldown" }
-  local i
-  for i = 1, table.getn(suffixes) do
-    local region = U.G(name .. suffixes[i])
-    U.HideRegion(region)
-  end
-
-  button.uuiClassicBagHighlight = proxy
-  return proxy
 end
 
 function classicAction.RefreshHighlight(button)
-  if not button or not button.uuiClassicHighlight then return end
-  local wanted = button.uuiHover or button.uuiActive
-  if not wanted and button.uuiClassicBagHighlight == nil and
-     not button.uuiClassicHighlightFallback then return end
-  local proxy = classicAction.EnsureBagHighlight(button)
-  local owner = proxy
-  if not owner and button.uuiClassicHighlightFallback then owner = button end
-  if not owner then return end
+  if not button then return end
+  U.SetClassicActionButtonHighlight(button, button.uuiHover, button.uuiActive)
+end
 
-  if wanted then
-    if proxy then pcall(proxy.Show, proxy) end
-    pcall(owner.LockHighlight, owner)
-  else
-    pcall(owner.UnlockHighlight, owner)
+-- ---------------------------------------------------------------------------
+-- Classic chrome for icon buttons that are not action slots
+--
+-- modules/stancebar.lua draws a spell icon in an action-button-shaped slot
+-- while owning no action, so it needs this module's captured client face, its
+-- icon geometry and its highlight without any of the slot, drag, paging or
+-- keybind machinery. The capture stays here -- one live read of ActionButton1
+-- before the suppression pass -- so every Classic surface borrowing the look
+-- cannot drift away from the bars. modules/actionbar.lua is enabled ahead of
+-- modules/stancebar.lua (TOC order), so the faces exist by the time the stance
+-- bar builds its buttons.
+-- ---------------------------------------------------------------------------
+function U.ClassicActionChromeReady()
+  return classicAction.ready and true or false
+end
+
+-- One-time styling for such a button. Returns false when the client faces were
+-- unavailable, so the caller can keep its own flat rendering rather than draw a
+-- half-Classic button.
+function U.StyleClassicActionIconButton(button, icon, size)
+  if not classicAction.ready or not button then return false end
+  size = tonumber(size) or classicAction.Dimension(button, "GetWidth")
+
+  -- Uncropped and centred at the client's own icon-to-button ratio, the way
+  -- classicAction.SizeButton does it for an action slot: the normal face
+  -- supplies the ornamental edge around the icon and overflows the button on
+  -- every side, which is what makes the slot read as a stock one.
+  if icon then
+    pcall(icon.SetTexCoord, icon, 0, 1, 0, 1)
+    if classicAction.iconWidthRatio and classicAction.iconHeightRatio then
+      pcall(icon.ClearAllPoints, icon)
+      pcall(icon.SetPoint, icon, "CENTER", button, "CENTER", 0, 0)
+      pcall(icon.SetWidth, icon, size * classicAction.iconWidthRatio)
+      pcall(icon.SetHeight, icon, size * classicAction.iconHeightRatio)
+    end
   end
+
+  button.uuiClassicNormal = U.StyleClassicActionButtonBorder(button, size)
+  button.uuiClassicHighlight = classicAction.ApplyNativeHighlight(button)
+  return button.uuiClassicNormal and true or false
 end
 
 function classicAction.StyleButton(button, textLayer)
@@ -427,7 +436,11 @@ function classicAction.StyleButton(button, textLayer)
 
   button.uuiClassicNormal = U.StyleClassicActionButtonBorder(
     button, classicAction.Dimension(button, "GetWidth"))
-  button.uuiClassicHighlight = true
+  -- The action button itself must remain the sole mouse and drop target. A
+  -- ContainerFrameItemButtonTemplate child can intercept spell drops on this
+  -- client even when asked to be mouse-transparent, so Classic installs the
+  -- captured native highlight directly on the owning action button.
+  button.uuiClassicHighlight = classicAction.ApplyNativeHighlight(button)
 
   -- The press flash keeps its owned region, because it is driven by keybind
   -- timing rather than by a real mouse press (see ShowButtonPress). It does not
@@ -756,10 +769,19 @@ local function BindingPrefix(bar)
   return nil
 end
 
+-- modules/quickbind.lua takes the slot keys off the client while its mode is
+-- open, so the client has nothing to report until it closes. U.SlotBindingKey
+-- answers with what the player has staged in that window and with the client's
+-- own key at every other time.
 local function BindingFor(bar, index)
   local prefix = BindingPrefix(bar)
   if not prefix then return "" end
-  return CompactBinding(Call("GetBindingKey", prefix .. index))
+
+  local command = prefix .. index
+  if type(U.SlotBindingKey) == "function" then
+    return CompactBinding(U.SlotBindingKey(command))
+  end
+  return CompactBinding(Call("GetBindingKey", command))
 end
 
 -- Make the executable key route match the label route exactly. Suppressing the
@@ -1265,8 +1287,8 @@ local function CreateButton(bar, index)
   button:SetScript("OnClick", function() OnButtonClick(button) end)
   button:SetScript("OnDragStart", function() OnButtonDragStart(button) end)
   button:SetScript("OnReceiveDrag", function() OnButtonReceiveDrag(button) end)
-  -- Classic drives the real bag-slot highlight proxy explicitly because it is
-  -- mouse-transparent; Modern continues to use the owned outline.
+  -- Classic drives its native highlight explicitly; Modern continues to use
+  -- the owned outline.
   button:SetScript("OnEnter", function()
     button.uuiHover = true
     classicAction.RefreshHighlight(button)
@@ -1347,13 +1369,7 @@ local function HideButton(button)
   -- recycled into a slot whose action is not active. Clearing the cached flag
   -- with it keeps UpdateActive from short-circuiting and leaving a button that
   -- is still active after the recycle without its lock.
-  if button.uuiClassicBagHighlight then
-    pcall(button.uuiClassicBagHighlight.UnlockHighlight,
-          button.uuiClassicBagHighlight)
-    pcall(button.uuiClassicBagHighlight.Hide,
-          button.uuiClassicBagHighlight)
-  end
-  if button.uuiClassicHighlightFallback then
+  if button.uuiClassicHighlight then
     pcall(button.UnlockHighlight, button)
   end
   button.uuiHover = false
@@ -1510,46 +1526,10 @@ end
 --   * api.json / core.time.v1: GetTime() returned a plain rising number of
 --     seconds (852.623). Same clock GetActionCooldown stamps start with.
 -- ---------------------------------------------------------------------------
--- Only needed by the wrap correction below, and only if this client wraps at
--- all. Each source is optional and guarded.
-local function EpochSeconds()
-  local value = tonumber(Call("time"))
-  if value then return value end
-
-  value = tonumber(Call("GetServerTime"))
-  if value then return value end
-
-  local fn = U.G("date")
-  if type(fn) == "function" then
-    local ok, text = pcall(fn, "%s")
-    value = ok and tonumber(text) or nil
-    if value then return value end
-  end
-  return nil
-end
-
--- Seconds left on (start, duration), or nil when it cannot be established.
-local function CooldownRemaining(start, duration)
-  local now = tonumber(Call("GetTime")) or 0
-
-  if start <= now then
-    return duration - (now - start)
-  end
-
-  -- A start stamped ahead of the current time means the client's 32-bit
-  -- millisecond uptime counter wrapped and the stamp belongs to the previous
-  -- cycle, so the plain subtraction would read as a cooldown days long.
-  -- UnrealPfUI corrects it by rebasing both onto wall-clock seconds
-  -- (modules/cooldown.lua); the arithmetic here is that working implementation,
-  -- so it is WORKING_SOURCE evidence and not verified on this client. It only
-  -- runs in a case the plain path is already wrong in.
-  local epoch = EpochSeconds()
-  if not epoch then return nil end
-
-  local startupTime = epoch - now
-  local cdTime = (2 ^ 32) / 1000 - start
-  return (startupTime - cdTime + duration) - epoch
-end
+-- The (start, duration) pair is turned into seconds remaining by the shared
+-- U.CooldownRemaining (core/compat.lua), which also owns this client's 32-bit
+-- uptime wrap correction. modules/stancebar.lua draws the same readout from
+-- the same helper.
 
 -- The string and its tier come from the shared U.FormatTimeShort; this only
 -- maps the tier onto the palette.
@@ -1566,7 +1546,7 @@ local function RefreshCooldownText(button)
 
   local remaining = nil
   if button.uuiCdActive and cfg and cfg.showCooldown then
-    remaining = CooldownRemaining(button.uuiCdStart, button.uuiCdDuration)
+    remaining = U.CooldownRemaining(button.uuiCdStart, button.uuiCdDuration)
   end
 
   if not remaining or remaining <= 0 then
@@ -1614,7 +1594,7 @@ local function NoteGCD(slot, start, duration)
 
   local now = tonumber(Call("GetTime"))
   if not now then return end
-  -- A stamp ahead of the clock is the 32-bit uptime wrap CooldownRemaining
+  -- A stamp ahead of the clock is the 32-bit uptime wrap U.CooldownRemaining
   -- rebases for. Rebasing is not worth it across a 1.5s sweep: skip that one
   -- global cooldown rather than draw it from a stamp days out.
   if start > now then return end
@@ -2141,6 +2121,14 @@ function U.ActionBindingLabel(binding, full)
   return CompactBinding(binding, full)
 end
 
+-- modules/stancebar.lua draws the same corner key label on its own buttons and
+-- follows this setting rather than owning a second copy of it. True before the
+-- config is read, which matches the default.
+function U.ActionBarShowsKeybinds()
+  if not cfg then return true end
+  return cfg.showKeybind and true or false
+end
+
 -- `declared` marks the slots whose command comes from unrealUI's own
 -- Bindings.xml rather than from the client, which is worth telling the player:
 -- the key is real and saved, but it is listed under an unrealUI header in the
@@ -2328,10 +2316,9 @@ function U.ActionBarHighlightTune(alpha, brighten, rest)
 
   ForEachVisibleButton(function(button)
     if not button.uuiClassic then return end
-    local ok, texture = pcall(button.GetHighlightTexture, button)
-    if ok and texture then
-      U.SetColor(texture, 1, 1, 1, CLASSIC_HIGHLIGHT_ALPHA)
-    end
+    classicAction.SetHighlightAlpha(
+      button, button.uuiHover and CLASSIC_HIGHLIGHT_ALPHA or
+              CLASSIC_ACTIVE_HIGHLIGHT_ALPHA)
     ApplyIconTint(button)
   end)
 
@@ -2456,4 +2443,90 @@ function U.ActionBarHighlightDump()
   for i = 1, table.getn(entries) do
     if entries[i].own then U.Print("  " .. Describe(entries[i])) end
   end
+end
+
+-- ---------------------------------------------------------------------------
+-- Countdown dump (/uui abcd)
+--
+-- The cooldown number has four independent ways to end up invisible and the
+-- symptom is identical for every one of them: the client never reports the
+-- pair (GetActionCooldown), the state gate rejects it (uuiCdActive, which also
+-- drives the red icon tint), the FontString was never created (U.CreateLabel
+-- returned nil), or the label is shown and carries text but draws nothing --
+-- no font object, zero alpha, or a raised layer that is not visible. Nothing
+-- in this module distinguishes them from the outside, so print all four in one
+-- pass rather than trying successive blind fixes across reloads.
+-- ---------------------------------------------------------------------------
+function U.ActionBarCooldownDump()
+  local function Ask(object, method)
+    if not object or type(object[method]) ~= "function" then return nil end
+    local ok, value = pcall(object[method], object)
+    if not ok then return nil end
+    return value
+  end
+
+  U.Print("classic active=" .. tostring(classicAction.active) ..
+          " ready=" .. tostring(classicAction.ready) ..
+          ", showCooldown=" .. tostring(cfg and cfg.showCooldown) ..
+          ", font=" .. tostring(U.GetFontChoice and U.GetFontChoice("default")))
+
+  -- A slot already counting down answers every question below with live
+  -- values; an empty or ready slot answers all of them with a zero and proves
+  -- nothing. Prefer the first one this module believes is on cooldown, and
+  -- fall back to any slot carrying an action so the command still reports the
+  -- label and layer state when nothing is running.
+  local entry = bars[1]
+  local button, fallback, i = nil, nil, nil
+  if entry then
+    for i = 1, table.getn(entry.buttons) do
+      local candidate = entry.buttons[i]
+      if candidate.uuiShown and not candidate.uuiEmpty then
+        if not fallback then fallback = candidate end
+        if candidate.uuiCdActive and not button then button = candidate end
+      end
+    end
+  end
+  button = button or fallback
+  if not button then
+    U.Print("bar 1 has no visible slot carrying an action")
+    return
+  end
+
+  local slot = ButtonSlot(button)
+  local start, duration, enable = Call("GetActionCooldown", slot)
+  U.Print("slot " .. tostring(slot) ..
+          " GetActionCooldown start=" .. tostring(start) ..
+          " duration=" .. tostring(duration) ..
+          " enable=" .. tostring(enable) ..
+          " now=" .. tostring(Call("GetTime")))
+  U.Print("  cached start=" .. tostring(button.uuiCdStart) ..
+          " duration=" .. tostring(button.uuiCdDuration) ..
+          " active=" .. tostring(button.uuiCdActive) ..
+          " shown=" .. tostring(button.uuiCdShown) ..
+          " remaining=" .. tostring(button.uuiCdActive and
+            U.CooldownRemaining(button.uuiCdStart, button.uuiCdDuration)))
+
+  local layer = button.uuiCooldownLayer
+  U.Print("  button level=" .. tostring(Ask(button, "GetFrameLevel")) ..
+          " shown=" .. tostring(Ask(button, "IsShown")) ..
+          ", raised layer level=" .. tostring(Ask(layer, "GetFrameLevel")) ..
+          " shown=" .. tostring(Ask(layer, "IsShown")) ..
+          " visible=" .. tostring(Ask(layer, "IsVisible")) ..
+          " alpha=" .. tostring(Ask(layer, "GetAlpha")))
+
+  local label = button.uuiCooldownText
+  if not label then
+    U.Print("  no countdown FontString - U.CreateLabel returned nil")
+    return
+  end
+  U.Print("  label text=" .. tostring(Ask(label, "GetText")) ..
+          " shown=" .. tostring(Ask(label, "IsShown")) ..
+          " visible=" .. tostring(Ask(label, "IsVisible")) ..
+          " drawLayer=" .. tostring(Ask(label, "GetDrawLayer")) ..
+          " w=" .. tostring(Ask(label, "GetWidth")) ..
+          " h=" .. tostring(Ask(label, "GetHeight")))
+  U.Print("  label font=" .. tostring(Ask(label, "GetFont")) ..
+          " object=" .. tostring(Ask(label, "GetFontObject")) ..
+          " colour=" .. tostring(Ask(label, "GetTextColor")) ..
+          " alpha=" .. tostring(Ask(label, "GetAlpha")))
 end

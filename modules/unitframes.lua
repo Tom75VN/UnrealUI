@@ -214,6 +214,10 @@ do
       width = PARTY_WIDTH, health = 36, power = 8, gap = 0,
       healthTexture = true,
       healthLabels = { left = "unit", right = "healthdyn" },
+      -- Party health rows have enough vertical room to give their identity and
+      -- health readout stronger hierarchy than the compact power/pet rows.
+      healthLabelSize = M.fontSize.large,
+      healthLabelInherits = "GameFontNormal",
       powerLabels = { right = "powerdyn" },
       anchorTo = PARTY_ANCHOR,
       -- No fixed offset: LayoutParty owns every position inside the block,
@@ -644,6 +648,7 @@ local frames = {}       -- id -> frame
 local frameOrder = {}
 local textCache = {}    -- fontstring -> last applied string
 local dirtyUnits = {}   -- unit token -> health | power | vitals | full
+local unitMouse = {}
 
 -- Classic keeps UnrealUI's generated frames as invisible layout anchors while
 -- showing the client's real unit frames on top of them. That gives the theme
@@ -710,6 +715,14 @@ function classicNative.Anchor(anchor, native)
   anchor.uuiAuraRightOffset = math.max(0, (nativeWidth - anchorWidth) / 2)
   anchor.uuiAuraTopOffset = math.max(0, (nativeHeight - anchorHeight) / 2)
   anchor.uuiAuraBottomOffset = anchor.uuiAuraTopOffset
+
+  local catcher = anchor.uuiClassicClickCatcher
+  if catcher then
+    pcall(catcher.ClearAllPoints, catcher)
+    pcall(catcher.SetPoint, catcher, "CENTER", native, "CENTER", 0, 0)
+    pcall(catcher.SetWidth, catcher, nativeWidth)
+    pcall(catcher.SetHeight, catcher, nativeHeight)
+  end
 end
 
 function classicNative.HideCustomVisuals(frame)
@@ -719,7 +732,7 @@ function classicNative.HideCustomVisuals(frame)
 
   local parts = {
     frame.health, frame.power, frame.values, frame.portrait,
-    frame.classIcon, frame.restIcon, frame.happiness,
+    frame.classIcon, frame.restIcon, frame.happiness, frame.leaderIcon,
   }
   local i
   for i = 1, table.getn(parts) do
@@ -728,7 +741,7 @@ function classicNative.HideCustomVisuals(frame)
   end
 end
 
-function classicNative.Bind(entry)
+function classicNative.Bind(entry, order)
   local anchor = frames[entry.id]
   local native = classicNative.Resolve(entry.names)
   if not anchor or not native then
@@ -739,12 +752,48 @@ function classicNative.Bind(entry)
   anchor.classicNativeFrame = native
   entry.anchor = anchor
   entry.native = native
+
+  -- unitframes.player_click_hit_route.v1 first confirmed that neither the
+  -- native Button nor its mouse-enabled StatusBar children deliver Lua mouse
+  -- scripts in this Classic rendering path. The same probe's addon-owned
+  -- overlay variant then verified both exact production actions end-to-end:
+  -- left-click TargetUnit("player") and right-click ToggleDropDownMenu both
+  -- succeed. Reproduce that measured construction above every native root.
+  local catcherName = "UnrealUIClassicUnitClick" .. entry.id
+  local catcherOk, catcher = pcall(CreateFrame, "Button", catcherName, UIParent)
+  if catcherOk and catcher then
+    anchor.uuiClassicClickCatcher = catcher
+    pcall(catcher.SetFrameStrata, catcher, "LOW")
+    -- Later roots such as target-of-target and pet can overlap their owner;
+    -- keep their catchers above the earlier/larger root in the same order.
+    pcall(catcher.SetFrameLevel, catcher, 100 + (tonumber(order) or 0))
+    unitMouse.Enable(catcher, anchor.unit)
+  else
+    U.Debug("no Classic click catcher created for: " .. entry.id)
+  end
+
   classicNative.Anchor(anchor, native)
+
+  local shownOk, shown = pcall(native.IsShown, native)
+  if catcher then
+    if shownOk and shown then pcall(catcher.Show, catcher)
+    else pcall(catcher.Hide, catcher) end
+  end
 
   if not native.uuiClassicAnchorHooked then
     native.uuiClassicAnchorHooked = true
     U.PostHookScript(native, "OnShow", function()
       classicNative.Anchor(anchor, native)
+      if anchor.uuiClassicClickCatcher then
+        pcall(anchor.uuiClassicClickCatcher.Show,
+              anchor.uuiClassicClickCatcher)
+      end
+    end)
+    U.PostHookScript(native, "OnHide", function()
+      if anchor.uuiClassicClickCatcher then
+        pcall(anchor.uuiClassicClickCatcher.Hide,
+              anchor.uuiClassicClickCatcher)
+      end
     end)
   end
 end
@@ -796,7 +845,7 @@ function classicNative.BindAll()
   classicNative.active = true
   local i
   for i = 1, table.getn(classicNative.roots) do
-    classicNative.Bind(classicNative.roots[i])
+    classicNative.Bind(classicNative.roots[i], i)
   end
 end
 
@@ -833,11 +882,12 @@ local function CreateBarBox(parent, width, height, border, color, texture)
   return box
 end
 
-local function CreateBarLabel(parent, anchor, target, offset, yOffset)
+local function CreateBarLabel(parent, anchor, target, offset, yOffset,
+                              size, inherits)
   local label = U.CreateLabel(parent, {
-    size = M.fontSize.normal,
+    size = size or M.fontSize.normal,
     color = M.color.text,
-    inherits = "GameFontNormalSmall",
+    inherits = inherits or "GameFontNormalSmall",
     fontRole = "unitframe",
     shadowOffset = M.compactTextShadowOffset,
     shadowColor = M.color.shadowStrong,
@@ -868,7 +918,7 @@ local NAME_LEVEL_GAP_TRUNCATED = NAME_LEVEL_GAP + 3
 -- or power), on the same raised-child-layer trick as the targettarget name:
 -- the fill is a sibling texture whose width changes every refresh, and text
 -- on the same layer can end up behind it.
-local function BuildBarLabels(box, labels, yOffset)
+local function BuildBarLabels(box, labels, yOffset, size, inherits)
   if not labels then return end
   yOffset = yOffset or BAR_LABEL_Y_OFFSET
 
@@ -881,20 +931,20 @@ local function BuildBarLabels(box, labels, yOffset)
 
   if labels.left then
     box.leftLabel = CreateBarLabel(box.textLayer, "LEFT", box.textLayer,
-                                    BAR_LABEL_MARGIN, yOffset)
+                                    BAR_LABEL_MARGIN, yOffset, size, inherits)
   end
   if labels.right then
     box.rightLabel = CreateBarLabel(box.textLayer, "RIGHT", box.textLayer,
-                                     -BAR_LABEL_MARGIN, yOffset)
+                                     -BAR_LABEL_MARGIN, yOffset, size, inherits)
 
     -- "unitrev" (target frame) draws name+level as two labels instead of one
     -- string, so the gap between them can widen by a real pixel amount when
     -- the name is truncated -- a single FontString can't do that.
     if labels.right == "unitrev" then
       box.rightNameLabel = U.CreateLabel(box.textLayer, {
-        size = M.fontSize.normal,
+        size = size or M.fontSize.normal,
         color = M.color.text,
-        inherits = "GameFontNormalSmall",
+        inherits = inherits or "GameFontNormalSmall",
         fontRole = "unitframe",
         shadowOffset = M.compactTextShadowOffset,
         shadowColor = M.color.shadowStrong,
@@ -1118,7 +1168,7 @@ end
 -- Second attempt was unrealUI's own flat accent glyph, no client asset at all.
 -- Now replaced by a user-supplied icon (media/rest-icon.tga, native 36x39).
 -- TGA rather than PNG: this is a Vanilla-era client and
--- media/chat_resize_grip.tga is this addon's only other shipped custom
+-- media/resize.tga is this addon's only other shipped custom
 -- texture, so TGA is the one raster format already confirmed to render here
 -- -- PNG support was never verified. Displayed 60% smaller than native size,
 -- by request.
@@ -1154,6 +1204,69 @@ local function BuildRestIcon(frame, health)
   pcall(layer.Hide, layer)
   frame.restIcon = layer
   frame.restIconState = false
+end
+
+-- ---------------------------------------------------------------------------
+-- Party leader star
+--
+-- Replaces the suppressed stock PartyMemberFrame%dLeaderIcon. The read is
+-- UnitIsPartyLeader(unit), documented for this client (documentation.json /
+-- global:Unit:UnitIsPartyLeader, DOCUMENTED_NOT_RUNTIME_VERIFIED) and driven
+-- from the same call by UnrealPfUI's own leader icon on this client
+-- (api/unitframes.lua:1407, WORKING_SOURCE -- not runtime verification).
+--
+-- The roster guard is copied from that implementation rather than trusting the
+-- documented "false when not in a group" return: pfUI pairs the call with a
+-- GetNumPartyMembers/GetNumRaidMembers check, and a solo player wearing a
+-- leader star is the one failure worth spending two cached calls on.
+--
+-- The player frame carries one too. The question the star answers is "who
+-- leads this party", and a player-led party would otherwise show no star at
+-- all -- the same state, silently.
+--
+-- Art is unrealUI's own media/leader-star.tga (see core/media.lua): a stock
+-- GroupFrame path is exactly the kind this client is known to leave blank.
+-- Accent-tinted rather than a semantic colour: leadership is unrealUI chrome
+-- marking a roster fact, not unit state like health or reaction.
+--
+-- No event: PARTY_LEADER_CHANGED is already in GROUP_EVENTS and queues a full
+-- refresh for every member, and the 1s full sweep catches it regardless.
+-- ---------------------------------------------------------------------------
+local LEADER_ICON_SIZE = 14
+
+local LEADER_UNITS = { player = true }
+do
+  local i
+  for i = 1, PARTY_COUNT do LEADER_UNITS["party" .. i] = true end
+end
+
+-- Same raised-child-layer guard as the rest icon and the classification icon:
+-- the health bar's fill is a sibling texture that resizes on every refresh,
+-- and art on the same frame level can end up behind it.
+local function BuildLeaderIcon(frame, health)
+  if not LEADER_UNITS[frame.unit] then return end
+  if type(health.CreateTexture) ~= "function" then return end
+
+  local layer = CreateFrame("Frame", nil, frame)
+  layer:SetWidth(LEADER_ICON_SIZE)
+  layer:SetHeight(LEADER_ICON_SIZE)
+  -- Centred on the frame's top-right corner, mirroring the rest icon on the
+  -- top-left: half the star sits outside the frame, which keeps it clear of
+  -- the health value the party rows print at that end of the bar.
+  layer:SetPoint("CENTER", frame, "TOPRIGHT", 0, 0)
+  local levelOk, level = pcall(health.GetFrameLevel, health)
+  if levelOk and tonumber(level) then
+    pcall(layer.SetFrameLevel, layer, level + 10)
+  end
+
+  local icon = layer:CreateTexture(nil, "OVERLAY")
+  icon:SetAllPoints(layer)
+  pcall(icon.SetTexture, icon, M.texture.leaderIcon)
+  U.SetColor(icon, M.color.accent[1], M.color.accent[2], M.color.accent[3], 1)
+
+  pcall(layer.Hide, layer)
+  frame.leaderIcon = layer
+  frame.leaderIconState = false
 end
 
 local function BuildFrame(spec, parent)
@@ -1210,11 +1323,13 @@ local function BuildFrame(spec, parent)
     end
     health.label = CreateBarLabel(health.textLayer, "CENTER", health.textLayer, 0)
   elseif spec.healthLabels then
-    BuildBarLabels(health, spec.healthLabels)
+    BuildBarLabels(health, spec.healthLabels, nil,
+                   spec.healthLabelSize, spec.healthLabelInherits)
   end
 
   BuildClassificationIcon(frame, health)
   BuildRestIcon(frame, health)
+  BuildLeaderIcon(frame, health)
 
   local previous = health
   local power = nil
@@ -1227,7 +1342,8 @@ local function BuildFrame(spec, parent)
                    border - spec.gap)
     previous = power
     if spec.powerLabels then
-      BuildBarLabels(power, spec.powerLabels, POWER_LABEL_Y_OFFSET)
+      BuildBarLabels(power, spec.powerLabels, POWER_LABEL_Y_OFFSET,
+                     spec.powerLabelSize, spec.powerLabelInherits)
     end
   end
 
@@ -1262,9 +1378,10 @@ end
 --
 -- Flat modern design, not pfUI's red/yellow/green tiered pips: five equal
 -- segments in a single hue (rogue class colour when filled, the same empty
--- bar tone the health/power bars use when not), overlaid on a raised child
--- layer across the top of the player health bar so the frame's own geometry
--- and mover position are untouched.
+-- bar tone the health/power bars use when not), in a raised child layer
+-- immediately above the player frame. The layer is anchored flush to the
+-- frame's top edge, so it follows the existing mover without changing the
+-- player's geometry.
 -- ---------------------------------------------------------------------------
 local COMBO_MAX = 5
 local COMBO_GAP = 2
@@ -1307,14 +1424,16 @@ local function BuildComboPoints(playerFrame)
   local health = playerFrame and playerFrame.health
   if not health then return end
 
-  local border = U.BorderSize()
   local width = playerFrame.spec.width
   local pipWidth = (width - (COMBO_MAX - 1) * COMBO_GAP) / COMBO_MAX
 
   -- Same raised-child-layer trick as the targettarget health label: sits above
-  -- the bar fill so the fill's width changes can never cover the pips.
-  local layer = CreateFrame("Frame", nil, health)
-  layer:SetAllPoints(health)
+  -- the player frame so the pips remain visible and move with it. Its bottom
+  -- edge meets the player's top edge exactly: no separating gap.
+  local layer = CreateFrame("Frame", nil, playerFrame)
+  layer:SetWidth(width)
+  layer:SetHeight(COMBO_HEIGHT)
+  layer:SetPoint("BOTTOMLEFT", playerFrame, "TOPLEFT", 0, 0)
   local levelOk, level = pcall(health.GetFrameLevel, health)
   if levelOk and tonumber(level) then
     pcall(layer.SetFrameLevel, layer, level + 10)
@@ -1327,7 +1446,7 @@ local function BuildComboPoints(playerFrame)
     pip:SetWidth(pipWidth)
     pip:SetHeight(COMBO_HEIGHT)
     pip:SetPoint("TOPLEFT", layer, "TOPLEFT",
-                border + (i - 1) * (pipWidth + COMBO_GAP), -border)
+                (i - 1) * (pipWidth + COMBO_GAP), 0)
     U.CreateBackdrop(pip, { border = false, background = COMBO_EMPTY })
     comboPips[i] = pip
   end
@@ -1639,6 +1758,35 @@ local function HideRestIcon(frame)
   pcall(frame.restIcon.Hide, frame.restIcon)
 end
 
+local function ApplyLeaderIcon(frame)
+  local icon = frame.leaderIcon
+  if not icon then return end
+  if frame.classicNative then
+    frame.leaderIconState = false
+    pcall(icon.Hide, icon)
+    return
+  end
+
+  local leader = ApiTruth("UnitIsPartyLeader", frame.unit) and
+                 (ApiTruth("GetNumPartyMembers") or
+                  ApiTruth("GetNumRaidMembers"))
+  -- Nothing below needs to run again while leadership has not changed.
+  if frame.leaderIconState == leader then return end
+  frame.leaderIconState = leader
+
+  if leader then
+    pcall(icon.Show, icon)
+  else
+    pcall(icon.Hide, icon)
+  end
+end
+
+local function HideLeaderIcon(frame)
+  if not frame.leaderIcon or frame.leaderIconState == false then return end
+  frame.leaderIconState = false
+  pcall(frame.leaderIcon.Hide, frame.leaderIcon)
+end
+
 local function SetFrameShown(frame, shown)
   if frame.uuiShown == shown then return end
   frame.uuiShown = shown
@@ -1681,6 +1829,7 @@ local function RefreshFrame(frame, mode)
     HideClassificationIcon(frame)
     HideHappinessIndicator(frame)
     HideRestIcon(frame)
+    HideLeaderIcon(frame)
     -- An empty shell stays on screen while the UI is unlocked, otherwise a
     -- frame with no unit could never be dragged into place.
     if U.IsUnlocked() then
@@ -1761,6 +1910,7 @@ local function RefreshFrame(frame, mode)
   if mode == "full" then RefreshPortrait(frame) end
   if mode == "full" then ApplyHappinessIndicator(frame) end
   if mode == "full" then ApplyRestIcon(frame) end
+  if mode == "full" then ApplyLeaderIcon(frame) end
 
   -- Offline party members are dimmed rather than hidden, matching pfUI's
   -- alpha_offline treatment without importing its alpha config. Unverified on
@@ -2154,8 +2304,8 @@ local UNIT_DROPDOWNS = {
   party4 = "PartyMemberFrame4DropDown",
 }
 
-local function ShowUnitMenu(frame)
-  local dropdownName = UNIT_DROPDOWNS[frame.unit]
+local function ShowUnitMenu(frame, unit)
+  local dropdownName = UNIT_DROPDOWNS[unit or frame.unit]
   if not dropdownName then return end
 
   local dropdown = U.G(dropdownName)
@@ -2183,7 +2333,8 @@ local function ResolveClickButton(a, b)
   return U.G("arg1")
 end
 
-local function EnableMouse(frame)
+function unitMouse.Enable(frame, unit)
+  unit = unit or frame.unit
   pcall(frame.EnableMouse, frame, true)
   pcall(frame.RegisterForClicks, frame, "LeftButtonUp", "RightButtonUp")
 
@@ -2191,12 +2342,12 @@ local function EnableMouse(frame)
     local button = ResolveClickButton(a, b)
 
     if button == "RightButton" then
-      ShowUnitMenu(frame)
+      ShowUnitMenu(frame, unit)
       return
     end
 
     local target = U.G("TargetUnit")
-    if type(target) == "function" then pcall(target, frame.unit) end
+    if type(target) == "function" then pcall(target, unit) end
   end)
 
   frame:SetScript("OnEnter", function()
@@ -2208,7 +2359,7 @@ local function EnableMouse(frame)
       pcall(tooltip.SetOwner, tooltip, frame, "ANCHOR_RIGHT")
     end
 
-    if pcall(tooltip.SetUnit, tooltip, frame.unit) then
+    if pcall(tooltip.SetUnit, tooltip, unit) then
       pcall(tooltip.Show, tooltip)
     end
   end)
@@ -2283,6 +2434,9 @@ local function RegisterEvents()
       for n = 1, PARTY_COUNT do
         QueueUnitToken("party" .. n, "full")
       end
+      -- The player carries a leader star of its own (see BuildLeaderIcon), so
+      -- a leadership change has to reach the player frame as well.
+      QueueUnitToken("player", "full")
       classicNative.Reanchor()
     end)
   end
@@ -2633,7 +2787,7 @@ function UF:OnEnable()
     if nativeChrome then
       classicNative.HideCustomVisuals(frame)
     else
-      EnableMouse(frame)
+      unitMouse.Enable(frame)
     end
   end
 

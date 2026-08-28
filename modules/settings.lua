@@ -1038,6 +1038,29 @@ local function BuildGeneralPage(parent)
     table.insert(widgets, quickbindHint)
   end
 
+  local autoAttack = U.CreateCheckbox(parent, {
+    name = "UnrealUISettingsAutoAttack",
+    text = U.L("SETTINGS_AUTO_ATTACK"),
+    value = U.ModuleConfig("autoattack", { enabled = true }).enabled,
+    onChange = function(value)
+      U.ModuleConfig("autoattack", { enabled = true }).enabled = value
+    end,
+  })
+  autoAttack.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -164)
+  table.insert(widgets, autoAttack)
+
+  local autoAttackHint = U.CreateSettingsLabel(parent, {
+    size = M.fontSize.small,
+    color = M.color.textDim,
+    inherits = "GameFontNormalSmall",
+    justify = "LEFT",
+  })
+  if autoAttackHint then
+    U.AnchorSettingsDescription(autoAttackHint, autoAttack.box)
+    autoAttackHint:SetText(U.L("SETTINGS_AUTO_ATTACK_HINT"))
+    table.insert(widgets, autoAttackHint)
+  end
+
   -- The micro bar (modules/microbar.lua) has a single setting, so its toggle
   -- lives here rather than on a dedicated tab of its own.
   local microbar = U.CreateCheckbox(parent, {
@@ -1049,7 +1072,7 @@ local function BuildGeneralPage(parent)
       if type(U.ApplyMicroBar) == "function" then U.ApplyMicroBar() end
     end,
   })
-  microbar.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -164)
+  microbar.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -220)
   table.insert(widgets, microbar)
 
   local microbarHint = U.CreateSettingsLabel(parent, {
@@ -1075,7 +1098,7 @@ local function BuildGeneralPage(parent)
       if type(U.ApplyXPBar) == "function" then U.ApplyXPBar() end
     end,
   })
-  reputation.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -220)
+  reputation.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -276)
   table.insert(widgets, reputation)
 
   -- The minimap settings button (modules/minimap.lua) is the normal way to
@@ -1090,7 +1113,7 @@ local function BuildGeneralPage(parent)
       if type(U.ApplyMinimapButton) == "function" then U.ApplyMinimapButton() end
     end,
   })
-  minimapButton.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -252)
+  minimapButton.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -308)
   table.insert(widgets, minimapButton)
 
   -- The world map zone level ranges (modules/worldmap.lua) are a single
@@ -1107,7 +1130,7 @@ local function BuildGeneralPage(parent)
       end
     end,
   })
-  zoneLevels.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -284)
+  zoneLevels.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -340)
   table.insert(widgets, zoneLevels)
 
   local zoneLevelsHint = U.CreateSettingsLabel(parent, {
@@ -1124,6 +1147,7 @@ local function BuildGeneralPage(parent)
 
   local function Refresh()
     themes.SetValue(U.GetThemeStyle(), false)
+    autoAttack.SetValue(U.ModuleConfig("autoattack", { enabled = true }).enabled)
     microbar.SetValue(U.ModuleConfig("microbar", { enabled = true }).enabled)
     reputation.SetValue(U.ModuleConfig("xpbar", { repEnabled = true }).repEnabled)
     minimapButton.SetValue(U.ModuleConfig("minimap", { enabled = true }).enabled)

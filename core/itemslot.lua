@@ -249,56 +249,7 @@ local COMPARE_SLOTS = {
   INVTYPE_AMMO = { "AmmoSlot" },
 }
 
-local COMPARE_TEXT_SIDES = { "Left", "Right" }
-
--- SetInventoryItem builds the equipped item's normal tooltip and therefore
--- does not prepend the semantic header used by SetMerchantCompareItem. Shift
--- its populated lines down once and add the same localized stock heading.
--- This is the narrow AddHeader pattern used by UnrealPfUI's working compare
--- module on this client (WORKING_SOURCE, modules/eqcompare.lua).
-local function AddItemCompareHeader(tooltip, name)
-  if not tooltip or type(name) ~= "string" then return end
-
-  local header = U.G("CURRENTLY_EQUIPPED")
-  if type(header) ~= "string" or header == "" then
-    header = "Currently Equipped"
-  end
-
-  local first = U.G(name .. "TextLeft1")
-  if not first then return end
-  if first:GetText() == header then return end
-
-  local lineCount = tooltip:NumLines()
-  local lineIndex, sideIndex
-  for lineIndex = lineCount, 1, -1 do
-    for sideIndex = 1, table.getn(COMPARE_TEXT_SIDES) do
-      local side = COMPARE_TEXT_SIDES[sideIndex]
-      local current = U.G(name .. "Text" .. side .. lineIndex)
-      local below = U.G(name .. "Text" .. side .. (lineIndex + 1))
-      if current and below and current:IsShown() then
-        local text = current:GetText()
-        if type(text) == "string" and text ~= "" then
-          local r, g, b = current:GetTextColor()
-          if tooltip:NumLines() < lineIndex + 1 then
-            tooltip:AddLine(text, r, g, b, true)
-          else
-            below:SetText(text)
-            below:SetTextColor(r, g, b)
-            below:Show()
-            current:Hide()
-          end
-        end
-      end
-    end
-  end
-
-  first:SetText(header)
-  first:SetTextColor(M.Unpack(M.color.textDim))
-  first:Show()
-  tooltip:Show()
-end
-
-local function HideItemCompare()
+function U.HideItemCompare()
   local i
   for i = 1, 2 do
     local tooltip = U.G("ShoppingTooltip" .. i)
@@ -306,11 +257,13 @@ local function HideItemCompare()
   end
 end
 
-local function ShowItemCompare(bag, slot)
-  HideItemCompare()
-
-  local linkOk, link = pcall(GetContainerItemLink, bag, slot)
-  if not linkOk or type(link) ~= "string" then return end
+-- Shared comparison renderer for any hover surface that can identify the item
+-- link. Bag slots, below, resolve it from their container coordinates; native
+-- quest reward buttons resolve it through modules/itemprice.lua's guarded
+-- quest-link adapter. Both paths render the same ShoppingTooltip frames.
+function U.ShowItemCompare(link)
+  U.HideItemCompare()
+  if type(link) ~= "string" then return end
 
   local infoOk, _, _, _, _, _, _, _, equipLoc = pcall(GetItemInfo, link)
   if not infoOk or type(equipLoc) ~= "string" then return end
@@ -344,7 +297,12 @@ local function ShowItemCompare(bag, slot)
         local setOk, populated = pcall(tooltip.SetInventoryItem, tooltip,
                                        "player", inventorySlot)
         if setOk and populated then
-          pcall(AddItemCompareHeader, tooltip, name)
+          -- SetInventoryItem does not add CURRENTLY_EQUIPPED. modules/
+          -- tooltip.lua inserts it as the tooltip's own first line, shifting
+          -- the native item lines down rather than appending an addon row.
+          if type(U.ShowCompareTooltipHeader) == "function" then
+            pcall(U.ShowCompareTooltipHeader, tooltip, name)
+          end
           -- modules/tooltip.lua owns ShoppingTooltip styling for every native
           -- and addon-driven comparison path.
           pcall(tooltip.Show, tooltip)
@@ -353,6 +311,12 @@ local function ShowItemCompare(bag, slot)
       end
     end
   end
+end
+
+local function ShowBagItemCompare(bag, slot)
+  local linkOk, link = pcall(GetContainerItemLink, bag, slot)
+  if not linkOk then link = nil end
+  U.ShowItemCompare(link)
 end
 
 function U.CreateItemSlot(parent, name, bag, slot)
@@ -397,11 +361,11 @@ function U.CreateItemSlot(parent, name, bag, slot)
   -- client (see that file).
   U.PostHookScript(button, "OnEnter", function()
     if type(U.ShowItemPrice) == "function" then U.ShowItemPrice(bag, slot) end
-    ShowItemCompare(bag, slot)
+    ShowBagItemCompare(bag, slot)
   end)
   U.PostHookScript(button, "OnLeave", function()
     if type(U.HideItemPrice) == "function" then U.HideItemPrice() end
-    HideItemCompare()
+    U.HideItemCompare()
   end)
 
   -- ContainerFrame_UpdateCooldown resolves the cooldown by frame name. The
@@ -431,9 +395,11 @@ end
 function U.UpdateItemSlot(button, bag, slot)
   if not button then return end
 
-  local ok, texture, count, locked, quality =
-    pcall(GetContainerItemInfo, bag, slot)
-  if not ok then texture, count, locked, quality = nil, nil, nil, nil end
+  -- Through the shared reader rather than GetContainerItemInfo directly: an
+  -- empty slot on this client answers with texture "" instead of nil (see
+  -- core/compat.lua), which would give every empty slot an occupied slot's
+  -- border colour and hand the stock texture setter a non-nil path.
+  local texture, count, locked, quality = U.ContainerSlotInfo(bag, slot)
 
   pcall(SetItemButtonTexture, button, texture)
   pcall(SetItemButtonCount, button, count)
@@ -473,6 +439,17 @@ function U.UpdateItemSlot(button, bag, slot)
 
   local color = U.ItemSlotBorderColor(bag, slot, texture, quality)
   U.SetBorderColor(button, color[1], color[2], color[3], color[4] or 1)
+
+  -- The Classic action-button face deliberately hides the flat backdrop, but
+  -- U.SetBackdropShown also hides its four explicit edge textures. Restore
+  -- only those edges after tinting them so bag (and shared bank) slots retain
+  -- their rarity outline above the native face.
+  if button.uuiClassicItemSlot then
+    local i
+    for i = 1, table.getn(button.uuiEdges or {}) do
+      pcall(button.uuiEdges[i].Show, button.uuiEdges[i])
+    end
+  end
 
   U.UpdateItemSlotCooldown(bag, button)
 end

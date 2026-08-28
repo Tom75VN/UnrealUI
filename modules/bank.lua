@@ -73,22 +73,45 @@ local emptyReported = false
 
 -- The Azeroth bank backend rejects a cursor item picked up from one bank
 -- container when it is dropped directly into a different bank container
--- ("Item not found").  The same item succeeds after it has passed through a
--- player-bag slot, so remember which bank container supplied the cursor item
--- and use that proven route only for cross-container bank transfers.
+-- ("Item not found" -- knowledge.json /
+-- bank.cross_container_transfer_requires_inventory_stage, USER_CONFIRMED_INGAME).
+-- The same item succeeds after it has passed through a player-bag slot, so
+-- remember which bank container supplied the cursor item and use that proven
+-- route only for cross-container bank transfers.
+--
+-- cursorBankLink is the item the cursor is carrying.  It has to be read from
+-- the source slot *before* the stock handler runs, because an item already on
+-- the cursor cannot be read out of any container.  It exists so an occupied
+-- player-bag slot can serve as the staging slot: swapping the cursor item
+-- against a *different* item is safe, while swapping it against the same item
+-- would merge the two stacks and drag the player's own items into the bank.
 local cursorBankBag
+local cursorBankLink
 
+-- Shared with the bag-slot wrappers in modules/bags.lua; the reading itself
+-- lives in core/compat.lua.
 local function CursorHasInventoryItem()
-  local fn = U.G("CursorHasItem")
-  if type(fn) ~= "function" then return false end
-  local ok, hasItem = pcall(fn)
-  return ok and hasItem and true or false
+  return U.CursorHasItem()
 end
 
--- Specialty bags cannot accept every item.  Prefer the backpack, then bags
--- which the working Vanilla-shaped GetBagFamily helper identifies as normal.
--- If that optional helper is absent, try the empty slots and let the cursor
--- state tell us whether the client accepted the temporary drop.
+local function SlotLink(bag, slot)
+  local ok, link = pcall(GetContainerItemLink, bag, slot)
+  if ok and link and link ~= "" then return link end
+  return nil
+end
+
+local function SlotLocked(bag, slot)
+  local texture, count, locked = U.ContainerSlotInfo(bag, slot)
+  return locked and true or false
+end
+
+-- Specialty bags cannot accept every item.  Prefer the backpack, then bags a
+-- Vanilla-shaped GetBagFamily helper identifies as normal.  Nothing records a
+-- client GetBagFamily global on this client at all -- UnrealPfUI builds its own
+-- from GetInventoryItemLink/GetItemInfo rather than calling one -- so the
+-- helper stays optional here: when it is missing, errors, or answers in the
+-- numeric form where 0 means an ordinary bag, every bag is tried and the
+-- container state below decides whether the client accepted the drop.
 local function PlayerBagCanStage(bag)
   if bag == 0 then return true end
 
@@ -96,38 +119,111 @@ local function PlayerBagCanStage(bag)
   if type(familyFn) ~= "function" then return true end
 
   local ok, family = pcall(familyFn, bag)
-  return ok and family == "BAG"
+  if not ok or family == nil then return true end
+  if type(family) == "number" then return family == 0 end
+  return family == "BAG"
 end
 
--- Put the cursor item into an empty player slot and pick it straight back up.
--- This changes the cursor item's source from a bank container to player
--- inventory without changing the item or its final destination.
+-- First choice: an empty player-bag slot.  The cursor item is placed there and
+-- picked straight back up, which changes its source from a bank container to
+-- player inventory without changing the item or its final destination.
+-- Returns true on success, false after a failure that has been reported, and
+-- nil when this bag simply offered no usable slot.
+local function StageThroughEmptySlot(bag)
+  local sizeOk, size = pcall(GetContainerNumSlots, bag)
+  size = (sizeOk and tonumber(size)) or 0
+
+  local slot
+  for slot = 1, size do
+    -- U.ContainerSlotHasItem, not `not texture`: an empty slot on this client
+    -- reports texture "" from GetContainerItemInfo, which is truthy in Lua, so
+    -- the Vanilla-shaped test matched nothing and no staging slot was ever
+    -- found. core/compat.lua carries the documentation for that difference.
+    if not U.ContainerSlotHasItem(bag, slot) then
+      pcall(PickupContainerItem, bag, slot)
+      if not CursorHasInventoryItem() then
+        -- The temporary drop succeeded. Pick the same item back up so the
+        -- caller can place it in the requested bank destination.
+        pcall(PickupContainerItem, bag, slot)
+        if CursorHasInventoryItem() then return true end
+
+        -- The item is safe in player inventory, but the second pickup did
+        -- not complete. Do not pretend the bank transfer succeeded.
+        U.Print(U.L("BANK_TRANSFER_PICKUP"))
+        cursorBankBag = nil
+        cursorBankLink = nil
+        return false
+      end
+    end
+  end
+
+  return nil
+end
+
+-- Fallback for full bags, which is the normal state of a player standing at a
+-- banker.  A slot holding a *different* item stages just as well, because
+-- PickupContainerItem swaps: the first call puts the cursor item into the slot
+-- and lifts that slot's item, the second puts it back and returns the original
+-- to the cursor -- now sourced from player inventory.  A slot holding the same
+-- item is never used, because the stacks would merge and the player's own item
+-- would travel into the bank with it; without a known cursor item the whole
+-- pass is skipped rather than guessed.  Each half is confirmed by re-reading
+-- the slot, so a slot the client refused (specialty bag, locked item) is
+-- skipped instead of assumed, and an unexpected result stops the pass rather
+-- than shuffling further items blind.
+local function StageThroughOccupiedSlot(bag)
+  if not cursorBankLink then return nil end
+
+  local sizeOk, size = pcall(GetContainerNumSlots, bag)
+  size = (sizeOk and tonumber(size)) or 0
+
+  local slot
+  for slot = 1, size do
+    local link = SlotLink(bag, slot)
+    if link and link ~= cursorBankLink and not SlotLocked(bag, slot) then
+      pcall(PickupContainerItem, bag, slot)
+
+      local now = SlotLink(bag, slot)
+      if now == cursorBankLink then
+        pcall(PickupContainerItem, bag, slot)
+        if SlotLink(bag, slot) == link and CursorHasInventoryItem() then
+          return true
+        end
+
+        -- The swap back did not complete. Both items are in inventory, so
+        -- nothing is lost, but the bank transfer is not done.
+        U.Print(U.L("BANK_TRANSFER_PICKUP"))
+        cursorBankBag = nil
+        cursorBankLink = nil
+        return false
+      elseif now ~= link then
+        -- The slot became something neither expected. Stop rather than move
+        -- more of the player's items around blind.
+        U.Print(U.L("BANK_TRANSFER_PICKUP"))
+        cursorBankBag = nil
+        cursorBankLink = nil
+        return false
+      end
+    end
+  end
+
+  return nil
+end
+
 local function StageCursorThroughPlayerBags()
-  local bag
+  local bag, staged
+
   for bag = 0, 4 do
     if PlayerBagCanStage(bag) then
-      local sizeOk, size = pcall(GetContainerNumSlots, bag)
-      size = (sizeOk and tonumber(size)) or 0
+      staged = StageThroughEmptySlot(bag)
+      if staged ~= nil then return staged end
+    end
+  end
 
-      local slot
-      for slot = 1, size do
-        local infoOk, texture = pcall(GetContainerItemInfo, bag, slot)
-        if infoOk and not texture then
-          pcall(PickupContainerItem, bag, slot)
-          if not CursorHasInventoryItem() then
-            -- The temporary drop succeeded. Pick the same item back up so the
-            -- caller can place it in the requested bank destination.
-            pcall(PickupContainerItem, bag, slot)
-            if CursorHasInventoryItem() then return true end
-
-            -- The item is safe in player inventory, but the second pickup did
-            -- not complete. Do not pretend the bank transfer succeeded.
-            U.Print(U.L("BANK_TRANSFER_PICKUP"))
-            cursorBankBag = nil
-            return false
-          end
-        end
-      end
+  for bag = 0, 4 do
+    if PlayerBagCanStage(bag) then
+      staged = StageThroughOccupiedSlot(bag)
+      if staged ~= nil then return staged end
     end
   end
 
@@ -135,15 +231,20 @@ local function StageCursorThroughPlayerBags()
   return false
 end
 
-local function TransferCursorToBank(bag, drop)
+local function TransferCursorToBank(bag, slot, drop)
   if not CursorHasInventoryItem() then
     cursorBankBag = nil
+    cursorBankLink = nil
     return false
   end
 
   if cursorBankBag and cursorBankBag ~= bag then
     if not StageCursorThroughPlayerBags() then return false end
   end
+
+  -- Read before the drop: an occupied destination hands its previous item to
+  -- the cursor, and that item is what a following transfer would carry.
+  local previous = SlotLink(bag, slot)
 
   -- Let the destination's original template perform the final drop.  The main
   -- bank and purchased bank bags use different stock templates, and retaining
@@ -156,16 +257,16 @@ local function TransferCursorToBank(bag, drop)
   -- drop must use the workaround again.
   if CursorHasInventoryItem() then
     cursorBankBag = bag
+    cursorBankLink = previous
   else
     cursorBankBag = nil
+    cursorBankLink = nil
   end
   return true
 end
 
 local function MouseButton(a1, a2)
-  if type(a1) == "string" then return a1 end
-  if type(a2) == "string" then return a2 end
-  return U.G("arg1")
+  return U.MouseButton(a1, a2)
 end
 
 -- Wrap the stock template rather than discarding it: modifier clicks, stack
@@ -179,11 +280,15 @@ local function InstallBankTransfer(button, bag)
   local click = button:GetScript("OnClick")
   button:SetScript("OnClick",
     function(a1, a2, a3, a4, a5, a6, a7, a8, a9)
+      local slot = button:GetID()
       local hadItem = CursorHasInventoryItem()
       local left = MouseButton(a1, a2) == "LeftButton"
+      -- Whatever this slot holds now is what the cursor holds afterwards,
+      -- whether the click lifts the item or swaps the cursor item for it.
+      local previous = SlotLink(bag, slot)
 
       if left and hadItem and cursorBankBag and cursorBankBag ~= bag then
-        TransferCursorToBank(bag, function()
+        TransferCursorToBank(bag, slot, function()
           if click then click(a1, a2, a3, a4, a5, a6, a7, a8, a9) end
         end)
         return
@@ -194,8 +299,10 @@ local function InstallBankTransfer(button, bag)
       if left then
         if CursorHasInventoryItem() then
           cursorBankBag = bag
+          cursorBankLink = previous
         else
           cursorBankBag = nil
+          cursorBankLink = nil
         end
       end
     end)
@@ -203,18 +310,25 @@ local function InstallBankTransfer(button, bag)
   local dragStart = button:GetScript("OnDragStart")
   button:SetScript("OnDragStart",
     function(a1, a2, a3, a4, a5, a6, a7, a8, a9)
+      local previous = SlotLink(bag, button:GetID())
+
       if dragStart then
         dragStart(a1, a2, a3, a4, a5, a6, a7, a8, a9)
       end
-      if CursorHasInventoryItem() then cursorBankBag = bag end
+      if CursorHasInventoryItem() then
+        cursorBankBag = bag
+        cursorBankLink = previous
+      end
     end)
 
   local receiveDrag = button:GetScript("OnReceiveDrag")
   button:SetScript("OnReceiveDrag",
     function(a1, a2, a3, a4, a5, a6, a7, a8, a9)
+      local slot = button:GetID()
+
       if CursorHasInventoryItem() and cursorBankBag and
          cursorBankBag ~= bag then
-        TransferCursorToBank(bag, function()
+        TransferCursorToBank(bag, slot, function()
           if receiveDrag then
             receiveDrag(a1, a2, a3, a4, a5, a6, a7, a8, a9)
           end
@@ -222,14 +336,18 @@ local function InstallBankTransfer(button, bag)
         return
       end
 
+      local previous = SlotLink(bag, slot)
+
       if receiveDrag then
         receiveDrag(a1, a2, a3, a4, a5, a6, a7, a8, a9)
       end
 
       if CursorHasInventoryItem() then
         cursorBankBag = bag
+        cursorBankLink = previous
       else
         cursorBankBag = nil
+        cursorBankLink = nil
       end
     end)
 end
@@ -617,7 +735,10 @@ end
 local function ProcessDirty()
   if U.PerfDisabled and U.PerfDisabled("bank") then return end
 
-  if not CursorHasInventoryItem() then cursorBankBag = nil end
+  if not CursorHasInventoryItem() then
+    cursorBankBag = nil
+    cursorBankLink = nil
+  end
 
   NeutraliseNativeBank()
 
@@ -803,6 +924,7 @@ local function Build()
     U.UnregisterUpdate("bank.refresh")
     U.HideConfirm("bank")
     cursorBankBag = nil
+    cursorBankLink = nil
     if closing then return end
     closing = true
     pcall(CloseBankFrame)

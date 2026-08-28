@@ -207,7 +207,7 @@ local function UpdatePopulationWidth()
   if not popAnchor or not popDisplay then return end
 
   local width = HORIZONTAL_PADDING
-  width = width + LabelWidth(popDisplay.serverCaption) + 2 + LabelWidth(popDisplay.serverValue)
+  width = width + LabelWidth(popDisplay.serverValue)
   width = width + 2 + LabelWidth(popDisplay.serverSuffix)
   width = width + HORIZONTAL_PADDING
   popAnchor:SetWidth(width)
@@ -223,16 +223,10 @@ local function BuildPopulation()
   })
 
   popDisplay = {}
-  popDisplay.serverCaption = U.CreateLabel(popAnchor, {
-    size = M.fontSize.normal, inherits = "GameFontNormal", color = M.color.text,
-  })
-  popDisplay.serverCaption:SetPoint("LEFT", popAnchor, "LEFT", HORIZONTAL_PADDING, 0)
-  popDisplay.serverCaption:SetText(U.L("STATUS_FACTION"))
-
   popDisplay.serverValue = U.CreateLabel(popAnchor, {
     size = M.fontSize.normal, inherits = "GameFontNormal", color = M.color.text,
   })
-  popDisplay.serverValue:SetPoint("LEFT", popDisplay.serverCaption, "RIGHT", 2, 0)
+  popDisplay.serverValue:SetPoint("LEFT", popAnchor, "LEFT", HORIZONTAL_PADDING, 0)
   popDisplay.serverValue:SetText("--")
 
   popDisplay.serverSuffix = U.CreateLabel(popAnchor, {

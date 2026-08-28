@@ -42,6 +42,58 @@ function U.FormatTimeShort(remaining)
   return tostring(U.Round(remaining)), "normal"
 end
 
+-- A client (start, duration) cooldown pair as seconds remaining, or nil when
+-- that cannot be established.
+--
+-- Shared for the same reason U.FormatTimeShort above is: modules/actionbar.lua
+-- and modules/stancebar.lua both draw a countdown from one of these pairs, and
+-- the wrap correction below is exactly the kind of client-specific arithmetic
+-- that must not exist in two copies.
+--
+-- The epoch sources are needed only by that correction, and only if this
+-- client wraps at all, so each one is optional and guarded.
+local function EpochNumber(name, argument)
+  local fn = U.G(name)
+  if type(fn) ~= "function" then return nil end
+  local ok, value = pcall(fn, argument)
+  if not ok then return nil end
+  return tonumber(value)
+end
+
+local function EpochSeconds()
+  local value = EpochNumber("time")
+  if value then return value end
+
+  value = EpochNumber("GetServerTime")
+  if value then return value end
+
+  return EpochNumber("date", "%s")
+end
+
+function U.CooldownRemaining(start, duration)
+  start = tonumber(start) or 0
+  duration = tonumber(duration) or 0
+  local now = EpochNumber("GetTime") or 0
+
+  if start <= now then
+    return duration - (now - start)
+  end
+
+  -- A start stamped ahead of the current time means the client's 32-bit
+  -- millisecond uptime counter wrapped and the stamp belongs to the previous
+  -- cycle, so the plain subtraction would read as a cooldown days long.
+  -- UnrealPfUI corrects it by rebasing both onto wall-clock seconds
+  -- (modules/cooldown.lua); the arithmetic here is that working implementation,
+  -- so it is WORKING_SOURCE evidence and not verified on this client. It only
+  -- runs in a case the plain path is already wrong in.
+  local epoch = EpochSeconds()
+  if not epoch then return nil end
+
+  local startupTime = epoch - now
+  local cdTime = (2 ^ 32) / 1000 - start
+  return (startupTime - cdTime + duration) - epoch
+end
+
 -- ---------------------------------------------------------------------------
 -- Screen metrics
 --
@@ -431,6 +483,76 @@ function U.HideRegion(region)
     if region.Hide then region:Hide() end
   end)
   return true
+end
+
+-- ---------------------------------------------------------------------------
+-- Cursor and mouse input
+--
+-- Two readings that several surfaces need whenever they wrap a stock button's
+-- own click and drag handlers: whether the cursor is currently carrying
+-- something, and which mouse button a handler was entered with.
+--
+-- The cursor state is the only observable a wrapper shares with a native
+-- handler it cannot read, so it is what tells a fallback whether the stock
+-- script actually moved anything. CursorHasItem is documented for this client
+-- (OFFICIAL_CLIENT_DOCUMENTATION, Cursor) but is still resolved through U.G and
+-- pcall, like every other client call in this addon.
+--
+-- The button argument has no single shape here. A handler may be entered with
+-- the button string as its first argument, with the frame first and the string
+-- second, or with neither and only Vanilla's `arg1` global set. All three are
+-- checked in that order rather than assuming one calling convention.
+-- ---------------------------------------------------------------------------
+function U.CursorHasItem()
+  local fn = U.G("CursorHasItem")
+  if type(fn) ~= "function" then return false end
+
+  local ok, hasItem = pcall(fn)
+  return (ok and hasItem) and true or false
+end
+
+function U.MouseButton(a1, a2)
+  if type(a1) == "string" then return a1 end
+  if type(a2) == "string" then return a2 end
+  return U.G("arg1")
+end
+
+-- ---------------------------------------------------------------------------
+-- Container slots
+--
+-- GetContainerItemInfo on this client always returns five values, and an empty
+-- slot is *not* signalled by a nil texture: it returns the empty string, which
+-- is truthy in Lua. The client documentation says so outright -- "Icon path.
+-- Empty string if the slot is empty (still truthy in Lua)", with the explicit
+-- caller note that `if texture then` is true for "" and that callers needing
+-- "has an item" should check GetContainerItemLink or treat a missing texture
+-- path as empty. Empty slots also return count 0 and quality 0, so a
+-- `quality == 0` test alone reads an empty slot as a grey item.
+--
+-- Vanilla returns nil for an empty slot, so every ported `not texture` /
+-- `if texture then` test silently inverts here. This wrapper is the one place
+-- that difference is absorbed: it hands back the same five values with the
+-- texture normalised to nil when the slot is empty, so callers can use the
+-- Vanilla-shaped test they already read as correct.
+-- ---------------------------------------------------------------------------
+function U.ContainerSlotInfo(bag, slot)
+  local ok, texture, count, locked, quality, readable =
+    pcall(GetContainerItemInfo, bag, slot)
+  if not ok then return nil end
+
+  if texture == "" or texture == 0 then texture = nil end
+  return texture, count, locked, quality, readable
+end
+
+-- True only when the slot holds an item. The texture reading above is the
+-- primary test; GetContainerItemLink is the fallback the same documentation
+-- recommends, used when the info call itself failed.
+function U.ContainerSlotHasItem(bag, slot)
+  local ok, texture = pcall(GetContainerItemInfo, bag, slot)
+  if ok then return (texture and texture ~= "" and texture ~= 0) and true or false end
+
+  local linkOk, link = pcall(GetContainerItemLink, bag, slot)
+  return (linkOk and link and link ~= "") and true or false
 end
 
 -- ---------------------------------------------------------------------------
@@ -918,7 +1040,7 @@ local function ApplyNativeSuppressionBatch()
   -- One deferred sweep was therefore early enough for the yellow number to
   -- return. Clear just that FontString across a bounded 0.6s window (at the
   -- normal 0.05s cadence), without Hide, event removal, or Show replacement.
-  if targetLevelRetryPasses > 0 then
+  if targetLevelRetryPasses > 0 and suppressedSeen["TargetLevelText"] then
     local levelText = ResolveNativeObject("TargetLevelText")
     if levelText then
       pcall(ZeroAlpha, levelText)
@@ -1061,6 +1183,12 @@ function U.SuppressNativeFrame(names, group)
   if not suppressionArmed then
     suppressionArmed = true
 
+    -- The client must finish constructing its native UI before suppressing it;
+    -- measured runtime evidence shows that applying the same recipe during
+    -- startup damages target-change performance for the whole session. Show a
+    -- compact explanation while the measured settle gate below does its work.
+    if type(U.ShowStartupLoading) == "function" then U.ShowStartupLoading() end
+
     -- PLAYER_TARGET_CHANGED is the one of these observed firing on this client
     -- (events.json, 7 captures); the others are registered but unobserved, so
     -- the bounded periodic scan is the actual guarantee rather than a backstop.
@@ -1090,7 +1218,15 @@ function U.SuppressNativeFrame(names, group)
     local targetSweep = GroupSweeper("target")
     U.RegisterEvent("PLAYER_TARGET_CHANGED", function()
       targetVisualEpoch = targetVisualEpoch + 1
-      targetLevelRetryPasses = TARGET_LEVEL_RETRY_PASSES
+      -- Modern registers TargetLevelText because it replaces the native target
+      -- frame. Classic registers only the native aura slots, but that still
+      -- arms this shared target-group event handler. Never let an aura-only
+      -- Classic registration start the Modern level-clearing retry.
+      if suppressedSeen["TargetLevelText"] then
+        targetLevelRetryPasses = TARGET_LEVEL_RETRY_PASSES
+      else
+        targetLevelRetryPasses = 0
+      end
       U.DeferOnce("compat.target-sweep", function()
         -- Bracket the sweep so the counters below describe one target-change
         -- sweep specifically, separated from the 0.05s periodic batch that is
@@ -1182,6 +1318,11 @@ function U.SuppressNativeFrame(names, group)
       end
       settleLast = now
 
+      if type(U.UpdateStartupLoading) == "function" then
+        U.UpdateStartupLoading(waited, quiet, SETTLE_MIN_SECONDS,
+                               SETTLE_MAX_SECONDS, SETTLE_QUIET_FRAMES)
+      end
+
       local calm = (waited >= SETTLE_MIN_SECONDS and quiet >= SETTLE_QUIET_FRAMES)
       if not calm and waited < SETTLE_MAX_SECONDS then return end
 
@@ -1190,6 +1331,9 @@ function U.SuppressNativeFrame(names, group)
       targetLevelRetryPasses = TARGET_LEVEL_RETRY_PASSES
       if type(U.ReapplyNativeSuppression) == "function" then
         U.ReapplyNativeSuppression()
+      end
+      if type(U.CompleteStartupLoading) == "function" then
+        U.CompleteStartupLoading()
       end
       U.Debug("native suppression settled after " ..
               string.format("%.1f", waited) .. "s (" .. tostring(quiet) ..

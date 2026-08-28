@@ -1,7 +1,7 @@
 -- unrealUI :: core/widgets.lua
 --
--- Composite controls for the settings panel: sliders, checkboxes, radio
--- groups, dropdowns, section headings and sidebar rows.
+-- Composite controls for UnrealUI surfaces: startup progress plus the settings
+-- panel's sliders, checkboxes, radio groups, dropdowns, headings and rows.
 --
 -- These sit on top of core/style.lua rather than inside it: style.lua owns the
 -- drawing primitives every module uses (backdrop, border, bar, label, button),
@@ -64,6 +64,231 @@ function U.AnchorSettingsDescription(label, parent, offsetX)
   if not label or not parent then return end
   label:ClearAllPoints()
   label:SetPoint("TOPLEFT", parent, "BOTTOMLEFT", offsetX or 0, -5)
+end
+
+-- ---------------------------------------------------------------------------
+-- Progress indicators
+-- ---------------------------------------------------------------------------
+
+-- A compact, non-interactive progress bar shared by any UnrealUI surface that
+-- needs to report bounded work. The fill comes from the verified plain-texture
+-- status-bar primitive in core/style.lua; this wrapper adds the standard
+-- outline and an owned centred readout without depending on the native
+-- StatusBar widget, whose fill is known not to lay itself out on this client.
+function U.CreateProgressIndicator(parent, options)
+  options = options or {}
+
+  local bar = U.CreateStatusBar(parent, {
+    name = options.name,
+    width = options.width or 240,
+    height = options.height or 12,
+    background = options.background or M.color.healthBg,
+    color = options.color or M.color.accent,
+  })
+  if not bar then return nil end
+
+  U.CreateBorder(bar, options.thickness)
+  U.SetBorderColor(bar, M.Unpack(options.border or M.color.border))
+
+  local label = U.CreateLabel(bar, {
+    size = options.size or M.fontSize.tiny,
+    color = options.textColor or M.color.text,
+    inherits = "GameFontNormal",
+    width = math.max(1, (options.width or 240) - 8),
+    height = math.max(1, (options.height or 12) - 2),
+    justify = "CENTER",
+  })
+  if label then
+    label:SetPoint("CENTER", bar, "CENTER", 0, -1)
+    label:SetText(options.text or "")
+  end
+  bar.label = label
+
+  function bar:SetProgress(value, text)
+    value = tonumber(value) or 0
+    if value < 0 then value = 0 end
+    if value > 1 then value = 1 end
+    self:SetValue(value)
+    if label and text ~= nil then label:SetText(tostring(text)) end
+  end
+
+  bar:SetMinMaxValues(0, 1)
+  bar:SetProgress(options.value or 0, options.text or "")
+  return bar
+end
+
+-- ---------------------------------------------------------------------------
+-- Startup loading
+-- ---------------------------------------------------------------------------
+
+-- This lives beside the shared progress component rather than in a new TOC
+-- file because this client can retain the add-on's file list across /reload.
+-- Keeping the login surface in an already-loaded core file means installing an
+-- update while the client is open still makes it available on the next reload.
+--
+-- Native suppression cannot safely run while the client constructs its own
+-- interface: measured runtime evidence shows that doing so leaves the session
+-- with severe target-change stalls. core/compat.lua owns the measured settle
+-- criteria and reports them here; this code only draws their progress.
+local startupLoading = {
+  width = 500,
+  height = 92,
+  barWidth = 460,
+  progress = 0,
+}
+
+function startupLoading.SetRegionShown(region, shown)
+  if not region then return end
+  if shown then region:Show() else region:Hide() end
+end
+
+function startupLoading.SetShown(shown)
+  startupLoading.SetRegionShown(startupLoading.panel, shown)
+  startupLoading.SetRegionShown(startupLoading.title, shown)
+  startupLoading.SetRegionShown(startupLoading.message, shown)
+  startupLoading.SetRegionShown(startupLoading.timing, shown)
+  startupLoading.SetRegionShown(startupLoading.bar, shown)
+  if startupLoading.bar then
+    startupLoading.SetRegionShown(startupLoading.bar.uuiBackground, shown)
+    startupLoading.SetRegionShown(startupLoading.bar.uuiFillTexture,
+                                  shown and startupLoading.progress > 0)
+    startupLoading.SetRegionShown(startupLoading.bar.label, shown)
+    local i
+    for i = 1, table.getn(startupLoading.bar.uuiEdges or {}) do
+      startupLoading.SetRegionShown(startupLoading.bar.uuiEdges[i], shown)
+    end
+  end
+  if startupLoading.panel then
+    startupLoading.SetRegionShown(startupLoading.panel.uuiFill, shown)
+    local i
+    for i = 1, table.getn(startupLoading.panel.uuiEdges or {}) do
+      startupLoading.SetRegionShown(startupLoading.panel.uuiEdges[i], shown)
+    end
+  end
+end
+
+function startupLoading.Build()
+  if startupLoading.panel then return true end
+
+  local panel = U.CreatePanel(UIParent, {
+    name = "UnrealUIStartupLoading",
+    width = startupLoading.width,
+    height = startupLoading.height,
+  })
+  panel:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
+  pcall(panel.SetFrameStrata, panel, "FULLSCREEN_DIALOG")
+  pcall(panel.SetFrameLevel, panel, 1000)
+  panel:Show()
+  startupLoading.panel = panel
+
+  local title = U.CreateLabel(panel, {
+    size = M.fontSize.large,
+    color = M.color.accent,
+    inherits = "GameFontNormal",
+    width = startupLoading.barWidth,
+    height = 16,
+    justify = "CENTER",
+  })
+  if title then
+    title:SetPoint("TOP", panel, "TOP", 0, -10)
+    title:SetText(U.L("LOADING_TITLE"))
+  end
+  startupLoading.title = title
+
+  local message = U.CreateLabel(panel, {
+    size = M.fontSize.small,
+    color = M.color.textDim,
+    inherits = "GameFontNormal",
+    width = startupLoading.barWidth,
+    height = 16,
+    justify = "CENTER",
+    nonSpaceWrap = true,
+  })
+  if message then
+    message:SetPoint("TOP", panel, "TOP", 0, -31)
+    message:SetText(U.L("LOADING_CLIENT_LIMITATION"))
+  end
+  startupLoading.message = message
+
+  local timing = U.CreateLabel(panel, {
+    size = M.fontSize.small,
+    color = M.color.textDim,
+    inherits = "GameFontNormal",
+    width = startupLoading.barWidth,
+    height = 16,
+    justify = "CENTER",
+    nonSpaceWrap = true,
+  })
+  if timing then
+    timing:SetPoint("TOP", panel, "TOP", 0, -47)
+    timing:SetText(U.L("LOADING_FPS_DEPENDENT"))
+  end
+  startupLoading.timing = timing
+
+  local bar = U.CreateProgressIndicator(panel, {
+    width = startupLoading.barWidth,
+    height = 14,
+    color = M.color.accent,
+  })
+  if bar then bar:SetPoint("BOTTOM", panel, "BOTTOM", 0, 10) end
+  startupLoading.bar = bar
+  return bar ~= nil
+end
+
+function U.ShowStartupLoading()
+  if startupLoading.active then return end
+  if not startupLoading.Build() then return end
+
+  startupLoading.active = true
+  startupLoading.progress = 0
+  startupLoading.lastPercent = 0
+  startupLoading.SetShown(true)
+  startupLoading.bar:SetProgress(0, "0%")
+end
+
+-- `quiet` is the current run of frames shorter than the compatibility layer's
+-- stability threshold. It can reset after a hitch, so the visible bar is
+-- monotonic: measured readiness can advance it, never pull it backwards. The
+-- hard-cap fraction keeps it moving on a low-FPS client that cannot accumulate
+-- enough quiet frames and will therefore finish through the safety deadline.
+function U.UpdateStartupLoading(waited, quiet, minimum, maximum, quietNeeded)
+  if not startupLoading.active or not startupLoading.bar then return end
+
+  waited = tonumber(waited) or 0
+  quiet = tonumber(quiet) or 0
+  minimum = tonumber(minimum) or 1
+  maximum = tonumber(maximum) or minimum
+  quietNeeded = tonumber(quietNeeded) or 1
+
+  local timeReady = waited / minimum
+  local frameReady = quiet / quietNeeded
+  local readiness = math.min(timeReady, frameReady)
+  local deadline = waited / maximum
+  local progress = math.max(readiness, deadline)
+  if progress > 0.99 then progress = 0.99 end
+  if progress < startupLoading.progress then progress = startupLoading.progress end
+
+  startupLoading.progress = progress
+  local percent = math.floor(progress * 100)
+  if percent <= startupLoading.lastPercent then return end
+  startupLoading.lastPercent = percent
+  startupLoading.bar:SetProgress(percent / 100, tostring(percent) .. "%")
+end
+
+function U.CompleteStartupLoading()
+  if not startupLoading.active or not startupLoading.bar then return end
+
+  startupLoading.progress = 1
+  startupLoading.lastPercent = 100
+  startupLoading.bar:SetProgress(1, "100%")
+
+  -- Leave the completed state visible for one rendered frame after native
+  -- suppression. The shared driver is the only reliable deferred path on this
+  -- client; a child frame created here may never receive its own OnUpdate.
+  U.DeferOnce("loading.hide", function()
+    startupLoading.SetShown(false)
+    startupLoading.active = false
+  end)
 end
 
 -- ---------------------------------------------------------------------------
@@ -842,7 +1067,8 @@ local function EnsureColorDialog()
   dialog:Hide()
 
   U.MakeWindowDraggable("colorpicker", dialog,
-                        { headerHeight = 24, headerInset = 0 })
+                        { headerHeight = 24, headerInset = 0,
+                          avoidOverlap = false })
 
   dialog.title = U.CreateLabel(dialog, {
     size = M.fontSize.normal,
@@ -1687,18 +1913,46 @@ function U.CreateMoneyReadout(parent)
   row.silver:SetPoint("LEFT", row.gold, "RIGHT", 3, 0)
   row.copper:SetPoint("LEFT", row.silver, "RIGHT", 3, 0)
 
+  -- A denomination worth nothing is dropped rather than padded with a zero:
+  -- 18 copper reads "18c", and 120 copper reads "1s 20c". Which coins are
+  -- visible therefore changes with the value, so the surviving ones are
+  -- re-anchored left to right on every call instead of once at creation.
   function row:SetAmount(copper)
     copper = tonumber(copper) or 0
     if copper < 0 then copper = 0 end
 
-    U.SetMoneyCoin(row.gold, tostring(math.floor(copper / 10000)))
-    U.SetMoneyCoin(row.silver, tostring(math.floor(math.mod(copper, 10000) / 100)))
-    U.SetMoneyCoin(row.copper, tostring(math.mod(copper, 100)))
+    local amounts = {
+      { coin = row.gold,   value = math.floor(copper / 10000) },
+      { coin = row.silver, value = math.floor(math.mod(copper, 10000) / 100) },
+      { coin = row.copper, value = math.mod(copper, 100) },
+    }
 
-    row.contentWidth = (row.gold.contentWidth or 0) + 3 +
-                        (row.silver.contentWidth or 0) + 3 +
-                        (row.copper.contentWidth or 0)
-    row:SetWidth(row.contentWidth)
+    local previous, width = nil, 0
+    for i = 1, 3 do
+      local entry = amounts[i]
+      if entry.coin then
+        -- Copper is the fallback so a free or unknown amount still reads "0c"
+        -- instead of collapsing the row to nothing.
+        if entry.value > 0 or (i == 3 and not previous) then
+          U.SetMoneyCoin(entry.coin, tostring(entry.value))
+          entry.coin:ClearAllPoints()
+          if previous then
+            entry.coin:SetPoint("LEFT", previous, "RIGHT", 3, 0)
+            width = width + 3
+          else
+            entry.coin:SetPoint("LEFT", row, "LEFT", 0, 0)
+          end
+          width = width + (entry.coin.contentWidth or 0)
+          entry.coin:Show()
+          previous = entry.coin
+        else
+          entry.coin:Hide()
+        end
+      end
+    end
+
+    row.contentWidth = width
+    if width > 0 then row:SetWidth(width) end
   end
 
   return row

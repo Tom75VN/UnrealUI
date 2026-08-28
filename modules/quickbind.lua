@@ -5,10 +5,13 @@
 -- General Options, and from /uui bind.
 --
 -- Scope is deliberately narrow. This is not pfUI's hoverbind module rebuilt:
--- there is no stance/pet/paging keymap, no pfUI info-box framework and no
--- second binding UI. It drives exactly the slots modules/actionbar.lua reports
--- through U.ActionBarBindTargets, using the native binding commands that
--- already back the corner key labels.
+-- there is no pet or paging keymap, no pfUI info-box framework and no second
+-- binding UI. It drives exactly the slots the bar modules report --
+-- U.ActionBarBindTargets and U.StanceBarBindTargets -- using the native binding
+-- commands that already back the corner key labels. The stance slots are in
+-- because their commands (SHAPESHIFTBUTTON1-10) are the client's own, present
+-- in the binding table this client actually registered; see the note in
+-- modules/stancebar.lua.
 --
 -- Behaviour that was decided rather than inherited:
 --
@@ -16,12 +19,31 @@
 --     slot's command held first, so the key shown on the button is always the
 --     key that was just pressed. pfUI adds instead, which leaves the label
 --     showing the older key.
---   * Keys are written to the client as they are pressed, so every slot always
---     shows what the client actually holds rather than a staged preview. They
---     cannot be fired while the mode is open -- the catchers own the keyboard --
---     but they are live the moment it closes. Save persists them to the binding
---     set; Cancel (and Escape outside a slot) puts every key this session
---     touched back to the action it held on open.
+--   * Opening the mode takes every shown slot's key off the client and holds
+--     the player's edits in Lua until it closes. Pressing a key over a slot
+--     therefore only moves the key: it cannot reach the slot's action, on that
+--     press or on any later one inside the mode. This is the whole reason the
+--     staged model exists -- the binding layer resolves a key before any addon
+--     frame script sees it (see the compatibility note below), so a slot key
+--     left live would cast on the very press meant to rebind it, and the addon
+--     would only hear about it afterwards. Close is where the keys become real
+--     again: Save writes what was staged and persists it to the binding set;
+--     Cancel (and Escape outside a slot) puts every slot back exactly as it
+--     was, second keys included, along with any key taken from a command
+--     outside the bars. The client's action commands that no slot on screen
+--     answers to -- a bar the player turned off, the bonus/pet page -- are held
+--     for the same press-must-not-cast reason and are only ever put back.
+--   * While the mode holds the keys the client has none to report, so the bars
+--     draw their corner labels from U.SlotBindingKey instead of GetBindingKey.
+--     That keeps every slot readable during the mode, not only the hovered one.
+--   * The consequence of staging: a client that persists its live bindings on
+--     its own would write a set with the shown slots unbound if the mode were
+--     somehow still open at logout. Every way out of the mode restores them
+--     first -- Save, Cancel, Escape, entering combat, PLAYER_ENTERING_WORLD --
+--     and Escape cannot reach the game menu while the mode owns it, so the
+--     mode cannot be left open through a normal logout. PLAYER_LOGOUT is not
+--     registered as a further guard because this client has no evidence for
+--     that event and U.RegisterEvent reports a rejected one to the player.
 --   * Only the bars this client gives a binding command can be bound: bars
 --     1-5. Bar 6 and the class pages 7-10 have no key route at all here (see
 --     "Bars with no key route" in modules/actionbar.lua for the three routes
@@ -54,12 +76,15 @@
 --     name rather than a defensive extra.
 --   * knowledge.json / chat.mousewheel_uses_binding_layer: the binding layer
 --     runs before addon frame scripts on this client. That is why the wheel is
---     not offered as a bindable input, and why Escape has to be lifted off
+--     not offered as a bindable input, why Escape has to be lifted off
 --     TOGGLEGAMEMENU for the duration of the mode (SuspendMenuKeys) instead of
 --     being relied on to stop at a keyboard-enabled frame -- confirmed in game
 --     on 2026-08-19, where Escape opened the client's game menu on top of the
---     mode. The same record's solution shape is used: save the action, remap
---     while the mode owns the screen, always restore.
+--     mode -- and why the slots themselves have to be lifted the same way
+--     (SuspendSlotKeys), or a key already on a slot fires it before the mode
+--     can claim the press. The same record's solution shape is used
+--     throughout: save the action, remap while the mode owns the screen,
+--     always restore.
 --   * knowledge.json / rendering.parent_alpha_not_propagated: every region is
 --     shown and hidden explicitly, never through its parent.
 --   * knowledge.json / scripts.child_onupdate_unreliable: this mode owns no
@@ -160,18 +185,41 @@ end
 -- ---------------------------------------------------------------------------
 -- Binding state
 --
--- `restore` is the undo log: the action each touched key held when the mode
--- first touched it, or false when the key was free. Binding a key can steal it
--- from another command, so the log is keyed by key rather than by slot -- that
--- is the only form Cancel can put back exactly.
+-- `restore` is the undo log for keys outside the bars: the action each touched
+-- key held when the mode first touched it, or false when the key was free.
+-- Binding a key can steal it from another command, so the log is keyed by key
+-- rather than by slot -- that is the only form Cancel can put back exactly.
+--
+-- The slots have their own model because they must not fire while the mode is
+-- open. The binding layer resolves a key before it reaches an addon frame
+-- script (chat.mousewheel_uses_binding_layer), so a key that is live on a slot
+-- casts that slot's action on the very press meant to rebind it -- the addon
+-- hears about it afterwards, too late to stop it. So the mode takes every slot
+-- key off the client on open, exactly as it already does for TOGGLEGAMEMENU,
+-- and holds the player's edits in Lua until it closes:
+--
+--   slotKeys  what each slot command held on open, freed from the client
+--   staged    what each slot command will hold on close
+--   dirty     the slots the player actually changed
+--
+-- An untouched slot is put back from `slotKeys` rather than rewritten from
+-- `staged`, so a slot that happened to carry two keys keeps both.
 -- ---------------------------------------------------------------------------
 local active = false
 local restore = {}   -- undo log: key -> the action it held on open, or false
 local changes = 0
 local lastInput, lastInputAt
 
+local slotKeys = {}   -- { { key = , command = }, ... }, in the order freed
+local slotKeySet = {} -- key -> true for every key in slotKeys
+local staged = {}     -- command -> key, or false for "no key"
+local dirty = {}      -- command -> true once the player changed that slot
+
 local function RememberKey(key)
   if type(key) ~= "string" or key == "" then return end
+  -- Slot keys are the other model's business; logging them here as well would
+  -- have Cancel's two passes free what the slot pass has already put back.
+  if slotKeySet[key] then return end
   if restore[key] ~= nil then return end
 
   local action = Call("GetBindingAction", key)
@@ -196,22 +244,131 @@ local function CurrentKey(command)
   return keys[1]
 end
 
+-- The key a slot shows. While the mode owns the bindings the client has none
+-- to report, so the staged value is the answer; outside the mode, and for any
+-- command the mode never took, the client is.
+local function StagedKey(command)
+  if type(command) ~= "string" then return nil end
+  local key = staged[command]
+  if key ~= nil then return key or nil end
+  return CurrentKey(command)
+end
+
+-- The bars draw their own corner key labels from the client. They ask here
+-- instead so they keep reading the truth while the mode holds the real keys.
+function U.SlotBindingKey(command)
+  return StagedKey(command)
+end
+
 local function RefreshBars()
   if type(U.RefreshActionBarBindings) == "function" then
     U.RefreshActionBarBindings()
   end
+  if type(U.RefreshStanceBarBindings) == "function" then
+    U.RefreshStanceBarBindings()
+  end
 end
 
--- Clears every key currently routed to `command`, logging each one first.
-local function ClearCommand(command)
+-- Frees `command`'s keys and logs them so ReleaseSlotKeys can put them back.
+local function HoldCommandKeys(command)
   local keys = CommandKeys(command)
+  local k
+
+  for k = 1, table.getn(keys) do
+    table.insert(slotKeys, { key = keys[k], command = command })
+    slotKeySet[keys[k]] = true
+    Call("SetBinding", keys[k])
+  end
+  return keys
+end
+
+-- Action commands that no slot on screen answers to: the ones belonging to a
+-- bar the player has turned off, and the client's own bonus/pet page. They are
+-- held for the same reason as the visible ones -- a key on one still fires its
+-- action, and the press meant to move that key would cast it -- but they are
+-- never staged or edited, only put back exactly as they were.
+local OFFSCREEN_COMMANDS = {
+  "^ACTIONBUTTON%d+$",
+  "^MULTIACTIONBAR%d+BUTTON%d+$",
+  "^BONUSACTIONBUTTON%d+$",
+  "^SHAPESHIFTBUTTON%d+$",
+  "^UNREALUIBAR%d+BUTTON%d+$",
+}
+
+local function OffscreenActionCommand(command)
+  local i
+  for i = 1, table.getn(OFFSCREEN_COMMANDS) do
+    if string.find(command, OFFSCREEN_COMMANDS[i]) then return true end
+  end
+  return false
+end
+
+-- Takes every key the shown slots hold off the client, so no press inside the
+-- mode can reach a slot's action, and seeds the staged model from what they
+-- held. Called once the catchers know which commands are on screen.
+local function SuspendSlotKeys(catchers)
+  slotKeys, slotKeySet, staged, dirty = {}, {}, {}, {}
+
+  local held = {}   -- command -> true, so nothing is taken twice
   local i
 
-  for i = 1, table.getn(keys) do
-    RememberKey(keys[i])
-    Call("SetBinding", keys[i])
+  for i = 1, table.getn(catchers) do
+    local command = catchers[i].command
+    if type(command) == "string" and not held[command] then
+      held[command] = true
+      staged[command] = HoldCommandKeys(command)[1] or false
+    end
   end
-  return table.getn(keys)
+
+  -- The client's own binding table is the only way to reach the commands no
+  -- catcher reported. GetNumBindings / GetBinding are what modules/actionbar.lua
+  -- already asks whether unrealUI's declared commands registered, and the same
+  -- enumeration returned this client's 225 commands during the wheel probe
+  -- (behavior.json / wheelbinding). Absent, this pass is simply skipped: the
+  -- visible slots are still safe, which is the case that matters.
+  if type(U.G("GetNumBindings")) ~= "function" or
+     type(U.G("GetBinding")) ~= "function" then
+    return
+  end
+
+  local count = tonumber(Call("GetNumBindings")) or 0
+  for i = 1, count do
+    local command = Call("GetBinding", i)
+    if type(command) == "string" and not held[command] and
+       OffscreenActionCommand(command) then
+      held[command] = true
+      HoldCommandKeys(command)
+    end
+  end
+end
+
+-- Hands the slots back to the client. save = true writes what the player
+-- staged; anything else puts back exactly what was there on open.
+local function ReleaseSlotKeys(save)
+  local claimed = {}   -- key -> the changed slot that is taking it
+  local command, key, i
+
+  if save then
+    for command, key in pairs(staged) do
+      if dirty[command] and type(key) == "string" and key ~= "" then
+        claimed[key] = command
+      end
+    end
+  end
+
+  -- Untouched slots first, and never a key a changed slot is about to take.
+  for i = 1, table.getn(slotKeys) do
+    local entry = slotKeys[i]
+    if not (save and (dirty[entry.command] or claimed[entry.key])) then
+      Call("SetBinding", entry.key, entry.command)
+    end
+  end
+
+  for key, command in pairs(claimed) do
+    Call("SetBinding", key, command)
+  end
+
+  slotKeys, slotKeySet, staged, dirty = {}, {}, {}, {}
 end
 
 local function BindKey(command, key)
@@ -219,34 +376,50 @@ local function BindKey(command, key)
     return false
   end
 
-  -- One slot, one key: drop what the command held before taking the new key.
-  ClearCommand(command)
-  RememberKey(key)
-
-  local set = U.G("SetBinding")
-  if type(set) ~= "function" then
+  -- Nothing is written to the client until the mode closes, but a mode that
+  -- cannot write at all is worth saying so at the first key rather than at
+  -- Save, when the player's work is already done.
+  if type(U.G("SetBinding")) ~= "function" then
     U.Print(U.L("QUICKBIND_NO_SETBINDING"))
     return false
   end
 
-  local ok, result = pcall(set, key, command)
-  if not ok then return false end
+  -- One slot, one key: take the key off whichever slot is staged to hold it.
+  local other, held
+  for other, held in pairs(staged) do
+    if held == key and other ~= command then
+      staged[other] = false
+      dirty[other] = true
+    end
+  end
 
-  changes = changes + 1
-  RefreshBars()
-  return result ~= false
-end
+  -- A key taken from a command outside the bars is freed now, so the rest of
+  -- the mode is not spent firing it, and goes back on Cancel.
+  if not slotKeySet[key] then
+    RememberKey(key)
+    Call("SetBinding", key)
+  end
 
-local function ClearBinding(command)
-  if type(command) ~= "string" then return false end
-  if table.getn(CommandKeys(command)) == 0 then return false end
-
-  ClearCommand(command)
+  staged[command] = key
+  dirty[command] = true
   changes = changes + 1
   RefreshBars()
   return true
 end
 
+local function ClearBinding(command)
+  if type(command) ~= "string" then return false end
+  if not staged[command] then return false end
+
+  staged[command] = false
+  dirty[command] = true
+  changes = changes + 1
+  RefreshBars()
+  return true
+end
+
+-- The undo log for keys outside the bars. The slots are restored separately in
+-- ReleaseSlotKeys, which runs first.
 local function RestoreBindings()
   local key, action
 
@@ -261,7 +434,6 @@ local function RestoreBindings()
 
   restore = {}
   changes = 0
-  RefreshBars()
 end
 
 local function PersistBindings()
@@ -367,10 +539,17 @@ local function Bindable(catcher)
   return catcher.command and true or false
 end
 
+-- What a slot is called in the tooltip and in the chat line for a cleared key.
+-- The stance bar has no bar number, so it is named rather than numbered.
+local function GroupName(catcher)
+  if catcher.stance then return "Stance" end
+  return "Bar " .. tostring(catcher.bar)
+end
+
 local function LabelFor(catcher)
   if not Bindable(catcher) then return "n/a", KEY_LOCK_COLOR end
 
-  local key = CurrentKey(catcher.command)
+  local key = StagedKey(catcher.command)
   if not key then return "--", KEY_NONE_COLOR end
 
   local label = key
@@ -402,7 +581,7 @@ local function ShowTooltip(catcher)
   pcall(tooltip.ClearLines, tooltip)
 
   pcall(tooltip.AddLine, tooltip,
-        "Bar " .. tostring(catcher.bar) .. "  Slot " .. tostring(catcher.index),
+        GroupName(catcher) .. "  Slot " .. tostring(catcher.index),
         1, 1, 1)
 
   if not Bindable(catcher) then
@@ -414,7 +593,7 @@ local function ShowTooltip(catcher)
     return
   end
 
-  local key = CurrentKey(catcher.command)
+  local key = StagedKey(catcher.command)
   if key then
     local label = key
     if type(U.ActionBindingLabel) == "function" then
@@ -554,12 +733,31 @@ local function HideCatchers()
   hovered = nil
 end
 
+-- Every bind provider unrealUI has, in the order the bars are read: the action
+-- bars first, then the stance bar. A module that is not loaded (or a class with
+-- no stance bar) simply contributes nothing.
+local function CollectTargets()
+  local providers = { U.ActionBarBindTargets, U.StanceBarBindTargets }
+  local targets, p = {}, nil
+
+  for p = 1, table.getn(providers) do
+    if type(providers[p]) == "function" then
+      local ok, list = pcall(providers[p])
+      if ok and type(list) == "table" then
+        local i
+        for i = 1, table.getn(list) do table.insert(targets, list[i]) end
+      end
+    end
+  end
+  return targets
+end
+
 local function ShowCatchers()
   HideCatchers()
 
   if type(U.ActionBarBindTargets) ~= "function" then return 0 end
 
-  local targets = U.ActionBarBindTargets()
+  local targets = CollectTargets()
   local i
   for i = 1, table.getn(targets) do
     local target = targets[i]
@@ -573,6 +771,7 @@ local function ShowCatchers()
     catcher.index = target.index
     catcher.command = target.command
     catcher.declared = target.declared and true or false
+    catcher.stance = target.stance and true or false
 
     SizeCatcher(catcher)
     RefreshCatcher(catcher)
@@ -619,8 +818,12 @@ function HandleInput(input, map)
     if catcher and Bindable(catcher) then
       if ClearBinding(catcher.command) then
         RefreshShown()
-        U.Print(U.L("QUICKBIND_CLEARED", tostring(catcher.bar),
-                    tostring(catcher.index)))
+        if catcher.stance then
+          U.Print(U.L("QUICKBIND_CLEARED_STANCE", tostring(catcher.index)))
+        else
+          U.Print(U.L("QUICKBIND_CLEARED", tostring(catcher.bar),
+                      tostring(catcher.index)))
+        end
       end
       return
     end
@@ -840,6 +1043,11 @@ function U.OpenQuickBind()
   InstallMenuGuard()
   SuspendMenuKeys()
 
+  -- The slots belong to the mode too: from here no key on screen can fire an
+  -- action, so pressing one only moves it. U.CloseQuickBind hands them back.
+  SuspendSlotKeys(shown)
+  RefreshBars()
+
   shade:Show()
   if shade.tex then shade.tex:Show() end
   if type(U.ShowAlignmentGrid) == "function" then U.ShowAlignmentGrid() end
@@ -861,6 +1069,10 @@ function U.CloseQuickBind(save)
   -- Before any save or restore: a binding set written while the menu key is
   -- lifted would persist its absence.
   ReleaseMenuKeys()
+
+  -- The slots go back to the client here, and only here: this is the point at
+  -- which the player's keys become real and can fire again.
+  ReleaseSlotKeys(save)
 
   HideTooltip()
   HideCatchers()
@@ -892,6 +1104,7 @@ function U.CloseQuickBind(save)
   end
 
   changes = 0
+  RefreshBars()
   return true
 end
 
@@ -927,6 +1140,9 @@ function U.QuickBindReport()
     keyCatcher = keys and true or false,
     menuKeysHeld = table.getn(suspended),
     menuGuard = menuGuardInstalled,
+    -- Non-zero only while the mode is open: the slot keys it is holding off
+    -- the client so a press cannot fire the slot it is rebinding.
+    slotKeysHeld = table.getn(slotKeys),
   }
 end
 

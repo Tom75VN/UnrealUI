@@ -18,11 +18,13 @@
 -- demonstrably do on this same client -- WORKING_SOURCE only, never runtime
 -- verified. Feed anything measured in game back into knowledge.json.
 --
--- Only the slot algorithm, the keyring/bag-slot recipe and the grey-item scan
--- are reused from UnrealPfUI; none of its module framework, config schema,
--- disenchant/picklock buttons or panel system are reproduced. The bank is a
--- separate unrealUI window (modules/bank.lua) built on the same shared slot
--- component (core/itemslot.lua).
+-- Only the slot algorithm, the keyring/bag-slot recipe, the grey-item scan and
+-- the visual placement of a Rogue Pick Lock shortcut are reused from
+-- UnrealPfUI; none of its module framework, config schema, disenchant button
+-- or panel system are reproduced. The shortcut's activation belongs to
+-- modules/rogue.lua because this client protects direct CastSpell calls. The
+-- bank is a separate unrealUI window (modules/bank.lua) built on the same
+-- shared slot component (core/itemslot.lua).
 
 local U = UnrealUI
 local M = U.media
@@ -303,9 +305,11 @@ local function CollectGreyItems()
 
     local slot
     for slot = 1, n do
-      local infoOk, texture, count, locked, quality =
-        pcall(GetContainerItemInfo, bag, slot)
-      if infoOk and texture and quality == 0 and not locked then
+      -- Empty slots report texture "" and quality 0 on this client, which
+      -- reads exactly like a grey item through the Vanilla-shaped test. The
+      -- shared reader normalises the texture so only real items are queued.
+      local texture, count, locked, quality = U.ContainerSlotInfo(bag, slot)
+      if texture and quality == 0 and not locked then
         table.insert(list, { bag = bag, slot = slot })
       end
     end
@@ -356,9 +360,9 @@ local function ProcessPending()
   pending.index = pending.index + 1
 
   -- Re-validate: bag contents can change while the queue drains.
-  local ok, texture, count, locked, quality =
-    pcall(GetContainerItemInfo, item.bag, item.slot)
-  if ok and texture and quality == 0 and not locked then
+  local texture, count, locked, quality =
+    U.ContainerSlotInfo(item.bag, item.slot)
+  if texture and quality == 0 and not locked then
     pcall(ClearCursor)
     if pending.mode == "sell" then
       pcall(UseContainerItem, item.bag, item.slot)
@@ -551,6 +555,21 @@ local function EnsureSlot(bag, slot, parent)
   local button = U.CreateItemSlot(root, name, bag, slot)
   if not button then return nil end
 
+  -- Preserve the stock container handler exactly unless the Rogue-only helper
+  -- claims an enabled Shift-click on a poison. Passing the original argument
+  -- shape through unchanged keeps both direct and legacy template handlers
+  -- working, including chat-linking and stack splitting.
+  if bag >= 0 and type(U.IsRogue) == "function" and U.IsRogue() and
+     type(U.TryRoguePoisonClick) == "function" then
+    local stockClick = button:GetScript("OnClick")
+    if type(stockClick) == "function" then
+      button:SetScript("OnClick", function(a, b, c)
+        if U.TryRoguePoisonClick(bag, slot, a, b) then return end
+        stockClick(a, b, c)
+      end)
+    end
+  end
+
   slots[bag][slot] = button
   return button
 end
@@ -682,6 +701,68 @@ local function RefreshBagSlotButtons()
   for i = 1, BAG_SLOT_COUNT do RefreshBagSlotButton(tray.buttons[i]) end
 end
 
+-- Taking a bag back out of its slot.
+--
+-- The stock BagSlotButtonTemplate works out its own inventory id inside its
+-- OnLoad, from the frame name and the XML id the client's own bag buttons are
+-- declared with. A button created through CreateFrame has neither at load time,
+-- so whatever that handler resolved was not this slot. The id is corrected with
+-- SetID below, but nothing available here can confirm the template's click and
+-- drag handlers read it back afterwards rather than something they kept from
+-- OnLoad -- query_compat.py has no record of BagSlotButtonTemplate at all, and
+-- the client ships no FrameXML to read.
+--
+-- Rather than guess at native template internals, the stock scripts are kept
+-- and wrapped: they run first, and UnrealUI only steps in when the cursor shows
+-- they moved nothing at all. PickupBagFromSlot is documented for this client
+-- (OFFICIAL_CLIENT_DOCUMENTATION, Container) and takes exactly the inventory
+-- slot 20-23 that ContainerIDToInventoryID returns, so the fallback rests on no
+-- assumption the template does not already make, and it is inert wherever the
+-- native path already does the work.
+--
+-- The fallback covers taking a bag *out* and nothing else, which is the one
+-- direction where an empty cursor before and after is unambiguous proof that
+-- nothing happened. Putting a bag in is deliberately left entirely native: a
+-- swap into an occupied slot leaves a different bag on the cursor, so "the
+-- cursor still holds something" cannot tell a completed swap from a handler
+-- that did nothing, and a fallback firing there would undo the swap it just
+-- misread.
+--
+-- Only a left click falls back. The stock right click opens the bag rather than
+-- unequipping it, and that path deliberately reaches UnrealUI's own no-op
+-- ToggleBag, which leaves the cursor untouched and would otherwise look exactly
+-- like a handler that did nothing.
+--
+-- A bag that still holds items stays put either way: PickupBagFromSlot itself
+-- declines an occupied bag, which is the client's rule and not something this
+-- wrapper tries to work around.
+local function WrapBagSlotPickup(button, script, inventoryId, leftOnly)
+  local original = button:GetScript(script)
+
+  button:SetScript(script, function(a1, a2, a3, a4, a5, a6, a7, a8, a9)
+    local hadItem = U.CursorHasItem()
+    local mouseButton = U.MouseButton(a1, a2)
+
+    if original then
+      original(a1, a2, a3, a4, a5, a6, a7, a8, a9)
+    end
+
+    if hadItem or U.CursorHasItem() then return end
+    if leftOnly and mouseButton and mouseButton ~= "LeftButton" then return end
+
+    local pickup = U.G("PickupBagFromSlot")
+    if type(pickup) == "function" then pcall(pickup, inventoryId) end
+  end)
+end
+
+local function InstallBagSlotHandlers(button, inventoryId)
+  if not button or button.uuiBagSlotFallback then return end
+  button.uuiBagSlotFallback = true
+
+  WrapBagSlotPickup(button, "OnClick", inventoryId, true)
+  WrapBagSlotPickup(button, "OnDragStart", inventoryId, false)
+end
+
 local function LayoutBagSlots()
   if not frame or not frame.bagslots then return end
 
@@ -705,8 +786,16 @@ local function LayoutBagSlots()
       if idOk and tonumber(inventoryId) then
         pcall(button.SetID, button, inventoryId)
         button.uuiInventoryId = inventoryId
+        InstallBagSlotHandlers(button, inventoryId)
       end
       button.slot = i
+
+      -- The template registers these in its own OnLoad. Repeating them is
+      -- idempotent and costs nothing, and it means a button whose OnLoad gave
+      -- up early -- on the id it could not resolve for a CreateFrame'd frame --
+      -- still receives the clicks and drags the wrappers above depend on.
+      pcall(button.RegisterForClicks, button, "LeftButtonUp", "RightButtonUp")
+      pcall(button.RegisterForDrag, button, "LeftButton")
 
       button:ClearAllPoints()
       button:SetPoint("TOPLEFT", tray, "TOPLEFT",
@@ -799,6 +888,13 @@ local function ProcessDirty()
     layoutDirty = false
     LayoutSlots()
     if frame.keyring and frame.keyring:IsShown() then LayoutKeyring() end
+    -- The bag-slot tray draws the equipped bags themselves, which change
+    -- without any container's contents changing. It was only ever refreshed by
+    -- reopening the tray, so a bag taken out of a slot went on being drawn in
+    -- it. Redraw it whenever it is on screen.
+    if frame.bagslots and frame.bagslots:IsShown() then
+      RefreshBagSlotButtons()
+    end
   end
 
   if keyringDirty then
@@ -892,6 +988,27 @@ local function BuildTray(name)
   return tray
 end
 
+local function RefreshRogueBagButton()
+  if not frame or not frame.pickLock then return end
+
+  local available = type(U.RogueHasPickLock) == "function" and
+                    U.RogueHasPickLock()
+  if available then frame.pickLock:Show() else frame.pickLock:Hide() end
+
+  -- Collapse the header row when the skill has not been learned; hiding a
+  -- frame does not move siblings anchored to it on this client.
+  if frame.sell and frame.bagsToggle then
+    frame.sell:ClearAllPoints()
+    if available then
+      frame.sell:SetPoint("LEFT", frame.pickLock, "RIGHT", 4, 0)
+    else
+      frame.sell:SetPoint("LEFT", frame.bagsToggle, "RIGHT", 4, 0)
+    end
+  end
+end
+
+U.RefreshRogueBagButton = RefreshRogueBagButton
+
 local function BuildHeader()
   frame.close = U.CreateButton(frame, {
     name = "UnrealUIBagClose",
@@ -951,6 +1068,29 @@ local function BuildHeader()
   classicBag.StyleIconButton(frame.bagsToggle)
   frame.bagsToggle:SetPoint("LEFT", frame.keyToggle, "RIGHT", 4, 0)
 
+  if type(U.IsRogue) == "function" and U.IsRogue() then
+    frame.pickLock = U.CreateIconButton(frame, {
+      name = "UnrealUIBagPickLock",
+      texture = "Interface\\Icons\\Spell_Nature_MoonKey",
+      fallback = "L",
+      title = U.L("BAGS_PICK_LOCK"),
+      detail = function()
+        if type(U.RoguePickLockActionAvailable) == "function" and
+           U.RoguePickLockActionAvailable() then
+          return U.L("BAGS_PICK_LOCK_HINT")
+        end
+        return U.L("BAGS_PICK_LOCK_ACTION_HINT")
+      end,
+      onClick = function()
+        if type(U.ActivateRoguePickLock) == "function" then
+          U.ActivateRoguePickLock()
+        end
+      end,
+    })
+    classicBag.StyleIconButton(frame.pickLock)
+    frame.pickLock:SetPoint("LEFT", frame.bagsToggle, "RIGHT", 4, 0)
+  end
+
   frame.sell = U.CreateIconButton(frame, {
     name = "UnrealUIBagSell",
     texture = "Interface\\Icons\\INV_Misc_Coin_02",
@@ -961,6 +1101,7 @@ local function BuildHeader()
   })
   classicBag.StyleIconButton(frame.sell)
   frame.sell:SetPoint("LEFT", frame.bagsToggle, "RIGHT", 4, 0)
+  RefreshRogueBagButton()
 end
 
 local function Build()

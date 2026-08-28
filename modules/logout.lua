@@ -1,13 +1,15 @@
 -- unrealUI :: modules/logout.lua
 --
--- Modern-style skin for the native logout/camp confirmation popup (the
--- "X Seconds until logout" dialog shown by StaticPopup "CAMP"/"QUIT").
+-- Modern-style skin for the native confirmation popups: logout/camp, releasing
+-- a spirit, and accepting a resurrection. They retain their native actions;
+-- this module replaces only the chrome around those actions.
 --
 -- query_compat.py has no StaticPopup evidence at all on this client
 -- (SOURCE_DEPENDENCY_GAP). Per the UnrealPfUI evidence-gap fallback, this
 -- reproduces UnrealPfUI's own generic StaticPopup skin (skins/blizzard/
 -- popup_dialogs.lua: CreateBackdrop + SkinButton per dialog), narrowed to
--- only the logout/camp dialog rather than reskinning every stock popup.
+-- the confirmation dialogs UnrealUI owns rather than reskinning every stock
+-- popup.
 -- WORKING_SOURCE, not runtime-verified.
 
 local U = UnrealUI
@@ -15,7 +17,16 @@ local M = U.media
 
 local G = U.RegisterModule("logout")
 
-local TRACK_WHICH = { CAMP = true, QUIT = true }
+-- `DEATH` is the Release Spirit confirmation and `RESURRECT` is the native
+-- resurrection offer. The no-sickness variant uses the same controls and is
+-- included so the modern theme stays coherent for both offer states.
+local TRACK_WHICH = {
+  CAMP = true,
+  QUIT = true,
+  DEATH = true,
+  RESURRECT = true,
+  RESURRECT_NO_SICKNESS = true,
+}
 local styledDialogs = {}
 
 local function StyleDialog(dialog, name)

@@ -98,6 +98,8 @@ local DIAGNOSTIC_HELP = {
   "  |cffffff00/uui map|r - arm the map hover watch before opening it",
   "  |cffffff00/uui res|r - dump the Character sheet resistance frames",
   "  |cffffff00/uui abhl [alpha] [hover] [rest]|r - dump or tune the classic hover highlight",
+  "  |cffffff00/uui abcd|r - dump why an action button shows no cooldown number",
+  "  |cffffff00/uui cb|r - arm a placement dump for the native cast bar",
   "  |cffffff00/uui movertest|r - foundation mover smoke test",
   "  |cffffff00/uui perf|r - record frame time around target changes",
   "  |cffffff00/uui nosuppress|r - skip native frame suppression (needs /reload)",
@@ -176,7 +178,12 @@ local function ShowUnitFrameCheck()
   -- instead of another assumption.
   if type(U.CastbarReport) == "function" then
     local cb = U.CastbarReport()
-    if cb then
+    if cb and cb.native then
+      -- Native-chrome theme: the client's own CastingBarFrame is in use and
+      -- this module built nothing, so there is no unrealUI state to read.
+      U.Print("castbar: native client bar (theme " ..
+              tostring(U.GetActiveThemeStyle()) .. ")")
+    elseif cb then
       U.Print("castbar: casting " .. tostring(cb.casting) ..
               ", shown " .. tostring(cb.shown))
       if cb.casting then
@@ -209,16 +216,21 @@ local function ShowUnitFrameCheck()
     end
   end
 
-  -- Warriors only. modules/stancebar.lua never creates its bar/mover for any
-  -- other class, so isWarrior false with created false is the expected line
-  -- for everyone else.
+  -- Warriors and Rogues only. modules/stancebar.lua never creates its bar or
+  -- mover for any other class, so supported false with created false is the
+  -- expected line for everyone else. "classic" reports whether the buttons
+  -- took the client's own action-button faces, which only Classic WoW does.
   if type(U.StanceBarReport) == "function" then
     local sb = U.StanceBarReport()
     if sb then
-      U.Print("stance bar: warrior " .. tostring(sb.isWarrior) ..
+      U.Print("stance bar: class " .. tostring(sb.class) ..
+              ", supported " .. tostring(sb.supported) ..
+              ", classic " .. tostring(sb.classic) ..
               ", created " .. tostring(sb.created) ..
               ", shown " .. tostring(sb.shown) ..
-              ", forms " .. tostring(sb.slotCount))
+              ", forms " .. tostring(sb.slotCount) ..
+              ", cd text " .. tostring(sb.cooldownText) ..
+              ", cd sweep " .. tostring(sb.cooldownSweep))
     end
   end
 
@@ -487,7 +499,8 @@ local function ShowSelfCheck()
             tostring(qb.declaredBindings) ..
             ", SetOverrideBindingClick " .. tostring(qb.overrideBindings))
     U.Print("    menu keys held " .. tostring(qb.menuKeysHeld) ..
-            ", menu guard " .. tostring(qb.menuGuard))
+            ", menu guard " .. tostring(qb.menuGuard) ..
+            ", slot keys held " .. tostring(qb.slotKeysHeld))
   end
 
   if type(U.ChatResizeReport) == "function" then
@@ -970,6 +983,20 @@ handlers["res"] = function(rest)
   end
 end
 handlers["elite"] = function(rest) HandleElite(rest) end
+handlers["cb"] = function()
+  if type(U.CastbarNativeDump) ~= "function" then
+    U.Print("castbar dump unavailable - modules/castbar.lua did not load")
+    return
+  end
+  U.CastbarNativeDump()
+end
+handlers["abcd"] = function()
+  if type(U.ActionBarCooldownDump) ~= "function" then
+    U.Print("cooldown dump unavailable - modules/actionbar.lua did not load")
+    return
+  end
+  U.ActionBarCooldownDump()
+end
 handlers["abhl"] = function(rest)
   if type(U.ActionBarHighlightDump) ~= "function" then
     U.Print("highlight dump unavailable - modules/actionbar.lua did not load")

@@ -234,6 +234,88 @@ function U.StyleCompareTooltip(tooltip, name)
   end
 end
 
+-- SetInventoryItem populates ShoppingTooltip with the equipped item's native
+-- lines but does not add CURRENTLY_EQUIPPED. Both themes therefore supply the
+-- heading themselves, and both put it *inside* the tooltip: the native compare
+-- setters this client uses elsewhere also render it as line 1, so an attached
+-- external panel reads as a second floating frame rather than part of the
+-- comparison. The heading is inserted with the stock-style line-shift pattern
+-- from UnrealPfUI's working comparison module (WORKING_SOURCE,
+-- modules/eqcompare.lua): existing line text moves down one row and line 1 is
+-- reused for the heading, so no addon-owned row has to relayout a populated
+-- tooltip (knowledge.json / tooltip.added_lines_do_not_relayout). Only the
+-- final overflow row needs AddLine, and the Show call below republishes the
+-- layout for it.
+local COMPARE_TEXT_SIDES = { "Left", "Right" }
+
+local function CompareHeaderText()
+  local header = U.G("CURRENTLY_EQUIPPED")
+  if type(header) ~= "string" or header == "" then
+    return "Currently Equipped"
+  end
+  return header
+end
+
+function U.ShowCompareTooltipHeader(tooltip, name)
+  if not tooltip or type(name) ~= "string" then return end
+
+  local header = CompareHeaderText()
+  local first = U.G(name .. "TextLeft1")
+  if not first or not first.GetText then return end
+
+  local firstOk, firstText = pcall(first.GetText, first)
+  if firstOk and firstText == header then return first end
+
+  local countOk, lineCount = pcall(tooltip.NumLines, tooltip)
+  if not countOk or type(lineCount) ~= "number" then return end
+
+  local lineIndex, sideIndex
+  for lineIndex = lineCount, 1, -1 do
+    for sideIndex = 1, table.getn(COMPARE_TEXT_SIDES) do
+      local side = COMPARE_TEXT_SIDES[sideIndex]
+      local current = U.G(name .. "Text" .. side .. lineIndex)
+      local below = U.G(name .. "Text" .. side .. (lineIndex + 1))
+      local shownOk, shown = false, false
+      if current and current.IsShown then
+        shownOk, shown = pcall(current.IsShown, current)
+      end
+
+      if shownOk and shown and below then
+        local textOk, text = pcall(current.GetText, current)
+        if textOk and type(text) == "string" and text ~= "" then
+          local colorOk, r, g, b = pcall(current.GetTextColor, current)
+          if not colorOk then r, g, b = 1, 1, 1 end
+
+          local linesOk, currentLines = pcall(tooltip.NumLines, tooltip)
+          if linesOk and type(currentLines) == "number" and
+             currentLines < lineIndex + 1 then
+            pcall(tooltip.AddLine, tooltip, text, r, g, b, true)
+          else
+            pcall(below.SetText, below, text)
+            pcall(below.SetTextColor, below, r, g, b)
+            pcall(below.Show, below)
+            pcall(current.Hide, current)
+          end
+        end
+      end
+    end
+  end
+
+  -- Flat tooltips take the heading colour from the shared palette; the Classic
+  -- theme keeps the stock grey the native comparison header uses.
+  local dim = M.color.textDim
+  local r, g, b = 0.5, 0.5, 0.5
+  if not U.ThemeStyleUsesNativeChrome() and dim then
+    r, g, b = dim[1], dim[2], dim[3]
+  end
+
+  pcall(first.SetText, first, header)
+  pcall(first.SetTextColor, first, r, g, b, 1)
+  pcall(first.Show, first)
+  pcall(tooltip.Show, tooltip)
+  return first
+end
+
 -- Comparison tooltips are not owned by the bag module. The client can show
 -- ShoppingTooltip1/2 from merchant, character, auction and other native item
 -- paths, so their modern skin must be driven from the tooltip frames
@@ -276,6 +358,281 @@ local function RefreshCompareTooltip(index, force)
     local regionIndex
     for regionIndex = 1, 3 do
       U.HideRegion(U.G(name .. "Texture" .. regionIndex))
+    end
+  end
+end
+
+-- ---------------------------------------------------------------------------
+-- Comparison stat colouring
+--
+-- While an equipped counterpart is on screen the hovered item's own stat lines
+-- are tinted: green where the hovered item gives more than what is worn, red
+-- where it gives less. Both sides are read straight off the two populated
+-- tooltips, so no item database and no table of localized stat names is
+-- involved.
+--
+-- A line is reduced to a locale-independent key by replacing every number in it
+-- with a marker and dropping whitespace and case: "+10 Stamina" becomes
+-- "+#stamina" carrying the value 10, and the worn item's "+7 Stamina" produces
+-- the same key carrying 7. Keys present on both items are compared by value. A
+-- key only the hovered item carries counts as a straight gain when the line is
+-- a plain "+N ..." attribute row, which is the one shape where the worn item
+-- having no such line unambiguously means zero -- an absent "Chance on hit" or
+-- "Equip:" row is not a numeric zero and is left alone.
+--
+-- Numbered rows that are not stats (durability, level requirements, weapon
+-- speed, charges) are skipped. Their templates come from the client's own
+-- global strings, so the exclusion follows the game locale instead of a list of
+-- English words. No compact evidence names these globals on this client, so
+-- every candidate spelling is listed and a missing one is simply skipped; the
+-- structural "# / #" rule below is the durability backstop that does not depend
+-- on a global existing at all.
+-- ---------------------------------------------------------------------------
+
+local COMPARE_IGNORE_GLOBALS = {
+  "DURABILITY_TEMPLATE",
+  "ITEM_MIN_LEVEL",
+  "ITEM_REQ_LEVEL",
+  "ITEM_MIN_SKILL",
+  "ITEM_REQ_SKILL",
+  "ITEM_LEVEL",
+  "ITEM_SPELL_CHARGES",
+  "SPEED",
+}
+
+local compareIgnore
+local compareColored = {}
+local compareColorSubject
+
+local function StripEscapes(text)
+  text = string.gsub(text, "|c%x%x%x%x%x%x%x%x", "")
+  text = string.gsub(text, "|r", "")
+  return text
+end
+
+-- "+10 Stamina" -> "+#stamina", 10. Returns nil for a line carrying no number,
+-- which is every flavour, binding, class and slot row.
+local function StatLineKey(text)
+  if type(text) ~= "string" or text == "" then return nil end
+  text = StripEscapes(text)
+
+  local key, total, pos = "", nil, 1
+  while true do
+    local first, last = string.find(text, "%-?%d+%.?%d*", pos)
+    if not first then break end
+    key = key .. string.sub(text, pos, first - 1) .. "#"
+    total = (total or 0) + (tonumber(string.sub(text, first, last)) or 0)
+    pos = last + 1
+  end
+  if not total then return nil end
+
+  key = string.gsub(key .. string.sub(text, pos), "%s", "")
+  if key == "" then return nil end
+  return string.lower(key), total
+end
+
+-- The ignore templates go through the same normalisation, with their format
+-- specifiers standing in for the numbers: "Durability %d / %d" becomes
+-- "durability#/#", which is exactly the key "Durability 55 / 55" produces.
+local function CompareIgnoreKeys()
+  if compareIgnore then return compareIgnore end
+
+  compareIgnore = {}
+  local i
+  for i = 1, table.getn(COMPARE_IGNORE_GLOBALS) do
+    local template = U.G(COMPARE_IGNORE_GLOBALS[i])
+    if type(template) == "string" and template ~= "" then
+      local key = string.gsub(template, "%%%d?%$?[%-%d%.]*[dsfg]", "#")
+      key = string.lower(string.gsub(key, "%s", ""))
+      if key ~= "" then table.insert(compareIgnore, key) end
+    end
+  end
+  return compareIgnore
+end
+
+local function IsIgnoredStatKey(key)
+  -- A pair of numbers around a slash is a durability-style readout, never a
+  -- stat. This holds in every locale and without any global string, so it stays
+  -- correct even where the template lookup above finds nothing.
+  if string.find(key, "#/#", 1, true) then return true end
+
+  local keys = CompareIgnoreKeys()
+  local i
+  for i = 1, table.getn(keys) do
+    if string.find(key, keys[i], 1, true) == 1 then return true end
+  end
+  return false
+end
+
+-- Every numbered line of one populated tooltip, keyed as above. Both text sides
+-- are read: this client puts armour and damage on the left and the secondary
+-- weapon columns on the right.
+local function StatMapFor(name)
+  local tooltip = U.G(name)
+  if not tooltip or not tooltip.IsShown then return nil end
+
+  local shownOk, shown = pcall(tooltip.IsShown, tooltip)
+  if not shownOk or not shown then return nil end
+
+  local countOk, lineCount = pcall(tooltip.NumLines, tooltip)
+  if not countOk or type(lineCount) ~= "number" or lineCount < 1 then return nil end
+
+  local map = {}
+  local index, sideIndex
+  for index = 1, lineCount do
+    for sideIndex = 1, table.getn(COMPARE_TEXT_SIDES) do
+      local label = U.G(name .. "Text" .. COMPARE_TEXT_SIDES[sideIndex] .. index)
+      if label and label.GetText then
+        local textOk, text = pcall(label.GetText, label)
+        if textOk then
+          local key, value = StatLineKey(text)
+          if key and not IsIgnoredStatKey(key) then
+            map[key] = (map[key] or 0) + value
+          end
+        end
+      end
+    end
+  end
+  return map
+end
+
+-- What the hovered item is measured against. Rings and trinkets put both worn
+-- pieces on screen; the comparison then uses the weaker value per stat, since
+-- that is the piece a replacement would actually take the place of.
+local function WornStatMap()
+  local maps, i = {}, nil
+  for i = 1, 2 do
+    local map = StatMapFor("ShoppingTooltip" .. i)
+    if map then table.insert(maps, map) end
+  end
+
+  local count = table.getn(maps)
+  if count == 0 then return nil end
+  if count == 1 then return maps[1] end
+
+  local keys, key = {}, nil
+  for key in pairs(maps[1]) do table.insert(keys, key) end
+  for key in pairs(maps[2]) do
+    if maps[1][key] == nil then table.insert(keys, key) end
+  end
+
+  local merged = {}
+  for i = 1, table.getn(keys) do
+    local a = maps[1][keys[i]] or 0
+    local b = maps[2][keys[i]] or 0
+    merged[keys[i]] = (a < b) and a or b
+  end
+  return merged
+end
+
+-- Putting a tinted line back the way it was found. Repopulating the tooltip is
+-- expected to reset the line colours natively, but that is an assumption about
+-- client-side tooltip code no probe covers, so the tint is undone rather than
+-- left to be overwritten. The stored text guards the restore: a line whose text
+-- has changed was rebuilt by the client and already carries its own colour, and
+-- writing the previous item's colour back onto it would be the bug this avoids.
+local function RestoreCompareColors()
+  local entries = compareColored
+  compareColored = {}
+
+  local i
+  for i = 1, table.getn(entries) do
+    local entry = entries[i]
+    local textOk, text = pcall(entry.label.GetText, entry.label)
+    if textOk and text == entry.text then
+      pcall(entry.label.SetTextColor, entry.label,
+            entry.r, entry.g, entry.b, entry.a)
+    end
+  end
+end
+
+-- The subject the current tint belongs to: the hovered item, how many lines it
+-- drew, and which worn items it is being measured against. Deliberately cheap,
+-- because the 0.10s driver evaluates it on every tick to decide whether any of
+-- the scanning work below has to happen at all. A comparison tooltip keeps its
+-- text after being hidden, so its shown state is part of the subject -- without
+-- it, the comparison going away would not register as a change.
+local function CompareColorSubject(lineCount)
+  local subject = (CompareLineText("GameTooltip", 1) or "?") .. "|" .. lineCount
+  local i
+  for i = 1, 2 do
+    local name = "ShoppingTooltip" .. i
+    local tooltip = U.G(name)
+    local shown = false
+    if tooltip and tooltip.IsShown then
+      local shownOk, isShown = pcall(tooltip.IsShown, tooltip)
+      shown = (shownOk and isShown) and true or false
+    end
+    subject = subject .. "|" .. (shown and "1" or "0") ..
+              (CompareLineText(name, 2) or "-")
+  end
+  return subject
+end
+
+local function ApplyCompareColors()
+  if U.PerfDisabled and U.PerfDisabled("tooltip") then return end
+
+  local tooltip = U.G("GameTooltip")
+  if not tooltip or not tooltip.IsShown then return end
+
+  local shownOk, shown = pcall(tooltip.IsShown, tooltip)
+  if not shownOk or not shown then
+    compareColorSubject = nil
+    RestoreCompareColors()
+    return
+  end
+
+  local countOk, lineCount = pcall(tooltip.NumLines, tooltip)
+  if not countOk or type(lineCount) ~= "number" or lineCount < 1 then return end
+
+  -- Nothing below runs while the hovered item and its counterparts are the ones
+  -- already tinted, which is every tick but the one where the hover changes.
+  local subject = CompareColorSubject(lineCount)
+  if subject == compareColorSubject then return end
+  compareColorSubject = subject
+  RestoreCompareColors()
+
+  -- No equipped counterpart on screen: nothing to measure against. The tint
+  -- from the previous hover has already come off above.
+  local worn = WornStatMap()
+  if not worn then return end
+
+  local better = M.itemCompare and M.itemCompare.better
+  local worse = M.itemCompare and M.itemCompare.worse
+  if not better or not worse then return end
+
+  local index, sideIndex
+  for index = 1, lineCount do
+    for sideIndex = 1, table.getn(COMPARE_TEXT_SIDES) do
+      local label = U.G("GameTooltipText" ..
+                        COMPARE_TEXT_SIDES[sideIndex] .. index)
+      if label and label.GetText and label.SetTextColor then
+        local textOk, text = pcall(label.GetText, label)
+        local key, value
+        if textOk then key, value = StatLineKey(text) end
+
+        if key and not IsIgnoredStatKey(key) then
+          local delta
+          if worn[key] then
+            delta = value - worn[key]
+          elseif string.find(StripEscapes(text), "^%+%d") then
+            -- A plain "+N Stat" row the worn item does not carry at all.
+            delta = value
+          end
+
+          if delta and delta ~= 0 then
+            local color = (delta > 0) and better or worse
+            local wasOk, r, g, b, a = pcall(label.GetTextColor, label)
+            if pcall(label.SetTextColor, label,
+                     color[1], color[2], color[3], color[4]) and wasOk then
+              table.insert(compareColored, {
+                label = label, text = text,
+                r = r or 1, g = g or 1, b = b or 1, a = a or 1,
+              })
+            end
+          end
+        end
+      end
     end
   end
 end
@@ -487,6 +844,7 @@ local function InstallCompareTrigger(index)
     -- cannot become the final visible state.
     U.DeferOnce("tooltip.compare-restyle." .. index, function()
       RefreshCompareTooltip(index, true)
+      ApplyCompareColors()
     end)
   end
 
@@ -534,5 +892,6 @@ function TT.OnEnable()
     for compareIndex = 1, 2 do
       RefreshCompareTooltip(compareIndex, false)
     end
+    ApplyCompareColors()
   end)
 end

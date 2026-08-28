@@ -138,6 +138,55 @@ local BUTTONS = {
 local ITEM_PREFIXES = { "QuestProgressItem", "QuestDetailItem", "QuestRewardItem" }
 local ITEMS_PER_PANEL = 9
 
+-- The native quest button owns tooltip population and stores the corresponding
+-- GetQuestItemLink list in button.type, with its 1-based item index in GetID().
+-- Append the price only after that native OnEnter has run, exactly like
+-- core/itemslot.lua does for bag buttons. The resolved link also drives that
+-- same module's equipped-item comparison tooltips. Progress/required items are
+-- intentionally excluded: these readouts are for rewards the player is
+-- evaluating.
+--
+-- This is behavior only -- no texture, font or anchor is touched -- so the
+-- Classic theme installs the same hooks on the untouched native frame without
+-- pulling in any of the skinning below.
+local function HookRewardTooltip(button, prefix)
+  if not button or prefix == "QuestProgressItem" then return end
+  if button.uuiQuestPriceHooks then return end
+  button.uuiQuestPriceHooks = true
+
+  U.PostHookScript(button, "OnEnter", function()
+    local idOk, index = false, nil
+    if button.GetID then idOk, index = pcall(button.GetID, button) end
+    if not idOk then return end
+
+    local link
+    if type(U.ShowQuestItemPrice) == "function" then
+      link = U.ShowQuestItemPrice(button.type, index)
+    end
+    if type(U.ShowItemCompare) == "function" then
+      U.ShowItemCompare(link)
+    end
+  end)
+  U.PostHookScript(button, "OnLeave", function()
+    if type(U.HideItemPrice) == "function" then U.HideItemPrice() end
+    if type(U.HideItemCompare) == "function" then U.HideItemCompare() end
+  end)
+end
+
+-- Classic keeps the client's own quest frame, so the reward readouts are all
+-- that gets added. Re-run on every quest event because the client populates
+-- and reuses these buttons per panel; HookRewardTooltip is idempotent, so a
+-- button already carrying the hooks is skipped.
+local function HookQuestRewards()
+  local p
+  for p = 1, table.getn(ITEM_PREFIXES) do
+    local i
+    for i = 1, ITEMS_PER_PANEL do
+      HookRewardTooltip(G(ITEM_PREFIXES[p] .. i), ITEM_PREFIXES[p])
+    end
+  end
+end
+
 -- The parchment fill is a set of Material* textures owned by each panel, and
 -- knowledge.json / frames.stock_singletons_structure_nonvanilla records that
 -- stock singletons recreate artwork when they are shown. UnrealPfUI had to
@@ -208,10 +257,135 @@ local function StyleTitleRows()
   end
 end
 
+-- The client marks the chosen reward with QuestRewardItemHighlight, a stock
+-- gold UI-QuestItemHighlight box sized for the untouched native reward row
+-- (WORKING_SOURCE: UnrealPfUI's skins/blizzard/gossipquest.lua replaces the
+-- same frame on this client). It is a second style family on top of unrealUI's
+-- flat rows, and its fixed size no longer matches the Quest Log cell geometry
+-- used below, so the modern themes strip that artwork and express the selected
+-- state with the reward button's own accent outline instead -- the selected
+-- state rules/unreal-ui-design.md defines.
+--
+-- The stock frame itself is left shown rather than hidden: the native click
+-- handler shows it only for a real choice row and QuestFrameItems_Update hides
+-- it whenever the reward list is rebuilt, so its visibility stays a free,
+-- accurate read of the native selection without hooking either global.
+local selectedReward
+
+local function NativeRewardHighlight()
+  return G("QuestRewardItemHighlight")
+end
+
+local function NativeRewardHighlightShown()
+  local highlight = NativeRewardHighlight()
+  if not highlight or not highlight.IsShown then return false end
+  local ok, shown = pcall(highlight.IsShown, highlight)
+  return ok and shown and true or false
+end
+
+local function StripRewardHighlight()
+  local highlight = NativeRewardHighlight()
+  if not highlight then return end
+
+  U.StripStockTextures(highlight)
+  if not highlight.uuiQuestHighlightHooks then
+    highlight.uuiQuestHighlightHooks = true
+    U.PostHookScript(highlight, "OnShow", function()
+      U.StripStockTextures(highlight)
+    end)
+  end
+end
+
+local hoveredReward
+
+-- Both reward row states are painted from one place, because hover and
+-- selection share the same single outline: whichever is true wins the accent,
+-- and a row that is neither goes back to the normal border colour.
+local function ApplyRewardStates()
+  local i
+  for i = 1, ITEMS_PER_PANEL do
+    local button = G("QuestRewardItem" .. i)
+    -- uuiEdges is the outline U.StyleStockButton installed; a button that has
+    -- not been through that pass yet has nothing to recolour.
+    if button and button.uuiEdges then
+      local color = M.color.border
+      if button == hoveredReward or button == selectedReward then
+        color = M.color.accent
+      end
+      U.SetBorderColor(button, M.Unpack(color))
+    end
+  end
+end
+
+-- Self-healing script hook, deliberately not U.PostHookScript.
+--
+-- U.PostHookScript wraps once and the caller guards with a flag on the button,
+-- so a native reward rebuild that reassigns these buttons' scripts drops the
+-- unrealUI handler for the rest of the session with no error and no way to
+-- notice. That is the shape of "the hover state simply stopped existing".
+-- Storing the installed wrapper lets every styling pass compare it against the
+-- live script and re-wrap whatever the client has put there now.
+--
+-- UNVERIFIED: nothing in the compact evidence records whether this client's
+-- quest code reassigns reward-button scripts. This is written to be correct
+-- either way -- when the script is still ours the pass is a single comparison.
+local function HookRewardScript(button, script, callback)
+  local field = "uuiQuestHook" .. script
+  local liveOk, live = pcall(button.GetScript, button, script)
+  if liveOk and live and live == button[field] then return end
+
+  local previous = liveOk and live or nil
+  local wrapper = function(a1, a2, a3, a4, a5, a6, a7, a8, a9)
+    if previous then previous(a1, a2, a3, a4, a5, a6, a7, a8, a9) end
+    callback(a1, a2, a3, a4, a5, a6, a7, a8, a9)
+  end
+
+  if pcall(button.SetScript, button, script, wrapper) then
+    button[field] = wrapper
+  end
+end
+
+local function HookRewardSelection(button, prefix)
+  if not button or prefix ~= "QuestRewardItem" then return end
+  if not button.GetScript or not button.SetScript then return end
+
+  -- The reward row owns its own hover state rather than leaving it to
+  -- U.StyleStockButton's hooks: this runs at the end of the chain in both
+  -- directions, so leaving a row cannot clear the accent on the selected one
+  -- and a native rebuild cannot silently take the hover with it.
+  HookRewardScript(button, "OnEnter", function()
+    hoveredReward = button
+    ApplyRewardStates()
+  end)
+
+  HookRewardScript(button, "OnLeave", function()
+    if hoveredReward == button then hoveredReward = nil end
+    ApplyRewardStates()
+  end)
+
+  HookRewardScript(button, "OnClick", function()
+    -- The native handler has already run, so the stock highlight's state --
+    -- not a guess about which rows are choices -- decides whether this click
+    -- selected a reward. button.type is the same field HookRewardTooltip
+    -- reads, kept as a fallback for a build that leaves the frame absent.
+    if NativeRewardHighlightShown() or button.type == "choice" then
+      selectedReward = button
+      ApplyRewardStates()
+    end
+  end)
+end
+
 -- Reward/progress/detail item slots use the Quest Log item-cell treatment
 -- directly.  Do not maintain a second card layout here: it let the native
 -- accept-panel refresh leave reward icons on top of one another.
 local function StyleItemSlots()
+  StripRewardHighlight()
+  -- A selection only survives while the client still shows its own highlight;
+  -- once the reward list is rebuilt the native frame is hidden again and the
+  -- accent row goes with it.
+  if not NativeRewardHighlightShown() then selectedReward = nil end
+  hoveredReward = nil
+
   local p
   for p = 1, table.getn(ITEM_PREFIXES) do
     local rowStart
@@ -281,6 +455,9 @@ local function StyleItemSlots()
 
         U.StyleStockButton(button, { icon = icon, fitIcon = false })
 
+        HookRewardTooltip(button, ITEM_PREFIXES[p])
+        HookRewardSelection(button, ITEM_PREFIXES[p])
+
         if icon then
           pcall(function()
             local heightOk, height = pcall(button.GetHeight, button)
@@ -321,6 +498,8 @@ local function StyleItemSlots()
       end
     end
   end
+
+  ApplyRewardStates()
 end
 
 local function StyleHeader()
@@ -577,7 +756,17 @@ local function TryBuild()
 end
 
 function QF:OnEnable()
-  if U.ThemeStyleUsesNativeChrome() then return end
+  if U.ThemeStyleUsesNativeChrome() then
+    -- The stock quest frame is left exactly as the client draws it. Only the
+    -- reward price and equipped-item comparison are added, matching what the
+    -- modern themes get from StyleItemSlots.
+    HookQuestRewards()
+    local i
+    for i = 1, table.getn(pendingEvents) do
+      U.RegisterEvent(pendingEvents[i], HookQuestRewards)
+    end
+    return
+  end
   if TryBuild() then return end
 
   local i

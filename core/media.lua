@@ -85,8 +85,16 @@ M.texture = {
   -- Official client documentation uses this native TargetingFrame texture as
   -- the StatusBar example; the Classic unit-frame theme reuses it directly.
   classicStatusBar = "Interface\\TargetingFrame\\UI-StatusBar",
-  chatResizeGrip = "Interface\\AddOns\\unrealUI\\media\\chat_resize_grip",
+  chatResizeGrip = "Interface\\AddOns\\unrealUI\\media\\resize",
   restIcon = "Interface\\AddOns\\unrealUI\\media\\rest-icon",
+  -- Party-leader star. unrealUI's own art rather than the stock GroupFrame
+  -- leader icon: knowledge.json / textures.separate_coin_paths_not_rendered
+  -- is a confirmed case of Vanilla texture paths that simply do not draw on
+  -- this client, and the elite icon already cost a session hunting for one
+  -- that does. White star on a black rim, so SetVertexColor tints the star
+  -- to the accent while the rim stays dark enough to read over a bright
+  -- health fill.
+  leaderIcon = "Interface\\AddOns\\unrealUI\\media\\leader-star",
 }
 
 -- Flag artwork for the settings language selector, keyed by the locale codes
@@ -151,6 +159,10 @@ M.color = {
   -- looks like a third unit-frame bar.
   cast       = { 0.20, 0.55, 0.65, 1.00 },
 
+  -- Breath is a depletion state, not an UnrealUI accent. Its cool blue stays
+  -- separate from casting so the two progress bars remain distinguishable.
+  breath     = { 0.22, 0.60, 0.74, 1.00 },
+
   highlight  = { 0.96, 0.68, 0.04, 0.22 },
   mover      = { 0.55, 0.36, 0.02, 0.45 },
   moverEdge  = { 0.96, 0.68, 0.04, 1.00 },
@@ -190,6 +202,15 @@ M.zoneLevel = {
   ready   = { 0.25, 0.75, 0.30, 1.00 },   -- player is above the zone range
   caution = { 1.00, 0.50, 0.10, 1.00 },   -- player is inside the zone range
   danger  = { 1.00, 0.20, 0.20, 1.00 },   -- zone is above the player
+}
+
+-- Item-comparison deltas, drawn on the hovered item's own stat lines while an
+-- equipped counterpart is on screen (modules/tooltip.lua). This is game state
+-- rather than UnrealUI chrome, so it stays clear of the accent and reuses the
+-- same green/red the zone-level readout already carries.
+M.itemCompare = {
+  better = { 0.25, 0.75, 0.30, 1.00 },   -- hovered item gives more
+  worse  = { 1.00, 0.20, 0.20, 1.00 },   -- hovered item gives less
 }
 
 -- Power colours keyed by the numeric UnitPowerType index used by Vanilla.

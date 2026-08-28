@@ -374,6 +374,22 @@ function classicMenu.Number(object, method)
   return tonumber(value)
 end
 
+-- USER_CONFIRMED_INGAME: EnableMouse(false) on a sibling Button above these
+-- native rows does not pass input through on this client. Keep the replacement
+-- face below the transparent native row instead, so engine-dispatched clicks
+-- still reach the row's original handler (including handlers that read the
+-- client's implicit `this` rather than their Lua argument).
+function classicMenu.PlaceVisualBelow(visual, row)
+  local rowLevel = classicMenu.Number(row, "GetFrameLevel")
+  local visualLevel = classicMenu.Number(visual, "GetFrameLevel")
+  if rowLevel and visualLevel and visualLevel >= rowLevel then
+    -- Child frame levels can be clamped to their parent's level, so lowering
+    -- the visual is not sufficient. Raise the transparent native target one
+    -- level instead; subsequent passes leave the stable ordering untouched.
+    pcall(row.SetFrameLevel, row, visualLevel + 1)
+  end
+end
+
 function classicMenu.CopyFace(button, source, getter, setter)
   if not button or not source then return end
   if not button[setter] or not source[getter] then return end
@@ -578,10 +594,10 @@ function classicMenu.CreateRowVisual(row)
     })
   end
 
-  RaiseAbove(visual, row, 10)
+  classicMenu.PlaceVisualBelow(visual, row)
 
-  -- The visual is mouse-transparent, so mirror the native target's interaction
-  -- state onto it. All calls are capability-checked for this client.
+  -- The visual remains mouse-transparent and below the real target. Mirror the
+  -- native row's interaction state onto it. All calls are capability-checked.
   U.PostHookScript(row, "OnEnter", function()
     if visual.LockHighlight then pcall(visual.LockHighlight, visual) end
   end)
@@ -604,8 +620,8 @@ end
 
 -- The original row remains shown, enabled and anchored as the physical click
 -- target, but alpha zero removes every piece of its independently rendered art
--- and text. The visible sibling above it is a real GameMenuButtonTemplate, just
--- like Unreal UI and Quick Binding. This avoids Button:Click, which is
+-- and text. The visible sibling behind it is a real GameMenuButtonTemplate,
+-- just like Unreal UI and Quick Binding. This avoids Button:Click, which is
 -- RUNTIME_FAILURE_CONFIRMED broken on this client
 -- (behavior.json / loot.native_button_click.v1).
 function classicMenu.CoverRow(row)
@@ -628,6 +644,7 @@ function classicMenu.CoverRow(row)
   if height and height > 0 then pcall(visual.SetHeight, visual, height) end
   visual:ClearAllPoints()
   visual:SetPoint("CENTER", row, "CENTER", 0, 0)
+  classicMenu.PlaceVisualBelow(visual, row)
   classicMenu.SetLabelText(visual, row.uuiRowText)
   classicMenu.AlignLabel(visual)
   if visual.SetButtonState then

@@ -1,7 +1,7 @@
 -- unrealUI :: modules/itemprice.lua
 --
--- Item value at the bottom of bag and bank item tooltips. See "Hover path"
--- below for why that is the current reach and what it would take to widen it.
+-- Item value at the bottom of bag, bank and quest-reward item tooltips. See
+-- "Hover path" below for why each surface needs its own button hook.
 --
 -- This client has no API that returns a price from an item id. GetItemInfo
 -- stops at `texture` and returns nine values with no sellPrice
@@ -172,6 +172,69 @@ local function Lookup(kind, id)
   return nil
 end
 
+-- GetQuestItemLink is documented on this client, but USER_CONFIRMED_INGAME
+-- (2026-08-29, /uui price) it returned nil for a visible choice reward whose
+-- tooltip had already been populated. GetQuestItemInfo still provides the
+-- displayed name, texture and quality. Resolve that tuple only against item
+-- ids for which this module can actually show a price: learned sell rows first,
+-- then the stock fallback table. UnrealPfUI's GetItemLinkByName uses the same
+-- GetItemInfo id scan across a larger fixed range; narrowing it to priced ids
+-- avoids doing work for items that would have no sell row anyway.
+local questLinkCache = {}
+
+local function FindPricedItemLink(list, name, texture, quality)
+  if type(list) ~= "table" then return nil end
+
+  local getItemInfo = U.G("GetItemInfo")
+  if type(getItemInfo) ~= "function" then return nil end
+
+  local found
+  local ok = pcall(function()
+    local id
+    for id in pairs(list) do
+      if type(id) == "number" then
+        local itemName, link, itemQuality, _, _, _, _, _, itemTexture =
+          getItemInfo(id)
+        if itemName == name and
+           (not texture or itemTexture == texture) and
+           (not quality or itemQuality == quality) and
+           LinkID(link) then
+          found = link
+          return
+        end
+      end
+    end
+  end)
+
+  if ok then return found end
+  return nil
+end
+
+local function QuestLinkByInfo(name, texture, quality)
+  if type(name) ~= "string" or name == "" then return nil end
+
+  local cached = questLinkCache[name]
+  if cached and
+     (not texture or cached.texture == texture) and
+     (not quality or cached.quality == quality) then
+    return cached.link
+  end
+
+  local link = FindPricedItemLink(store and store.sell, name, texture, quality)
+  if not link then
+    link = FindPricedItemLink(U.priceData, name, texture, quality)
+  end
+
+  if link then
+    questLinkCache[name] = {
+      link = link,
+      texture = texture,
+      quality = quality,
+    }
+  end
+  return link
+end
+
 -- ---------------------------------------------------------------------------
 -- Harvest
 -- ---------------------------------------------------------------------------
@@ -228,11 +291,118 @@ local function Remember(tip, link, count)
   rec.count = tonumber(count) or 1
 end
 
+-- Classic WoW keeps the client's own tooltip chrome. SetTooltipMoney was the
+-- obvious native route, and its call completed without error, but the user
+-- confirmed that it rendered no price on this client. Give the native tooltip
+-- explicit extra height instead and place an owned row in that new bottom
+-- space. This does not depend on GameTooltip's broken AddLine relayout path.
+local classicPrice = {
+  -- 14px row + 5px bottom padding + 5px existing breathing room + the
+  -- requested 4px separation from the native tooltip contents above it.
+  extraHeight = 28,
+  inset = 10,
+  gap = 8,
+}
+
+function classicPrice.Build(tip)
+  if classicPrice.row then return classicPrice.row end
+
+  local row = CreateFrame("Frame", nil, tip)
+  row:SetHeight(14)
+
+  row.label = U.CreateLabel(row, {
+    size = U.media.fontSize.small,
+    color = U.media.color.text,
+    inherits = "GameFontNormalSmall",
+  })
+  if row.label then row.label:SetPoint("LEFT", row, "LEFT", 0, 0) end
+
+  row.readout = U.CreateMoneyReadout(row)
+  row:Hide()
+  classicPrice.row = row
+  return row
+end
+
+function classicPrice.Hide()
+  if classicPrice.row then classicPrice.row:Hide() end
+  if classicPrice.tip then
+    if classicPrice.baseWidth then
+      pcall(classicPrice.tip.SetWidth, classicPrice.tip, classicPrice.baseWidth)
+    end
+    if classicPrice.baseHeight then
+      pcall(classicPrice.tip.SetHeight, classicPrice.tip, classicPrice.baseHeight)
+    end
+  end
+  classicPrice.tip = nil
+  classicPrice.baseWidth = nil
+  classicPrice.baseHeight = nil
+  classicPrice.active = nil
+end
+
+function classicPrice.Show(tip, copper, label)
+  if not U.ThemeStyleUsesNativeChrome() then return false end
+  if not tip or not tip.GetHeight or not tip.SetHeight then return false end
+
+  local heightOk, baseHeight = pcall(tip.GetHeight, tip)
+  local widthOk, baseWidth = pcall(tip.GetWidth, tip)
+  baseHeight = heightOk and tonumber(baseHeight) or nil
+  baseWidth = widthOk and tonumber(baseWidth) or nil
+  if not baseHeight or baseHeight <= 0 or not baseWidth or baseWidth <= 0 then
+    return false
+  end
+
+  local row = classicPrice.Build(tip)
+  if not row or not row.readout then return false end
+
+  if row.label then row.label:SetText(label or "") end
+  row.readout:SetAmount(copper)
+
+  local labelWidth = 0
+  if row.label and row.label.GetStringWidth then
+    local labelOk, value = pcall(row.label.GetStringWidth, row.label)
+    if labelOk then labelWidth = math.ceil(tonumber(value) or 0) end
+  end
+  local contentWidth = labelWidth + classicPrice.gap +
+                       (row.readout.contentWidth or 0)
+  local targetWidth = math.max(baseWidth,
+                               contentWidth + classicPrice.inset * 2)
+  local targetHeight = baseHeight + classicPrice.extraHeight
+
+  classicPrice.tip = tip
+  classicPrice.baseWidth = baseWidth
+  classicPrice.baseHeight = baseHeight
+
+  row:SetWidth(contentWidth)
+  row.readout:ClearAllPoints()
+  row.readout:SetPoint("LEFT", row, "LEFT", labelWidth + classicPrice.gap, 0)
+  row:ClearAllPoints()
+  row:SetPoint("BOTTOMLEFT", tip, "BOTTOMLEFT", classicPrice.inset, 5)
+
+  local widthSet = pcall(tip.SetWidth, tip, targetWidth)
+  local heightSet = pcall(tip.SetHeight, tip, targetHeight)
+  if not widthSet or not heightSet then
+    classicPrice.Hide()
+    return false
+  end
+
+  local appliedOk, appliedHeight = pcall(tip.GetHeight, tip)
+  if not appliedOk or math.abs((tonumber(appliedHeight) or 0) - targetHeight) > 1 then
+    classicPrice.Hide()
+    return false
+  end
+
+  classicPrice.active = true
+  row:Show()
+  pcall(tip.Show, tip)
+  return true
+end
+
 local function Append(tip)
   -- One singleton is shared by all price readouts. Clear the previous owner
   -- before resolving this hover so an unknown or suppressed item cannot leave
   -- the last item's panel visible.
   U.HideMoneyRows()
+  classicPrice.Hide()
 
   local rec = tracked[tip]
   if not rec or not rec.id then
@@ -264,8 +434,18 @@ local function Append(tip)
   local stackSell = sell * count
   local rows = { { label = U.L("COMMON_SELL"), copper = stackSell } }
 
-  -- This remains a separate owned frame because GameTooltip will not relayout,
-  -- but matching its width and sharing the edge makes it one visual surface.
+  if classicPrice.Show(tip, stackSell, rows[1].label) then
+    trace.panelFrame = nil
+    trace.result = "classic in-tooltip price shown"
+    trace.sell = stackSell
+    trace.panel = "classic inline"
+    return
+  end
+
+  -- Flat themes retain the separate owned frame because GameTooltip will not
+  -- relayout, but matching its width and sharing the edge makes it one visual
+  -- surface. This is also the safe fallback if the Classic native money helper
+  -- is missing or errors.
   -- The match is asked for rather than measured here: a width read during this
   -- hover is still the previous tooltip's, which is what made the price cell
   -- render far wider than the tooltip above it. U.ShowMoneyRows carries the
@@ -309,10 +489,9 @@ end
 -- populated and shown GameTooltip.
 --
 -- Consequence, stated rather than left to be discovered: the price panel
--- appears on the surfaces unrealUI owns a hover hook for. Bag and bank slots
--- have one.
--- Merchant rows, loot, quest rewards and chat links do not yet, and each needs
--- its own button hook rather than one central tooltip hook.
+-- appears on the surfaces unrealUI owns a hover hook for. Bag/bank slots and
+-- quest rewards have one. Merchant rows, loot and chat links do not yet, and
+-- each needs its own button hook rather than one central tooltip hook.
 -- ---------------------------------------------------------------------------
 function U.ShowItemPrice(bag, slot)
   U.HideMoneyRows()
@@ -325,6 +504,7 @@ function U.ShowItemPrice(bag, slot)
   Remember(tooltip, link, count)
 
   trace.source = "bag " .. tostring(bag) .. " slot " .. tostring(slot)
+  trace.lookup = "container link"
   trace.link = link
   trace.id = LinkID(link)
   trace.count = count
@@ -339,8 +519,56 @@ function U.ShowItemPrice(bag, slot)
   end
 end
 
+-- Quest reward buttons already know the exact native item list they represent:
+-- "choice" for choose-one rewards and "reward" for always-granted rewards.
+-- modules/quest.lua passes that identity after the stock OnEnter has populated
+-- GameTooltip, mirroring the proven bag/button hover path above. Call() keeps
+-- either quest API non-fatal, and QuestLinkByInfo handles the confirmed case
+-- where the documented link getter still returns nil for a visible reward.
+function U.ShowQuestItemPrice(itemType, index)
+  U.HideMoneyRows()
+
+  if itemType ~= "choice" and itemType ~= "reward" then return end
+  index = tonumber(index)
+  if not index or index < 1 then return end
+
+  local tooltip = U.G("GameTooltip")
+  if not tooltip then return end
+
+  local link = Call("GetQuestItemLink", itemType, index)
+  local name, texture, count, quality =
+    Call("GetQuestItemInfo", itemType, index)
+  local lookup = "quest link"
+  if not LinkID(link) then
+    link = QuestLinkByInfo(name, texture, quality)
+    lookup = "priced-item name fallback"
+  end
+  Remember(tooltip, link, count)
+
+  trace.source = "quest " .. itemType .. " " .. tostring(index)
+  trace.lookup = lookup
+  trace.link = link
+  trace.id = LinkID(link)
+  trace.count = count
+  trace.sell = nil
+  trace.panel = nil
+  trace.result = "hover ran, Append did not finish"
+
+  local ok, err = pcall(Append, tooltip)
+  if not ok then
+    trace.result = "error: " .. tostring(err)
+    U.Debug("itemprice quest hover: " .. tostring(err))
+  end
+
+  -- The quest module also hands this resolved link to core/itemslot.lua's
+  -- shared comparison renderer. Returning it keeps price and compare on the
+  -- same guarded identity path, including the confirmed nil-link fallback.
+  return link
+end
+
 function U.HideItemPrice()
   U.HideMoneyRows()
+  classicPrice.Hide()
 end
 
 -- ---------------------------------------------------------------------------
@@ -375,11 +603,12 @@ function U.PriceDebugDump()
   U.Print("  merchant open: " .. tostring(MerchantShown()))
 
   if not trace.source then
-    U.Print("  last hover: none seen -- core/itemslot.lua never called in")
+    U.Print("  last hover: none seen -- no supported item button called in")
     return
   end
 
   U.Print("  last hover: " .. tostring(trace.source) ..
+          " lookup=" .. tostring(trace.lookup) ..
           " link=" .. tostring(trace.link) ..
           " id=" .. tostring(trace.id) ..
           " count=" .. tostring(trace.count))

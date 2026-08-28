@@ -50,6 +50,33 @@
 --     settled from a real fight. See knowledge.json /
 --     castbar.pushback_delay_event_unconfirmed.
 --
+-- Themes with native chrome (themes/classic-wow.lua) keep the client's own
+-- CastingBarFrame instead of this one: every cast the client draws a bar for --
+-- a spell, a channel, a quest-object loot channel -- stays in the client's own
+-- style rather than mixing one modern bar into an otherwise native interface.
+-- None of the unrealUI bar is built and, more importantly,
+-- SuppressNativeCastbar is not called, so the stock frame keeps the events and
+-- scripts the client gave it and needs no API assumption from us.
+--
+-- It still gets a mover. The native bar is placed the way modules/petbar.lua
+-- places the native pet bar, for the same reasons and with the same two modes:
+-- an unrealUI-owned anchor frame carries the handle, and until the player has
+-- actually dropped that handle the anchor follows the native bar and nothing is
+-- written to it at all, so an untouched interface keeps the client's own
+-- castbar position. The client's anchor is captured before the mover is
+-- registered and replayed from U.OnPositionReset, because it need not be
+-- UIParent-relative and so cannot be expressed as a mover `default`.
+--
+-- Two things differ from the pet bar. The native castbar is hidden whenever
+-- there is no cast, so the anchor frame is the thing that stays shown and
+-- carries the handle -- a bar that only exists mid-cast could never be dragged
+-- into place. And the anchor is given a floor height, because the stock bar is
+-- too thin to be a comfortable grab target; placement is unaffected, since the
+-- native bar is anchored CENTER-to-CENTER and neither frame needs to know how
+-- large the other is. There is no target castbar mover in this mode: this
+-- client has no native target castbar to place, and the unrealUI one is an
+-- empty placeholder (see the scope note below).
+--
 -- Scope this module still does not cover, and why:
 --   * A target castbar. The only known implementation strategy (pfUI's) polls
 --     UnitCastingInfo/UnitChannelInfo per unit, and that contract is
@@ -114,6 +141,10 @@ local targetBar
 -- focused runtime result, so every operation is guarded and a missing or
 -- differently shaped native frame leaves the UnrealUI castbar functional.
 local nativeCastbarSuppressed = false
+
+-- Set in OnEnable: true when the active theme draws stock client chrome, in
+-- which case this module stands down entirely (see the header note).
+local nativeChrome = false
 
 local function SuppressNativeCastbar()
   local native = U.G("CastingBarFrame")
@@ -511,8 +542,465 @@ local function Build()
   })
 end
 
+-- ---------------------------------------------------------------------------
+-- Native castbar mover
+--
+-- Only used under a native-chrome theme, where the client draws the castbar and
+-- this module draws nothing. Same shape as modules/petbar.lua: the native frame
+-- is never hidden, reskinned, re-parented or click-handled -- it is only
+-- re-anchored, and only once the player has placed the handle.
+--
+-- knowledge.json / frames.getpoint_relative_name_y_inverted: anchors are read
+-- through U.GetFramePoint, which hands back values in the shape SetPoint wants,
+-- so a capture goes straight back through SetPoint unchanged.
+-- ---------------------------------------------------------------------------
+
+local NATIVE_NAME = "CastingBarFrame"
+
+-- Used until the native frame reports its own size, and as the footprint if it
+-- never does. The floor height is a grab target, not a claim about the bar.
+local NATIVE_FALLBACK_WIDTH = 195
+local NATIVE_FALLBACK_HEIGHT = 13
+local HANDLE_MIN_HEIGHT = 20
+
+-- Anchor offsets below this are treated as unchanged rather than drift.
+local DRIFT_EPSILON = 0.5
+
+local nativeFrame
+local nativeMoverAnchor
+local capturedNativeAnchor
+local nativeDriving = false
+
+-- Counts SetPoint calls on the native frame that did not go through. Reported
+-- by /uui cb: a bar sitting in the wrong place with a non-zero count here is a
+-- refused anchor, not a client that re-anchored its own frame.
+local driveFailures = 0
+
+local function CaptureNativeAnchor()
+  if not nativeFrame then return nil end
+
+  local point, relative, relativePoint, x, y = U.GetFramePoint(nativeFrame, 1)
+  if type(point) ~= "string" then
+    U.Debug("castbar: no readable native anchor to capture")
+    return nil
+  end
+
+  if not relative then
+    local ok, parent = pcall(nativeFrame.GetParent, nativeFrame)
+    if ok then relative = parent end
+  end
+  if not relative then relative = UIParent end
+
+  return {
+    point = point,
+    relative = relative,
+    relativePoint = relativePoint or point,
+    x = x,
+    y = y,
+  }
+end
+
+local function RestoreNativeAnchor()
+  if not nativeFrame or not capturedNativeAnchor then return false end
+
+  local ok = pcall(function()
+    nativeFrame:ClearAllPoints()
+    nativeFrame:SetPoint(capturedNativeAnchor.point,
+                         capturedNativeAnchor.relative,
+                         capturedNativeAnchor.relativePoint,
+                         capturedNativeAnchor.x, capturedNativeAnchor.y)
+  end)
+
+  if ok then
+    nativeDriving = false
+    U.Debug("castbar: native castbar anchor restored")
+  end
+  return ok
+end
+
+local function NativeStoredPosition()
+  local ok, position = pcall(U.GetPosition, "castbar.player")
+  if not ok or type(position) ~= "table" then return nil end
+  if type(position.point) ~= "string" then return nil end
+  return position
+end
+
+-- Written only when it actually changes: this runs on a shared tick and the
+-- handle is SetAllPoints to this frame, so a size write is a handle relayout
+-- for nothing.
+local function MirrorNativeSize()
+  if not nativeMoverAnchor or not nativeFrame then return end
+
+  local okW, w = pcall(nativeFrame.GetWidth, nativeFrame)
+  local okH, h = pcall(nativeFrame.GetHeight, nativeFrame)
+
+  w = okW and tonumber(w) or nil
+  h = okH and tonumber(h) or nil
+
+  local width = (w and w > 0 and w) or NATIVE_FALLBACK_WIDTH
+  local height = (h and h > 0 and h) or NATIVE_FALLBACK_HEIGHT
+  if height < HANDLE_MIN_HEIGHT then height = HANDLE_MIN_HEIGHT end
+
+  if nativeMoverAnchor.uuiWidth ~= width then
+    nativeMoverAnchor:SetWidth(width)
+    nativeMoverAnchor.uuiWidth = width
+  end
+  if nativeMoverAnchor.uuiHeight ~= height then
+    nativeMoverAnchor:SetHeight(height)
+    nativeMoverAnchor.uuiHeight = height
+  end
+end
+
+local function AnchorDrifted(position)
+  local point, relative, relativePoint, x, y =
+    U.GetFramePoint(nativeMoverAnchor, 1)
+  if type(point) ~= "string" then return true end
+  if relative and relative ~= UIParent then return true end
+  if point ~= position.point then return true end
+  if relativePoint ~= (position.relativePoint or position.point) then return true end
+  if math.abs(x - (tonumber(position.x) or 0)) > DRIFT_EPSILON then return true end
+  if math.abs(y - (tonumber(position.y) or 0)) > DRIFT_EPSILON then return true end
+  return false
+end
+
+-- Has the client re-anchored its own bar out from under us?
+--
+-- The point count is checked first, and deliberately. A frame keeps every
+-- anchor set on it and is positioned by all of them at once, but GetPoint(1)
+-- reports only the first -- so a second point added after DriveNative's
+-- ClearAllPoints moves the bar while leaving point 1 still reading as ours.
+-- Testing point 1 alone cannot see that, and reports no drift for a bar that
+-- has visibly moved.
+local function NativeDrifted()
+  local okCount, count = pcall(nativeFrame.GetNumPoints, nativeFrame)
+  if okCount and tonumber(count) and tonumber(count) ~= 1 then return true end
+
+  local point, relative, relativePoint, x, y = U.GetFramePoint(nativeFrame, 1)
+  if type(point) ~= "string" then return true end
+  if relative ~= nativeMoverAnchor then return true end
+  if point ~= "CENTER" or relativePoint ~= "CENTER" then return true end
+  if math.abs(x) > DRIFT_EPSILON or math.abs(y) > DRIFT_EPSILON then return true end
+  return false
+end
+
+-- Centre-on-centre needs neither frame to know how wide the other is, which is
+-- what lets the handle carry a floor height without shifting the bar.
+-- nativeDriving is set from the pcall result, not unconditionally. Claiming the
+-- drive succeeded when the SetPoint was refused would leave ApplyNativeAnchor
+-- believing it owned an anchor it had never written, and would hide exactly the
+-- failure /uui cb exists to find.
+local function DriveNative()
+  local ok = pcall(function()
+    nativeFrame:ClearAllPoints()
+    nativeFrame:SetPoint("CENTER", nativeMoverAnchor, "CENTER", 0, 0)
+  end)
+
+  if ok then
+    nativeDriving = true
+  else
+    driveFailures = driveFailures + 1
+    if driveFailures == 1 then
+      U.Debug("castbar: re-anchoring " .. NATIVE_NAME .. " was refused")
+    end
+  end
+end
+
+local function FollowNative()
+  pcall(function()
+    nativeMoverAnchor:ClearAllPoints()
+    nativeMoverAnchor:SetPoint("CENTER", nativeFrame, "CENTER", 0, 0)
+  end)
+end
+
+local function ApplyNativeAnchor()
+  if U.PerfDisabled and U.PerfDisabled("castbar") then return end
+  if not nativeMoverAnchor or not nativeFrame then return end
+
+  MirrorNativeSize()
+
+  local position = NativeStoredPosition()
+  local unlocked = U.IsUnlocked()
+
+  if not position then
+    -- Never placed, or /uui reset: hand the bar back to the client once, then
+    -- keep the handle shadowing it. Not mid-drag -- re-anchoring the handle to
+    -- the native bar then would snap it out of the player's hand.
+    if nativeDriving then RestoreNativeAnchor() end
+    if not unlocked then FollowNative() end
+    return
+  end
+
+  -- The mover owns the anchor between StartMoving and StopMovingOrSizing, so
+  -- the stored position is only re-applied while locked. The native bar is
+  -- anchored *to* the anchor, so it tracks the handle live during a drag with
+  -- no second write.
+  if not unlocked and AnchorDrifted(position) then
+    U.ApplyFramePoint(nativeMoverAnchor, position)
+  end
+
+  if NativeDrifted() then DriveNative() end
+end
+
+local function SetupNativeMover()
+  nativeFrame = U.G(NATIVE_NAME)
+  if not nativeFrame then
+    U.Debug("castbar: " .. NATIVE_NAME .. " not found; no castbar mover")
+    return
+  end
+
+  -- Before RegisterMover, which is what may apply a stored position.
+  capturedNativeAnchor = CaptureNativeAnchor()
+
+  -- Carries a mover handle and nothing else: no backdrop, no mouse, no strata
+  -- of its own. It must never sit in front of the bar it is placing.
+  nativeMoverAnchor = CreateFrame("Frame", "UnrealUICastBarAnchor", UIParent)
+  nativeMoverAnchor:SetWidth(NATIVE_FALLBACK_WIDTH)
+  nativeMoverAnchor:SetHeight(HANDLE_MIN_HEIGHT)
+  MirrorNativeSize()
+  FollowNative()
+  -- Stays shown even though the bar it places does not: the native castbar
+  -- only exists mid-cast, and a handle that only appeared mid-cast could not
+  -- be dragged.
+  nativeMoverAnchor:Show()
+
+  -- Same id as the modern bar's mover, so a position placed under one theme is
+  -- the position used under the other. No `default`: the client's own anchor
+  -- need not be UIParent-relative and cannot be written as one, which is the
+  -- case core/mover.lua documents U.OnPositionReset for.
+  U.RegisterMover("castbar.player", nativeMoverAnchor, {
+    label = U.L("MOVER_LABEL_CASTBAR"),
+  })
+  U.OnPositionReset(function() return RestoreNativeAnchor() end)
+
+  ApplyNativeAnchor()
+
+  -- Accelerators, so a cast that starts right after the client re-anchors its
+  -- bar is not drawn in the old place for up to one tick. The tick below is
+  -- the guarantee; these only make it prompt.
+  local refresh = function() ApplyNativeAnchor() end
+  U.RegisterEvent("PLAYER_ENTERING_WORLD", refresh)
+  U.RegisterEvent("SPELLCAST_START", refresh)
+  U.RegisterEvent("SPELLCAST_CHANNEL_START", refresh)
+
+  -- One anchor read twice a second against a frame that rarely moves. The
+  -- modern bar's per-frame tick is not registered in this mode at all.
+  U.RegisterUpdate("castbar.anchor", 0.5, ApplyNativeAnchor)
+end
+
+-- ---------------------------------------------------------------------------
+-- /uui cb -- native castbar placement dump
+--
+-- Armed rather than immediate, the way /uui map arms its hover watch: the
+-- native castbar only exists mid-cast, so there is nothing to measure at the
+-- moment the command is typed.
+--
+-- It samples twice -- the frame as soon as it is shown, and again a moment
+-- later -- because the open questions have different signatures, and one
+-- sample cannot tell them apart:
+--
+--   * the anchor still reads CENTER -> UnrealUICastBarAnchor in both samples,
+--     but the visible bar is somewhere else -- a child carries its own anchor,
+--     and moving the parent moves nothing;
+--   * the anchor reads ours in the first sample and something else in the
+--     second -- the client re-anchors its own bar when it shows, and the fix
+--     has to re-drive from that moment rather than from a tick;
+--   * the anchor never reads ours at all -- the SetPoint in DriveNative is
+--     failing, or the frame drawing the bar is not this one.
+--
+-- Children are listed with their own rects because documentation.json names
+-- CastingBarFrameStatusBar as a frame that exists on this client, which is
+-- exactly the shape the first case would take.
+-- ---------------------------------------------------------------------------
+
+local DUMP_SECOND_SAMPLE = 0.3
+local DUMP_TIMEOUT = 30
+
+-- Timed off GetTime rather than the tick argument: the shared updater hands a
+-- callback its registered *interval*, which is 0 for a per-tick consumer like
+-- this one and would never accumulate.
+local dumpArmed = false
+local dumpArmedAt = 0
+local dumpShownAt = nil
+local dumpFirst = nil
+
+local function Num(value)
+  value = tonumber(value)
+  if not value then return "?" end
+  return string.format("%.0f", value)
+end
+
+local function FrameName(frame)
+  if not frame then return "nil" end
+  local ok, name = pcall(frame.GetName, frame)
+  if ok and type(name) == "string" and name ~= "" then return name end
+  return "<unnamed>"
+end
+
+-- One frame's placement as a list of printable lines. Everything is read
+-- through pcall so a frame that does not answer a method costs one line of the
+-- dump rather than the whole command.
+local function DescribeFrame(frame, label, lines)
+  if not frame then
+    table.insert(lines, label .. ": missing")
+    return
+  end
+
+  local okShown, shown = pcall(frame.IsShown, frame)
+  local okParent, parent = pcall(frame.GetParent, frame)
+  table.insert(lines, label .. ": shown " ..
+               tostring(okShown and shown and true or false) ..
+               ", parent " .. FrameName(okParent and parent or nil))
+
+  -- Every point, not just the first. A frame carrying a second anchor is
+  -- positioned by both, while GetPoint(1) keeps reporting only the first --
+  -- which is how a bar can report an anchor it is visibly not sitting on.
+  -- Read raw rather than through U.GetFramePoint, because that helper inverts
+  -- Y for round-tripping through SetPoint and this needs the client's own
+  -- numbers.
+  local okCount, count = pcall(frame.GetNumPoints, frame)
+  count = okCount and tonumber(count) or nil
+
+  if not count then
+    table.insert(lines, "  points: GetNumPoints unavailable")
+  else
+    table.insert(lines, "  points: " .. count)
+    local i
+    for i = 1, count do
+      local ok, point, relative, relativePoint, x, y =
+        pcall(frame.GetPoint, frame, i)
+      if ok and type(point) == "string" then
+        if type(relative) == "string" then relative = U.G(relative) end
+        table.insert(lines, "   [" .. i .. "] " .. point .. " -> " ..
+                     FrameName(relative) .. "." .. tostring(relativePoint) ..
+                     "  " .. Num(x) .. "," .. Num(y) .. " (raw)")
+      else
+        table.insert(lines, "   [" .. i .. "] unreadable")
+      end
+    end
+  end
+
+  local okL, left = pcall(frame.GetLeft, frame)
+  local okB, bottom = pcall(frame.GetBottom, frame)
+  local okW, width = pcall(frame.GetWidth, frame)
+  local okH, height = pcall(frame.GetHeight, frame)
+  table.insert(lines, "  rect " .. Num(okL and left) .. "," ..
+               Num(okB and bottom) .. "  " .. Num(okW and width) .. "x" ..
+               Num(okH and height))
+end
+
+-- The child list is the whole point of the first hypothesis: a child anchored
+-- to something other than its parent stays put when the parent moves.
+local function DescribeChildren(frame, lines)
+  if not frame or type(frame.GetChildren) ~= "function" then
+    table.insert(lines, "  children unavailable")
+    return
+  end
+
+  local ok, c1, c2, c3, c4, c5, c6 = pcall(frame.GetChildren, frame)
+  if not ok then
+    table.insert(lines, "  children unreadable")
+    return
+  end
+
+  local kids = { c1, c2, c3, c4, c5, c6 }
+  local i, found = nil, 0
+  for i = 1, 6 do
+    if kids[i] then
+      found = found + 1
+      DescribeFrame(kids[i], "  child " .. i .. " " .. FrameName(kids[i]),
+                    lines)
+    end
+  end
+  if found == 0 then table.insert(lines, "  no child frames") end
+end
+
+local function Sample(label)
+  local lines = {}
+  table.insert(lines, "-- " .. label .. " --")
+  DescribeFrame(nativeFrame, NATIVE_NAME, lines)
+  DescribeChildren(nativeFrame, lines)
+  DescribeFrame(nativeMoverAnchor, "UnrealUICastBarAnchor", lines)
+  return lines
+end
+
+local function PrintLines(lines)
+  local i
+  for i = 1, table.getn(lines) do
+    U.Print(lines[i])
+  end
+end
+
+local function DumpTick()
+  if not dumpArmed then return end
+
+  local now = GetTime()
+
+  if not dumpShownAt then
+    if now - dumpArmedAt > DUMP_TIMEOUT then
+      dumpArmed = false
+      U.UnregisterUpdate("castbar.dump")
+      U.Print("castbar dump: no cast started within " ..
+              DUMP_TIMEOUT .. "s; disarmed")
+      return
+    end
+
+    local ok, shown = pcall(nativeFrame.IsShown, nativeFrame)
+    if not (ok and shown) then return end
+
+    dumpShownAt = now
+    dumpFirst = Sample("at show")
+    return
+  end
+
+  if now - dumpShownAt < DUMP_SECOND_SAMPLE then return end
+
+  local second = Sample("+" .. DUMP_SECOND_SAMPLE .. "s")
+
+  dumpArmed = false
+  U.UnregisterUpdate("castbar.dump")
+
+  U.Print("castbar dump: placed " ..
+          tostring(NativeStoredPosition() and true or false) ..
+          ", driving " .. tostring(nativeDriving) ..
+          ", drive errors " .. tostring(driveFailures))
+  PrintLines(dumpFirst)
+  PrintLines(second)
+end
+
+-- Reached from /uui cb.
+function U.CastbarNativeDump()
+  if not nativeChrome then
+    U.Print("castbar dump: only applies under a native-chrome theme; " ..
+            "the active theme is " .. tostring(U.GetActiveThemeStyle()))
+    return
+  end
+  if not nativeFrame then
+    U.Print("castbar dump: " .. NATIVE_NAME .. " was not found at load")
+    return
+  end
+
+  dumpArmed = true
+  dumpArmedAt = GetTime()
+  dumpShownAt = nil
+  dumpFirst = nil
+  U.RegisterUpdate("castbar.dump", 0, DumpTick)
+  U.Print("castbar dump armed: cast something, or open a quest object")
+end
+
 function CB:OnEnable()
   if bar then return end
+
+  -- Before Build() and before SuppressNativeCastbar(): under a native-chrome
+  -- theme the client's own castbar is the castbar, so this module creates
+  -- nothing, hides nothing and registers nothing at all.
+  nativeChrome = type(U.ThemeStyleUsesNativeChrome) == "function" and
+                 U.ThemeStyleUsesNativeChrome() or false
+  if nativeChrome then
+    U.Debug("castbar: native chrome theme; leaving CastingBarFrame alone")
+    SetupNativeMover()
+    return
+  end
+
   Build()
   SuppressNativeCastbar()
 
@@ -555,6 +1043,18 @@ end
 -- whether the spellbook lookup resolves a real texture, and whether this
 -- client emits SPELLCAST_DELAYED at all.
 function U.CastbarReport()
+  if nativeChrome then
+    return {
+      native = true,
+      nativeSuppressed = false,
+      nativeFound = nativeFrame and true or false,
+      anchor = nativeMoverAnchor and true or false,
+      placed = NativeStoredPosition() and true or false,
+      driving = nativeDriving,
+      driveFailures = driveFailures,
+      nativeAnchorCaptured = capturedNativeAnchor and true or false,
+    }
+  end
   if not bar then return nil end
 
   local shownOk, shown = pcall(bar.IsShown, bar)

@@ -129,6 +129,7 @@ local function SetDetailVisible(show)
 
   local expand = G("UnrealUIQuestLogExpand")
   if expand then U.StyleStockArrowButton(expand, show and "left" or "right", 21) end
+  U.RefreshWindowOverlap(frame)
 end
 
 local function BuildQuestLevelToggle(collapseAll)
@@ -581,6 +582,7 @@ local function BuildFrame()
     if frame and detail.uuiUserHidden then
       pcall(frame.SetWidth, frame, 340)
       U.StyleStockArrowButton(expand, "right", 21)
+      U.RefreshWindowOverlap(frame)
     end
   end)
   U.PostHookScript(detail, "OnShow", function()
@@ -588,6 +590,7 @@ local function BuildFrame()
     if not detail.uuiUserHidden then
       pcall(frame.SetWidth, frame, 676)
       U.StyleStockArrowButton(expand, "left", 21)
+      U.RefreshWindowOverlap(frame)
     end
   end)
 
