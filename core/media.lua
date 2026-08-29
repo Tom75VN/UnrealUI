@@ -204,10 +204,11 @@ M.zoneLevel = {
   danger  = { 1.00, 0.20, 0.20, 1.00 },   -- zone is above the player
 }
 
--- Item-comparison deltas, drawn on the hovered item's own stat lines while an
--- equipped counterpart is on screen (modules/tooltip.lua). This is game state
--- rather than UnrealUI chrome, so it stays clear of the accent and reuses the
--- same green/red the zone-level readout already carries.
+-- Item-comparison deltas, drawn only in the "Currently Equipped" tooltip's
+-- change summary (modules/tooltip.lua). The hovered item's own lines stay the
+-- colour the client gave them. This is game state rather than UnrealUI chrome,
+-- so it stays clear of the accent and reuses the same green/red the zone-level
+-- readout already carries.
 M.itemCompare = {
   better = { 0.25, 0.75, 0.30, 1.00 },   -- hovered item gives more
   worse  = { 1.00, 0.20, 0.20, 1.00 },   -- hovered item gives less

@@ -28,11 +28,14 @@
 --
 -- What is left
 --
---   The native bar is never hidden, reskinned, re-parented or click-handled.
---   An unrealUI-owned anchor frame carries the mover handle, and the native
---   bar is pointed at it only once the player has actually placed it. Until
---   then the anchor follows the native bar and nothing is written at all, so
---   an untouched interface keeps the client's own pet bar position.
+--   The native bar is never hidden, reskinned or click-handled. An unrealUI-
+--   owned anchor frame carries the mover handle, and the native bar is pointed
+--   at it only once the player has actually placed it. Until then the anchor
+--   follows the native bar and its position is not written at all, so an
+--   untouched interface keeps the client's own pet bar position.
+--
+--   The one structural change is the parent, and only because it has to be:
+--   see the parent section below.
 --
 -- Compatibility notes that shaped this file:
 --
@@ -73,7 +76,9 @@ local DRIFT_EPSILON = 0.5
 local anchor = nil
 local native = nil
 local nativeAnchor = nil
+local nativeParent = nil
 local driving = false
+local reparented = false
 
 -- ---------------------------------------------------------------------------
 -- Client calls
@@ -243,10 +248,97 @@ local function FollowNative()
   end)
 end
 
+-- ---------------------------------------------------------------------------
+-- The native bar's parent
+--
+-- Why the bar is moved off it
+--
+--   modules/actionbar.lua suppresses the whole stock bar hierarchy, and
+--   MainMenuBar is the first name in its NATIVE_ROOTS list: the root is
+--   hidden, alpha'd, mouse-disabled and (at suppression level 3+) has its Show
+--   replaced with a no-op. Vanilla FrameXML parents PetActionBarFrame into
+--   that hierarchy, and a hidden parent takes every descendant down with it.
+--   The result is exactly what was reported: the mover handle is there and
+--   grabbable, the client still shows and updates the bar, PetHasActionBar is
+--   true -- and nothing is drawn, because an ancestor is hidden.
+--
+--   Re-parenting the bar to UIParent is the fix, and it is not a new
+--   mechanism: modules/microbar.lua already does the same thing to the stock
+--   micro buttons, the other family living inside that suppressed hierarchy,
+--   and that bar draws. Nothing else about the bar changes -- it is still the
+--   client's own frame, still shown and hidden by the client's own code, and
+--   still the only thing on this client that can cast a pet spell (see the
+--   CastPetAction note at the top).
+--
+-- What is checked rather than assumed
+--
+--   This client has no runtime record of the pet bar at all (frames.json and
+--   interface.json hold no pet capture), so the parent is *read* and the move
+--   only happens when it is not already UIParent. A client that parents its
+--   pet bar somewhere safe is left completely alone.
+--
+--   Scale multiplies down the parent chain here
+--   (frames.json / frames.parent_effective_scale.v1, SUPPORTED /
+--   BEHAVIOR_VERIFIED), so a parent carrying a scale of its own would resize
+--   the bar the moment it moved. The effective scale is measured before the
+--   move and restored after it.
+--
+--   SetPoint anchors survive SetParent, but a point stored against the old
+--   parent -- including the common "no relative frame, so it means my parent"
+--   form -- does not mean the same thing afterwards. The anchor captured above
+--   is replayed once the move is done, so the bar lands where it was.
+-- ---------------------------------------------------------------------------
+local function EffectiveScale(frame)
+  if not frame then return nil end
+  local ok, scale = pcall(frame.GetEffectiveScale, frame)
+  if not ok then return nil end
+  return Number(scale)
+end
+
+-- Cheap enough for the shared tick: one pcall'd GetParent against a frame the
+-- client re-parents essentially never. It is re-checked rather than done once
+-- because a native bar re-created or re-homed by the client would otherwise
+-- silently vanish again until the next reload.
+local function EnsureParent()
+  if not native then return end
+
+  local ok, parent = pcall(native.GetParent, native)
+  if not ok then return end
+  if parent == UIParent then return end
+
+  if nativeParent == nil then nativeParent = parent or false end
+
+  local before = EffectiveScale(native)
+
+  local moved = pcall(native.SetParent, native, UIParent)
+  if not moved then
+    U.Debug("petbar: could not re-parent " .. NATIVE_NAME)
+    return
+  end
+  reparented = true
+
+  -- before and after are both *effective* scales; the value handed to SetScale
+  -- is the factor that reproduces the old effective scale under the new
+  -- parent.
+  local host = EffectiveScale(UIParent)
+  local after = EffectiveScale(native)
+  if before and host and after and math.abs(after - before) > 0.01 then
+    pcall(native.SetScale, native, before / host)
+  end
+
+  -- Put the bar back on the anchor it had before the move: ours if the player
+  -- has placed it, the client's own otherwise.
+  if driving then DriveNative() else RestoreNativeAnchor() end
+
+  U.Debug("petbar: " .. NATIVE_NAME .. " re-parented to UIParent")
+end
+
 local function Apply()
   if U.PerfDisabled and U.PerfDisabled("petbar") then return end
   if not anchor or not native then return end
 
+  -- First: a bar hidden by an ancestor cannot be fixed by anything below.
+  EnsureParent()
   MirrorNativeSize()
 
   local position = StoredPosition()
@@ -305,8 +397,13 @@ function PB:OnEnable()
     return
   end
 
-  -- Before RegisterMover, which is what may apply a stored position.
+  -- Before RegisterMover, which is what may apply a stored position, and
+  -- before EnsureParent, which replays this capture after the move.
   nativeAnchor = CaptureNativeAnchor()
+
+  -- Before CreateAnchor: the anchor frame mirrors the native bar's size, and
+  -- the move can change it if the old parent carried a scale.
+  EnsureParent()
 
   CreateAnchor()
 
@@ -325,6 +422,38 @@ function PB:OnEnable()
   U.RegisterUpdate("petbar.anchor", 1.0, Apply)
 end
 
+-- ---------------------------------------------------------------------------
+-- Report
+--
+-- These are here to answer one question from chat without a probe: is the bar
+-- invisible because the client is not showing it, or because something above
+-- it is not? "shown true, visible false" is the hidden-ancestor case this
+-- module's parent section exists for; "shown false" means the client itself
+-- has no bar to draw.
+-- ---------------------------------------------------------------------------
+local function ParentName(frame)
+  if frame == nil or frame == false then return nil end
+  local ok, name = pcall(frame.GetName, frame)
+  if ok and type(name) == "string" then return name end
+  return "unnamed"
+end
+
+local function CurrentParent()
+  if not native then return nil end
+  local ok, parent = pcall(native.GetParent, native)
+  if not ok then return nil end
+  return parent
+end
+
+local function Readback(frame, method)
+  if not frame then return nil end
+  local found, fn = pcall(function() return frame[method] end)
+  if not found or type(fn) ~= "function" then return nil end
+  local ok, value = pcall(fn, frame)
+  if not ok then return nil end
+  return value and true or false
+end
+
 -- Reported by /uui check.
 function U.PetBarReport()
   return {
@@ -334,5 +463,12 @@ function U.PetBarReport()
     placed = StoredPosition() and true or false,
     driving = driving,
     nativeAnchorCaptured = nativeAnchor and true or false,
+    reparented = reparented,
+    originalParent = ParentName(nativeParent),
+    parent = ParentName(CurrentParent()),
+    shown = Readback(native, "IsShown"),
+    visible = Readback(native, "IsVisible"),
+    -- One button, for the case the bar frame draws but its buttons do not.
+    buttonVisible = Readback(U.G("PetActionButton1"), "IsVisible"),
   }
 end

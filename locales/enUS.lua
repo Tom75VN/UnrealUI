@@ -67,6 +67,7 @@ MOVER_LABEL_XP_BAR        = "Experience Bar",
 MOVER_LABEL_REP_BAR       = "Reputation Bar",
 MOVER_LABEL_BREATH_BAR    = "Breath Bar",
 MOVER_LABEL_MICRO_BAR     = "Micro Bar",
+MOVER_LABEL_BUFFS         = "Buffs & Debuffs",
 MOVER_LABEL_MINIMAP       = "Minimap",
 MOVER_LABEL_PET_BAR       = "Pet Bar",
 MOVER_LABEL_STANCE_BAR    = "Stance Bar",
@@ -211,7 +212,10 @@ UF_PARTY_HEADER           = "Party Frames",
 UF_PARTY_PETS             = "Show party member pets",
 
 AURAS_HEADER              = "Unit Frame Auras",
+AURAS_ON_PLAYER_FRAME     = "Show auras on the player frame",
+AURAS_NEAR_MINIMAP        = "Show auras near the minimap",
 AURAS_PLAYER_DEBUFFS      = "Player frame debuffs",
+AURAS_PLAYER_BUFFS        = "Player frame buffs",
 AURAS_TARGET_DEBUFFS      = "Target frame debuffs",
 AURAS_TARGET_BUFFS        = "Target frame buffs",
 AURAS_PARTY_DEBUFFS       = "Party frame debuffs",
@@ -224,7 +228,7 @@ AURAS_CURSE               = "Curse",
 AURAS_POISON              = "Poison",
 AURAS_DISEASE             = "Disease",
 AURAS_OTHER               = "Physical / other",
-AURAS_HINT                = "Your own auras are timed by the client and are exact. For any other unit this client reports no duration, so those timers are rebuilt from a spell duration table and the moment the aura was first seen: one already running when you target reads as fresh, and one the table does not list shows no timer. Use /uui aura to see which is which.",
+AURAS_HINT                = "Only your own aura timers are exact. This client reports no duration for other units, so those are estimated from a spell table: an aura already running reads as fresh, and one the table omits shows no timer. Use /uui aura to see which.",
 
 -- ---------------------------------------------------------------------------
 -- Bags and bank (modules/bags.lua, modules/bank.lua)
@@ -254,6 +258,11 @@ BANK_TRANSFER_PICKUP      = "Bank transfer stopped in your inventory; pick the i
 BANK_TRANSFER_EMPTY_SLOT  = "Moving items between bank bags needs a player-bag slot to pass through; none could be used.",
 BANK_SLOT_TEMPLATE_FALLBACK = "%s is not available on this client; bank slots use the bag slot template instead.",
 BANK_SLOTS_LOADING        = "The client has not reported the bank slots yet; retrying while the window is open.",
+
+-- ---------------------------------------------------------------------------
+-- Item comparison (modules/tooltip.lua)
+-- ---------------------------------------------------------------------------
+TOOLTIP_COMPARE_SUMMARY   = "If you replace this item :",
 
 -- ---------------------------------------------------------------------------
 -- Overlays and native screens

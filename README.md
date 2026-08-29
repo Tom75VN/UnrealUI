@@ -29,7 +29,7 @@ Quick Binding removes the trip through nested menus. Hover an action slot, press
 
 ### Read combat before the moment has passed
 
-Clean player, target, target-of-target, pet, and party frames keep health and power readable at a glance. Modern nameplates emphasize your target, the player cast bar shows progress and remaining time, and configurable debuff rows separate Magic, Curse, Poison, Disease, and physical effects by color. The target also carries its buffs on a row of their own, and every aura icon runs the same radial wipe and countdown the action bars use.
+Clean player, target, target-of-target, pet, and party frames keep health and power readable at a glance. Modern nameplates emphasize your target, the player cast bar shows progress and remaining time, and configurable debuff rows separate Magic, Curse, Poison, Disease, and physical effects by color. The player and target frames each carry their buffs on a row of their own, and every aura icon runs the same radial wipe and countdown the action bars use. Two settings decide where your own auras appear: on the player frame, beside the minimap where the client draws them, either, or neither.
 
 ### Spend less time managing inventory
 
@@ -91,7 +91,7 @@ Use `/uui` to open the settings, `/uui unlock` to arrange supported elements, an
 
 ## Version
 
-Current release: **0.2.2**
+Current release: **0.2.3**
 
 ## Acknowledgements
 

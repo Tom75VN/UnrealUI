@@ -803,6 +803,7 @@ local function LayoutBagSlots()
       button:SetWidth(TRAY_SLOT)
       button:SetHeight(TRAY_SLOT)
       U.StyleItemSlot(button, name)
+      U.UseBorderOnlyItemSlotHover(button)
       classicBag.StyleItemSlot(button, TRAY_SLOT)
       tray.buttons[i] = button
       RefreshBagSlotButton(button)

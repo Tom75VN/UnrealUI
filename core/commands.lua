@@ -237,6 +237,12 @@ local function ShowUnitFrameCheck()
   -- The pet bar is the client's own frame; unrealUI only places it. "placed"
   -- false with "driving" false is the untouched-interface state, and means the
   -- bar is sitting wherever the client anchored it.
+  --
+  -- The second line answers the one failure this bar actually has: shown true
+  -- with visible false means the client is drawing a bar whose ancestor is
+  -- hidden, which is why modules/petbar.lua re-parents it to UIParent (the
+  -- stock bar hierarchy modules/actionbar.lua suppresses is where the client
+  -- puts it). shown false just means there is no pet bar to draw.
   if type(U.PetBarReport) == "function" then
     local pb = U.PetBarReport()
     if pb then
@@ -245,6 +251,29 @@ local function ShowUnitFrameCheck()
               ", placed " .. tostring(pb.placed) ..
               ", driving " .. tostring(pb.driving) ..
               ", native anchor " .. tostring(pb.nativeAnchorCaptured))
+      U.Print("  shown " .. tostring(pb.shown) ..
+              ", visible " .. tostring(pb.visible) ..
+              ", button visible " .. tostring(pb.buttonVisible) ..
+              ", parent " .. tostring(pb.parent) ..
+              " (was " .. tostring(pb.originalParent) ..
+              ", moved " .. tostring(pb.reparented) .. ")")
+    end
+  end
+
+  -- Same arrangement for the native buff/debuff display beside the minimap.
+  -- "root" is whichever of BuffFrame / TemporaryEnchantFrame the handle drives,
+  -- discovered from their anchors rather than assumed; "skipped" says why the
+  -- other one is not driven when it is not.
+  if type(U.BuffFrameReport) == "function" then
+    local bf = U.BuffFrameReport()
+    if bf then
+      U.Print("buffs: root " .. tostring(bf.root) ..
+              " (" .. tostring(bf.point) .. ")" ..
+              ", second " .. tostring(bf.second) ..
+              ", placed " .. tostring(bf.placed) ..
+              ", driving " .. tostring(bf.driving) ..
+              ", native anchor " .. tostring(bf.nativeAnchorCaptured))
+      if bf.skipped then U.Print("  second frame: " .. bf.skipped) end
     end
   end
 end

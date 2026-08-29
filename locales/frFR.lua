@@ -58,6 +58,7 @@ MOVER_LABEL_XP_BAR        = "Barre d'experience",
 MOVER_LABEL_REP_BAR       = "Barre de reputation",
 MOVER_LABEL_BREATH_BAR    = "Barre de souffle",
 MOVER_LABEL_MICRO_BAR     = "Micro-barre",
+MOVER_LABEL_BUFFS         = "Ameliorations et affaiblissements",
 MOVER_LABEL_MINIMAP       = "Minicarte",
 MOVER_LABEL_PET_BAR       = "Barre du familier",
 MOVER_LABEL_STANCE_BAR    = "Barre de posture",
@@ -201,7 +202,10 @@ UF_PARTY_HEADER           = "Cadres de groupe",
 UF_PARTY_PETS             = "Afficher les familiers des membres du groupe",
 
 AURAS_HEADER              = "Auras des cadres d'unite",
+AURAS_ON_PLAYER_FRAME     = "Afficher les auras sur le cadre joueur",
+AURAS_NEAR_MINIMAP        = "Afficher les auras pres de la minicarte",
 AURAS_PLAYER_DEBUFFS      = "Affaiblissements du cadre joueur",
+AURAS_PLAYER_BUFFS        = "Ameliorations du cadre joueur",
 AURAS_TARGET_DEBUFFS      = "Affaiblissements du cadre cible",
 AURAS_TARGET_BUFFS        = "Ameliorations du cadre cible",
 AURAS_PARTY_DEBUFFS       = "Affaiblissements des cadres de groupe",
@@ -214,7 +218,7 @@ AURAS_CURSE               = "Malediction",
 AURAS_POISON              = "Poison",
 AURAS_DISEASE             = "Maladie",
 AURAS_OTHER               = "Physique / autre",
-AURAS_HINT                = "Vos propres auras sont minutees par le client et sont exactes. Pour toute autre unite, ce client ne rapporte aucune duree : ces minuteurs sont donc reconstruits a partir d'une table de durees de sorts et du moment ou l'aura a ete vue pour la premiere fois. Une aura deja active au moment ou vous ciblez parait fraiche, et une aura absente de la table n'affiche aucun minuteur. Utilisez /uui aura pour voir laquelle est laquelle.",
+AURAS_HINT                = "Seuls les minuteurs de vos propres auras sont exacts. Ce client n'indique aucune duree pour les autres unites : ces minuteurs sont estimes d'apres une table de sorts. Une aura deja active parait fraiche, une aura absente de la table n'affiche rien. Tapez /uui aura pour voir laquelle est laquelle.",
 
 -- ---------------------------------------------------------------------------
 -- Bags and bank
@@ -244,6 +248,11 @@ BANK_TRANSFER_PICKUP      = "Le transfert bancaire s'est arrete dans votre inven
 BANK_TRANSFER_EMPTY_SLOT  = "Deplacer des objets entre les sacs de banque necessite un emplacement de sac du personnage comme relais ; aucun n'etait utilisable.",
 BANK_SLOT_TEMPLATE_FALLBACK = "%s n'est pas disponible dans ce client ; les emplacements de banque utilisent le modele des sacs.",
 BANK_SLOTS_LOADING        = "Le client n'a pas encore signale les emplacements de banque ; nouvelle tentative tant que la fenetre reste ouverte.",
+
+-- ---------------------------------------------------------------------------
+-- Item comparison (modules/tooltip.lua)
+-- ---------------------------------------------------------------------------
+TOOLTIP_COMPARE_SUMMARY   = "Si vous remplacez cet objet :",
 
 -- ---------------------------------------------------------------------------
 -- Overlays and native screens

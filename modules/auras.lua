@@ -7,7 +7,9 @@
 -- Party members use two compact rows beside the frame: debuffs above buffs so
 -- the actionable row always has the stable, more prominent position. Raid
 -- auras, weapon enchants, and pfUI's whole buff/debuff module framework are not
--- reproduced here. The player row stays debuffs-only.
+-- reproduced here. The player frame carries both rows, laid out exactly like
+-- the target frame's: debuffs against the frame edge, buffs stacked outside
+-- them, so your own auras are readable without having to target yourself.
 -- Hovering an icon shows the shared client GameTooltip (SetUnitBuff /
 -- SetUnitDebuff), the same native widget xpbar.lua already owns for the rest
 -- tooltip -- not a second private tooltip frame.
@@ -107,7 +109,14 @@ local A = U.RegisterModule("auras")
 local CONFIG = "auras"
 
 local defaults = {
+  -- Where the player's own auras are drawn. showOnPlayerFrame gates this
+  -- module's two player rows as a unit, so switching the display off and back
+  -- on keeps whatever buff/debuff choice was made below it. The other half of
+  -- the pair -- the client's own display near the minimap -- is not this
+  -- module's frames and is stored by modules/buffframe.lua instead.
+  showOnPlayerFrame = true,
   playerEnabled     = true,
+  playerBuffEnabled = true,
   targetEnabled     = true,
   targetBuffEnabled = true,
   partyEnabled      = true,
@@ -893,6 +902,9 @@ end
 -- Refresh
 -- ---------------------------------------------------------------------------
 local function RowEnabled(row)
+  -- The location switch wins over the per-type one, so an off display stays
+  -- off whatever the buff/debuff checkboxes under it say.
+  if row.master and not U.GetAuraSetting(row.master) then return false end
   return U.GetAuraSetting(row.setting) and true or false
 end
 
@@ -1033,14 +1045,22 @@ local function RefreshRow(row, offset)
 end
 
 -- Debuffs take the frame edge and buffs stack outside them, so the row a player
--- reads mid-fight never moves because a buff came or went.
+-- reads mid-fight never moves because a buff came or went. The player frame is
+-- stacked the same way as the target frame so the two read identically; both
+-- halves of the player pair come from the native GetPlayerBuff path, so their
+-- timers are the client's own number either way.
+local function RefreshPlayer()
+  local used = RefreshRow(rows.player, 0)
+  RefreshRow(rows.playerBuff, used > 0 and used + ROW_GAP or 0)
+end
+
 local function RefreshTarget()
   local used = RefreshRow(rows.target, 0)
   RefreshRow(rows.targetBuff, used > 0 and used + ROW_GAP or 0)
 end
 
 local function RefreshPrimary()
-  RefreshRow(rows.player, 0)
+  RefreshPlayer()
   RefreshTarget()
 end
 
@@ -1074,7 +1094,7 @@ local function RefreshUnitToken(token)
   if token == "target" then
     RefreshTarget()
   elseif token == "player" then
-    RefreshRow(rows.player, 0)
+    RefreshPlayer()
   elseif type(token) == "string" and rows[token] and rows[token].beside then
     RefreshPartyUnit(token, false)
   else
@@ -1262,6 +1282,7 @@ local function BuildRow(id, unit, harmful, setting, options)
     row.maxIcons = options.maxIcons
     row.stopAtCap = options.stopAtCap
     row.radialOnly = options.radialOnly
+    row.master = options.master
   end
   row.icons = {}
   row.names = {}
@@ -1283,7 +1304,7 @@ end
 -- there is no user-facing control for them, only the fixed defaults above.
 -- ---------------------------------------------------------------------------
 local PAGE_WIDTH = 484
-local FILTER_COLUMN_X = 200
+local FILTER_COLUMN_X = 160
 
 -- The Unit Frames page opens with the party-frame section, which is owned by
 -- modules/unitframes.lua because that module owns the layout it changes. Every
@@ -1293,28 +1314,70 @@ local FILTER_COLUMN_X = 200
 local SECTION_TOP = (U.UnitFramePartySettingsHeight or 0)
 if SECTION_TOP > 0 then SECTION_TOP = SECTION_TOP + 8 end
 
--- Two columns keep the seven toggles to four compact rows and leave the colour
+-- Two columns keep the toggles to five compact rows and leave the colour
 -- controls inside the fixed-height settings panel.
 local TOGGLE_COLUMN_X = 240
 
+-- The client's own display is modules/buffframe.lua's frames, not this
+-- module's rows, so this toggle reads and writes through that module rather
+-- than through the aura config table. If that module found no native frames to
+-- own, the checkbox reads as on and does nothing, which is what an interface
+-- with no such display looks like.
+local function NativeShown()
+  if type(U.GetNativeAuraFrameShown) ~= "function" then return true end
+  local ok, value = pcall(U.GetNativeAuraFrameShown)
+  if not ok then return true end
+  return value and true or false
+end
+
+local function SetNativeShown(value)
+  if type(U.SetNativeAuraFrameShown) ~= "function" then return end
+  pcall(U.SetNativeAuraFrameShown, value)
+end
+
+-- Row 0 is where the player's own auras appear -- one switch per location, the
+-- unrealUI rows on the player frame and the client's own row by the minimap.
+-- The rows under it are which auras each frame draws, so the page reads
+-- "where" first and "what" after.
 local TOGGLES = {
-  { key = "playerEnabled",     textKey = "AURAS_PLAYER_DEBUFFS", column = 0, row = 0 },
-  { key = "targetEnabled",     textKey = "AURAS_TARGET_DEBUFFS", column = 1, row = 0 },
-  { key = "targetBuffEnabled", textKey = "AURAS_TARGET_BUFFS",   column = 0, row = 1 },
-  { key = "partyEnabled",      textKey = "AURAS_PARTY_DEBUFFS",  column = 1, row = 1 },
-  { key = "partyBuffEnabled",  textKey = "AURAS_PARTY_BUFFS",    column = 0, row = 2 },
-  { key = "showTimers",        textKey = "AURAS_SHOW_TIMERS",    column = 1, row = 2 },
-  { key = "belowFrame",        textKey = "AURAS_BELOW_FRAME",    column = 0, row = 3 },
+  { key = "showOnPlayerFrame", textKey = "AURAS_ON_PLAYER_FRAME", column = 0, row = 0 },
+  { key = "nativeShown",       textKey = "AURAS_NEAR_MINIMAP",    column = 1, row = 0,
+    get = NativeShown, set = SetNativeShown },
+  { key = "playerEnabled",     textKey = "AURAS_PLAYER_DEBUFFS",  column = 0, row = 1 },
+  { key = "playerBuffEnabled", textKey = "AURAS_PLAYER_BUFFS",    column = 1, row = 1 },
+  { key = "targetEnabled",     textKey = "AURAS_TARGET_DEBUFFS",  column = 0, row = 2 },
+  { key = "targetBuffEnabled", textKey = "AURAS_TARGET_BUFFS",    column = 1, row = 2 },
+  { key = "partyEnabled",      textKey = "AURAS_PARTY_DEBUFFS",   column = 0, row = 3 },
+  { key = "partyBuffEnabled",  textKey = "AURAS_PARTY_BUFFS",     column = 1, row = 3 },
+  { key = "showTimers",        textKey = "AURAS_SHOW_TIMERS",     column = 0, row = 4 },
+  { key = "belowFrame",        textKey = "AURAS_BELOW_FRAME",     column = 1, row = 4 },
 }
 
--- Laid out 2 per row (column, row) so the list reads as a table instead of a
--- single tall column.
+-- A toggle either lives in this module's config table or, for the native
+-- display, behind the two accessors above.
+local function ToggleValue(spec)
+  if spec.get then return spec.get() end
+  return U.GetAuraSetting(spec.key) and true or false
+end
+
+local function SetToggleValue(spec, value)
+  if spec.set then
+    spec.set(value)
+    return
+  end
+  Config()[spec.key] = value
+  U.ApplyAuras()
+end
+
+-- Three per row rather than two: the toggle grid above needed one more line
+-- and the dispel labels are short enough to give it back here, so the hint and
+-- the colour section below keep the offsets they already had.
 local FILTERS = {
   { key = "showMagic",   textKey = "AURAS_MAGIC",   column = 0, row = 0 },
   { key = "showCurse",   textKey = "AURAS_CURSE",   column = 1, row = 0 },
-  { key = "showPoison",  textKey = "AURAS_POISON",  column = 0, row = 1 },
-  { key = "showDisease", textKey = "AURAS_DISEASE", column = 1, row = 1 },
-  { key = "showOther",   textKey = "AURAS_OTHER",   column = 0, row = 2 },
+  { key = "showPoison",  textKey = "AURAS_POISON",  column = 2, row = 0 },
+  { key = "showDisease", textKey = "AURAS_DISEASE", column = 0, row = 1 },
+  { key = "showOther",   textKey = "AURAS_OTHER",   column = 1, row = 1 },
 }
 
 local function BuildSettingsPage(parent)
@@ -1335,11 +1398,8 @@ local function BuildSettingsPage(parent)
       name = "UnrealUIAuraToggle" .. spec.key,
       text = U.L(spec.textKey),
       textWidth = TOGGLE_COLUMN_X - 26,
-      value = U.GetAuraSetting(spec.key),
-      onChange = function(value)
-        Config()[spec.key] = value
-        U.ApplyAuras()
-      end,
+      value = ToggleValue(spec),
+      onChange = function(value) SetToggleValue(spec, value) end,
     })
     check.SetPoint("TOPLEFT", parent, "TOPLEFT",
                    spec.column * TOGGLE_COLUMN_X,
@@ -1351,7 +1411,7 @@ local function BuildSettingsPage(parent)
   local filterHeader = U.CreateSectionHeader(parent, {
     text = U.L("AURAS_DISPEL_HEADER"),
     width = PAGE_WIDTH,
-    y = -134 - SECTION_TOP,
+    y = -160 - SECTION_TOP,
   })
   table.insert(widgets, filterHeader)
 
@@ -1369,7 +1429,7 @@ local function BuildSettingsPage(parent)
     })
     check.SetPoint("TOPLEFT", parent, "TOPLEFT",
                    spec.column * FILTER_COLUMN_X,
-                   -164 - SECTION_TOP - spec.row * 26)
+                   -190 - SECTION_TOP - spec.row * 26)
     controls[spec.key] = check
     table.insert(widgets, check)
   end
@@ -1385,15 +1445,32 @@ local function BuildSettingsPage(parent)
     width = PAGE_WIDTH,
   })
   if hint then
-    U.AnchorSettingsDescription(hint, controls[FILTERS[table.getn(FILTERS)].key].box)
+    -- Anchor under the left-most control of the final filter row so the block
+    -- starts at the page's left edge instead of under whichever column happens
+    -- to hold the last checkbox.
+    local anchorKey = FILTERS[1].key
+    local f
+    for f = 1, table.getn(FILTERS) do
+      if FILTERS[f].column == 0 then anchorKey = FILTERS[f].key end
+    end
+    U.AnchorSettingsDescription(hint, controls[anchorKey].box)
     hint:SetText(U.L("AURAS_HINT"))
     table.insert(widgets, hint)
   end
 
   local function RefreshAuraControls()
-    local key, control
-    for key, control in pairs(controls) do
-      control.SetValue(U.GetAuraSetting(key))
+    local n
+    for n = 1, table.getn(TOGGLES) do
+      local spec = TOGGLES[n]
+      if controls[spec.key] then
+        controls[spec.key].SetValue(ToggleValue(spec))
+      end
+    end
+    for n = 1, table.getn(FILTERS) do
+      local spec = FILTERS[n]
+      if controls[spec.key] then
+        controls[spec.key].SetValue(U.GetAuraSetting(spec.key))
+      end
     end
   end
 
@@ -1438,7 +1515,10 @@ function A:OnInit()
 end
 
 function A:OnEnable()
-  BuildRow("player", "player", true, "playerEnabled")
+  BuildRow("player", "player", true, "playerEnabled",
+           { master = "showOnPlayerFrame" })
+  BuildRow("playerBuff", "player", false, "playerBuffEnabled",
+           { master = "showOnPlayerFrame" })
   BuildRow("target", "target", true, "targetEnabled")
   BuildRow("targetBuff", "target", false, "targetBuffEnabled")
 
@@ -1467,7 +1547,7 @@ function A:OnEnable()
   -- registered as a free accelerator rather than relied on.
   U.RegisterEvent("UNIT_AURA", function(event, unit) RefreshUnitToken(unit) end)
   U.RegisterEvent("PLAYER_AURAS_CHANGED", function()
-    RefreshRow(rows.player, 0)
+    RefreshPlayer()
   end)
   -- round 3: deferred one driver tick, same reasoning as
   -- core/compat.lua's target-group sweep -- this used to scan the whole debuff

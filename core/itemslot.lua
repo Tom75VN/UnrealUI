@@ -197,6 +197,17 @@ function U.StyleItemSlot(button, name, raisedCount)
   end
 end
 
+-- Equipped-bag controls use their explicit UnrealUI border as the complete
+-- Modern hover state. Keep this opt-in so ordinary item slots retain their
+-- existing hover fill, and leave Classic's native state artwork untouched.
+function U.UseBorderOnlyItemSlotHover(button)
+  if not button or U.ThemeStyleUsesNativeChrome() then return end
+
+  local highlightOk, highlight = pcall(button.GetHighlightTexture, button)
+  if highlightOk and highlight then U.HideRegion(highlight) end
+  pcall(button.SetHighlightTexture, button, "")
+end
+
 -- ---------------------------------------------------------------------------
 -- Creation
 --

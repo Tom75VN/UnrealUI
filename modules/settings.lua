@@ -106,7 +106,16 @@ function U.RegisterSettingsGroup(id, label)
     label = label or id,
     expanded = false,
   }
-  table.insert(entries, entry)
+
+  -- Same default placement as RegisterSettingsTab: slot in ahead of profiles
+  -- so a group registered after it (e.g. action bar options, whose OnInit
+  -- runs later in module order) doesn't end up stranded past its own pages.
+  local _, profilesIndex = FindEntry("profiles")
+  if profilesIndex then
+    table.insert(entries, profilesIndex, entry)
+  else
+    table.insert(entries, entry)
+  end
 
   if panel then RenderSidebar() end
   return entry
@@ -147,8 +156,20 @@ function U.RegisterSettingsTab(id, label, build, options)
     local _, index = FindEntry(options.after)
     afterIndex = index
   end
+
   if afterIndex then
     table.insert(entries, afterIndex + 1, entry)
+  elseif id ~= "profiles" and id ~= "unrealquest" then
+    -- Profiles stays the last built-in page; anything registering without an
+    -- explicit "after" slots in ahead of it instead of past it. UnrealQuest's
+    -- tab (registered late, via host polling from the sibling addon) is the
+    -- one entry meant to land after profiles, so it keeps the plain append.
+    local _, profilesIndex = FindEntry("profiles")
+    if profilesIndex then
+      table.insert(entries, profilesIndex, entry)
+    else
+      table.insert(entries, entry)
+    end
   else
     table.insert(entries, entry)
   end

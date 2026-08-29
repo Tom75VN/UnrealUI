@@ -59,6 +59,7 @@ MOVER_LABEL_XP_BAR        = "经验条",
 MOVER_LABEL_REP_BAR       = "声望条",
 MOVER_LABEL_BREATH_BAR    = "呼吸条",
 MOVER_LABEL_MICRO_BAR     = "微型菜单条",
+MOVER_LABEL_BUFFS         = "增益与减益",
 MOVER_LABEL_MINIMAP       = "小地图",
 MOVER_LABEL_PET_BAR       = "宠物动作条",
 MOVER_LABEL_STANCE_BAR    = "姿态条",
@@ -202,7 +203,10 @@ UF_PARTY_HEADER           = "小队框体",
 UF_PARTY_PETS             = "显示队友嬠物",
 
 AURAS_HEADER              = "单位框体光环",
+AURAS_ON_PLAYER_FRAME     = "在玩家框体上显示光环",
+AURAS_NEAR_MINIMAP        = "在小地图旁显示光环",
 AURAS_PLAYER_DEBUFFS      = "玩家框体减益效果",
+AURAS_PLAYER_BUFFS        = "玩家框体增益效果",
 AURAS_TARGET_DEBUFFS      = "目标框体减益效果",
 AURAS_TARGET_BUFFS        = "目标框体增益效果",
 AURAS_PARTY_DEBUFFS       = "队伍框体减益效果",
@@ -215,7 +219,7 @@ AURAS_CURSE               = "诅咒",
 AURAS_POISON              = "中毒",
 AURAS_DISEASE             = "疾病",
 AURAS_OTHER               = "物理 / 其他",
-AURAS_HINT                = "你自己身上的光环由客户端计时，因此完全准确。对于其他单位，此客户端不会返回持续时间，这些计时是依据法术持续时间表和光环首次被看到的时刻推算出来的：你选中目标时已经在生效的光环会被当作刚刚开始，而表中没有收录的光环则不显示计时。输入 /uui aura 可以查看具体属于哪一种。",
+AURAS_HINT                = "只有你自己身上的光环计时是准确的。此客户端不会返回其他单位的持续时间，这些计时由法术时长表推算：已在生效的光环会显示为刚刚开始，表中没有的则不显示计时。输入 /uui aura 可查看具体属于哪一种。",
 
 -- ---------------------------------------------------------------------------
 -- Bags and bank
@@ -245,6 +249,11 @@ BANK_TRANSFER_PICKUP      = "银行转移已停在角色背包中；请再次拾
 BANK_TRANSFER_EMPTY_SLOT  = "在银行背包之间移动物品需要一个角色背包格作中转，但没有可用的格子。",
 BANK_SLOT_TEMPLATE_FALLBACK = "此客户端不支持 %s；银行栏位将改用背包栏位模板。",
 BANK_SLOTS_LOADING        = "客户端尚未返回银行栏位；窗口打开期间将继续重试。",
+
+-- ---------------------------------------------------------------------------
+-- Item comparison (modules/tooltip.lua)
+-- ---------------------------------------------------------------------------
+TOOLTIP_COMPARE_SUMMARY   = "如果替换此物品：",
 
 -- ---------------------------------------------------------------------------
 -- Overlays and native screens

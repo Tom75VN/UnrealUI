@@ -39,6 +39,17 @@ local QF = U.RegisterModule("quest")
 -- modules/questlog.lua uses (QUEST_WHITE), deliberately not M.color.text: that
 -- token is 0.90 grey and reads dim against this window's dark panel.
 local WHITE = { 1.00, 1.00, 1.00, 1 }
+-- RUNTIME_PROBE questgreetingicon measured a 14px QuestTitleButton height.
+-- Keep a 1px vertical margin on both sides so adjacent quest glyphs never
+-- overlap even when two rows are packed directly together.
+local QUEST_ROW_ICON_HEIGHT = 10.8
+local QUEST_ROW_ICON_WIDTH = QUEST_ROW_ICON_HEIGHT * 19 / 32
+local QUEST_ROW_ICON_SLOT_WIDTH = 16
+local QUEST_ROW_TEXTURES = {
+  available = "Interface\\AddOns\\unrealUI\\media\\QuestIcon",
+  active = "Interface\\AddOns\\unrealUI\\media\\ActiveQuestIcon",
+  complete = "Interface\\AddOns\\unrealUI\\media\\CompleteQuestIcon",
+}
 
 local frame, panel
 
@@ -204,11 +215,166 @@ local function StripPanels()
   end
 end
 
+-- Imported from UnrealQuest by request. All three files are 19x32, so preserve
+-- that ratio instead of stretching them into square native icon slots.
+--
+-- QuestFrame's active list contains both incomplete and completable quests.
+-- The same-client FrameXML contract may return completion as GetActiveTitle's
+-- second result. Official client documentation only records the title result,
+-- so the quest-log completion flag is the evidence-backed fallback.
+local function ActiveQuestIsComplete(button)
+  local id
+  if button and button.GetID then
+    local idOk, value = pcall(button.GetID, button)
+    if idOk then id = tonumber(value) end
+  end
+  if not id then return false end
+
+  local activeTitle
+  local getActiveTitle = G("GetActiveTitle")
+  if type(getActiveTitle) == "function" then
+    local titleOk, title, isComplete = pcall(getActiveTitle, id)
+    if titleOk then
+      activeTitle = title
+      if isComplete ~= nil then
+        return isComplete == 1 or isComplete == true
+      end
+    end
+  end
+
+  local getCount = G("GetNumQuestLogEntries")
+  local getLogTitle = G("GetQuestLogTitle")
+  if type(activeTitle) ~= "string" or activeTitle == "" or
+     type(getCount) ~= "function" or type(getLogTitle) ~= "function" then
+    return false
+  end
+
+  local countOk, count = pcall(getCount)
+  if not countOk or not tonumber(count) then return false end
+
+  local index
+  for index = 1, count do
+    -- UnrealQuest Compatibility/ClientAPI.lua records this client's verified
+    -- six-value tuple as title, level, tag, isHeader, isCollapsed, isComplete.
+    -- Reading a seventh `group` value shifted both flags and made every active
+    -- quest appear incomplete.
+    local titleOk, title, level, tag, isHeader, isCollapsed, isComplete =
+      pcall(getLogTitle, index)
+    if titleOk and not isHeader and title == activeTitle then
+      return isComplete == 1 or isComplete == true
+    end
+  end
+  return false
+end
+
+local function NativeQuestRowState(nativeIcon)
+  if not nativeIcon or not nativeIcon.GetTexture then return nil end
+  local textureOk, texture = pcall(nativeIcon.GetTexture, nativeIcon)
+  if not textureOk or type(texture) ~= "string" then return nil end
+
+  texture = string.lower(texture)
+  if string.find(texture, "completequesticon", 1, true) then return "complete" end
+  if string.find(texture, "incompletequesticon", 1, true) or
+     string.find(texture, "activequesticon", 1, true) then return "active" end
+  if string.find(texture, "availablequesticon", 1, true) then
+    return "available"
+  end
+  return nil
+end
+
+local function QuestRowText(button, fontstring)
+  local source = fontstring
+  if not source or not source.GetText then source = button end
+  if not source or not source.GetText then return nil end
+
+  local textOk, text = pcall(source.GetText, source)
+  if textOk and type(text) == "string" and text ~= "" then return text end
+  return nil
+end
+
+-- RUNTIME_PROBE questgreetingicon.production_state.v1 (2026-08-29): every
+-- visible QuestTitleButton has `type == nil`, and its only stock texture is the
+-- generic UI-Quest-BulletPoint. Neither therefore carries active/available
+-- state on this client. The button ID *does* index GetActiveTitle and
+-- GetAvailableTitle, and the returned title identifies which section owns the
+-- row even though both sections restart their IDs at one.
+local function QuestRowState(button, nativeIcon, fontstring)
+  local id
+  if button and button.GetID then
+    local idOk, value = pcall(button.GetID, button)
+    if idOk then id = tonumber(value) end
+  end
+
+  local title = QuestRowText(button, fontstring)
+  if id and title then
+    local getActive = G("GetActiveTitle")
+    if type(getActive) == "function" then
+      local activeOk, activeTitle = pcall(getActive, id)
+      if activeOk and activeTitle == title then
+        return ActiveQuestIsComplete(button) and "complete" or "active"
+      end
+    end
+
+    local getAvailable = G("GetAvailableTitle")
+    if type(getAvailable) == "function" then
+      local availableOk, availableTitle = pcall(getAvailable, id)
+      if availableOk and availableTitle == title then return "available" end
+    end
+  end
+
+  local rowType = type(button.type) == "string" and
+                  string.lower(button.type) or nil
+  if rowType == "available" then return "available" end
+  if rowType == "active" then
+    return ActiveQuestIsComplete(button) and "complete" or "active"
+  end
+  return NativeQuestRowState(nativeIcon)
+end
+
+local function StyleQuestRowIcon(button, nativeIcon, fontstring)
+  if not button then return nil end
+
+  local state = QuestRowState(button, nativeIcon, fontstring)
+
+  local icon = button.uuiQuestStateIcon
+  local shown = true
+  if button.IsShown then
+    local shownOk, value = pcall(button.IsShown, button)
+    if shownOk then shown = value and true or false end
+  end
+  if not shown or not QUEST_ROW_TEXTURES[state] then
+    if icon then pcall(icon.Hide, icon) end
+    return icon
+  end
+
+  if not icon and button.CreateTexture then
+    local createOk, created = pcall(button.CreateTexture, button, nil, "BACKGROUND")
+    if createOk then
+      icon = created
+      button.uuiQuestStateIcon = icon
+    end
+  end
+  if not icon then return nil end
+
+  pcall(function()
+    icon:SetTexture(QUEST_ROW_TEXTURES[state])
+    icon:SetVertexColor(1, 1, 1)
+    icon:SetAlpha(1)
+    icon:ClearAllPoints()
+    icon:SetWidth(QUEST_ROW_ICON_WIDTH)
+    icon:SetHeight(QUEST_ROW_ICON_HEIGHT)
+    -- Centre the portrait glyph within the native 16px-wide inset and the
+    -- button's measured 14px line height.
+    icon:SetPoint("LEFT", button, "LEFT",
+      (QUEST_ROW_ICON_SLOT_WIDTH - QUEST_ROW_ICON_WIDTH) / 2, 0)
+    icon:Show()
+  end)
+  return icon
+end
+
 -- Quest rows on the greeting panel (QuestTitleButton1..N) are plain clickable
--- text/icon rows, not stock chrome buttons -- same shape as modules/gossip.lua's
--- option rows. The per-row icon (QuestTitleButtonNQuestIcon) is a meaningful
--- content glyph (the available/turn-in marker), so it is kept explicitly rather
--- than stripped with the rest of the row's native art.
+-- text/icon rows, not stock chrome buttons. Keep the stock buttons and click
+-- handlers, but use the imported UnrealQuest assets for their state glyphs.
 local function StyleTitleRows()
   -- No compact-DB record for how many QuestTitleButton rows FrameXML ever
   -- instantiates. Same convention as modules/gossip.lua's NUMGOSSIPBUTTONS
@@ -218,16 +384,20 @@ local function StyleTitleRows()
   for i = 1, rows do
     local button = G("QuestTitleButton" .. i)
     if button then
-      local icon = G("QuestTitleButton" .. i .. "QuestIcon")
-      -- Same shared row helper as modules/gossip.lua: it also finds the icon by
-      -- texture path and re-shows it, so the available/turn-in marker survives
-      -- both a missing region name and a strip pass on a then-empty row.
-      U.StripStockRowTextures(button, icon and { icon = icon } or nil)
-
       local fontOk, fontstring = false, nil
       if button.GetFontString then
         fontOk, fontstring = pcall(button.GetFontString, button)
       end
+
+      -- Strip first, including an icon left from an earlier population pass.
+      -- RUNTIME_PROBE questgreetingicon.production_state.v1 measured that a
+      -- keep-table strip performed after styling still left all three owned
+      -- textures hidden with alpha zero on this client. Reapplying the owned
+      -- texture last is the verified region-suppression recovery sequence.
+      U.StripStockTextures(button)
+      local nativeIcon = G("QuestTitleButton" .. i .. "QuestIcon")
+      StyleQuestRowIcon(button, nativeIcon, fontOk and fontstring or nil)
+
       if fontOk and fontstring then
         SetQuestFont(fontstring, M.fontSize.normal, WHITE)
       end
@@ -263,28 +433,21 @@ end
 -- same frame on this client). It is a second style family on top of unrealUI's
 -- flat rows, and its fixed size no longer matches the Quest Log cell geometry
 -- used below, so the modern themes strip that artwork and express the selected
--- state with the reward button's own accent outline instead -- the selected
--- state rules/unreal-ui-design.md defines.
+-- state with the reward row's own accent outline and accent fill instead --
+-- the selected state rules/unreal-ui-design.md defines.
 --
--- The stock frame itself is left shown rather than hidden: the native click
--- handler shows it only for a real choice row and QuestFrameItems_Update hides
--- it whenever the reward list is rebuilt, so its visibility stays a free,
--- accurate read of the native selection without hooking either global.
-local selectedReward
-
-local function NativeRewardHighlight()
-  return G("QuestRewardItemHighlight")
-end
-
-local function NativeRewardHighlightShown()
-  local highlight = NativeRewardHighlight()
-  if not highlight or not highlight.IsShown then return false end
-  local ok, shown = pcall(highlight.IsShown, highlight)
-  return ok and shown and true or false
-end
+-- The selection is stored as the row's 1-based index, not as a frame
+-- reference, and is cleared only by the quest events that mean the window now
+-- holds different content. The earlier shape read the stock highlight frame's
+-- visibility on every restyle pass and dropped the selection whenever that
+-- read failed -- one absent frame, or one native rebuild between the click and
+-- the next pass, silently returned every row to the plain border.
+local REWARD_BACKGROUND = { 0.03, 0.03, 0.03, 0.82 }
+local selectedRewardIndex
+local hoveredReward
 
 local function StripRewardHighlight()
-  local highlight = NativeRewardHighlight()
+  local highlight = G("QuestRewardItemHighlight")
   if not highlight then return end
 
   U.StripStockTextures(highlight)
@@ -296,11 +459,40 @@ local function StripRewardHighlight()
   end
 end
 
-local hoveredReward
+local function RewardIndex(button, fallback)
+  if button and button.GetID then
+    local ok, id = pcall(button.GetID, button)
+    if ok and tonumber(id) then return tonumber(id) end
+  end
+  return fallback
+end
+
+-- Only a choose-one row can be selected; a guaranteed reward is not a choice
+-- and must never take the accent.
+--
+-- USER_CONFIRMED_INGAME (knowledge.json
+-- quest.reward_item_link_nil_after_tooltip_population): a reward button on
+-- this client carries type == "choice" with its 1-based index in GetID(), the
+-- same pair HookRewardTooltip already relies on. GetNumQuestChoices is the
+-- documented fallback for a build that leaves the tag unset: the client fills
+-- the reward buttons with the choose-one items first, so anything within that
+-- count is a choice row.
+local function IsChoiceButton(button, fallbackIndex)
+  if not button then return false end
+  if button.type == "choice" then return true end
+  if button.type then return false end
+
+  if type(GetNumQuestChoices) ~= "function" then return false end
+  local index = RewardIndex(button, fallbackIndex)
+  local ok, choices = pcall(GetNumQuestChoices)
+  if not ok or not tonumber(choices) or not tonumber(index) then return false end
+  return choices > 0 and index <= choices
+end
 
 -- Both reward row states are painted from one place, because hover and
--- selection share the same single outline: whichever is true wins the accent,
--- and a row that is neither goes back to the normal border colour.
+-- selection share one outline. Hover is the subdued accent; the picked reward
+-- takes the full accent outline plus the accent fill, so the two stay
+-- distinguishable while the mouse is still on the row it just selected.
 local function ApplyRewardStates()
   local i
   for i = 1, ITEMS_PER_PANEL do
@@ -308,13 +500,37 @@ local function ApplyRewardStates()
     -- uuiEdges is the outline U.StyleStockButton installed; a button that has
     -- not been through that pass yet has nothing to recolour.
     if button and button.uuiEdges then
-      local color = M.color.border
-      if button == hoveredReward or button == selectedReward then
-        color = M.color.accent
+      if selectedRewardIndex and RewardIndex(button, i) == selectedRewardIndex
+         and IsChoiceButton(button, i) then
+        U.SetBorderColor(button, M.Unpack(M.color.accent))
+        U.SetBackgroundColor(button, M.Unpack(M.color.accentFill))
+      elseif button == hoveredReward then
+        U.SetBorderColor(button, M.Unpack(M.color.accentDim))
+        U.SetBackgroundColor(button, M.Unpack(REWARD_BACKGROUND))
+      else
+        U.SetBorderColor(button, M.Unpack(M.color.border))
+        U.SetBackgroundColor(button, M.Unpack(REWARD_BACKGROUND))
       end
-      U.SetBorderColor(button, M.Unpack(color))
     end
   end
+end
+
+local function SelectReward(button, fallbackIndex)
+  if not IsChoiceButton(button, fallbackIndex) then return end
+  selectedRewardIndex = RewardIndex(button, fallbackIndex)
+  ApplyRewardStates()
+end
+
+-- The selection belongs to one open quest window, so it is dropped when that
+-- window's content changes and never on a restyle pass, which runs far more
+-- often. MEASURED_RUNTIME (knowledge.json
+-- questlog.turnin_event_sequence_measured): QUEST_COMPLETE fires as the
+-- completion dialog opens and QUEST_FINISHED when it closes, so both ends of a
+-- turn-in are covered by the quest events this module already listens for.
+local function ClearRewardSelection()
+  selectedRewardIndex = nil
+  hoveredReward = nil
+  ApplyRewardStates()
 end
 
 -- Self-healing script hook, deliberately not U.PostHookScript.
@@ -364,15 +580,38 @@ local function HookRewardSelection(button, prefix)
   end)
 
   HookRewardScript(button, "OnClick", function()
-    -- The native handler has already run, so the stock highlight's state --
-    -- not a guess about which rows are choices -- decides whether this click
-    -- selected a reward. button.type is the same field HookRewardTooltip
-    -- reads, kept as a fallback for a build that leaves the frame absent.
-    if NativeRewardHighlightShown() or button.type == "choice" then
-      selectedReward = button
-      ApplyRewardStates()
-    end
+    -- The native handler has already run, so the row now carries whatever the
+    -- client decided about this click.
+    SelectReward(button)
   end)
+end
+
+-- Second, independent click path.
+--
+-- WORKING_SOURCE (UnrealPfUI skins/blizzard/gossipquest.lua): this client
+-- routes reward clicks through a global QuestRewardItem_OnClick, which is how
+-- that skin drives its own selection box. Hooking the global as well as the
+-- rows' own OnClick covers a build whose buttons carry no OnClick script of
+-- their own, and a native rebuild that reassigns them between styling passes.
+-- U.PostHookGlobal fails closed when the function is absent, so this costs
+-- nothing where the per-button hook is already the live path.
+--
+-- The clicked row arrives either as the first argument or in the legacy `this`
+-- global; knowledge.json scripts.handler_arguments_direct records that this
+-- client uses both shapes depending on the handler, so both are resolved
+-- rather than one being assumed.
+local function RewardClicked(a1)
+  local button = a1
+  if type(button) ~= "table" then button = U.G("this") end
+  if type(button) ~= "table" then return end
+
+  local i
+  for i = 1, ITEMS_PER_PANEL do
+    if G("QuestRewardItem" .. i) == button then
+      SelectReward(button, i)
+      return
+    end
+  end
 end
 
 -- Reward/progress/detail item slots use the Quest Log item-cell treatment
@@ -380,10 +619,6 @@ end
 -- accept-panel refresh leave reward icons on top of one another.
 local function StyleItemSlots()
   StripRewardHighlight()
-  -- A selection only survives while the client still shows its own highlight;
-  -- once the reward list is rebuilt the native frame is hidden again and the
-  -- accent row goes with it.
-  if not NativeRewardHighlightShown() then selectedReward = nil end
   hoveredReward = nil
 
   local p
@@ -453,7 +688,12 @@ local function StyleItemSlots()
           end
         end
 
-        U.StyleStockButton(button, { icon = icon, fitIcon = false })
+        -- The background is named rather than defaulted because
+        -- ApplyRewardStates has to put this exact fill back when a row stops
+        -- being the selected one.
+        U.StyleStockButton(button, { icon = icon, fitIcon = false,
+                                     background = REWARD_BACKGROUND,
+                                     hoverBorder = M.color.accentDim })
 
         HookRewardTooltip(button, ITEM_PREFIXES[p])
         HookRewardSelection(button, ITEM_PREFIXES[p])
@@ -624,6 +864,10 @@ local function BuildFrame()
   U.PostHookGlobal("QuestFrameProgressItems_Update", ReapplyAfterNative)
   U.PostHookGlobal("QuestFrameRewardItems_Update", ReapplyAfterNative)
 
+  -- The second click path described at RewardClicked, installed once per
+  -- session next to the other stock-global hooks.
+  U.PostHookGlobal("QuestRewardItem_OnClick", RewardClicked)
+
   U.PostHookScript(frame, "OnShow", ReapplyAfterNative)
 
   if frame.IsShown then
@@ -738,6 +982,10 @@ local pendingEvents = {
   "QUEST_COMPLETE",
 }
 
+-- Not a build trigger: QUEST_FINISHED only ever means the quest window closed,
+-- so it is registered beside the events above purely to drop the selection.
+local FINISH_EVENT = "QUEST_FINISHED"
+
 local function TryBuild()
   if BuildFrame() then
     local i
@@ -749,7 +997,11 @@ local function TryBuild()
     -- refresh triggers, alongside the per-panel OnShow hooks.
     for i = 2, table.getn(pendingEvents) do
       U.RegisterEvent(pendingEvents[i], ReapplyAfterNative)
+      -- Registered after ReapplyAfterNative so the clear lands on top of the
+      -- restyle that same event triggers, instead of being repainted by it.
+      U.RegisterEvent(pendingEvents[i], ClearRewardSelection)
     end
+    U.RegisterEvent(FINISH_EVENT, ClearRewardSelection)
     return true
   end
   return false

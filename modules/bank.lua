@@ -49,6 +49,7 @@ local BANK_BAG_OFFSET = 4     -- bank bag n is container n + 4, i.e. 5..10
 local MAX_BANK_BAGS   = 6     -- NUM_BANKBAGSLOTS in Vanilla FrameXML
 local BANK_SLOTS      = 24    -- NUM_BANKGENERIC_SLOTS in Vanilla FrameXML
 local NATIVE_PARK     = 4000  -- where the stock bank window is sent to
+local EMPTY_BAG_ICON  = "Interface\\Icons\\INV_Misc_Bag_08"
 
 -- Shared container tokens; only the row length is this window's own.
 local COLUMNS       = 10
@@ -71,22 +72,17 @@ local bagDirty = {}
 local closing = false
 local emptyReported = false
 
--- The Azeroth bank backend rejects a cursor item picked up from one bank
--- container when it is dropped directly into a different bank container
--- ("Item not found" -- knowledge.json /
--- bank.cross_container_transfer_requires_inventory_stage, USER_CONFIRMED_INGAME).
--- The same item succeeds after it has passed through a player-bag slot, so
--- remember which bank container supplied the cursor item and use that proven
--- route only for cross-container bank transfers.
+-- The main bank pane and purchased bank bags share a visual grid, but not a
+-- cursor API. A focused live probe (behavior.json / bankmove, probe 1.40.1)
+-- verified that purchased bags use PickupContainerItem(5..10, slot), while
+-- the main pane must be addressed with PickupInventoryItem and the inventory
+-- id returned by BankButtonIDToInvSlotID. Treating the main pane as container
+-- -1 fails even though its contents can be read through container -1.
 --
--- cursorBankLink is the item the cursor is carrying.  It has to be read from
--- the source slot *before* the stock handler runs, because an item already on
--- the cursor cannot be read out of any container.  It exists so an occupied
--- player-bag slot can serve as the staging slot: swapping the cursor item
--- against a *different* item is safe, while swapping it against the same item
--- would merge the two stacks and drag the player's own items into the bank.
+-- Remember which bank surface supplied the cursor so only a cross-surface
+-- left-button drop is redirected. Same-surface moves and every modifier-click
+-- keep the stock template handlers.
 local cursorBankBag
-local cursorBankLink
 
 -- Shared with the bag-slot wrappers in modules/bags.lua; the reading itself
 -- lives in core/compat.lua.
@@ -94,173 +90,32 @@ local function CursorHasInventoryItem()
   return U.CursorHasItem()
 end
 
-local function SlotLink(bag, slot)
-  local ok, link = pcall(GetContainerItemLink, bag, slot)
-  if ok and link and link ~= "" then return link end
-  return nil
-end
-
-local function SlotLocked(bag, slot)
-  local texture, count, locked = U.ContainerSlotInfo(bag, slot)
-  return locked and true or false
-end
-
--- Specialty bags cannot accept every item.  Prefer the backpack, then bags a
--- Vanilla-shaped GetBagFamily helper identifies as normal.  Nothing records a
--- client GetBagFamily global on this client at all -- UnrealPfUI builds its own
--- from GetInventoryItemLink/GetItemInfo rather than calling one -- so the
--- helper stays optional here: when it is missing, errors, or answers in the
--- numeric form where 0 means an ordinary bag, every bag is tried and the
--- container state below decides whether the client accepted the drop.
-local function PlayerBagCanStage(bag)
-  if bag == 0 then return true end
-
-  local familyFn = U.G("GetBagFamily")
-  if type(familyFn) ~= "function" then return true end
-
-  local ok, family = pcall(familyFn, bag)
-  if not ok or family == nil then return true end
-  if type(family) == "number" then return family == 0 end
-  return family == "BAG"
-end
-
--- First choice: an empty player-bag slot.  The cursor item is placed there and
--- picked straight back up, which changes its source from a bank container to
--- player inventory without changing the item or its final destination.
--- Returns true on success, false after a failure that has been reported, and
--- nil when this bag simply offered no usable slot.
-local function StageThroughEmptySlot(bag)
-  local sizeOk, size = pcall(GetContainerNumSlots, bag)
-  size = (sizeOk and tonumber(size)) or 0
-
-  local slot
-  for slot = 1, size do
-    -- U.ContainerSlotHasItem, not `not texture`: an empty slot on this client
-    -- reports texture "" from GetContainerItemInfo, which is truthy in Lua, so
-    -- the Vanilla-shaped test matched nothing and no staging slot was ever
-    -- found. core/compat.lua carries the documentation for that difference.
-    if not U.ContainerSlotHasItem(bag, slot) then
-      pcall(PickupContainerItem, bag, slot)
-      if not CursorHasInventoryItem() then
-        -- The temporary drop succeeded. Pick the same item back up so the
-        -- caller can place it in the requested bank destination.
-        pcall(PickupContainerItem, bag, slot)
-        if CursorHasInventoryItem() then return true end
-
-        -- The item is safe in player inventory, but the second pickup did
-        -- not complete. Do not pretend the bank transfer succeeded.
-        U.Print(U.L("BANK_TRANSFER_PICKUP"))
-        cursorBankBag = nil
-        cursorBankLink = nil
-        return false
-      end
-    end
+local function DropCursorIntoBank(bag, slot)
+  if bag == BANK_CONTAINER then
+    local idOk, inventorySlot = pcall(BankButtonIDToInvSlotID, slot)
+    inventorySlot = idOk and tonumber(inventorySlot) or nil
+    if not inventorySlot then return false end
+    return pcall(PickupInventoryItem, inventorySlot)
   end
 
-  return nil
+  return pcall(PickupContainerItem, bag, slot)
 end
 
--- Fallback for full bags, which is the normal state of a player standing at a
--- banker.  A slot holding a *different* item stages just as well, because
--- PickupContainerItem swaps: the first call puts the cursor item into the slot
--- and lifts that slot's item, the second puts it back and returns the original
--- to the cursor -- now sourced from player inventory.  A slot holding the same
--- item is never used, because the stacks would merge and the player's own item
--- would travel into the bank with it; without a known cursor item the whole
--- pass is skipped rather than guessed.  Each half is confirmed by re-reading
--- the slot, so a slot the client refused (specialty bag, locked item) is
--- skipped instead of assumed, and an unexpected result stops the pass rather
--- than shuffling further items blind.
-local function StageThroughOccupiedSlot(bag)
-  if not cursorBankLink then return nil end
-
-  local sizeOk, size = pcall(GetContainerNumSlots, bag)
-  size = (sizeOk and tonumber(size)) or 0
-
-  local slot
-  for slot = 1, size do
-    local link = SlotLink(bag, slot)
-    if link and link ~= cursorBankLink and not SlotLocked(bag, slot) then
-      pcall(PickupContainerItem, bag, slot)
-
-      local now = SlotLink(bag, slot)
-      if now == cursorBankLink then
-        pcall(PickupContainerItem, bag, slot)
-        if SlotLink(bag, slot) == link and CursorHasInventoryItem() then
-          return true
-        end
-
-        -- The swap back did not complete. Both items are in inventory, so
-        -- nothing is lost, but the bank transfer is not done.
-        U.Print(U.L("BANK_TRANSFER_PICKUP"))
-        cursorBankBag = nil
-        cursorBankLink = nil
-        return false
-      elseif now ~= link then
-        -- The slot became something neither expected. Stop rather than move
-        -- more of the player's items around blind.
-        U.Print(U.L("BANK_TRANSFER_PICKUP"))
-        cursorBankBag = nil
-        cursorBankLink = nil
-        return false
-      end
-    end
-  end
-
-  return nil
-end
-
-local function StageCursorThroughPlayerBags()
-  local bag, staged
-
-  for bag = 0, 4 do
-    if PlayerBagCanStage(bag) then
-      staged = StageThroughEmptySlot(bag)
-      if staged ~= nil then return staged end
-    end
-  end
-
-  for bag = 0, 4 do
-    if PlayerBagCanStage(bag) then
-      staged = StageThroughOccupiedSlot(bag)
-      if staged ~= nil then return staged end
-    end
-  end
-
-  U.Print(U.L("BANK_TRANSFER_EMPTY_SLOT"))
-  return false
-end
-
-local function TransferCursorToBank(bag, slot, drop)
+local function TransferCursorToBank(bag, slot)
   if not CursorHasInventoryItem() then
     cursorBankBag = nil
-    cursorBankLink = nil
     return false
   end
 
-  if cursorBankBag and cursorBankBag ~= bag then
-    if not StageCursorThroughPlayerBags() then return false end
-  end
-
-  -- Read before the drop: an occupied destination hands its previous item to
-  -- the cursor, and that item is what a following transfer would carry.
-  local previous = SlotLink(bag, slot)
-
-  -- Let the destination's original template perform the final drop.  The main
-  -- bank and purchased bank bags use different stock templates, and retaining
-  -- their own destination call avoids substituting one API for the other.
-  if type(drop) ~= "function" then return false end
-  drop()
+  if not DropCursorIntoBank(bag, slot) then return false end
 
   -- An occupied destination leaves its previous item on the cursor.  That
   -- item's new source is the destination container, so a following cross-bank
-  -- drop must use the workaround again.
+  -- drop must use the destination-specific route again.
   if CursorHasInventoryItem() then
     cursorBankBag = bag
-    cursorBankLink = previous
   else
     cursorBankBag = nil
-    cursorBankLink = nil
   end
   return true
 end
@@ -271,8 +126,8 @@ end
 
 -- Wrap the stock template rather than discarding it: modifier clicks, stack
 -- splitting, right-click use, repair targeting and tooltips remain native.
--- Only a left-button drop whose cursor source is a different bank container
--- takes the inventory-staging route above.
+-- Only a left-button drop whose cursor source is a different bank surface is
+-- routed through the verified destination API above.
 local function InstallBankTransfer(button, bag)
   if not button or button.uuiBankTransfer then return end
   button.uuiBankTransfer = true
@@ -283,14 +138,9 @@ local function InstallBankTransfer(button, bag)
       local slot = button:GetID()
       local hadItem = CursorHasInventoryItem()
       local left = MouseButton(a1, a2) == "LeftButton"
-      -- Whatever this slot holds now is what the cursor holds afterwards,
-      -- whether the click lifts the item or swaps the cursor item for it.
-      local previous = SlotLink(bag, slot)
 
       if left and hadItem and cursorBankBag and cursorBankBag ~= bag then
-        TransferCursorToBank(bag, slot, function()
-          if click then click(a1, a2, a3, a4, a5, a6, a7, a8, a9) end
-        end)
+        TransferCursorToBank(bag, slot)
         return
       end
 
@@ -299,10 +149,8 @@ local function InstallBankTransfer(button, bag)
       if left then
         if CursorHasInventoryItem() then
           cursorBankBag = bag
-          cursorBankLink = previous
         else
           cursorBankBag = nil
-          cursorBankLink = nil
         end
       end
     end)
@@ -310,14 +158,11 @@ local function InstallBankTransfer(button, bag)
   local dragStart = button:GetScript("OnDragStart")
   button:SetScript("OnDragStart",
     function(a1, a2, a3, a4, a5, a6, a7, a8, a9)
-      local previous = SlotLink(bag, button:GetID())
-
       if dragStart then
         dragStart(a1, a2, a3, a4, a5, a6, a7, a8, a9)
       end
       if CursorHasInventoryItem() then
         cursorBankBag = bag
-        cursorBankLink = previous
       end
     end)
 
@@ -328,15 +173,9 @@ local function InstallBankTransfer(button, bag)
 
       if CursorHasInventoryItem() and cursorBankBag and
          cursorBankBag ~= bag then
-        TransferCursorToBank(bag, slot, function()
-          if receiveDrag then
-            receiveDrag(a1, a2, a3, a4, a5, a6, a7, a8, a9)
-          end
-        end)
+        TransferCursorToBank(bag, slot)
         return
       end
-
-      local previous = SlotLink(bag, slot)
 
       if receiveDrag then
         receiveDrag(a1, a2, a3, a4, a5, a6, a7, a8, a9)
@@ -344,10 +183,8 @@ local function InstallBankTransfer(button, bag)
 
       if CursorHasInventoryItem() then
         cursorBankBag = bag
-        cursorBankLink = previous
       else
         cursorBankBag = nil
-        cursorBankLink = nil
       end
     end)
 end
@@ -524,6 +361,7 @@ local function EnsureBankBagButton(index)
   button:SetWidth(BAG_BUTTON)
   button:SetHeight(BAG_BUTTON)
   U.StyleItemSlot(button, name)
+  U.UseBorderOnlyItemSlotHover(button)
 
   button:SetScript("OnEnter", function()
     U.SetBorderColor(button, M.Unpack(M.color.moverEdge))
@@ -547,25 +385,43 @@ local function EnsureBankBagButton(index)
   return button
 end
 
--- The bag's own icon. The stock template resolves its art through frame names
--- it does not know here, so the inventory texture is read directly and
--- BankFrameItemButton_Update is only the fallback for what that misses.
+-- The bag's own icon. Focused runtime probe bankbagicon.mapping.v1 (1.41.0)
+-- verified that BankButtonIDToInvSlotID maps inputs 1..10 to inventory slots
+-- 40..49 on this client, while the equipped red bank bag was at inventory slot
+-- 64. The parked stock BankFrameBag1 icon held the correct red-bag texture both
+-- before and after BankFrameItemButton_Update; the updater left this custom-
+-- named button on its generic fallback. Read the verified stock icon region
+-- after updating the real stock button instead of guessing an inventory id.
 local function RefreshBankBagButton(index)
   local button = bagButtons[index]
   if not button then return end
 
   local texture
-  local idOk, inventoryId = pcall(BankButtonIDToInvSlotID, button:GetID())
-  if idOk and tonumber(inventoryId) then
-    local texOk, value = pcall(GetInventoryItemTexture, "player", inventoryId)
-    if texOk then texture = value end
+  local nativeName = "BankFrameBag" .. index
+  local nativeButton = U.G(nativeName)
+  local nativeIcon = U.G(nativeName .. "IconTexture")
+  local update = U.G("BankFrameItemButton_Update")
+  if nativeButton and type(update) == "function" then
+    pcall(update, nativeButton)
+  end
+  if nativeIcon then
+    local textureOk, value = pcall(nativeIcon.GetTexture, nativeIcon)
+    if textureOk and value and value ~= "" then texture = value end
   end
 
-  if texture then
-    pcall(SetItemButtonTexture, button, texture)
-  else
-    local fn = U.G("BankFrameItemButton_Update")
-    if type(fn) == "function" then pcall(fn, button) end
+  -- The generic icon is only a capability fallback. In the measured path the
+  -- stock region supplies either the equipped bag art or its native empty-slot
+  -- bag silhouette, so every purchased slot remains visible and accurate.
+  local displayTexture = texture or EMPTY_BAG_ICON
+  pcall(SetItemButtonTexture, button, displayTexture)
+
+  -- The template may leave its named icon hidden after a native update. Keep
+  -- the meaningful bag art visible independently of the stripped state art.
+  local icon = U.G(button:GetName() .. "IconTexture")
+  if icon then
+    pcall(icon.SetTexture, icon, displayTexture)
+    pcall(icon.SetAlpha, icon, 1)
+    pcall(icon.Show, icon)
   end
 
   button.tooltipText = U.L("BANK_BAG_LABEL")
@@ -633,8 +489,10 @@ local function LayoutHeader()
         button:ClearAllPoints()
         button:SetPoint("LEFT", frame.bags, "LEFT",
                         shown * (BAG_BUTTON + SLOT_GAP), 0)
-        RefreshBankBagButton(index)
         button:Show()
+        -- Refresh after Show: the stock template can run an OnShow update that
+        -- changes its icon region, so UnrealUI's explicit texture wins last.
+        RefreshBankBagButton(index)
         shown = shown + 1
       else
         button:Hide()
@@ -737,7 +595,6 @@ local function ProcessDirty()
 
   if not CursorHasInventoryItem() then
     cursorBankBag = nil
-    cursorBankLink = nil
   end
 
   NeutraliseNativeBank()
@@ -924,7 +781,6 @@ local function Build()
     U.UnregisterUpdate("bank.refresh")
     U.HideConfirm("bank")
     cursorBankBag = nil
-    cursorBankLink = nil
     if closing then return end
     closing = true
     pcall(CloseBankFrame)

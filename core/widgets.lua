@@ -73,8 +73,9 @@ end
 -- A compact, non-interactive progress bar shared by any UnrealUI surface that
 -- needs to report bounded work. The fill comes from the verified plain-texture
 -- status-bar primitive in core/style.lua; this wrapper adds the standard
--- outline and an owned centred readout without depending on the native
--- StatusBar widget, whose fill is known not to lay itself out on this client.
+-- outline and, unless showText is false, an owned centred readout without
+-- depending on the native StatusBar widget, whose fill is known not to lay
+-- itself out on this client.
 function U.CreateProgressIndicator(parent, options)
   options = options or {}
 
@@ -90,14 +91,17 @@ function U.CreateProgressIndicator(parent, options)
   U.CreateBorder(bar, options.thickness)
   U.SetBorderColor(bar, M.Unpack(options.border or M.color.border))
 
-  local label = U.CreateLabel(bar, {
-    size = options.size or M.fontSize.tiny,
-    color = options.textColor or M.color.text,
-    inherits = "GameFontNormal",
-    width = math.max(1, (options.width or 240) - 8),
-    height = math.max(1, (options.height or 12) - 2),
-    justify = "CENTER",
-  })
+  local label
+  if options.showText ~= false then
+    label = U.CreateLabel(bar, {
+      size = options.size or M.fontSize.tiny,
+      color = options.textColor or M.color.text,
+      inherits = "GameFontNormal",
+      width = math.max(1, (options.width or 240) - 8),
+      height = math.max(1, (options.height or 12) - 2),
+      justify = "CENTER",
+    })
+  end
   if label then
     label:SetPoint("CENTER", bar, "CENTER", 0, -1)
     label:SetText(options.text or "")
@@ -129,11 +133,11 @@ end
 -- Native suppression cannot safely run while the client constructs its own
 -- interface: measured runtime evidence shows that doing so leaves the session
 -- with severe target-change stalls. core/compat.lua owns the measured settle
--- criteria and reports them here; this code only draws their progress.
+-- criteria and reports them here; this code draws their progress and sends the
+-- explanation to chat without blocking the play area.
 local startupLoading = {
-  width = 500,
-  height = 92,
-  barWidth = 460,
+  width = 315,
+  height = 8,
   progress = 0,
 }
 
@@ -143,10 +147,6 @@ function startupLoading.SetRegionShown(region, shown)
 end
 
 function startupLoading.SetShown(shown)
-  startupLoading.SetRegionShown(startupLoading.panel, shown)
-  startupLoading.SetRegionShown(startupLoading.title, shown)
-  startupLoading.SetRegionShown(startupLoading.message, shown)
-  startupLoading.SetRegionShown(startupLoading.timing, shown)
   startupLoading.SetRegionShown(startupLoading.bar, shown)
   if startupLoading.bar then
     startupLoading.SetRegionShown(startupLoading.bar.uuiBackground, shown)
@@ -158,79 +158,24 @@ function startupLoading.SetShown(shown)
       startupLoading.SetRegionShown(startupLoading.bar.uuiEdges[i], shown)
     end
   end
-  if startupLoading.panel then
-    startupLoading.SetRegionShown(startupLoading.panel.uuiFill, shown)
-    local i
-    for i = 1, table.getn(startupLoading.panel.uuiEdges or {}) do
-      startupLoading.SetRegionShown(startupLoading.panel.uuiEdges[i], shown)
-    end
-  end
 end
 
 function startupLoading.Build()
-  if startupLoading.panel then return true end
+  if startupLoading.bar then return true end
 
-  local panel = U.CreatePanel(UIParent, {
+  local bar = U.CreateProgressIndicator(UIParent, {
     name = "UnrealUIStartupLoading",
     width = startupLoading.width,
     height = startupLoading.height,
-  })
-  panel:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
-  pcall(panel.SetFrameStrata, panel, "FULLSCREEN_DIALOG")
-  pcall(panel.SetFrameLevel, panel, 1000)
-  panel:Show()
-  startupLoading.panel = panel
-
-  local title = U.CreateLabel(panel, {
-    size = M.fontSize.large,
     color = M.color.accent,
-    inherits = "GameFontNormal",
-    width = startupLoading.barWidth,
-    height = 16,
-    justify = "CENTER",
+    showText = false,
   })
-  if title then
-    title:SetPoint("TOP", panel, "TOP", 0, -10)
-    title:SetText(U.L("LOADING_TITLE"))
+  if bar then
+    bar:SetPoint("TOP", UIParent, "TOP", 0, -42)
+    pcall(bar.SetFrameStrata, bar, "FULLSCREEN_DIALOG")
+    pcall(bar.SetFrameLevel, bar, 1000)
+    bar:Show()
   end
-  startupLoading.title = title
-
-  local message = U.CreateLabel(panel, {
-    size = M.fontSize.small,
-    color = M.color.textDim,
-    inherits = "GameFontNormal",
-    width = startupLoading.barWidth,
-    height = 16,
-    justify = "CENTER",
-    nonSpaceWrap = true,
-  })
-  if message then
-    message:SetPoint("TOP", panel, "TOP", 0, -31)
-    message:SetText(U.L("LOADING_CLIENT_LIMITATION"))
-  end
-  startupLoading.message = message
-
-  local timing = U.CreateLabel(panel, {
-    size = M.fontSize.small,
-    color = M.color.textDim,
-    inherits = "GameFontNormal",
-    width = startupLoading.barWidth,
-    height = 16,
-    justify = "CENTER",
-    nonSpaceWrap = true,
-  })
-  if timing then
-    timing:SetPoint("TOP", panel, "TOP", 0, -47)
-    timing:SetText(U.L("LOADING_FPS_DEPENDENT"))
-  end
-  startupLoading.timing = timing
-
-  local bar = U.CreateProgressIndicator(panel, {
-    width = startupLoading.barWidth,
-    height = 14,
-    color = M.color.accent,
-  })
-  if bar then bar:SetPoint("BOTTOM", panel, "BOTTOM", 0, 10) end
   startupLoading.bar = bar
   return bar ~= nil
 end
@@ -243,7 +188,12 @@ function U.ShowStartupLoading()
   startupLoading.progress = 0
   startupLoading.lastPercent = 0
   startupLoading.SetShown(true)
-  startupLoading.bar:SetProgress(0, "0%")
+  startupLoading.bar:SetProgress(0)
+
+  -- Keep the explanation available without covering the play area. The
+  -- loading surface itself is now only the slim bar at the top of the screen.
+  U.Print(U.L("LOADING_TITLE") .. ": " .. U.L("LOADING_CLIENT_LIMITATION"))
+  U.Print(U.L("LOADING_FPS_DEPENDENT"))
 end
 
 -- `quiet` is the current run of frames shorter than the compatibility layer's
@@ -272,7 +222,7 @@ function U.UpdateStartupLoading(waited, quiet, minimum, maximum, quietNeeded)
   local percent = math.floor(progress * 100)
   if percent <= startupLoading.lastPercent then return end
   startupLoading.lastPercent = percent
-  startupLoading.bar:SetProgress(percent / 100, tostring(percent) .. "%")
+  startupLoading.bar:SetProgress(percent / 100)
 end
 
 function U.CompleteStartupLoading()
@@ -280,7 +230,7 @@ function U.CompleteStartupLoading()
 
   startupLoading.progress = 1
   startupLoading.lastPercent = 100
-  startupLoading.bar:SetProgress(1, "100%")
+  startupLoading.bar:SetProgress(1)
 
   -- Leave the completed state visible for one rendered frame after native
   -- suppression. The shared driver is the only reliable deferred path on this
