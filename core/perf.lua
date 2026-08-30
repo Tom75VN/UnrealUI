@@ -128,6 +128,221 @@ local frameCount = 0
 local eventCounts = {}
 
 -- ---------------------------------------------------------------------------
+-- Spike census and frame attribution
+--
+-- The recorder above only looks at frames around a marked event, which is what
+-- it was built for and what a *periodic* stutter escapes: a hitch arriving
+-- every second or two, with no target change anywhere near it, leaves no trace
+-- in the baseline, the mean or the samples. A player reporting constant
+-- stuttering was describing something this file could not show.
+--
+-- So every frame is classified against the same rolling baseline. A spike is a
+-- frame at least FACTOR times the recent mean and at least FLOOR_MS above it,
+-- the floor being there so a 7ms baseline cannot turn a harmless 15ms frame
+-- into a "spike". The gap between consecutive spikes is recorded with them,
+-- because a periodic cost is identified by its period: ~2s of gaps points at a
+-- two-second poller, ~5s at a five-second one, and unrelated gaps say the cost
+-- is not on a timer at all.
+--
+-- Attribution then works the only way it can here. debugprofilestop is a
+-- documented no-op on this client, so nothing inside a frame can be timed. But
+-- the shared driver reports each updater as it fires, the delta the next tick
+-- reports describes the frame those updaters ran in, and the same holds for
+-- events dispatched in that frame. Counting fires and spike-fires per id turns
+-- "which frame was long" into "what ran in the long frames", which is what a
+-- bisect answers slowly and this answers in one run. It also reaches the two
+-- modules the cycle structurally cannot bisect, swingbar and petbarcustom,
+-- because it keys on the updater id rather than on a subsystem switch.
+--
+-- One table rather than eighteen file-level locals, per the module-segmentation
+-- rule: this file's Report and PerfTick already close over most of the module,
+-- and Lua caps upvalues per function (32 on 5.0, 60 on 5.1) well below its
+-- 200-local limit.
+--
+-- The symptom to recognise if this file ever stops working: /uui perf answers
+-- "perf recorder is unavailable in this build", which is core/commands.lua
+-- finding U.PerfCommand undefined because core/perf.lua never loaded at all.
+-- Any load failure in this file looks exactly like that, with no error shown.
+-- Check it with a real Lua 5.1 -- lupa ships lupa.lua51 alongside its default
+-- 5.5, which accepts syntax this client rejects -- and test loadstring's
+-- RETURN value: it reports failure by returning nil plus a message rather than
+-- raising, so a checker that ignores the return passes a file that never
+-- compiled. Both mistakes together hid a dropped `return {` in BuildExport.
+-- ---------------------------------------------------------------------------
+local spike = {
+  FACTOR = 2.0,        -- a frame this many times the rolling mean is a spike
+  FLOOR_MS = 6,        -- ...and at least this many ms above it
+  HARD = 4.0,          -- the subset severe enough to read as a freeze
+  KEEP = 30,           -- spikes retained with their timestamps and gaps
+
+  count = 0, hard = 0, worstMs = 0,
+  log = {}, lastAt = nil, clock = 0,
+
+  -- What ran inside the frame now ending. The arrays keep their slots, so a
+  -- steady state allocates nothing; only the counts reset per frame.
+  firedIds = {}, firedCount = 0,
+  firedEvents = {}, firedEventCount = 0,
+
+  updaterFires = {}, updaterSpikes = {}, eventSpikes = {},
+
+  -- Heap census. A spike train this regular is usually not code running on a
+  -- timer at all -- it is the collector, which fires on allocation rather than
+  -- on the clock and therefore lands at a fixed period whenever the
+  -- allocation rate is steady. gcinfo is the only heap reading available:
+  -- UnrealPfUI's modules/panel.lua calls it on this client and reads back
+  -- (used KB, threshold KB), which is WORKING_SOURCE for its presence here,
+  -- not runtime verification -- so every use below degrades to nil safely.
+  --
+  -- Readings are integer KB, so a single small allocation does not resolve.
+  -- Summed over thousands of fires the ranking still holds, which is all this
+  -- needs to do: name the updater feeding the collector.
+  gcFn = nil, gcSafe = nil,
+  kb = nil, gcFrame = false,
+  collections = 0, freedKb = 0, allocKb = 0,
+  gcAt = nil, gcGapTotal = 0, gcGapCount = 0, gcSpikes = 0,
+  openId = nil, openKb = nil,
+  allocById = {}, gcById = {},
+}
+
+-- gcinfo, resolved once and then called directly. The first call is protected;
+-- after it answers, the same memoisation the suppression sweep uses applies,
+-- because this runs twice per updater fire and a pcall per read would price
+-- the measurement into what it is measuring.
+function spike.ReadKb()
+  if spike.gcSafe then return spike.gcFn() end
+
+  local fn = spike.gcFn
+  if fn == nil then
+    fn = false
+    if type(U.G) == "function" then
+      local candidate = U.G("gcinfo")
+      if type(candidate) == "function" then fn = candidate end
+    end
+    spike.gcFn = fn
+  end
+  if not fn then return nil end
+
+  local ok, kb = pcall(fn)
+  if not ok or type(kb) ~= "number" then
+    spike.gcFn = false
+    return nil
+  end
+  spike.gcSafe = true
+  return kb
+end
+
+-- Reads the heap once per frame and decides whether the frame that just ended
+-- contained a collection: gcinfo going down can only mean the collector ran.
+function spike.Heap()
+  local kb = spike.ReadKb()
+  spike.gcFrame = false
+  if not kb then return end
+
+  if spike.kb then
+    if kb < spike.kb then
+      spike.gcFrame = true
+      spike.collections = spike.collections + 1
+      spike.freedKb = spike.freedKb + (spike.kb - kb)
+      if spike.gcAt then
+        spike.gcGapTotal = spike.gcGapTotal + (spike.clock - spike.gcAt)
+        spike.gcGapCount = spike.gcGapCount + 1
+      end
+      spike.gcAt = spike.clock
+    elseif kb > spike.kb then
+      spike.allocKb = spike.allocKb + (kb - spike.kb)
+    end
+  end
+
+  spike.kb = kb
+end
+
+function spike.Reset()
+  spike.count, spike.hard, spike.worstMs = 0, 0, 0
+  spike.log, spike.lastAt, spike.clock = {}, nil, 0
+  spike.firedIds, spike.firedCount = {}, 0
+  spike.firedEvents, spike.firedEventCount = {}, 0
+  spike.updaterFires, spike.updaterSpikes, spike.eventSpikes = {}, {}, {}
+  spike.kb, spike.gcFrame, spike.gcAt = nil, false, nil
+  spike.collections, spike.freedKb, spike.allocKb = 0, 0, 0
+  spike.gcGapTotal, spike.gcGapCount, spike.gcSpikes = 0, 0, 0
+  spike.openId, spike.openKb = nil, nil
+  spike.allocById, spike.gcById = {}, {}
+end
+
+-- Charges everything that ran in the frame just ended, then clears the frame.
+-- Takes the same ms the baseline sees, so the yardstick and the verdict cannot
+-- disagree.
+function spike.Settle(ms, baselineMean)
+  local hit = false
+  if baselineMean > 0 and ms >= baselineMean * spike.FACTOR and
+     ms >= baselineMean + spike.FLOOR_MS then
+    hit = true
+    spike.count = spike.count + 1
+    if ms >= baselineMean * spike.HARD then spike.hard = spike.hard + 1 end
+    if ms > spike.worstMs then spike.worstMs = ms end
+
+    local gap = -1
+    if spike.lastAt then gap = spike.clock - spike.lastAt end
+    spike.lastAt = spike.clock
+    if spike.gcFrame then spike.gcSpikes = spike.gcSpikes + 1 end
+    table.insert(spike.log, {
+      ms = ms, at = spike.clock, gap = gap,
+      gc = spike.gcFrame and 1 or 0,
+    })
+    if table.getn(spike.log) > spike.KEEP then table.remove(spike.log, 1) end
+  end
+
+  local i
+  if hit then
+    for i = 1, spike.firedCount do
+      local id = spike.firedIds[i]
+      spike.updaterSpikes[id] = (spike.updaterSpikes[id] or 0) + 1
+    end
+    for i = 1, spike.firedEventCount do
+      local name = spike.firedEvents[i]
+      spike.eventSpikes[name] = (spike.eventSpikes[name] or 0) + 1
+    end
+  end
+
+  spike.firedCount, spike.firedEventCount = 0, 0
+end
+
+-- Mean gap between the retained spikes, which is the number that names a
+-- period. Returns nil when there is nothing to average.
+function spike.Gaps()
+  local total, count, low, high = 0, 0, nil, 0
+  local i
+  for i = 1, table.getn(spike.log) do
+    local gap = spike.log[i].gap
+    if gap and gap >= 0 then
+      total = total + gap
+      count = count + 1
+      if not low or gap < low then low = gap end
+      if gap > high then high = gap end
+    end
+  end
+  if count == 0 then return nil end
+  return total / count, low or 0, high
+end
+
+-- The two updater ids present in the largest share of spike frames. An updater
+-- running every frame scores 100% by definition and means nothing, so the
+-- caller prints its total fire count beside the share.
+function spike.Worst()
+  local bestId, bestHits, nextId, nextHits = nil, 0, nil, 0
+  local id, hits
+  for id, hits in pairs(spike.updaterSpikes) do
+    if hits > bestHits then
+      nextId, nextHits = bestId, bestHits
+      bestId, bestHits = id, hits
+    elseif hits > nextHits then
+      nextId, nextHits = id, hits
+    end
+  end
+  return bestId, bestHits, nextId, nextHits
+end
+
+-- ---------------------------------------------------------------------------
 -- Automatic subsystem cycle
 --
 -- Hand bisecting compared runs taken minutes apart, under player behaviour that
@@ -192,6 +407,41 @@ local function ResetState()
   eventCounts = {}
   phaseStats = {}
   cycleElapsed, cycleRotations = 0, 0
+  spike.Reset()
+end
+
+-- Called by core/init.lua's shared driver as each updater fires. Recorded
+-- against the frame in progress and settled by the next tick, which is the one
+-- that knows how long that frame was.
+function U.PerfUpdater(id)
+  if not active or type(id) ~= "string" then return end
+  spike.updaterFires[id] = (spike.updaterFires[id] or 0) + 1
+  spike.firedCount = spike.firedCount + 1
+  spike.firedIds[spike.firedCount] = id
+  spike.openId = id
+  spike.openKb = spike.ReadKb()
+end
+
+-- Closes the bracket the driver opened. A negative delta means the collector
+-- ran inside that callback, which is charged separately: the updater that
+-- happens to cross the threshold is not necessarily the one that filled it,
+-- and the allocation totals are the honest answer to who did.
+function U.PerfUpdaterEnd()
+  if not active or not spike.openId then return end
+
+  local id = spike.openId
+  local before = spike.openKb
+  spike.openId, spike.openKb = nil, nil
+  if not before then return end
+
+  local kb = spike.ReadKb()
+  if not kb then return end
+
+  if kb > before then
+    spike.allocById[id] = (spike.allocById[id] or 0) + (kb - before)
+  elseif kb < before then
+    spike.gcById[id] = (spike.gcById[id] or 0) + 1
+  end
 end
 
 local function StoreSample(sample)
@@ -277,6 +527,15 @@ function U.PerfTick(elapsed)
 
   local ms = elapsed * 1000
   frameCount = frameCount + 1
+  spike.clock = spike.clock + elapsed
+
+  -- Settle the frame that just ended before anything else touches the
+  -- baseline: this delta describes the frame the previous tick's updaters and
+  -- events ran in, so it is judged against the window that closed before it.
+  local mean = 0
+  if baselineCount > 0 then mean = baselineTotal / baselineCount end
+  spike.Heap()
+  spike.Settle(ms, mean)
 
   if cycleActive then
     cycleElapsed = cycleElapsed + elapsed
@@ -329,6 +588,15 @@ function U.PerfEvent(event)
   if not active then return end
 
   eventCounts[event] = (eventCounts[event] or 0) + 1
+
+  -- Events are dispatched outside the driver loop but inside the same frame,
+  -- so they are charged to it exactly as updaters are. The cap only stops a
+  -- pathological burst from growing the per-frame array without bound; the
+  -- census in eventCounts is unaffected by it.
+  if spike.firedEventCount < 60 then
+    spike.firedEventCount = spike.firedEventCount + 1
+    spike.firedEvents[spike.firedEventCount] = event
+  end
 
   if not MARK[event] then return end
 
@@ -413,6 +681,27 @@ local function BuildExport()
 
   local suppression = ReadStats(U.SuppressionStats)
 
+  -- The spike log as three parallel plain-number arrays. This client's
+  -- SavedVariables writer is only trusted with numbers, booleans and arrays of
+  -- them (knowledge.json / config.savedvariables_backslash_corruption), and
+  -- three arrays read as well as a list of records once they are lined up.
+  local spikeMs, spikeAt, spikeGap, spikeGc = {}, {}, {}, {}
+  local n
+  for n = 1, table.getn(spike.log) do
+    spikeMs[n] = spike.log[n].ms
+    spikeAt[n] = spike.log[n].at
+    spikeGap[n] = spike.log[n].gap
+    spikeGc[n] = spike.log[n].gc
+  end
+
+  local gcGap = 0
+  if spike.gcGapCount > 0 then gcGap = spike.gcGapTotal / spike.gcGapCount end
+  local allocRate = 0
+  if spike.clock > 0 then allocRate = spike.allocKb / spike.clock end
+
+  local spikeRate = 0
+  if spike.clock > 0 then spikeRate = spike.count / spike.clock end
+
   return {
     active = active,
     frameCount = frameCount,
@@ -431,6 +720,37 @@ local function BuildExport()
       auras = switches.auras, plates = switches.plates,
       bars = switches.bars,
     },
+    -- The periodic-stutter half of the report. spikeUpdaters/spikeEvents are
+    -- keyed by id: compare each against updaterFires for the same id, because
+    -- an updater that fires every frame is in every spike frame by definition
+    -- and only its share means anything.
+    spikeCount = spike.count,
+    spikeHardCount = spike.hard,
+    spikeWorstMs = spike.worstMs,
+    spikePerSecond = spikeRate,
+    spikeFactor = spike.FACTOR,
+    spikeFloorMs = spike.FLOOR_MS,
+    spikeMs = spikeMs,
+    spikeAt = spikeAt,
+    spikeGap = spikeGap,
+    spikeGc = spikeGc,
+
+    -- Heap census. gcSpikeCount against spikeCount is the whole verdict: if
+    -- nearly every spike frame also contained a collection, the stutter is the
+    -- collector and allocKbPerSecond/allocByUpdater say what feeds it.
+    gcCollections = spike.collections,
+    gcSpikeCount = spike.gcSpikes,
+    gcMeanGapSeconds = gcGap,
+    gcFreedKb = spike.freedKb,
+    gcHeapKb = spike.kb,
+    allocKbTotal = spike.allocKb,
+    allocKbPerSecond = allocRate,
+    allocByUpdater = spike.allocById,
+    gcInsideUpdater = spike.gcById,
+    recordedSeconds = spike.clock,
+    updaterFires = spike.updaterFires,
+    spikeUpdaters = spike.updaterSpikes,
+    spikeEvents = spike.eventSpikes,
     baselineMeanMs = baseline,
     baselineWorstMs = baselineWorst,
     baselineFrameCount = baselineCount,
@@ -501,6 +821,62 @@ local function Report()
                 "ms (worst " .. Format(e.peakWorst) .. ")")
       end
     end
+  end
+
+  -- The periodic-stutter summary, printed before the work census because it is
+  -- the part a player can act on: how often the frame actually broke, how far
+  -- apart the breaks were, and what was running when they happened.
+  if spike.count > 0 then
+    local rate = 0
+    if spike.clock > 0 then rate = spike.count / spike.clock end
+    U.Print("  |cffffff00spikes|r: " .. tostring(spike.count) ..
+            " frames over " .. Format(spike.FACTOR) .. "x baseline (" ..
+            tostring(spike.hard) .. " over " .. Format(spike.HARD) ..
+            "x), worst " .. Format(spike.worstMs) .. "ms, " ..
+            string.format("%.2f", rate) .. "/s")
+
+    local mean, low, high = spike.Gaps()
+    if mean then
+      U.Print("    gap between spikes: mean " ..
+              string.format("%.2f", mean) .. "s (min " ..
+              string.format("%.2f", low) .. "s, max " ..
+              string.format("%.2f", high) .. "s)")
+    end
+
+    -- The verdict line. A collection pause is not something any single
+    -- updater is "in", so this is printed before the per-updater shares: those
+    -- shares are dominated by whatever runs every frame and mean little once
+    -- the collector is the answer.
+    if spike.collections > 0 then
+      U.Print("    |cffffff00heap|r: " .. tostring(spike.collections) ..
+              " collections, " .. tostring(spike.gcSpikes) .. " of " ..
+              tostring(spike.count) .. " spikes were collection frames" ..
+              (spike.gcGapCount > 0 and ("  (every " ..
+               string.format("%.2f", spike.gcGapTotal / spike.gcGapCount) ..
+               "s)") or ""))
+      local rate = 0
+      if spike.clock > 0 then rate = spike.allocKb / spike.clock end
+      U.Print("    allocation " .. string.format("%.0f", rate) ..
+              " KB/s, heap now " .. tostring(spike.kb or 0) .. " KB")
+    end
+
+    local bestId, bestHits, nextId, nextHits = spike.Worst()
+    if bestId then
+      U.Print("    in spikes: " .. bestId .. " " ..
+              tostring(math.floor(bestHits / spike.count * 100 + 0.5)) .. "% (" ..
+              tostring(bestHits) .. " of " .. tostring(spike.count) ..
+              ", fired " .. tostring(spike.updaterFires[bestId] or 0) ..
+              "x total)")
+    end
+    if nextId then
+      U.Print("               " .. nextId .. " " ..
+              tostring(math.floor(nextHits / spike.count * 100 + 0.5)) .. "% (" ..
+              tostring(nextHits) .. " of " .. tostring(spike.count) ..
+              ", fired " .. tostring(spike.updaterFires[nextId] or 0) ..
+              "x total)")
+    end
+    U.Print("    full per-updater table is in the file; |cffffff00/reload|r " ..
+            "to write it out")
   end
 
   -- The work census, printed alongside the timings so a bisect run says both

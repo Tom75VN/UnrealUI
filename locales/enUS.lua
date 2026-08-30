@@ -18,6 +18,16 @@
 
 UnrealUI.RegisterLocale("enUS", {
 
+-- Opt-in custom pet bar (native remains the default).
+CMD_PETBAR                = "  |cffffff00/uui petbar <native/custom>|r - select the pet bar (needs /reload)",
+PETBAR_MODE_NATIVE        = "Native",
+PETBAR_MODE_CUSTOM        = "Custom (Modern)",
+PETBAR_MODE_STATUS        = "Pet bar: %s. Selected for next reload: %s.",
+PETBAR_MODE_SELECTED      = "Pet bar selected: %s. Type /reload to apply.",
+PETBAR_CUSTOM_WARNING     = "Experimental custom pet bar: this client blocks pet spell clicks. Restore native casting with /uui petbar native, then /reload.",
+PETBAR_ACTION_UNAVAILABLE = "This pet action is unavailable on this client.",
+PETBAR_UNAVAILABLE        = "Pet bar mode controls are unavailable in this session.",
+
 -- ---------------------------------------------------------------------------
 -- Shared controls (core/widgets.lua, core/style.lua)
 -- ---------------------------------------------------------------------------
@@ -63,9 +73,11 @@ MOVER_LABEL_PARTY_N       = "Party %d",
 MOVER_LABEL_DRUID_MANA    = "Druid Mana",
 MOVER_LABEL_CASTBAR       = "Cast bar",
 MOVER_LABEL_TARGET_CASTBAR = "Target cast bar",
+MOVER_LABEL_PET_CASTBAR   = "Pet cast bar",
 MOVER_LABEL_XP_BAR        = "Experience Bar",
 MOVER_LABEL_REP_BAR       = "Reputation Bar",
 MOVER_LABEL_BREATH_BAR    = "Breath Bar",
+MOVER_LABEL_SWING_BAR     = "Auto attack : Swing bar",
 MOVER_LABEL_MICRO_BAR     = "Micro Bar",
 MOVER_LABEL_BUFFS         = "Buffs & Debuffs",
 MOVER_LABEL_MINIMAP       = "Minimap",
@@ -101,12 +113,18 @@ SETTINGS_QUICKBIND        = "Quick Binding",
 SETTINGS_QUICKBIND_HINT   = "Hover an action bar or stance bar slot and press a key to bind it. Escape over a slot clears it.",
 SETTINGS_AUTO_ATTACK      = "Start auto attack when targeting",
 SETTINGS_AUTO_ATTACK_HINT = "Automatically starts auto attack when you select an attackable target by clicking it or pressing Tab. It never triggers during Rogue Stealth or Druid Prowl.",
+SETTINGS_SWING_BAR        = "Show auto attack swing bar",
+SETTINGS_SWING_BAR_HINT   = "Shows main-hand, off-hand, and bow or ranged swing timing while the target is in range. Move it with Move UI.",
 SETTINGS_MICROBAR         = "Enable micro bar",
 SETTINGS_MICROBAR_HINT    = "Pulls the native character/spellbook/talent/quest log/social/map/menu/help buttons into one movable row. Disabling returns them to their stock location.",
 SETTINGS_REPUTATION_BAR   = "Show reputation bar",
 SETTINGS_MINIMAP_BUTTON   = "Show minimap settings button",
 SETTINGS_ZONE_LEVELS      = "Show zone level ranges on the world map",
 SETTINGS_ZONE_LEVELS_HINT = "Hovering a zone on a continent map shows its level range beside the name: green below your level, orange at your level, red above your level.",
+
+SWING_BAR_MAIN            = "MH",
+SWING_BAR_OFF             = "OH",
+SWING_BAR_RANGED          = "R",
 
 ROGUE_SETTINGS_HEADER         = "Poison shortcuts",
 ROGUE_POISON_SHIFT_CLICK      = "Enable poison Shift-clicks",
@@ -210,6 +228,12 @@ UF_POWER_ENERGY           = "Energy",
 
 UF_PARTY_HEADER           = "Party Frames",
 UF_PARTY_PETS             = "Show party member pets",
+UF_POWER_TICK_HEADER      = "Player Power Tick",
+UF_MANA_TICK              = "Show mana tick",
+UF_ENERGY_TICK            = "Show energy tick",
+UF_COMBO_POINTS_HEADER    = "Combo Points",
+UF_COMBO_POINTS_PLAYER_FRAME = "Player frame",
+UF_COMBO_POINTS_TARGET_FRAME = "Target frame",
 
 AURAS_HEADER              = "Unit Frame Auras",
 AURAS_ON_PLAYER_FRAME     = "Show auras on the player frame",
@@ -275,6 +299,10 @@ STATUS_ONLINE             = "online players",
 WORLDMAP_CURSOR           = "Cursor: --, --",
 WORLDMAP_CURSOR_OFF_MAP   = "Cursor: Off Map",
 QUESTLOG_LEVELS           = "Levels",
+SPELLBOOK_HIGHEST_RANK    = "Highest rank",
+SPELLBOOK_HIGHEST_RANK_TOOLTIP = "Shows only the last rank of each spell.",
+SPELLBOOK_BAR_HINT        = "Not on action bars",
+SPELLBOOK_BAR_HINT_TOOLTIP = "Highlights spells not on action bars.",
 GAMEMENU_OPTIONS          = "Options",
 
 -- ---------------------------------------------------------------------------

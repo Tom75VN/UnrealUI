@@ -405,6 +405,50 @@ local function UpdateRows()
                           headers > 0 and collapsedHeaders == headers)
 end
 
+-- Sell price and equipped-item comparison on quest-log rewards.
+--
+-- The same treatment modules/quest.lua gives the quest-giver frame, on the
+-- other surface where the player weighs a reward. The native button owns
+-- tooltip population and already knows which list it belongs to: it stores
+-- "choice" or "reward" in button.type and its 1-based index in GetID(), which
+-- is exactly what it feeds to GameTooltip:SetQuestLogItem. Append only after
+-- that native OnEnter has run, so the price lands under a populated tooltip.
+--
+-- This is behavior only -- no texture, font or anchor is touched -- and it is
+-- kept separate from the styling guard below so the hooks survive a button
+-- that was already styled on an earlier pass.
+local function HookQuestItemTooltip(item)
+  if not item or item.uuiQuestLogPriceHooks then return end
+  item.uuiQuestLogPriceHooks = true
+
+  U.PostHookScript(item, "OnEnter", function()
+    local idOk, index = false, nil
+    if item.GetID then idOk, index = pcall(item.GetID, item) end
+    if not idOk then return end
+
+    local link
+    if type(U.ShowQuestLogItemPrice) == "function" then
+      link = U.ShowQuestLogItemPrice(item.type, index)
+    end
+    -- The resolved link also carries the reward's rarity onto the tooltip's
+    -- name line. A reward that only resolved through the name fallback leaves
+    -- the native colour alone.
+    if type(U.ColorTooltipItemName) == "function" then
+      U.ColorTooltipItemName(link)
+    end
+    if type(U.ShowItemCompare) == "function" then
+      U.ShowItemCompare(link)
+    end
+  end)
+  U.PostHookScript(item, "OnLeave", function()
+    if type(U.ClearTooltipItemName) == "function" then
+      U.ClearTooltipItemName()
+    end
+    if type(U.HideItemPrice) == "function" then U.HideItemPrice() end
+    if type(U.HideItemCompare) == "function" then U.HideItemCompare() end
+  end)
+end
+
 local function StyleQuestItems()
   local maxItems = tonumber(G("MAX_NUM_ITEMS")) or 10
   local i
@@ -412,6 +456,7 @@ local function StyleQuestItems()
     local name = "QuestLogItem" .. i
     local item = G(name)
     local icon = G(name .. "IconTexture")
+    HookQuestItemTooltip(item)
     if item and not item.uuiQuestItemStyled then
       item.uuiQuestItemStyled = true
 
@@ -692,7 +737,13 @@ local function BuildFrame()
     UpdateRows()
     ApplyQuestFonts()
   end)
-  U.PostHookGlobal("QuestLog_UpdateQuestDetails", ApplyQuestFonts)
+  -- Re-run the item pass as well: the reward buttons are repopulated per
+  -- selected quest, and both helpers are idempotent, so a button that already
+  -- carries its styling and hooks is skipped.
+  U.PostHookGlobal("QuestLog_UpdateQuestDetails", function()
+    StyleQuestItems()
+    ApplyQuestFonts()
+  end)
 
   local empty = G("EmptyQuestLogFrame")
   if empty then

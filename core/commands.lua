@@ -94,6 +94,8 @@ local DIAGNOSTIC_HELP = {
   "  |cffffff00/uui keytest|r - measure whether key events reach addon frames",
   "  |cffffff00/uui elite|r - cycle the classification icon test",
   "  |cffffff00/uui np|r - dump WorldFrame children (nameplates)",
+  "  |cffffff00/uui sb|r - dump why a spellbook entry is marked off the action bars",
+  "  |cffffff00/uui sb trace|r - record what the mark does as a spell goes on/off a bar",
   "  |cffffff00/uui aura|r - dump the aura rows and why a timer is missing",
   "  |cffffff00/uui map|r - arm the map hover watch before opening it",
   "  |cffffff00/uui res|r - dump the Character sheet resistance frames",
@@ -122,6 +124,7 @@ local function ShowHelp(rest)
   U.Print(U.L("CMD_BIND"))
   U.Print(U.L("CMD_CHECK"))
   U.Print(U.L("CMD_THEME"))
+  U.Print(U.L("CMD_PETBAR"))
   U.Print(U.L("CMD_LANGUAGE"))
   U.Print(U.L("CMD_PROFILE"))
   U.Print(U.L("CMD_DEBUG"))
@@ -197,6 +200,28 @@ local function ShowUnitFrameCheck()
               ", delays " .. tostring(cb.delays) ..
               " (+" .. string.format("%.2f", tonumber(cb.delaySeconds) or 0) ..
               "s)")
+      -- Both reconstructed bars read out the same way, and the pet one is
+      -- the open question: no capture says which CHAT_MSG_SPELL event carries
+      -- a pet's cast text here, so starts/event is the evidence.
+      local PrintCastTracker = function(label, tracker)
+        if not tracker then return end
+        U.Print(label .. " castbar: casting " .. tostring(tracker.casting) ..
+                ", starts " .. tostring(tracker.starts) ..
+                ", unknown " .. tostring(tracker.unknown) ..
+                ", patterns " .. tostring(tracker.patterns))
+        if tracker.casting then
+          U.Print("  " .. tostring(tracker.caster) .. ": " ..
+                  tostring(tracker.spell) .. ", " ..
+                  tostring(tracker.remaining) .. "s remaining")
+        elseif tracker.lastUnknown then
+          U.Print("  last unknown spell: " .. tostring(tracker.lastUnknown))
+        end
+        U.Print("  event " .. tostring(tracker.lastEvent) ..
+                ", icon " .. tostring(tracker.iconSource))
+      end
+
+      PrintCastTracker("target", cb.target)
+      PrintCastTracker("pet", cb.pet)
     end
   end
 
@@ -245,7 +270,10 @@ local function ShowUnitFrameCheck()
   -- puts it). shown false just means there is no pet bar to draw.
   if type(U.PetBarReport) == "function" then
     local pb = U.PetBarReport()
-    if pb then
+    if pb and pb.mode == "custom" then
+      U.Print(U.L("PETBAR_MODE_STATUS", U.L("PETBAR_MODE_CUSTOM"),
+                  U.L(pb.selectedMode == "custom" and "PETBAR_MODE_CUSTOM" or "PETBAR_MODE_NATIVE")))
+    elseif pb then
       U.Print("pet bar: native " .. tostring(pb.native) ..
               ", has bar " .. tostring(pb.hasPetBar) ..
               ", placed " .. tostring(pb.placed) ..
@@ -971,6 +999,36 @@ handlers["check"]  = function() ShowSelfCheck() end
 handlers["help"]   = function(rest) ShowHelp(rest) end
 handlers["movertest"] = function() ShowMoverTest() end
 handlers["np"] = function() ShowNameplateDump() end
+-- Why a spellbook entry is, or is not, marked as absent from the action bars.
+-- The command being unavailable is itself an answer: modules/spellbook.lua did
+-- not load, or the hint never installed.
+handlers["sb"] = function(rest)
+  local mode = Trim(rest or "")
+
+  -- The dump is a snapshot; the trace is the timeline. A mark that is wrong
+  -- only *after* a drag cannot be explained by the snapshot alone, because by
+  -- the time it runs the index it would have to compare against is gone.
+  if mode == "trace" or mode == "trace on" then
+    if type(U.SpellBookBarHintTrace) ~= "function" then
+      U.Print("spellbook trace unavailable - modules/spellbook.lua did not load")
+      return
+    end
+    U.SpellBookBarHintTrace("on")
+    return
+  end
+
+  if mode == "trace off" or mode == "off" then
+    if type(U.SpellBookBarHintTrace) ~= "function" then return end
+    U.SpellBookBarHintTrace("off")
+    return
+  end
+
+  if type(U.SpellBookBarHintDump) ~= "function" then
+    U.Print("spellbook dump unavailable - modules/spellbook.lua did not load")
+    return
+  end
+  U.SpellBookBarHintDump()
+end
 -- Live readout, printed straight to chat: an aura timer that does not appear
 -- has exactly three possible causes and modules/auras.lua's dump names the one
 -- responsible, per row and per index, without a reload or a probe run.
@@ -1370,6 +1428,15 @@ handlers["profile"] = function(rest)
   end
 
   U.Print(U.L("CMD_PROFILE_CREATED", name))
+end
+
+-- Pet bar mode is independent of the overall theme and changes after reload.
+handlers["petbar"] = function(rest)
+  if type(U.PetBarCommand) == "function" then
+    U.PetBarCommand(rest)
+  else
+    U.Print(U.L("PETBAR_UNAVAILABLE"))
+  end
 end
 
 -- Native Classic mode has no UnrealUI settings window by design.  Keep theme

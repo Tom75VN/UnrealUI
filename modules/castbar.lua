@@ -2,7 +2,8 @@
 --
 -- The player's cast bar: the spell icon flush against the left edge, and the
 -- progress bar filling the rest of the width to the right edge, carrying the
--- spell name and the remaining time drawn directly on top of the fill.
+-- spell name, remaining time, and any accumulated spell-pushback penalty drawn
+-- directly on top of the fill.
 --
 -- knowledge.json / castbar.player_events_partial (RUNTIME_PLUS_WORKING_SOURCE):
 -- SPELLCAST_START and SPELLCAST_STOP are the two cast events observed firing on
@@ -11,10 +12,8 @@
 -- arrived as arg1="Fireball" (string, spell name), arg2=1500 (number,
 -- milliseconds) -- no rank argument at all. This module reads exactly that
 -- shape and nothing more. It does not call UnitCastingInfo or UnitChannelInfo,
--- which the same record explicitly says not to assume a tuple contract for on
--- this client (knowledge.json / castbar.target_polling_contract_unverified is
--- the sibling record covering why a target castbar built the same way pfUI
--- builds one is not attempted here).
+-- which are confirmed missing on this client. Target casts use the independent
+-- combat-text reconstruction described below.
 --
 -- Channelled casts (fishing among them) are handled the same way, but on
 -- WORKING_SOURCE evidence rather than a runtime capture: query_compat.py has
@@ -74,29 +73,36 @@
 -- too thin to be a comfortable grab target; placement is unaffected, since the
 -- native bar is anchored CENTER-to-CENTER and neither frame needs to know how
 -- large the other is. There is no target castbar mover in this mode: this
--- client has no native target castbar to place, and the unrealUI one is an
--- empty placeholder (see the scope note below).
+-- client has no native target castbar to place. The reconstructed UnrealUI
+-- target bar is part of the modern castbar mode rather than a stock frame.
 --
--- Scope this module still does not cover, and why:
---   * A target castbar. The only known implementation strategy (pfUI's) polls
---     UnitCastingInfo/UnitChannelInfo per unit, and that contract is
---     INCONCLUSIVE on this client. Left out until it is confirmed.
+-- Target casts use the client path verified by TargetedProbes 1.37.0. Native
+-- UnitCastingInfo("target") and UnitChannelInfo("target") were both nil on all
+-- 221 samples, so the bar never polls them. The same probe observed
+-- CHAT_MSG_SPELL_CREATURE_VS_CREATURE_DAMAGE carrying the localized combat
+-- text "Defias Cutpurse begins to perform Backstab.". This module parses the
+-- client's SPELLCASTOTHERSTART / SPELLPERFORMOTHERSTART templates, matches the
+-- caster to UnitName("target"), and times recognized spells from the compact
+-- Vanilla spell table below. Unknown spells are deliberately omitted rather
+-- than shown with an invented duration. Name matching has the usual Vanilla
+-- ambiguity when several nearby creatures share one name; no unit GUID exists
+-- in the captured event payload to distinguish them.
 --
---     UnrealPfUI's libs/libcast.lua does not actually call a native
---     UnitCastingInfo/UnitChannelInfo -- on a Vanilla-shaped client neither
---     exists for non-player units, so libcast *defines* those two globals
---     itself. Its own cast data comes from two sources, neither of them a cast
---     API: player casts from the same SPELLCAST_* events this module already
---     reads, and non-player casts from regex-matching combat-log text (e.g.
---     "%s begins to cast %s.") off CHAT_MSG_SPELL_* events, looked up against
---     a static per-spell-name cast-time table (L["spells"]). query_compat.py
---     has no record at all for CHAT_MSG_SPELL or that combat-log phrasing, so
---     this fallback is exactly as unverified on this client as the native
---     tuple it would replace -- it is not a usable evidence-gap default here,
---     only a second thing that would need its own probe. A target castbar
---     mover anchor is registered below (castbar.target) so the frame can be
---     placed now; it carries no live cast data until one of these two paths
---     is confirmed.
+-- The pet castbar is the same reconstruction pointed at UnitName("pet"), drawn
+-- under the pet unit frame at that frame's width. There is no pet cast API to
+-- use instead: this client has no PetCastingBarFrame and no UnitCastingInfo,
+-- and SPELLCAST_START is the player's own cast only. Two limits follow from
+-- the source, and neither is a bug to chase:
+--   * Only spells with a known cast time are drawn. Nearly every Vanilla pet
+--     ability is instant, so in practice this is the Imp's Firebolt; channels
+--     (Seduction, Consume Shadows) are left out rather than shown with a
+--     duration that cannot be cut short when the channel breaks early.
+--   * No captured evidence says which CHAT_MSG_SPELL event carries a friendly
+--     pet's cast text on this client, so the bar listens to the same measured
+--     family the target bar uses and no pet-only event is guessed at.
+--     U.CastbarReport's pet.starts / pet.lastEvent are what settle it -- if a
+--     pet cast never registers a start there, the routing event is outside
+--     that family and the gap is then a probe, not a rewrite.
 
 local U = UnrealUI
 local M = U.media
@@ -108,8 +114,25 @@ local CB = U.RegisterModule("castbar")
 -- separate cell for the timer, which is drawn on top of the bar instead.
 local HEIGHT = 24
 local WIDTH = 230
+-- The target frame is a 180px status bar plus its 1px outline on each side.
+-- Keep the target castbar's complete icon-and-progress footprint aligned to
+-- that outer width, rather than merely matching the progress cell.
+local TARGET_WIDTH = 180 + 2 * U.BorderSize()
 local ICON_SIZE = HEIGHT
 local BAR_WIDTH = WIDTH - ICON_SIZE
+local PUSHBACK_WIDTH = 35
+
+-- The pet castbar is a readout of the pet unit frame rather than a bar of its
+-- own: it takes that frame's width at build time and a shorter row height that
+-- sits with the frame's compact health/power bars instead of towering over
+-- them.
+local PET_HEIGHT = 16
+-- Only reached if the pet frame cannot report its width: the bars-only pet
+-- footprint from modules/unitframes.lua (120 plus its outline).
+local PET_FALLBACK_WIDTH = 120 + 2 * U.BorderSize()
+-- The pet book is walked until its first empty slot. The cap only bounds the
+-- loop if this client ever keeps returning names past the end of the book.
+local PET_BOOK_LIMIT = 30
 
 -- Shown whenever the spellbook lookup cannot produce a real icon, so the left
 -- cell is never an empty hole.
@@ -123,17 +146,141 @@ local STOP_EVENTS = {
   "SPELLCAST_CHANNEL_STOP",
 }
 
+-- Environmental cast text can be routed to different chat events according
+-- to the caster and recipient. This is the same narrow event family used by
+-- UnrealPfUI's working Vanilla libcast; the creature-vs-creature damage member
+-- is additionally measured on this runtime (behavior.json / targetcast).
+local TARGET_COMBAT_EVENTS = {
+  "CHAT_MSG_SPELL_SELF_DAMAGE",
+  "CHAT_MSG_SPELL_HOSTILEPLAYER_DAMAGE",
+  "CHAT_MSG_SPELL_HOSTILEPLAYER_BUFF",
+  "CHAT_MSG_SPELL_FRIENDLYPLAYER_DAMAGE",
+  "CHAT_MSG_SPELL_FRIENDLYPLAYER_BUFF",
+  "CHAT_MSG_SPELL_PERIODIC_HOSTILEPLAYER_BUFFS",
+  "CHAT_MSG_SPELL_PERIODIC_FRIENDLYPLAYER_BUFFS",
+  "CHAT_MSG_SPELL_PERIODIC_HOSTILEPLAYER_DAMAGE",
+  "CHAT_MSG_SPELL_PERIODIC_FRIENDLYPLAYER_DAMAGE",
+  "CHAT_MSG_SPELL_PERIODIC_SELF_DAMAGE",
+  "CHAT_MSG_SPELL_PARTY_DAMAGE",
+  "CHAT_MSG_SPELL_PARTY_BUFF",
+  "CHAT_MSG_SPELL_PERIODIC_PARTY_DAMAGE",
+  "CHAT_MSG_SPELL_PERIODIC_PARTY_BUFFS",
+  "CHAT_MSG_SPELL_PERIODIC_CREATURE_DAMAGE",
+  "CHAT_MSG_SPELL_PERIODIC_CREATURE_BUFFS",
+  "CHAT_MSG_SPELL_CREATURE_VS_CREATURE_DAMAGE",
+  "CHAT_MSG_SPELL_CREATURE_VS_CREATURE_BUFF",
+}
+
+-- Combat text supplies no duration or icon. These base cast times and icon
+-- names are the common combat subset of UnrealPfUI's enUS Vanilla spell data,
+-- used here as WORKING_SOURCE evidence. Player casts teach additional names
+-- for the current session from their measured SPELLCAST_START duration.
+-- Keeping this table local avoids creating a second addon-wide data system for
+-- information consumed only by the target castbar.
+local TARGET_CASTS = {
+  ["Aimed Shot"] = { ms = 3000, icon = "INV_Spear_07" },
+  ["Ancestral Spirit"] = { ms = 10000, icon = "Spell_Nature_Regenerate" },
+  ["Arcane Explosion"] = { ms = 1500, icon = "Spell_Nature_WispSplode" },
+  ["Banish"] = { ms = 1500, icon = "Spell_Shadow_Cripple" },
+  ["Blizzard"] = { ms = 2000, icon = "Spell_Frost_IceStorm" },
+  ["Chain Heal"] = { ms = 2500, icon = "Spell_Nature_HealingWaveGreater" },
+  ["Chain Lightning"] = { ms = 2500, icon = "Spell_Nature_ChainLightning" },
+  ["Corruption"] = { ms = 2000, icon = "Spell_Shadow_AbominationExplosion" },
+  ["Curse of the Deadwood"] = { ms = 2000, icon = "Spell_Shadow_GatherShadows" },
+  ["Dark Mending"] = { ms = 3500, icon = "Spell_Shadow_ChillTouch" },
+  ["Dominate Mind"] = { ms = 2000, icon = "Spell_Shadow_ShadowWordDominate" },
+  ["Entangling Roots"] = { ms = 1500, icon = "Spell_Nature_StrangleVines" },
+  ["Fear"] = { ms = 1500, icon = "Spell_Shadow_Possession" },
+  ["Fireball"] = { ms = 3500, icon = "Spell_Fire_FlameBolt" },
+  -- The Imp's Firebolt is the one Vanilla pet spell with a real cast time, so
+  -- it is what the pet bar normally draws. The same entry also covers an enemy
+  -- imp caught by the target bar.
+  ["Firebolt"] = { ms = 2000, icon = "Spell_Fire_FireBolt02" },
+  ["Flamestrike"] = { ms = 3000, icon = "Spell_Fire_SelfDestruct" },
+  ["Flash Heal"] = { ms = 1500, icon = "Spell_Holy_FlashHeal" },
+  ["Flash of Light"] = { ms = 1500, icon = "Spell_Holy_FlashHeal" },
+  ["Frostbolt"] = { ms = 3000, icon = "Spell_Frost_FrostBolt02" },
+  ["Greater Heal"] = { ms = 3000, icon = "Spell_Holy_GreaterHeal" },
+  ["Heal"] = { ms = 3000, icon = "Spell_Holy_Heal02" },
+  ["Healing Touch"] = { ms = 3500, icon = "Spell_Nature_HealingTouch" },
+  ["Healing Wave"] = { ms = 3000, icon = "Spell_Nature_MagicImmunity" },
+  ["Hex"] = { ms = 2000, icon = "Spell_Nature_Polymorph" },
+  ["Hibernate"] = { ms = 1500, icon = "Spell_Nature_Sleep" },
+  ["Holy Fire"] = { ms = 3500, icon = "Spell_Holy_SearingLight" },
+  ["Holy Light"] = { ms = 2500, icon = "Spell_Holy_HolyBolt" },
+  ["Holy Smite"] = { ms = 2500, icon = "Spell_Holy_HolySmite" },
+  ["Immolate"] = { ms = 2000, icon = "Spell_Fire_Immolation" },
+  ["Lesser Heal"] = { ms = 2500, icon = "Spell_Holy_LesserHeal" },
+  ["Lesser Healing Wave"] = { ms = 1500, icon = "Spell_Nature_HealingWaveLesser" },
+  ["Lightning Bolt"] = { ms = 3000, icon = "Spell_Nature_Lightning" },
+  ["Mana Burn"] = { ms = 3000, icon = "Spell_Shadow_ManaBurn" },
+  ["Mind Control"] = { ms = 3000, icon = "Spell_Shadow_ShadowWordDominate" },
+  ["Polymorph"] = { ms = 1500, icon = "Spell_Nature_Polymorph" },
+  ["Pyroblast"] = { ms = 6000, icon = "Spell_Fire_Fireball02" },
+  ["Rain of Fire"] = { ms = 3000, icon = "Spell_Shadow_RainOfFire" },
+  ["Rebirth"] = { ms = 2000, icon = "Spell_Nature_Reincarnation" },
+  ["Redemption"] = { ms = 10000, icon = "Spell_Holy_Resurrection" },
+  ["Regrowth"] = { ms = 2000, icon = "Spell_Nature_ResistNature" },
+  ["Renew"] = { ms = 2000, icon = "Spell_Holy_Renew" },
+  ["Resurrection"] = { ms = 10000, icon = "Spell_Holy_Resurrection" },
+  ["Scorch"] = { ms = 1500, icon = "Spell_Fire_SoulBurn" },
+  ["Searing Pain"] = { ms = 1500, icon = "Spell_Fire_SoulBurn" },
+  ["Shadow Bolt"] = { ms = 3000, icon = "Spell_Shadow_ShadowBolt" },
+  ["Silence"] = { ms = 1500, icon = "Spell_Holy_Silence" },
+  ["Sleep"] = { ms = 1500, icon = "Spell_Nature_Sleep" },
+  ["Smite"] = { ms = 2500, icon = "Spell_Holy_HolySmite" },
+  ["Soul Fire"] = { ms = 6000, icon = "Spell_Fire_Fireball02" },
+  ["Starfire"] = { ms = 3500, icon = "Spell_Arcane_StarFire" },
+  ["Summon"] = { ms = 1000, icon = "Spell_Arcane_Blink" },
+  ["Summon Felhunter"] = { ms = 10000, icon = "Spell_Shadow_SummonFelHunter" },
+  ["Summon Imp"] = { ms = 10000, icon = "Spell_Shadow_SummonImp" },
+  ["Summon Succubus"] = { ms = 10000, icon = "Spell_Shadow_SummonSuccubus" },
+  ["Summon Voidwalker"] = { ms = 10000, icon = "Spell_Shadow_SummonVoidWalker" },
+  ["Volley"] = { ms = 3000, icon = "Ability_TheBlackArrow" },
+  ["War Stomp"] = { ms = 500, icon = "Ability_WarStomp" },
+  ["Wrath"] = { ms = 2000, icon = "Spell_Nature_AbolishMagic" },
+}
+
 local bar
 local casting = false
 local startTime, duration
 local lastTimeText
+local tickInterval
+local Tick
+local UpdateTickRate
 
--- Anchor-only: mover target for a future target castbar. No cast events feed
--- it yet (see the header note on castbar.target_polling_contract_unverified
--- and the CHAT_MSG_SPELL evidence gap), so it only ever shows the idle
--- placeholder, and only while the UI is unlocked -- there is no live state to
--- show it for otherwise.
-local targetBar
+-- Combat-log casts are reconstructed identically for every non-player unit:
+-- the caster name parsed out of the chat text has to equal that unit's current
+-- name (knowledge.json / castbar.target_chatlog_fallback_unverified). One
+-- tracker per unit therefore puts the target bar and the pet bar on the same
+-- code path instead of keeping a second copy of it.
+local trackers = {}       -- id -> tracker
+local trackerOrder = {}   -- iteration order for the tick and the chat handler
+
+local function NewTracker(id, unit, labelKey)
+  local tracker = {
+    id = id,
+    unit = unit,
+    labelKey = labelKey,
+    bar = nil,
+    casting = false,
+    caster = nil,
+    spell = nil,
+    startTime = nil,
+    duration = nil,
+    lastTimeText = nil,
+    starts = 0,
+    unknown = 0,
+    lastUnknown = nil,
+    lastEvent = nil,
+    iconSource = "none",
+  }
+  trackers[id] = tracker
+  table.insert(trackerOrder, tracker)
+  return tracker
+end
+
+local targetStartPatterns = {}
 
 -- knowledge.json / castbar.native_frame_suppression_unverified: both
 -- UnrealPfUI and PotatoUI suppress this client's stock player castbar through
@@ -243,6 +390,37 @@ local function SpellIcon(name)
   return texture
 end
 
+-- The pet book is a separate flat index -- documentation.json /
+-- global:Spell:GetSpellName records that bookType "pet" selects it -- so it is
+-- walked directly instead of through GetSpellTabInfo. Its contents change with
+-- the pet, hence a separate cache, cleared on UNIT_PET.
+local petIconCache = {}
+
+local function PetSpellIcon(name)
+  if type(name) ~= "string" or name == "" then return nil end
+
+  local key = string.lower(name)
+  local cached = petIconCache[key]
+  if cached ~= nil then
+    return cached or nil
+  end
+
+  local texture, id = nil, 1
+  while id <= PET_BOOK_LIMIT do
+    local spellName = Call("GetSpellName", id, "pet")
+    if type(spellName) ~= "string" or spellName == "" then break end
+    if string.lower(spellName) == key then
+      local found = Call("GetSpellTexture", id, "pet")
+      if type(found) == "string" and found ~= "" then texture = found end
+      break
+    end
+    id = id + 1
+  end
+
+  petIconCache[key] = texture or false
+  return texture
+end
+
 -- A spellbook miss (Hearthstone, a quest item, any other non-spell cast) used
 -- to fall back to the question-mark placeholder texture; that read as a wrong
 -- icon rather than an honest "no icon available", so a miss now hides the
@@ -270,6 +448,107 @@ local function ApplyIcon(name)
   end
 end
 
+local function RememberTargetSpell(name, castTimeMs)
+  if type(name) ~= "string" or name == "" or TARGET_CASTS[name] then return end
+
+  local ms = tonumber(castTimeMs)
+  if not ms or ms <= 0 then return end
+
+  TARGET_CASTS[name] = {
+    ms = ms,
+    texture = SpellIcon(name),
+  }
+end
+
+-- `preferred` is a texture the caller already resolved for this exact unit --
+-- the pet tracker reads the real icon out of the pet spellbook -- and wins over
+-- the shared static table, which only knows one icon per spell name.
+local function ApplyUnitIcon(tracker, info, preferred)
+  local widget = tracker.bar
+  if not widget or not widget.icon then return end
+
+  local texture, source = preferred, "spellbook"
+  if not texture and info and info.texture then
+    texture, source = info.texture, "learned"
+  end
+  if not texture and info and type(info.icon) == "string" and
+     info.icon ~= "" and info.icon ~= "Temp" then
+    texture, source = "Interface\\Icons\\" .. info.icon, "static"
+  end
+
+  tracker.iconSource = texture and source or "none"
+  if not texture then
+    widget.showIcon = false
+    return
+  end
+
+  if pcall(widget.icon.SetTexture, widget.icon, texture) then
+    widget.showIcon = true
+  else
+    tracker.iconSource = "failed"
+    widget.showIcon = false
+  end
+end
+
+-- Convert the client's localized printf templates (for example
+-- "%s begins to cast %s.") into Lua capture patterns. Numbered placeholders
+-- are retained as a swap flag so locales that write spell before caster still
+-- return caster, spell to the caller. Only the two-string start templates are
+-- accepted; a different runtime shape safely produces no target casts.
+local function CompileTargetPattern(template)
+  if type(template) ~= "string" or template == "" then return nil end
+
+  local _, firstEnd, firstNumber = string.find(template, "%%(%d+)%$s")
+  local secondNumber
+  if firstEnd then
+    local _, _, found = string.find(template, "%%(%d+)%$s", firstEnd + 1)
+    secondNumber = found
+  end
+
+  local pattern = string.gsub(template,
+                              "([%.%+%-%*%(%)%?%[%]%^])", "%%%1")
+  pattern = string.gsub(pattern, "%%%d+%$s", "(.+)")
+  pattern = string.gsub(pattern, "%%s", "(.+)")
+
+  local captures = 0
+  string.gsub(pattern, "%(%.[%+%-%*]%)", function()
+    captures = captures + 1
+  end)
+  if captures ~= 2 then return nil end
+
+  return {
+    pattern = "^" .. pattern .. "$",
+    swap = tonumber(firstNumber) == 2 and tonumber(secondNumber) == 1,
+  }
+end
+
+local function BuildTargetPatterns()
+  targetStartPatterns = {}
+
+  local globals = { "SPELLCASTOTHERSTART", "SPELLPERFORMOTHERSTART" }
+  local i
+  for i = 1, table.getn(globals) do
+    local compiled = CompileTargetPattern(U.G(globals[i]))
+    if compiled then table.insert(targetStartPatterns, compiled) end
+  end
+end
+
+local function CaptureTargetStart(message)
+  if type(message) ~= "string" then return nil end
+
+  local i
+  for i = 1, table.getn(targetStartPatterns) do
+    local entry = targetStartPatterns[i]
+    local _, _, first, second = string.find(message, entry.pattern)
+    if first and second then
+      if entry.swap then return second, first end
+      return first, second
+    end
+  end
+
+  return nil
+end
+
 -- ---------------------------------------------------------------------------
 -- Bar state
 -- ---------------------------------------------------------------------------
@@ -280,6 +559,51 @@ local function ApplyTimer(remaining)
   if text == lastTimeText then return end
   lastTimeText = text
   bar.time:SetText(text)
+end
+
+-- The normal layout gives the spell name all space up to the countdown. Once
+-- pushback occurs, reserve a compact slot at the right for its cumulative
+-- penalty and move the countdown left. Hiding the slot again restores the
+-- original layout, so unaffected casts lose no name space.
+local function ApplyPushback(seconds)
+  if not bar.pushback then return end
+
+  local shown = tonumber(seconds) and tonumber(seconds) > 0
+  local text = shown and string.format("+ %.1f", seconds) or ""
+  if bar.pushbackShown == shown and bar.pushbackText == text then return end
+
+  bar.pushbackShown = shown
+  bar.pushbackText = text
+  bar.pushback:SetText(text)
+
+  if shown then
+    bar.pushback:Show()
+  else
+    bar.pushback:Hide()
+  end
+
+  if bar.time then
+    bar.time:ClearAllPoints()
+    if shown then
+      bar.time:SetPoint("RIGHT", bar.pushback, "LEFT", -1, 0)
+    else
+      bar.time:SetPoint("RIGHT", bar.bar, "RIGHT", -3, 0)
+    end
+  end
+
+  if bar.name then
+    pcall(bar.name.SetWidth, bar.name,
+          BAR_WIDTH - 34 - (shown and PUSHBACK_WIDTH or 0))
+  end
+end
+
+local function ApplyUnitTimer(tracker, remaining)
+  local widget = tracker.bar
+  if not widget or not widget.time then return end
+  local text = string.format("%.1f", remaining)
+  if text == tracker.lastTimeText then return end
+  tracker.lastTimeText = text
+  widget.time:SetText(text)
 end
 
 -- knowledge.json / rendering.parent_alpha_not_propagated: the cells are shown
@@ -310,18 +634,125 @@ local function SetCellsShown(shown)
   SetWidgetCellsShown(bar, shown)
 end
 
--- The target anchor carries no live cast state (see the header note), so its
--- only visibility rule is the edit lock: shown, with its idle placeholder,
--- while the UI is unlocked, and hidden otherwise.
-local function UpdateTargetVisibility()
-  if not targetBar then return end
-  local shown = U.IsUnlocked()
+local function UpdateUnitVisibility(tracker)
+  local widget = tracker.bar
+  if not widget then return end
+  local shown = tracker.casting or U.IsUnlocked()
   if shown then
-    if not targetBar:IsShown() then targetBar:Show() end
+    if not widget:IsShown() then widget:Show() end
   else
-    if targetBar:IsShown() then targetBar:Hide() end
+    if widget:IsShown() then widget:Hide() end
   end
-  SetWidgetCellsShown(targetBar, shown)
+  SetWidgetCellsShown(widget, shown)
+end
+
+local function ApplyUnitIdlePlaceholder(tracker)
+  local widget = tracker.bar
+  if not widget then return end
+
+  U.SetStatusBarColor(widget.bar, M.Unpack(M.color.cast))
+  pcall(widget.bar.SetMinMaxValues, widget.bar, 0, 1)
+  pcall(widget.bar.SetValue, widget.bar, 0.4)
+  if widget.name then
+    widget.name:SetText(U.L(tracker.labelKey))
+  end
+  if widget.icon then
+    pcall(widget.icon.SetTexture, widget.icon, FALLBACK_ICON)
+  end
+  widget.showIcon = true
+  SetWidgetCellsShown(widget, true)
+  tracker.lastTimeText = nil
+  if widget.time then widget.time:SetText("0.0") end
+end
+
+local function AnyCastActive()
+  if casting then return true end
+  local i
+  for i = 1, table.getn(trackerOrder) do
+    if trackerOrder[i].casting then return true end
+  end
+  return false
+end
+
+UpdateTickRate = function()
+  if not bar or not Tick then return end
+  -- Active fills keep the exact render-frame cadence they had before. While
+  -- every bar is idle, a 0.1s visibility pass is enough to expose edit-mode
+  -- placeholders without paying three IsShown/visibility walks every frame.
+  local interval = AnyCastActive() and 0 or 0.1
+  if tickInterval == interval then return end
+  tickInterval = interval
+  U.RegisterUpdate("castbar.tick", interval, Tick)
+end
+
+local function StopUnitCast(tracker)
+  if not tracker or not tracker.casting then return end
+  tracker.casting = false
+  tracker.caster = nil
+  tracker.spell = nil
+  tracker.startTime = nil
+  tracker.duration = nil
+  UpdateUnitVisibility(tracker)
+  UpdateTickRate()
+end
+
+local function StartUnitCast(tracker, eventName, caster, spell)
+  if not tracker.bar or type(caster) ~= "string" or
+     type(spell) ~= "string" then return end
+
+  -- The unit name is the whole identity check this event contract can offer:
+  -- the chat text names a caster and nothing else.
+  local unitName = Call("UnitName", tracker.unit)
+  if type(unitName) ~= "string" or unitName == "" or
+     caster ~= unitName then return end
+
+  -- A new start supersedes any earlier timer from the same named unit, even
+  -- when the new spell is unknown and therefore cannot be drawn accurately.
+  if tracker.casting then StopUnitCast(tracker) end
+  tracker.lastEvent = eventName
+
+  -- The pet book is the accurate icon source for a pet cast; the shared table
+  -- below only ever holds one icon per spell name.
+  local preferred
+  if tracker.unit == "pet" then preferred = PetSpellIcon(spell) end
+
+  local info = TARGET_CASTS[spell]
+  if not info or not tonumber(info.ms) or tonumber(info.ms) <= 0 then
+    tracker.unknown = tracker.unknown + 1
+    tracker.lastUnknown = spell
+    return
+  end
+
+  tracker.casting = true
+  tracker.caster = caster
+  tracker.spell = spell
+  tracker.startTime = GetTime()
+  tracker.duration = tonumber(info.ms) / 1000
+  tracker.lastTimeText = nil
+  tracker.starts = tracker.starts + 1
+
+  U.SetStatusBarColor(tracker.bar.bar, M.Unpack(M.color.cast))
+  pcall(tracker.bar.bar.SetMinMaxValues, tracker.bar.bar, 0,
+        tracker.duration)
+  pcall(tracker.bar.bar.SetValue, tracker.bar.bar, 0)
+  if tracker.bar.name then tracker.bar.name:SetText(spell) end
+  ApplyUnitIcon(tracker, info, preferred)
+  ApplyUnitTimer(tracker, tracker.duration)
+  UpdateUnitVisibility(tracker)
+  UpdateTickRate()
+end
+
+-- One parse, then every tracker gets a look at it: the same message is the
+-- target cast while the target is casting and the pet cast while the pet is,
+-- and a player targeting their own pet legitimately matches both.
+local function OnUnitCombatMessage(eventName, message)
+  local caster, spell = CaptureTargetStart(message)
+  if not caster or not spell then return end
+
+  local i
+  for i = 1, table.getn(trackerOrder) do
+    StartUnitCast(trackerOrder[i], eventName, caster, spell)
+  end
 end
 
 -- Kept shown and given a placeholder fill while the UI is unlocked, on the
@@ -340,6 +771,7 @@ local function ApplyIdlePlaceholder()
   SetCellsShown(true)
   lastTimeText = nil
   if bar.time then bar.time:SetText("0.0") end
+  ApplyPushback(0)
 end
 
 local function UpdateVisibility()
@@ -361,6 +793,7 @@ local function StartCast(name, castTimeMs)
   if duration <= 0 then duration = 0.01 end
 
   delayCount, delaySeconds = 0, 0
+  ApplyPushback(0)
 
   U.SetStatusBarColor(bar.bar, M.Unpack(M.color.cast))
   pcall(bar.bar.SetMinMaxValues, bar.bar, 0, duration)
@@ -371,6 +804,7 @@ local function StartCast(name, castTimeMs)
   ApplyTimer(duration)
 
   UpdateVisibility()
+  UpdateTickRate()
 end
 
 -- Cast pushback. UnrealPfUI's libs/libcast.lua does exactly this on
@@ -387,6 +821,7 @@ local function DelayCast(delayMs)
   startTime = startTime + delay
   delayCount = delayCount + 1
   delaySeconds = delaySeconds + delay
+  ApplyPushback(delaySeconds)
 
   -- Redraw immediately rather than waiting up to a tick: a pushback that only
   -- showed on the next 0.1s tick would read as a stutter, not a rollback.
@@ -400,13 +835,40 @@ local function StopCast()
   if not casting then return end
   casting = false
   UpdateVisibility()
+  UpdateTickRate()
 end
 
-local function Tick()
+Tick = function()
   if U.PerfDisabled and U.PerfDisabled("castbar") then return end
 
   UpdateVisibility()
-  UpdateTargetVisibility()
+
+  local i
+  for i = 1, table.getn(trackerOrder) do
+    local tracker = trackerOrder[i]
+    UpdateUnitVisibility(tracker)
+
+    if tracker.casting then
+      -- UnitName is the strongest identity available in this event contract.
+      -- Changing or clearing the unit must not leave the previous one cast
+      -- visible at the new unit position.
+      local currentName = Call("UnitName", tracker.unit)
+      if currentName ~= tracker.caster then
+        StopUnitCast(tracker)
+      else
+        local unitElapsed = GetTime() - tracker.startTime
+        if unitElapsed >= tracker.duration then
+          StopUnitCast(tracker)
+        else
+          if unitElapsed < 0 then unitElapsed = 0 end
+          pcall(tracker.bar.bar.SetValue, tracker.bar.bar, unitElapsed)
+          ApplyUnitTimer(tracker, tracker.duration - unitElapsed)
+        end
+      end
+    elseif tracker.bar and tracker.bar:IsShown() then
+      ApplyUnitIdlePlaceholder(tracker)
+    end
+  end
 
   if not casting then
     if bar:IsShown() then ApplyIdlePlaceholder() end
@@ -437,18 +899,24 @@ end
 -- icon flush left, the progress bar filling the rest of the width, name and
 -- timer drawn on top of the fill. `frameName` distinguishes the created
 -- widget names so registering both bars does not collide.
-local function BuildBarWidget(frameName)
-  local widget = CreateFrame("Frame", frameName, UIParent)
-  widget:SetWidth(WIDTH)
-  widget:SetHeight(HEIGHT)
+local function BuildBarWidget(frameName, width, height, parent)
+  -- height and parent are the pet bar's two departures from the free-standing
+  -- bars: it is shorter, and it is parented to the unit frame it belongs to so
+  -- it inherits that frame's position and visibility.
+  height = height or HEIGHT
+  local iconSize = height
+  local barWidth = width - iconSize
+  local widget = CreateFrame("Frame", frameName, parent or UIParent)
+  widget:SetWidth(width)
+  widget:SetHeight(height)
 
   local border = U.BorderSize()
 
   -- Left cell: the spell icon.
   local iconCell = U.CreatePanel(widget, {
     name = frameName .. "Icon",
-    width = ICON_SIZE,
-    height = HEIGHT,
+    width = iconSize,
+    height = height,
   })
   iconCell:SetPoint("TOPLEFT", widget, "TOPLEFT", 0, 0)
 
@@ -468,14 +936,14 @@ local function BuildBarWidget(frameName)
   -- drawn on top of it.
   local barCell = U.CreatePanel(widget, {
     name = frameName .. "Progress",
-    width = BAR_WIDTH,
-    height = HEIGHT,
+    width = barWidth,
+    height = height,
   })
   barCell:SetPoint("TOPLEFT", iconCell, "TOPRIGHT", 0, 0)
 
   widget.bar = U.CreateStatusBar(barCell, {
-    width = BAR_WIDTH - 2 * border,
-    height = HEIGHT - 2 * border,
+    width = barWidth - 2 * border,
+    height = height - 2 * border,
     color = M.color.cast,
     background = M.color.healthBg,
   })
@@ -492,7 +960,7 @@ local function BuildBarWidget(frameName)
   })
   if widget.name then
     widget.name:SetPoint("LEFT", widget.bar, "LEFT", 3, 0)
-    pcall(widget.name.SetWidth, widget.name, BAR_WIDTH - 34)
+    pcall(widget.name.SetWidth, widget.name, barWidth - 34)
   end
 
   -- The timer. A FontString's OVERLAY draw layer sits above the fill
@@ -505,16 +973,59 @@ local function BuildBarWidget(frameName)
   })
   if widget.time then widget.time:SetPoint("RIGHT", widget.bar, "RIGHT", -3, 0) end
 
+  -- Player-only state in practice, but part of the shared widget so its
+  -- geometry remains consistent. Target casts never call ApplyPushback and
+  -- therefore keep this label hidden.
+  widget.pushback = U.CreateLabel(widget.bar, {
+    size = M.fontSize.small,
+    color = M.color.castPushback,
+    inherits = "GameFontNormalSmall",
+    justify = "RIGHT",
+  })
+  if widget.pushback then
+    widget.pushback:SetPoint("RIGHT", widget.bar, "RIGHT", -3, 0)
+    pcall(widget.pushback.SetWidth, widget.pushback, PUSHBACK_WIDTH)
+    widget.pushback:SetText("")
+    widget.pushback:Hide()
+  end
+
   widget.uuiCells = { iconCell, barCell }
 
   return widget
+end
+
+-- The pet castbar rides the pet unit frame instead of owning a mover, the same
+-- way modules/auras.lua attaches its aura rows: it describes that frame's unit,
+-- so it has to keep the frame's width and follow it wherever the frame is
+-- moved. Parenting also hands it the frame's visibility -- no pet, no bar --
+-- so there is no pet-presence logic to keep in step here.
+local function BuildPetBar()
+  local anchor = type(U.GetUnitFrame) == "function" and U.GetUnitFrame("pet")
+  if not anchor then
+    U.Debug("castbar: no pet unit frame; pet castbar not built")
+    return
+  end
+
+  local okWidth, width = pcall(anchor.GetWidth, anchor)
+  width = okWidth and tonumber(width) or nil
+  -- A width that cannot hold the icon square would give the progress cell a
+  -- negative width, so fall back rather than build a broken row.
+  if not width or width <= PET_HEIGHT then width = PET_FALLBACK_WIDTH end
+
+  local pet = NewTracker("pet", "pet", "MOVER_LABEL_PET_CASTBAR")
+  pet.bar = BuildBarWidget("UnrealUICastBarPet", width, PET_HEIGHT, anchor)
+  -- Stacked rows overlap by one border unit, the same as the unit frames' own
+  -- rows: butting the two outlines together would draw a 2-unit band.
+  pet.bar:SetPoint("TOPLEFT", anchor, "BOTTOMLEFT", 0, U.BorderSize())
+  ApplyUnitIdlePlaceholder(pet)
+  pet.bar:Hide()
 end
 
 local function Build()
   -- The container carries no art of its own: it is the mover target and the
   -- anchor the two cells hang off, so each cell keeps its own outline the way
   -- the reference layout shows them.
-  bar = BuildBarWidget("UnrealUICastBar")
+  bar = BuildBarWidget("UnrealUICastBar", WIDTH)
   bar:Hide()
   SetCellsShown(false)
 
@@ -523,23 +1034,20 @@ local function Build()
     default = { point = "CENTER", relativePoint = "CENTER", x = 0, y = -220 },
   })
 
-  -- Anchor-only target castbar (see the header note): built the same way as
-  -- the player bar so its placeholder matches, but nothing ever calls
-  -- StartCast/StopCast on it. It is shown only while the UI is unlocked, on
-  -- the same reasoning as the player bar's idle placeholder -- a frame that
-  -- only exists once it has data could never be dragged into place.
-  targetBar = BuildBarWidget("UnrealUICastBarTarget")
-  U.SetStatusBarColor(targetBar.bar, M.Unpack(M.color.cast))
-  pcall(targetBar.bar.SetMinMaxValues, targetBar.bar, 0, 1)
-  pcall(targetBar.bar.SetValue, targetBar.bar, 0.4)
-  if targetBar.name then targetBar.name:SetText(U.L("MOVER_LABEL_TARGET_CASTBAR")) end
-  if targetBar.time then targetBar.time:SetText("0.0") end
-  targetBar:Hide()
+  -- Live target castbar, built from the same shared widget as the player bar.
+  -- While idle it is shown only in mover mode; recognized combat-log starts
+  -- show it while locked until their known duration expires.
+  local target = NewTracker("target", "target", "MOVER_LABEL_TARGET_CASTBAR")
+  target.bar = BuildBarWidget("UnrealUICastBarTarget", TARGET_WIDTH)
+  ApplyUnitIdlePlaceholder(target)
+  target.bar:Hide()
 
-  U.RegisterMover("castbar.target", targetBar, {
+  U.RegisterMover("castbar.target", target.bar, {
     label = U.L("MOVER_LABEL_TARGET_CASTBAR"),
     default = { point = "CENTER", relativePoint = "CENTER", x = 0, y = -250 },
   })
+
+  BuildPetBar()
 end
 
 -- ---------------------------------------------------------------------------
@@ -1003,9 +1511,11 @@ function CB:OnEnable()
 
   Build()
   SuppressNativeCastbar()
+  BuildTargetPatterns()
 
   U.RegisterEvent("SPELLCAST_START", function(event, name, castTimeMs)
     StartCast(name, castTimeMs)
+    RememberTargetSpell(name, castTimeMs)
   end)
 
   -- Reversed argument order from SPELLCAST_START -- see the header note on
@@ -1024,17 +1534,53 @@ function CB:OnEnable()
     U.RegisterEvent(STOP_EVENTS[i], StopCast)
   end
 
+  for i = 1, table.getn(TARGET_COMBAT_EVENTS) do
+    U.RegisterEvent(TARGET_COMBAT_EVENTS[i], OnUnitCombatMessage)
+  end
+
+  U.RegisterEvent("PLAYER_TARGET_CHANGED", function()
+    StopUnitCast(trackers.target)
+  end)
+
+  -- A new pet has a different name and a different spellbook, so the running
+  -- bar and the cached pet icons both belong to the old one. The tick's own
+  -- name check would catch the cast a frame later; this is just immediate.
+  U.RegisterEvent("UNIT_PET", function()
+    petIconCache = {}
+    StopUnitCast(trackers.pet)
+  end)
+
   -- Same invalidation UnrealPfUI's libspell uses: a newly learned rank changes
   -- which spellbook index a name resolves to.
   U.RegisterEvent("LEARNED_SPELL_IN_TAB", function()
     iconCache = {}
   end)
 
-  -- 0 runs every frame, the same convention core/widgets.lua's slider drag
-  -- ticker uses for per-frame motion: at 0.1s the fill visibly stepped
-  -- instead of sliding, since ApplyTimer's own text-change check already
-  -- throttles the one part of Tick that doesn't need to run every frame.
-  U.RegisterUpdate("castbar.tick", 0, Tick)
+  UpdateTickRate()
+end
+
+-- Whether a combat-log tracker ever saw a start, and on which event, is the
+-- open question for both reconstructed bars: the pet family in particular has
+-- no captured evidence saying which CHAT_MSG_SPELL event carries a pet's cast
+-- text on this client, so `starts` and `lastEvent` are how that gets answered.
+local function TrackerReport(tracker)
+  if not tracker then return nil end
+
+  return {
+    casting = tracker.casting,
+    caster = tracker.caster,
+    spell = tracker.spell,
+    duration = tracker.duration,
+    remaining = tracker.casting and
+                (tracker.duration - (GetTime() - tracker.startTime)) or nil,
+    starts = tracker.starts,
+    unknown = tracker.unknown,
+    lastUnknown = tracker.lastUnknown,
+    lastEvent = tracker.lastEvent,
+    iconSource = tracker.iconSource,
+    patterns = table.getn(targetStartPatterns),
+    built = tracker.bar and true or false,
+  }
 end
 
 -- Measured state for /uui check: what the client actually sent, not another
@@ -1067,5 +1613,7 @@ function U.CastbarReport()
     delays = delayCount,
     delaySeconds = delaySeconds,
     nativeSuppressed = nativeCastbarSuppressed,
+    target = TrackerReport(trackers.target),
+    pet = TrackerReport(trackers.pet),
   }
 end

@@ -38,9 +38,48 @@ local function SetTextFont(object, size, color)
   U.SetStockFont(object, size or M.fontSize.normal, color or WHITE)
 end
 
+-- The equipped item's quality index, or nil when this client will not report
+-- one. Shared by the slot's rarity border below and by its tooltip hook, so
+-- the two cannot disagree about what is equipped.
+local function SlotQuality(slotName)
+  local getSlot = G("GetInventorySlotInfo")
+  local getQuality = G("GetInventoryItemQuality")
+  if type(getSlot) ~= "function" or type(getQuality) ~= "function" then
+    return nil
+  end
+
+  local slotOk, inventorySlot = pcall(getSlot, slotName)
+  if not slotOk or not tonumber(inventorySlot) then return nil end
+
+  local qualityOk, quality = pcall(getQuality, "player", inventorySlot)
+  return qualityOk and tonumber(quality) or nil
+end
+
+-- Rarity colour on the tooltip's name line, from the slot the native handler
+-- is about to describe. Behavior only -- no texture, font or anchor is touched
+-- -- so the Classic theme installs it on the untouched paper doll exactly like
+-- the Modern one, the way modules/quest.lua hooks its reward rows.
+local function HookSlotTooltip(slot, slotName)
+  if not slot or slot.uuiSlotTooltipHook then return end
+  slot.uuiSlotTooltipHook = true
+
+  U.PostHookScript(slot, "OnEnter", function()
+    if type(U.ColorTooltipItemName) == "function" then
+      U.ColorTooltipItemName(nil, SlotQuality(slotName))
+    end
+  end)
+  U.PostHookScript(slot, "OnLeave", function()
+    if type(U.ClearTooltipItemName) == "function" then
+      U.ClearTooltipItemName()
+    end
+  end)
+end
+
 local function StyleSlot(slotName, keepNativeChrome)
   local slot = G("Character" .. slotName)
   if not slot then return end
+
+  HookSlotTooltip(slot, slotName)
 
   -- GetInventorySlotInfo/GetInventoryItemQuality are documented by this
   -- client but not yet runtime-verified. Keep both guarded: an unavailable
@@ -58,20 +97,12 @@ local function StyleSlot(slotName, keepNativeChrome)
   end
 
   local color = M.slotBorder.empty
-  local getSlot = G("GetInventorySlotInfo")
-  local getQuality = G("GetInventoryItemQuality")
-  if type(getSlot) == "function" and type(getQuality) == "function" then
-    local slotOk, inventorySlot = pcall(getSlot, slotName)
-    if slotOk and tonumber(inventorySlot) then
-      local qualityOk, quality = pcall(getQuality, "player", inventorySlot)
-      quality = qualityOk and tonumber(quality) or nil
-      if quality then
-        if quality > M.qualityLimit then
-          color = U.ItemQualityColor(quality) or M.slotBorder.plain
-        else
-          color = M.slotBorder.plain
-        end
-      end
+  local quality = SlotQuality(slotName)
+  if quality then
+    if quality > M.qualityLimit then
+      color = U.ItemQualityColor(quality) or M.slotBorder.plain
+    else
+      color = M.slotBorder.plain
     end
   end
 

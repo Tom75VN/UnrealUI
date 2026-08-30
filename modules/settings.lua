@@ -24,10 +24,10 @@ local S = U.RegisterModule("settings")
 
 local PANEL_WIDTH = 700
 -- Content area is PANEL_HEIGHT less the header and footer, and the fullest
--- page in the addon (Unit Frames: party, auras, dispel types and colours) is
--- what sets the floor. Raised from 520 when the party-frame section was added
--- to that page; every other page simply gains bottom margin.
-local PANEL_HEIGHT = 580
+-- page in the addon (Unit Frames: party, power ticks, combo placement, auras,
+-- dispel types and colours) is what sets the floor. Every other page simply
+-- gains bottom margin.
+local PANEL_HEIGHT = 704
 local SIDEBAR_WIDTH = 168
 local ROW_HEIGHT = 18
 local ROW_GAP = 1
@@ -1082,6 +1082,30 @@ local function BuildGeneralPage(parent)
     table.insert(widgets, autoAttackHint)
   end
 
+  local swingBar = U.CreateCheckbox(parent, {
+    name = "UnrealUISettingsSwingBar",
+    text = U.L("SETTINGS_SWING_BAR"),
+    value = U.ModuleConfig("swingbar", { enabled = true }).enabled,
+    onChange = function(value)
+      U.ModuleConfig("swingbar", { enabled = true }).enabled = value
+      if type(U.ApplySwingBar) == "function" then U.ApplySwingBar() end
+    end,
+  })
+  swingBar.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -220)
+  table.insert(widgets, swingBar)
+
+  local swingBarHint = U.CreateSettingsLabel(parent, {
+    size = M.fontSize.small,
+    color = M.color.textDim,
+    inherits = "GameFontNormalSmall",
+    justify = "LEFT",
+  })
+  if swingBarHint then
+    U.AnchorSettingsDescription(swingBarHint, swingBar.box)
+    swingBarHint:SetText(U.L("SETTINGS_SWING_BAR_HINT"))
+    table.insert(widgets, swingBarHint)
+  end
+
   -- The micro bar (modules/microbar.lua) has a single setting, so its toggle
   -- lives here rather than on a dedicated tab of its own.
   local microbar = U.CreateCheckbox(parent, {
@@ -1093,7 +1117,7 @@ local function BuildGeneralPage(parent)
       if type(U.ApplyMicroBar) == "function" then U.ApplyMicroBar() end
     end,
   })
-  microbar.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -220)
+  microbar.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -276)
   table.insert(widgets, microbar)
 
   local microbarHint = U.CreateSettingsLabel(parent, {
@@ -1119,7 +1143,7 @@ local function BuildGeneralPage(parent)
       if type(U.ApplyXPBar) == "function" then U.ApplyXPBar() end
     end,
   })
-  reputation.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -276)
+  reputation.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -332)
   table.insert(widgets, reputation)
 
   -- The minimap settings button (modules/minimap.lua) is the normal way to
@@ -1134,7 +1158,7 @@ local function BuildGeneralPage(parent)
       if type(U.ApplyMinimapButton) == "function" then U.ApplyMinimapButton() end
     end,
   })
-  minimapButton.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -308)
+  minimapButton.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -364)
   table.insert(widgets, minimapButton)
 
   -- The world map zone level ranges (modules/worldmap.lua) are a single
@@ -1151,7 +1175,7 @@ local function BuildGeneralPage(parent)
       end
     end,
   })
-  zoneLevels.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -340)
+  zoneLevels.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -396)
   table.insert(widgets, zoneLevels)
 
   local zoneLevelsHint = U.CreateSettingsLabel(parent, {
@@ -1169,6 +1193,7 @@ local function BuildGeneralPage(parent)
   local function Refresh()
     themes.SetValue(U.GetThemeStyle(), false)
     autoAttack.SetValue(U.ModuleConfig("autoattack", { enabled = true }).enabled)
+    swingBar.SetValue(U.ModuleConfig("swingbar", { enabled = true }).enabled)
     microbar.SetValue(U.ModuleConfig("microbar", { enabled = true }).enabled)
     reputation.SetValue(U.ModuleConfig("xpbar", { repEnabled = true }).repEnabled)
     minimapButton.SetValue(U.ModuleConfig("minimap", { enabled = true }).enabled)

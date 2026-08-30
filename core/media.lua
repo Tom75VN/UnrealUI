@@ -149,15 +149,24 @@ M.color = {
   health     = { 0.25, 0.75, 0.30, 1.00 },
   healthBg   = { 0.10, 0.10, 0.10, 0.90 },
 
-  -- pfUI modern's unitframe "custom" colour (profiles.lua, Modern profile:
-  -- customcolor "0.1,0.1,0.1,1"). It is what a full-health bar fades to, which
-  -- is the single most recognisable part of the modern unit frame look.
-  healthFull = { 0.10, 0.10, 0.10, 1.00 },
+  -- What a full-health bar fades to, and the single most recognisable part of
+  -- the modern unit frame look. pfUI modern puts near-black here (profiles.lua,
+  -- Modern profile: customcolor "0.1,0.1,0.1,1"), but the fade in
+  -- modules/unitframes.lua weights this colour by health percent, so the top of
+  -- the range collapsed onto the panel background: at 80% the fill resolved to
+  -- roughly 0.17/0.23/0.13 against a 0.06 backdrop. A deep green keeps the flat
+  -- dark bar while holding readable contrast across the whole high-health range,
+  -- and low health still reads red/orange because the gradient dominates there.
+  -- themes/modern.lua re-applies this token on a theme switch; keep both in sync.
+  healthFull = { 0.18, 0.50, 0.22, 1.00 },
 
   -- Castbar fill. Distinct from the accent so a cast in progress reads as game
   -- state, not chrome, and distinct from the health/power colours so it never
   -- looks like a third unit-frame bar.
   cast       = { 0.20, 0.55, 0.65, 1.00 },
+  -- Time added by spell pushback. Semantic red makes the penalty distinct
+  -- from both the normal countdown and the cast fill.
+  castPushback = { 1.00, 0.20, 0.20, 1.00 },
 
   -- Breath is a depletion state, not an UnrealUI accent. Its cool blue stays
   -- separate from casting so the two progress bars remain distinguishable.
@@ -277,6 +286,17 @@ M.class = {
   SHAMAN      = { 0.00, 0.44, 0.87 },
   WARLOCK     = { 0.58, 0.51, 0.79 },
   WARRIOR     = { 0.78, 0.61, 0.43 },
+}
+
+-- Ordered active-pip colours for the Rogue combo-point strip. These values
+-- compensate for normTex2's darkening while forming a clear red-to-green
+-- progression through orange, yellow, and yellow-green.
+M.rogueCombo = {
+  { 0.704, 0.341, 0.341, 1.00 },
+  { 0.800, 0.550, 0.340, 1.00 },
+  { 0.679, 0.654, 0.389, 1.00 },
+  { 0.490, 0.640, 0.320, 1.00 },
+  { 0.310, 0.700, 0.310, 1.00 },
 }
 
 function M.ClassColor(class)

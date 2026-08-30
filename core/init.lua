@@ -9,7 +9,7 @@ UnrealUI = {}
 local U = UnrealUI
 
 U.name      = "unrealUI"
-U.version   = "0.2.3"
+U.version   = "0.3.0"
 U.modules   = {}       -- name -> module table
 U.moduleOrder = {}     -- load/enable order, registration order
 U.ready     = false    -- set once PLAYER_LOGIN work has run
@@ -258,10 +258,17 @@ U.ticks = 0
 -- lacking GetTime.
 local _GetTime = GetTime
 local lastTickAt
+local clockVerified = false
 
 local function ResolveElapsed(a, b)
   if type(_GetTime) == "function" then
-    local ok, now = pcall(_GetTime)
+    local ok, now = true, nil
+    if clockVerified then
+      now = _GetTime()
+    else
+      ok, now = pcall(_GetTime)
+      if ok and type(now) == "number" then clockVerified = true end
+    end
     if ok and type(now) == "number" then
       local delta = 0
       if lastTickAt then delta = now - lastTickAt end
@@ -281,22 +288,40 @@ local function ResolveElapsed(a, b)
   return 0
 end
 
+-- The driver still receives every rendered frame because active animations
+-- can request interval 0, but normal HUD timers are much slower. Keep one
+-- monotonic scheduler clock and remember the earliest due callback so a
+-- high-FPS client does not walk every registered 0.1-2s timer on all the
+-- intervening frames. Each entry stores when it was last accounted, so a new
+-- registration never inherits time that elapsed before it existed.
+local schedulerClock = 0
+local nextUpdateAt = nil
+
 dispatcher:SetScript("OnUpdate", function(a, b)
   local elapsed = ResolveElapsed(a, b)
   U.ticks = U.ticks + 1
+  schedulerClock = schedulerClock + elapsed
 
   -- This delta is the only frame-time measurement this client can produce
   -- (debugprofilestop is a documented no-op here), so the recorder reads it
   -- before any updater has had a chance to add to the next one.
   if U.perfActive then U.PerfTick(elapsed) end
 
+  if nextUpdateAt == nil or schedulerClock < nextUpdateAt then return end
+
   -- A callback may unregister itself (the enable fallback below does exactly
-  -- that), so entries can disappear mid-loop.
-  local n
-  for n = 1, table.getn(updaters) do
+  -- that), so entries can disappear mid-loop. Check the current slot after a
+  -- callback: if that entry removed itself, the item shifted into its place is
+  -- still visited rather than being skipped for this pass.
+  local n = 1
+  while n <= table.getn(updaters) do
     local entry = updaters[n]
-    if entry then
-      entry.elapsed = entry.elapsed + elapsed
+    -- An updater registered by another updater starts on the next driver
+    -- frame, matching the old fixed-limit numeric loop. Event registrations
+    -- made between frames remain eligible immediately on the next frame.
+    if entry and entry.registeredTick < U.ticks then
+      entry.elapsed = entry.elapsed + (schedulerClock - entry.checkedAt)
+      entry.checkedAt = schedulerClock
       if entry.elapsed >= entry.interval then
         -- Carry the overshoot instead of zeroing. Zeroing restarted every
         -- accumulator from the same point each time it fired, which is what
@@ -318,11 +343,38 @@ dispatcher:SetScript("OnUpdate", function(a, b)
         else
           entry.elapsed = 0
         end
+        -- Recorder only, and only while /uui perf is running. Two things are
+        -- measured by bracketing the call: which updaters ran inside this
+        -- frame -- there is no intra-frame profiler here, but the delta the
+        -- NEXT tick reports describes this frame, so core/perf.lua credits
+        -- whatever fired in it -- and how much Lua heap each one leaves
+        -- behind, which is the thing a periodic collection pause is made of.
+        if U.perfActive and U.PerfUpdater then U.PerfUpdater(entry.id) end
+
         local ok, err = pcall(entry.callback, entry.interval)
+
+        if U.perfActive and U.PerfUpdaterEnd then U.PerfUpdaterEnd() end
         if not ok then
           U.Error("updater " .. tostring(entry.id) .. ": " .. tostring(err))
         end
       end
+    end
+
+    if updaters[n] == entry then n = n + 1 end
+  end
+
+  -- Recompute only after a due pass. Registration can add a sooner deadline
+  -- directly; unregistration may leave one harmless early wake, at which point
+  -- this pass corrects it. With no callbacks the driver avoids timer work
+  -- altogether until the next registration.
+  nextUpdateAt = nil
+  for n = 1, table.getn(updaters) do
+    local entry = updaters[n]
+    local remaining = entry.interval - entry.elapsed
+    if entry.interval <= 0 or remaining < 0 then remaining = 0 end
+    local dueAt = schedulerClock + remaining
+    if nextUpdateAt == nil or dueAt < nextUpdateAt then
+      nextUpdateAt = dueAt
     end
   end
 end)
@@ -346,15 +398,26 @@ function U.RegisterUpdate(id, interval, callback)
   if type(callback) ~= "function" then return end
   U.UnregisterUpdate(id)
   interval = tonumber(interval) or 0
-  table.insert(updaters, {
+  local phase = NextPhase(interval)
+  local entry = {
     id = id,
     interval = interval,
     -- Starting the accumulator part-way through the interval both offsets the
     -- first fire and, because the tick loop now carries the overshoot rather
     -- than zeroing, keeps that offset for every fire after it.
-    elapsed = NextPhase(interval),
+    elapsed = phase,
+    checkedAt = schedulerClock,
+    registeredTick = U.ticks,
     callback = callback,
-  })
+  }
+  table.insert(updaters, entry)
+
+  local remaining = interval - phase
+  if interval <= 0 or remaining < 0 then remaining = 0 end
+  local dueAt = schedulerClock + remaining
+  if nextUpdateAt == nil or dueAt < nextUpdateAt then
+    nextUpdateAt = dueAt
+  end
 end
 
 function U.UnregisterUpdate(id)

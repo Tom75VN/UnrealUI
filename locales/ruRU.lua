@@ -10,6 +10,16 @@
 
 UnrealUI.RegisterLocale("ruRU", {
 
+-- Opt-in custom pet bar (native remains the default).
+CMD_PETBAR                = "  |cffffff00/uui petbar <native/custom>|r - выбрать панель питомца (нужен /reload)",
+PETBAR_MODE_NATIVE        = "Стандартная",
+PETBAR_MODE_CUSTOM        = "Пользовательская (Modern)",
+PETBAR_MODE_STATUS        = "Панель питомца: %s. После перезагрузки: %s.",
+PETBAR_MODE_SELECTED      = "Выбрана панель питомца: %s. Введите /reload для применения.",
+PETBAR_CUSTOM_WARNING     = "Экспериментальная панель питомца: клиент блокирует применение заклинаний щелчком. Верните стандартную панель командой /uui petbar native, затем /reload.",
+PETBAR_ACTION_UNAVAILABLE = "Это действие питомца недоступно в данном клиенте.",
+PETBAR_UNAVAILABLE        = "Выбор панели питомца недоступен в этом сеансе.",
+
 -- ---------------------------------------------------------------------------
 -- Shared controls
 -- ---------------------------------------------------------------------------
@@ -56,9 +66,11 @@ MOVER_LABEL_PARTY_N       = "Группа %d",
 MOVER_LABEL_DRUID_MANA    = "Мана друида",
 MOVER_LABEL_CASTBAR       = "Полоса заклинаний",
 MOVER_LABEL_TARGET_CASTBAR = "Полоса заклинаний цели",
+MOVER_LABEL_PET_CASTBAR   = "Полоса заклинаний питомца",
 MOVER_LABEL_XP_BAR        = "Полоса опыта",
 MOVER_LABEL_REP_BAR       = "Полоса репутации",
 MOVER_LABEL_BREATH_BAR    = "Полоса дыхания",
+MOVER_LABEL_SWING_BAR     = "Автоатака: полоса атаки",
 MOVER_LABEL_MICRO_BAR     = "Микропанель",
 MOVER_LABEL_BUFFS         = "Усиления и ослабления",
 MOVER_LABEL_MINIMAP       = "Миникарта",
@@ -94,12 +106,18 @@ SETTINGS_QUICKBIND        = "Быстрые привязки",
 SETTINGS_QUICKBIND_HINT   = "Наведите курсор на ячейку панели команд или панели стоек и нажмите клавишу, чтобы назначить её. Escape над ячейкой очищает привязку.",
 SETTINGS_AUTO_ATTACK      = "Начинать автоатаку при выборе цели",
 SETTINGS_AUTO_ATTACK_HINT = "Автоматически начинает автоатаку при выборе доступной для атаки цели щелчком мыши или клавишей Tab. Не срабатывает, пока разбойник или друид находится в режиме незаметности.",
+SETTINGS_SWING_BAR        = "Показывать полосу автоатаки",
+SETTINGS_SWING_BAR_HINT   = "Показывает таймеры основной, дополнительной и луковой или дальней атаки, пока цель находится в радиусе действия. Перемещается через режим интерфейса.",
 SETTINGS_MICROBAR         = "Включить микропанель",
 SETTINGS_MICROBAR_HINT    = "Собирает стандартные кнопки персонажа, книги заклинаний, талантов, журнала заданий, социального окна, карты, меню и помощи в один перемещаемый ряд. Отключение возвращает их на штатные места.",
 SETTINGS_REPUTATION_BAR   = "Показывать полосу репутации",
 SETTINGS_MINIMAP_BUTTON   = "Показывать кнопку настроек у миникарты",
 SETTINGS_ZONE_LEVELS      = "Показывать диапазоны уровней зон на карте мира",
 SETTINGS_ZONE_LEVELS_HINT = "При наведении на зону на карте континента рядом с названием показывается её диапазон уровней: зелёный — ниже вашего уровня, оранжевый — на вашем уровне, красный — выше вашего уровня.",
+
+SWING_BAR_MAIN            = "Осн.",
+SWING_BAR_OFF             = "Доп.",
+SWING_BAR_RANGED          = "Дал.",
 
 ROGUE_SETTINGS_HEADER         = "Быстрое нанесение ядов",
 ROGUE_POISON_SHIFT_CLICK      = "Включить нанесение ядов по Shift",
@@ -208,6 +226,12 @@ UF_POWER_ENERGY           = "Энергия",
 
 UF_PARTY_HEADER           = "Рамки группы",
 UF_PARTY_PETS             = "Показывать питомцев членов группы",
+UF_POWER_TICK_HEADER      = "Тик ресурса игрока",
+UF_MANA_TICK              = "Показывать тик маны",
+UF_ENERGY_TICK            = "Показывать тик энергии",
+UF_COMBO_POINTS_HEADER    = "Серия приемов",
+UF_COMBO_POINTS_PLAYER_FRAME = "Рамка игрока",
+UF_COMBO_POINTS_TARGET_FRAME = "Рамка цели",
 
 AURAS_HEADER              = "Эффекты на рамках существ",
 AURAS_ON_PLAYER_FRAME     = "Показывать эффекты на рамке игрока",
@@ -277,6 +301,10 @@ STATUS_ONLINE             = "игроков в сети",
 WORLDMAP_CURSOR           = "Курсор: --, --",
 WORLDMAP_CURSOR_OFF_MAP   = "Курсор: вне карты",
 QUESTLOG_LEVELS           = "Уровни",
+SPELLBOOK_HIGHEST_RANK    = "Высший ранг",
+SPELLBOOK_HIGHEST_RANK_TOOLTIP = "Показывает только последний ранг каждого заклинания.",
+SPELLBOOK_BAR_HINT        = "Нет на панелях",
+SPELLBOOK_BAR_HINT_TOOLTIP = "Подсвечивает заклинания вне панелей.",
 GAMEMENU_OPTIONS          = "Настройки",
 
 -- ---------------------------------------------------------------------------

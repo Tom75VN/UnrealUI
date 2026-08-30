@@ -474,6 +474,10 @@ end
 
 -- The global cooldown currently running, shared by every button. See NoteGCD.
 local gcdStart, gcdDuration, gcdProgress
+local gcdTimerRunning = false
+local RefreshGCDSweep
+local cooldownTimerRunning = false
+local RefreshCooldownTimers
 
 -- ---------------------------------------------------------------------------
 -- Config
@@ -907,6 +911,8 @@ end
 -- SetOverrideBindingClick targets the named UnrealUI button, so keyboard and
 -- mouse activation both arrive through OnButtonClick. Flash that exact button;
 -- this is also a visible confirmation that a key was routed to the right slot.
+local RefreshPressedButtons
+
 local function ShowButtonPress(button, held)
   if not button.uuiPressed then return end
 
@@ -919,7 +925,14 @@ local function ShowButtonPress(button, held)
 
   if not button.uuiPressedTracked then
     button.uuiPressedTracked = true
+    local wasEmpty = table.getn(pressedButtons) == 0
     table.insert(pressedButtons, button)
+    -- The highlight needs render-frame cadence only while a key or mouse press
+    -- is actually being timed. Keeping an empty callback registered all the
+    -- time made every idle frame pay a protected call for no visual work.
+    if wasEmpty then
+      U.RegisterUpdate("actionbar.pressed", 0, RefreshPressedButtons)
+    end
   end
 end
 
@@ -927,7 +940,7 @@ local function ReleaseButtonPress(button)
   if button then button.uuiPressedHeld = nil end
 end
 
-local function RefreshPressedButtons()
+RefreshPressedButtons = function()
   if table.getn(pressedButtons) == 0 then return end
 
   local now = tonumber(Call("GetTime"))
@@ -943,6 +956,10 @@ local function RefreshPressedButtons()
       ApplyButtonBorder(button)
       table.remove(pressedButtons, i)
     end
+  end
+
+  if table.getn(pressedButtons) == 0 then
+    U.UnregisterUpdate("actionbar.pressed")
   end
 end
 
@@ -1374,8 +1391,18 @@ local function HideButton(button)
   end
   button.uuiHover = false
   button.uuiActive = nil
+  button.uuiEmpty = nil
+  button.uuiSlotTexture = nil
+  button.uuiCountText = nil
+  button.uuiMacroText = nil
+  button.uuiKeybindText = nil
+  button.uuiTint = nil
   button.uuiCdActive = false
   button.uuiCdShown = false
+  -- CooldownFrame_SetTimer may show its Model child. Mark the native timer
+  -- cache invalid whenever the button is hidden so the first refresh after a
+  -- bar is re-enabled always re-applies the current pair.
+  button.uuiCooldownApplied = nil
   if button.uuiCooldown then pcall(button.uuiCooldown.Hide, button.uuiCooldown) end
   U.HideRadialWipe(button.uuiGcd)
   button:Hide()
@@ -1389,18 +1416,26 @@ local function UpdateSlot(button)
 
   local texture = Call("GetActionTexture", slot)
   if type(texture) == "string" and texture ~= "" then
-    pcall(button.uuiIcon.SetTexture, button.uuiIcon, texture)
-    button.uuiIcon:Show()
+    if button.uuiSlotTexture ~= texture then
+      button.uuiSlotTexture = texture
+      pcall(button.uuiIcon.SetTexture, button.uuiIcon, texture)
+    end
+    if button.uuiEmpty ~= false then button.uuiIcon:Show() end
     button.uuiEmpty = false
     -- The cache has to agree with what is actually written below. Without this
     -- the next UpdateUsable sees its own stale colour and skips the re-apply,
     -- which left an out-of-range button white until its state changed to
     -- something else and back.
-    button.uuiTint = COLOR.usable
-    ApplyIconTint(button)
+    if not button.uuiTint then
+      button.uuiTint = COLOR.usable
+      ApplyIconTint(button)
+    end
   else
-    pcall(button.uuiIcon.SetTexture, button.uuiIcon, nil)
-    button.uuiIcon:Hide()
+    if button.uuiSlotTexture ~= false then
+      button.uuiSlotTexture = false
+      pcall(button.uuiIcon.SetTexture, button.uuiIcon, nil)
+    end
+    if button.uuiEmpty ~= true then button.uuiIcon:Hide() end
     button.uuiEmpty = true
     button.uuiTint = nil
   end
@@ -1415,27 +1450,33 @@ local function UpdateSlot(button)
     if n and n > 0 then count = tostring(n) end
   end
   if button.uuiCount then
-    button.uuiCount:SetText(count)
-    ShowRegion(button.uuiCount, count ~= "")
+    if button.uuiCountText ~= count then
+      button.uuiCountText = count
+      button.uuiCount:SetText(count)
+      ShowRegion(button.uuiCount, count ~= "")
+    end
   end
 
-  local macro = nil
+  local macro = ""
   if cfg.showMacro then macro = Call("GetActionText", slot) end
+  if type(macro) ~= "string" then macro = "" end
   if button.uuiMacro then
-    if type(macro) == "string" and macro ~= "" then
+    if button.uuiMacroText ~= macro then
+      button.uuiMacroText = macro
       button.uuiMacro:SetText(macro)
-      button.uuiMacro:Show()
-    else
-      button.uuiMacro:SetText("")
-      button.uuiMacro:Hide()
+      ShowRegion(button.uuiMacro, macro ~= "")
     end
   end
 
   local key = ""
   if cfg.showKeybind then key = BindingFor(button.uuiBar, button.uuiIndex) end
+  if type(key) ~= "string" then key = "" end
   if button.uuiKeybind then
-    button.uuiKeybind:SetText(key)
-    ShowRegion(button.uuiKeybind, key ~= "")
+    if button.uuiKeybindText ~= key then
+      button.uuiKeybindText = key
+      button.uuiKeybind:SetText(key)
+      ShowRegion(button.uuiKeybind, key ~= "")
+    end
   end
 end
 
@@ -1538,6 +1579,12 @@ local function FormatCooldown(remaining)
   return text, CD_COLOR[tier] or CD_COLOR.normal
 end
 
+local function WakeCooldownTimers()
+  if cooldownTimerRunning then return end
+  cooldownTimerRunning = true
+  U.RegisterUpdate("actionbar.cooldown", CD_TICK, RefreshCooldownTimers)
+end
+
 -- Redraws one button's number from its cached pair. Cheap on purpose: this is
 -- what runs at CD_TICK, so it re-reads the clock but not the action API.
 local function RefreshCooldownText(button)
@@ -1571,6 +1618,18 @@ local function RefreshCooldownText(button)
     button.uuiCdShown = true
     label:Show()
   end
+  return true
+end
+
+local activeCooldownSeen = false
+local function RefreshActiveCooldown(button)
+  if RefreshCooldownText(button) then activeCooldownSeen = true end
+end
+
+local function WakeGCDSweep()
+  if gcdTimerRunning then return end
+  gcdTimerRunning = true
+  U.RegisterUpdate("actionbar.gcd", 0.04, RefreshGCDSweep)
 end
 
 -- The global cooldown is never reported as a value of its own. It arrives as an
@@ -1601,6 +1660,7 @@ local function NoteGCD(slot, start, duration)
   if start + duration <= now then return end
 
   gcdStart, gcdDuration = start, duration
+  WakeGCDSweep()
 end
 
 -- Re-reads the slot's cooldown pair and drives both the swipe and the number.
@@ -1617,8 +1677,18 @@ local function UpdateCooldown(button)
     -- on every state tick, so an uncached U.G here is one extra pcall per
     -- button five times a second.
     local fn = ResolveApiFn("CooldownFrame_SetTimer")
-    if fn then
-      pcall(fn, button.uuiCooldown, start, duration, enable or 1)
+    local timerEnable = enable or 1
+    if fn and
+       (not button.uuiCooldownApplied or
+        button.uuiCooldownStart ~= start or
+        button.uuiCooldownDuration ~= duration or
+        button.uuiCooldownEnable ~= timerEnable) then
+      if pcall(fn, button.uuiCooldown, start, duration, timerEnable) then
+        button.uuiCooldownApplied = true
+        button.uuiCooldownStart = start
+        button.uuiCooldownDuration = duration
+        button.uuiCooldownEnable = timerEnable
+      end
     end
   end
 
@@ -1630,6 +1700,10 @@ local function UpdateCooldown(button)
   button.uuiCdDuration = duration
   button.uuiCdActive = (start > 0 and duration >= GCD_THRESHOLD
                         and (enable == nil or enable > 0)) and true or false
+
+  if button.uuiCdActive and cfg and cfg.showCooldown then
+    WakeCooldownTimers()
+  end
 
   RefreshCooldownText(button)
 end
@@ -1648,16 +1722,18 @@ local function ApplyButtonBackground(button)
   if button.uuiClassic then
     U.SetBackdropShown(button, false)
     ShowRegion(button.uuiClassicNormal, shown)
-    if not shown and button.uuiKeybind then
-      ShowRegion(button.uuiKeybind, false)
+    if button.uuiKeybind then
+      ShowRegion(button.uuiKeybind,
+                 shown and button.uuiKeybindText ~= "")
     end
     return
   end
   U.SetBackdropShown(button, shown)
   -- A keybind label floating over a background-less slot is the same "empty
   -- box" the setting is meant to remove, so it goes with the background.
-  if not shown and button.uuiKeybind then
-    ShowRegion(button.uuiKeybind, false)
+  if button.uuiKeybind then
+    ShowRegion(button.uuiKeybind,
+               shown and button.uuiKeybindText ~= "")
   end
 end
 
@@ -1719,14 +1795,24 @@ end
 local function ClearGCD()
   gcdStart, gcdDuration, gcdProgress = nil, nil, nil
   ForEachVisibleButton(HideGCDSweep)
+  if gcdTimerRunning then
+    gcdTimerRunning = false
+    U.UnregisterUpdate("actionbar.gcd")
+  end
 end
 
 -- One clock read for the whole action bar, then at most one size write per
 -- button. Outside a global cooldown the cost is the nil check on the first
 -- line, which is why this can tick faster than the state sweep: a 1.5s sweep
 -- redrawn five times a second would step rather than travel.
-local function RefreshGCDSweep()
-  if not gcdStart then return end
+RefreshGCDSweep = function()
+  if not gcdStart then
+    if gcdTimerRunning then
+      gcdTimerRunning = false
+      U.UnregisterUpdate("actionbar.gcd")
+    end
+    return
+  end
   if not (cfg and cfg.showGCD) then ClearGCD() return end
 
   local now = tonumber(Call("GetTime"))
@@ -2020,8 +2106,13 @@ end
 -- Only the number, from the cached pair. The pair itself is refreshed by the
 -- state sweep and by ACTIONBAR_UPDATE_COOLDOWN; this is what makes the digits
 -- move between those.
-local function RefreshCooldownTimers()
-  ForEachVisibleButton(RefreshCooldownText)
+RefreshCooldownTimers = function()
+  activeCooldownSeen = false
+  ForEachVisibleButton(RefreshActiveCooldown)
+  if not activeCooldownSeen then
+    cooldownTimerRunning = false
+    U.UnregisterUpdate("actionbar.cooldown")
+  end
 end
 
 -- Hoisted out of RefreshState, which used to build it fresh on every sweep --
@@ -2049,13 +2140,18 @@ end
 -- does everything the state sweep does.
 -- ---------------------------------------------------------------------------
 local pendingRefresh = nil
+local FlushPendingRefresh
 
 local function QueueRefresh(mode)
   if pendingRefresh == "slots" then return end
+  local wasEmpty = pendingRefresh == nil
   pendingRefresh = mode
+  if wasEmpty then
+    U.DeferOnce("actionbar.flush", FlushPendingRefresh)
+  end
 end
 
-local function FlushPendingRefresh()
+FlushPendingRefresh = function()
   local mode = pendingRefresh
   if not mode then return end
   pendingRefresh = nil
@@ -2254,20 +2350,9 @@ function AB:OnEnable()
   HookNativeBindingHighlights()
   RegisterEvents()
 
-  -- Three rates: slot contents change rarely and cost the most calls, usable/
-  -- active/cooldown state is what the eye tracks, and the countdown itself only
-  -- re-reads the clock, so it can tick fastest for the least work.
-  U.RegisterUpdate("actionbar.cooldown", CD_TICK, RefreshCooldownTimers)
-  U.RegisterUpdate("actionbar.pressed", 0, RefreshPressedButtons)
-  -- Drains whatever the event handlers queued during the previous frame. One
-  -- nil check per tick when nothing is pending, the same shape as
-  -- RefreshPressedButtons' empty-list return.
-  U.RegisterUpdate("actionbar.flush", 0, FlushPendingRefresh)
-  -- Faster than the state sweep on purpose: the whole animation is over in
-  -- about 1.5 seconds, and at the state sweep's 0.2s it would step through four
-  -- positions rather than travel. 0.04 is 25 redraws across the wipe, and only
-  -- the strips the leading edge actually crossed are written on each one.
-  U.RegisterUpdate("actionbar.gcd", 0.04, RefreshGCDSweep)
+  -- Slot contents change rarely and cost the most calls; usable/active state
+  -- is what the eye tracks. Cooldown digits and the GCD sweep register their
+  -- faster timers only while at least one countdown is actually moving.
   U.RegisterUpdate("actionbar.state", 0.2, RefreshState)
   U.RegisterUpdate("actionbar.slots", 1, RefreshSlots)
 end

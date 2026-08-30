@@ -100,6 +100,10 @@ local CD_TEXT_THRESHOLD = 2
 -- rate would step rather than travel.
 local CD_TICK = 0.1
 local SWEEP_TICK = 0.04
+local cooldownTextRunning = false
+local cooldownSweepRunning = false
+local RefreshCooldownTexts
+local RefreshCooldownSweeps
 
 -- The client's own stance keys. One command per slot, exactly as the native
 -- bar uses them, so a key bound here is the same key the Key Bindings window
@@ -432,6 +436,7 @@ local function RefreshCooldownText(button)
     button.uuiCdShown = true
     pcall(label.Show, label)
   end
+  return true
 end
 
 -- The wipe travels across the whole cooldown, the short ones included: below
@@ -464,6 +469,19 @@ local function RefreshCooldownSweep(button)
 
   button.uuiSweepShown = true
   U.SetRadialWipeProgress(button.uuiSweep, (duration - remaining) / duration)
+  return true
+end
+
+local function WakeCooldownText()
+  if cooldownTextRunning then return end
+  cooldownTextRunning = true
+  U.RegisterUpdate("stancebar.cdtext", CD_TICK, RefreshCooldownTexts)
+end
+
+local function WakeCooldownSweep()
+  if cooldownSweepRunning then return end
+  cooldownSweepRunning = true
+  U.RegisterUpdate("stancebar.sweep", SWEEP_TICK, RefreshCooldownSweeps)
 end
 
 local function UpdateCooldown(button)
@@ -488,8 +506,8 @@ local function UpdateCooldown(button)
   button.uuiCdText = (running and duration >= CD_TEXT_THRESHOLD) and true or false
 
   ApplyState(button)
-  RefreshCooldownSweep(button)
-  RefreshCooldownText(button)
+  if RefreshCooldownSweep(button) then WakeCooldownSweep() end
+  if RefreshCooldownText(button) then WakeCooldownText() end
 end
 
 local function FullUpdate(button)
@@ -504,6 +522,34 @@ local function ForEachButton(callback)
   if not shown then return end
   local i
   for i = 1, table.getn(buttons) do callback(buttons[i]) end
+end
+
+local activeCooldownTextSeen = false
+local function RefreshActiveCooldownText(button)
+  if RefreshCooldownText(button) then activeCooldownTextSeen = true end
+end
+
+RefreshCooldownTexts = function()
+  activeCooldownTextSeen = false
+  ForEachButton(RefreshActiveCooldownText)
+  if not activeCooldownTextSeen then
+    cooldownTextRunning = false
+    U.UnregisterUpdate("stancebar.cdtext")
+  end
+end
+
+local activeCooldownSweepSeen = false
+local function RefreshActiveCooldownSweep(button)
+  if RefreshCooldownSweep(button) then activeCooldownSweepSeen = true end
+end
+
+RefreshCooldownSweeps = function()
+  activeCooldownSweepSeen = false
+  ForEachButton(RefreshActiveCooldownSweep)
+  if not activeCooldownSweepSeen then
+    cooldownSweepRunning = false
+    U.UnregisterUpdate("stancebar.sweep")
+  end
 end
 
 -- ---------------------------------------------------------------------------
@@ -627,11 +673,9 @@ function SB:OnEnable()
   -- The cooldown pair itself is re-read faster than the old 0.5s: a stance
   -- swap is gone in about 1.5s, so half a second of latency before the sweep
   -- even starts is a third of the animation. The two readouts below then run
-  -- off that cached pair -- the number at CD_TICK, the wipe at SWEEP_TICK so
-  -- it travels rather than steps.
+  -- off that cached pair only while it is active -- the number at CD_TICK, the
+  -- wipe at SWEEP_TICK so it travels rather than steps.
   U.RegisterUpdate("stancebar.cooldown", 0.2, function() ForEachButton(UpdateCooldown) end)
-  U.RegisterUpdate("stancebar.cdtext", CD_TICK, function() ForEachButton(RefreshCooldownText) end)
-  U.RegisterUpdate("stancebar.sweep", SWEEP_TICK, function() ForEachButton(RefreshCooldownSweep) end)
   U.RegisterUpdate("stancebar.slots", 0.5, function() Apply() end)
 end
 

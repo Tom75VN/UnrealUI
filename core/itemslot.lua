@@ -36,6 +36,21 @@ function U.ItemQualityColor(quality)
   return M.quality[quality]
 end
 
+-- Quality colour for an item the caller can name with a link.
+--
+-- GetItemInfo's documented third return is the 0-6 quality index, and it
+-- accepts an item id or an item string / hyperlink -- never a display name
+-- (documentation.json / global:Item:GetItemInfo). It "returns no values if the
+-- item is not in the local cache", which falls through to nil here rather than
+-- to a wrong colour.
+function U.ItemLinkQualityColor(link)
+  if type(link) ~= "string" and type(link) ~= "number" then return nil end
+
+  local ok, _, _, quality = pcall(GetItemInfo, link)
+  if not ok then return nil end
+  return U.ItemQualityColor(quality)
+end
+
 -- No compact runtime record establishes GetItemInfo's full Vanilla tuple shape
 -- on this client; this mirrors UnrealPfUI's working itemType == "Quest" check
 -- (UnrealPfUI/modules/bags.lua:460) as WORKING_SOURCE evidence only.
@@ -300,6 +315,11 @@ function U.ShowItemCompare(link)
       local name = "ShoppingTooltip" .. i
       local tooltip = U.G(name)
       if tooltip and type(tooltip.SetInventoryItem) == "function" then
+        -- Provisional anchor only: a frame has to be positioned before it can
+        -- be populated and measured. modules/tooltip.lua does the real
+        -- placement once every frame in this comparison is sized, because
+        -- whether this chain fits to the left of the item tooltip at all
+        -- depends on where the item tooltip ended up on screen.
         pcall(tooltip.SetOwner, tooltip, anchor, "ANCHOR_NONE")
         pcall(tooltip.ClearAllPoints, tooltip)
         pcall(tooltip.SetPoint, tooltip, "BOTTOMRIGHT", previous,
@@ -308,6 +328,12 @@ function U.ShowItemCompare(link)
         local setOk, populated = pcall(tooltip.SetInventoryItem, tooltip,
                                        "player", inventorySlot)
         if setOk and populated then
+          -- Rarity colour before the heading is inserted: the shift below
+          -- copies each row's colour along with its text, so line 1's colour
+          -- travels with the name to the row it ends up on.
+          if type(U.ColorCompareTooltipItemName) == "function" then
+            U.ColorCompareTooltipItemName(name, wornLink)
+          end
           -- SetInventoryItem does not add CURRENTLY_EQUIPPED. modules/
           -- tooltip.lua inserts it as the tooltip's own first line, shifting
           -- the native item lines down rather than appending an addon row.
@@ -321,6 +347,12 @@ function U.ShowItemCompare(link)
         end
       end
     end
+  end
+
+  -- Both frames are populated and sized, so the side they belong on can be
+  -- decided against the item tooltip's actual position rather than assumed.
+  if type(U.PositionItemCompare) == "function" then
+    pcall(U.PositionItemCompare)
   end
 end
 
@@ -371,10 +403,19 @@ function U.CreateItemSlot(parent, name, bag, slot)
   -- tooltip because replacing a GameTooltip method does not persist on this
   -- client (see that file).
   U.PostHookScript(button, "OnEnter", function()
+    -- The slot's own quality index, not a link: GetContainerItemInfo already
+    -- reports it and needs no item-cache row to do so.
+    if type(U.ColorTooltipItemName) == "function" then
+      local _, _, _, quality = U.ContainerSlotInfo(bag, slot)
+      U.ColorTooltipItemName(nil, quality)
+    end
     if type(U.ShowItemPrice) == "function" then U.ShowItemPrice(bag, slot) end
     ShowBagItemCompare(bag, slot)
   end)
   U.PostHookScript(button, "OnLeave", function()
+    if type(U.ClearTooltipItemName) == "function" then
+      U.ClearTooltipItemName()
+    end
     if type(U.HideItemPrice) == "function" then U.HideItemPrice() end
     U.HideItemCompare()
   end)

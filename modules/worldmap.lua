@@ -169,8 +169,10 @@ local state = {
 }
 
 local function Enabled()
-  local settings = U.ModuleConfig("worldmap", { zoneLevels = true })
-  return settings.zoneLevels and true or false
+  if not state.config then
+    state.config = U.ModuleConfig("worldmap", { zoneLevels = true })
+  end
+  return state.config.zoneLevels and true or false
 end
 
 local function PlayerLevel()
@@ -301,15 +303,26 @@ local function RefreshCursorCoordinates()
   if not label then return end
 
   local u, v, failure = CursorMapPosition()
-  local text
+  local text, mode, x, y
   if not failure then
-    text = string.format("Cursor: %.1f, %.1f", u * 100, v * 100)
+    mode = "position"
+    x = math.floor(u * 1000 + 0.5)
+    y = math.floor(v * 1000 + 0.5)
+    if state.coordinateMode == mode and state.coordinateX == x and
+       state.coordinateY == y then return end
+    text = string.format("Cursor: %.1f, %.1f", x / 10, y / 10)
   elseif u and v then
+    mode = "off-map"
+    if state.coordinateMode == mode then return end
     text = U.L("WORLDMAP_CURSOR_OFF_MAP")
   else
+    mode = "unavailable"
+    if state.coordinateMode == mode then return end
     text = U.L("WORLDMAP_CURSOR")
   end
 
+  state.coordinateMode = mode
+  state.coordinateX, state.coordinateY = x, y
   if text ~= state.coordinateText then
     label:SetText(text)
     state.coordinateText = text
@@ -386,13 +399,18 @@ local function RestoreAreaLabel(area)
   end
   state.appliedText = nil
   state.appliedName = nil
+  state.appliedLevel = nil
 end
 
 local function ApplyAreaLabel(area, name, range, playerLevel)
   if not area or not area.SetText then return false end
-  local decorated = name .. " " ..
-    ColorEscape(RangeColor(range[1], range[2], playerLevel)) ..
-    RangeText(range) .. "|r"
+  local decorated = state.appliedText
+  if not decorated or state.appliedName ~= name or
+     state.appliedLevel ~= playerLevel then
+    decorated = name .. " " ..
+      ColorEscape(RangeColor(range[1], range[2], playerLevel)) ..
+      RangeText(range) .. "|r"
+  end
 
   -- The stock hover updater is allowed to rewrite the label. Reapply only when
   -- its current text differs, avoiding an unconditional SetText at 20 Hz while
@@ -404,6 +422,7 @@ local function ApplyAreaLabel(area, name, range, playerLevel)
   if applied then
     state.appliedText = decorated
     state.appliedName = name
+    state.appliedLevel = playerLevel
   end
   return applied and true or false
 end
@@ -662,5 +681,4 @@ function WMAP:OnEnable()
   end
   U.RegisterUpdate("worldmap.zonelevel", 0.05, Refresh)
   Refresh()
-  ArmAutoWatch()
 end

@@ -1,0 +1,2 @@
+# Local Python tooling artifacts; not part of the addon.
+*.whl

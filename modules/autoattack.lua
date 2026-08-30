@@ -216,6 +216,13 @@ local function IsAttacking()
   return true
 end
 
+-- Shared read-only state for modules that need to follow the real attack
+-- toggle without duplicating the guarded action-slot scan above. The swing bar
+-- uses this for manual attacks as well as attacks started by this module.
+function U.IsAutoAttacking()
+  return IsAttacking()
+end
+
 local function TargetIsAttackable()
   if not ApiTruth("UnitExists", "target") then return false end
   if ApiTruth("UnitIsDead", "target") then return false end

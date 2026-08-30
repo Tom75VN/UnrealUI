@@ -10,6 +10,16 @@
 
 UnrealUI.RegisterLocale("frFR", {
 
+-- Opt-in custom pet bar (native remains the default).
+CMD_PETBAR                = "  |cffffff00/uui petbar <native/custom>|r - choisir la barre du familier (necessite /reload)",
+PETBAR_MODE_NATIVE        = "Native",
+PETBAR_MODE_CUSTOM        = "Personnalisee (Moderne)",
+PETBAR_MODE_STATUS        = "Barre du familier : %s. Choix au prochain rechargement : %s.",
+PETBAR_MODE_SELECTED      = "Barre du familier choisie : %s. Tapez /reload pour appliquer.",
+PETBAR_CUSTOM_WARNING     = "Barre du familier personnalisee experimentale : ce client bloque le lancement des sorts par clic. Retrouvez les sorts natifs avec /uui petbar native, puis /reload.",
+PETBAR_ACTION_UNAVAILABLE = "Cette action du familier est indisponible sur ce client.",
+PETBAR_UNAVAILABLE        = "Le choix de la barre du familier est indisponible dans cette session.",
+
 -- ---------------------------------------------------------------------------
 -- Shared controls
 -- ---------------------------------------------------------------------------
@@ -54,9 +64,11 @@ MOVER_LABEL_PARTY_N       = "Groupe %d",
 MOVER_LABEL_DRUID_MANA    = "Mana du druide",
 MOVER_LABEL_CASTBAR       = "Barre d'incantation",
 MOVER_LABEL_TARGET_CASTBAR = "Incantation de la cible",
+MOVER_LABEL_PET_CASTBAR   = "Incantation du familier",
 MOVER_LABEL_XP_BAR        = "Barre d'experience",
 MOVER_LABEL_REP_BAR       = "Barre de reputation",
 MOVER_LABEL_BREATH_BAR    = "Barre de souffle",
+MOVER_LABEL_SWING_BAR     = "Attaque auto : barre d'attaque",
 MOVER_LABEL_MICRO_BAR     = "Micro-barre",
 MOVER_LABEL_BUFFS         = "Ameliorations et affaiblissements",
 MOVER_LABEL_MINIMAP       = "Minicarte",
@@ -92,12 +104,18 @@ SETTINGS_QUICKBIND        = "Raccourcis rapides",
 SETTINGS_QUICKBIND_HINT   = "Survolez un emplacement de barre d'action ou de barre de posture et appuyez sur une touche pour l'assigner. Echap sur un emplacement l'efface.",
 SETTINGS_AUTO_ATTACK      = "Demarrer l'attaque automatique au ciblage",
 SETTINGS_AUTO_ATTACK_HINT = "Demarre automatiquement l'attaque contre une cible attaquable selectionnee par clic ou avec Tab. Ne se declenche jamais quand un voleur ou un druide est camoufle.",
+SETTINGS_SWING_BAR        = "Afficher la barre d'attaque automatique",
+SETTINGS_SWING_BAR_HINT   = "Affiche le rythme de la main droite, de la main gauche et de l'arc ou arme a distance tant que la cible est a portee. Se deplace via le mode interface.",
 SETTINGS_MICROBAR         = "Activer la micro-barre",
 SETTINGS_MICROBAR_HINT    = "Regroupe les boutons natifs personnage/grimoire/talents/journal de quetes/social/carte/menu/aide en une seule rangee deplacable. La desactiver les remet a leur emplacement d'origine.",
 SETTINGS_REPUTATION_BAR   = "Afficher la barre de reputation",
 SETTINGS_MINIMAP_BUTTON   = "Afficher le bouton des reglages sur la minicarte",
 SETTINGS_ZONE_LEVELS      = "Afficher les niveaux des zones sur la carte du monde",
 SETTINGS_ZONE_LEVELS_HINT = "Survoler une zone sur une carte de continent affiche sa plage de niveaux a cote du nom : vert en dessous de votre niveau, orange a votre niveau, rouge au-dessus.",
+
+SWING_BAR_MAIN            = "MD",
+SWING_BAR_OFF             = "MG",
+SWING_BAR_RANGED          = "Dist.",
 
 ROGUE_SETTINGS_HEADER         = "Raccourcis de poison",
 ROGUE_POISON_SHIFT_CLICK      = "Activer les clics Shift pour les poisons",
@@ -200,6 +218,12 @@ UF_POWER_ENERGY           = "Energie",
 
 UF_PARTY_HEADER           = "Cadres de groupe",
 UF_PARTY_PETS             = "Afficher les familiers des membres du groupe",
+UF_POWER_TICK_HEADER      = "Cycle de ressource du joueur",
+UF_MANA_TICK              = "Afficher le cycle de mana",
+UF_ENERGY_TICK            = "Afficher le cycle d'energie",
+UF_COMBO_POINTS_HEADER    = "Points de combo",
+UF_COMBO_POINTS_PLAYER_FRAME = "Cadre joueur",
+UF_COMBO_POINTS_TARGET_FRAME = "Cadre cible",
 
 AURAS_HEADER              = "Auras des cadres d'unite",
 AURAS_ON_PLAYER_FRAME     = "Afficher les auras sur le cadre joueur",
@@ -265,6 +289,10 @@ STATUS_ONLINE             = "joueurs en ligne",
 WORLDMAP_CURSOR           = "Curseur : --, --",
 WORLDMAP_CURSOR_OFF_MAP   = "Curseur : hors carte",
 QUESTLOG_LEVELS           = "Niveaux",
+SPELLBOOK_HIGHEST_RANK    = "Rang maximal",
+SPELLBOOK_HIGHEST_RANK_TOOLTIP = "Affiche seulement le dernier rang de chaque sort.",
+SPELLBOOK_BAR_HINT        = "Absent des barres",
+SPELLBOOK_BAR_HINT_TOOLTIP = "Surligne les sorts absents des barres.",
 GAMEMENU_OPTIONS          = "Options",
 
 -- ---------------------------------------------------------------------------

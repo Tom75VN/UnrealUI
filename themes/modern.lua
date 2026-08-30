@@ -14,8 +14,8 @@ U.RegisterThemeStyle("modern", {
     -- Classic changes so switching back cannot retain its colours.
     M.color.unitFrameBorder[1], M.color.unitFrameBorder[2] = 0.05, 0.05
     M.color.unitFrameBorder[3], M.color.unitFrameBorder[4] = 0.05, 1.00
-    M.color.healthFull[1], M.color.healthFull[2] = 0.10, 0.10
-    M.color.healthFull[3], M.color.healthFull[4] = 0.10, 1.00
+    M.color.healthFull[1], M.color.healthFull[2] = 0.18, 0.50
+    M.color.healthFull[3], M.color.healthFull[4] = 0.22, 1.00
     M.unitFrame.usePastelGradient = true
     M.unitFrame.statusTexture = M.texture.statusBar
     M.unitFrame.background[1], M.unitFrame.background[2] = 0.06, 0.06

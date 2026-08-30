@@ -276,8 +276,18 @@ local function SuppressStockFrames()
   -- TargetHighLevelTexture is the skull this client draws in place of the
   -- number for a ??-level target, so it belongs with the level rather than
   -- being a separate feature.
+  -- TargetDeadText is the "Dead" string this client draws over a corpse, and
+  -- the same enumeration has TargetFrame_CheckDead, which writes it *inside*
+  -- one target rather than at target acquisition. It had no name in this list
+  -- at all, so nothing ever cleared it: it is the one piece of stock target
+  -- art still readable on a screenshot of a dead mob. TargetLeaderIcon,
+  -- TargetPVPIcon and TargetRaidTargetIcon are in the enumeration too and
+  -- belong to the same frame, so they are named here rather than being
+  -- reported one at a time later.
   U.SuppressNativeFrame({ "TargetName", "TargetLevelText",
-                          "TargetHighLevelTexture", "TargetPortrait" },
+                          "TargetHighLevelTexture", "TargetPortrait",
+                          "TargetDeadText", "TargetLeaderIcon",
+                          "TargetPVPIcon", "TargetRaidTargetIcon" },
                         "target")
 
   U.SuppressNativeFrame(U.NativeFrameParts("TargetofTarget",
@@ -1372,20 +1382,21 @@ end
 -- UnrealPfUI's demonstrated shape (modules/combopoints.lua) as WORKING_SOURCE
 -- evidence, not runtime verification: GetComboPoints("target") plus
 -- UNIT_COMBO_POINTS / PLAYER_COMBO_POINTS / PLAYER_TARGET_CHANGED /
--- PLAYER_ENTERING_WORLD. Rogue only, per request -- the pfUI reference also
--- drives a druid combo variant and a separate paladin "reck" tracker that
--- unrealUI does not reproduce here.
+-- PLAYER_ENTERING_WORLD. The same compact treatment is used for Rogue points
+-- and Druid Cat Form; the pfUI reference's separate paladin "reck" tracker is
+-- intentionally out of scope.
 --
--- Flat modern design, not pfUI's red/yellow/green tiered pips: five equal
--- segments in a single hue (rogue class colour when filled, the same empty
--- bar tone the health/power bars use when not), in a raised child layer
--- immediately above the player frame. The layer is anchored flush to the
--- frame's top edge, so it follows the existing mover without changing the
--- player's geometry.
+-- Five equal pips use the ordered muted red-to-green palette from the intended
+-- player-frame treatment when filled, with the existing empty tone otherwise.
+-- The raised child layer sits immediately above the player frame, so it follows
+-- the mover without changing the player's geometry.
 -- ---------------------------------------------------------------------------
 local COMBO_MAX = 5
-local COMBO_GAP = 2
-local COMBO_HEIGHT = 4
+-- The reference has a single dark 1px divider between each textured point.
+-- A matching one-pixel black outline frames the strip; the 13px pass is now
+-- reduced by 20%.
+local COMBO_GAP = 1
+local COMBO_HEIGHT = 9.4
 -- Brighter than M.color.healthBg (the bar's own empty tone) on purpose: an
 -- empty pip needs to read as a visible slot against the near-black health
 -- bar, not blend into it.
@@ -1406,9 +1417,9 @@ local comboPips = nil
 -- neutralise Show, drop native events. That is what UnrealPfUI's
 -- modules/combopoints.lua does on this same client (ComboFrame:Hide() plus
 -- ComboFrame:UnregisterAllEvents()) -- WORKING_SOURCE evidence, not runtime
--- verification. Only registered for the class unrealUI actually replaces the
--- display for; a druid keeps the native gems rather than losing combo points
--- to a frame that draws nothing for it.
+-- verification. Registered only for Rogue and Druid, the two classes whose
+-- combo display unrealUI replaces; the Druid strip itself stays hidden outside
+-- Cat Form.
 local function SuppressStockComboFrame()
   local names = { "ComboFrame" }
   local i
@@ -1420,12 +1431,16 @@ local function SuppressStockComboFrame()
   U.SuppressNativeFrame(names)
 end
 
-local function BuildComboPoints(playerFrame)
+local function BuildComboPoints(playerFrame, isDruid)
   local health = playerFrame and playerFrame.health
   if not health then return end
 
-  local width = playerFrame.spec.width
-  local pipWidth = (width - (COMBO_MAX - 1) * COMBO_GAP) / COMBO_MAX
+  -- Match the outer box, including its one-pixel frame outline, rather than
+  -- the narrower inner health/power bar.
+  local width = FrameWidth(playerFrame.spec)
+  local inset = U.BorderSize()
+  local pipWidth = (width - inset * 2 - (COMBO_MAX - 1) * COMBO_GAP) / COMBO_MAX
+  local pipHeight = COMBO_HEIGHT - inset * 2
 
   -- Same raised-child-layer trick as the targettarget health label: sits above
   -- the player frame so the pips remain visible and move with it. Its bottom
@@ -1434,21 +1449,63 @@ local function BuildComboPoints(playerFrame)
   layer:SetWidth(width)
   layer:SetHeight(COMBO_HEIGHT)
   layer:SetPoint("BOTTOMLEFT", playerFrame, "TOPLEFT", 0, 0)
+  -- The layer's black fill is visible only through the one-pixel gutters,
+  -- giving every adjacent pair of points the reference's crisp separator.
+  local separators = layer:CreateTexture(nil, "BACKGROUND")
+  separators:SetTexture(M.texture.plain)
+  separators:SetAllPoints(layer)
+  U.SetColor(separators, 0, 0, 0, 1)
+  U.CreateBorder(layer, inset)
+  U.SetBorderColor(layer, 0, 0, 0, 1)
   local levelOk, level = pcall(health.GetFrameLevel, health)
   if levelOk and tonumber(level) then
     pcall(layer.SetFrameLevel, layer, level + 10)
   end
 
-  comboPips = {}
+  comboPips = { layer = layer, druid = isDruid and true or false }
   local i
   for i = 1, COMBO_MAX do
-    local pip = CreateFrame("Frame", nil, layer)
-    pip:SetWidth(pipWidth)
-    pip:SetHeight(COMBO_HEIGHT)
+    local pip = U.CreateStatusBar(layer, {
+      width = pipWidth,
+      height = pipHeight,
+      texture = M.texture.statusBar,
+      color = COMBO_EMPTY,
+      background = COMBO_EMPTY,
+    })
     pip:SetPoint("TOPLEFT", layer, "TOPLEFT",
-                (i - 1) * (pipWidth + COMBO_GAP), 0)
-    U.CreateBackdrop(pip, { border = false, background = COMBO_EMPTY })
+                inset + (i - 1) * (pipWidth + COMBO_GAP), -inset)
     comboPips[i] = pip
+  end
+end
+
+-- Re-anchor and resize the strip in place so changing its setting is visible
+-- immediately. Player and target frames can have different configured widths.
+function U.ApplyComboPointAnchor(location)
+  if not comboPips or not comboPips.layer then return end
+
+  comboPips.anchor = location == "target" and "target" or "player"
+  local anchor = comboPips.anchor == "target" and frames.target or frames.player
+  if not anchor then return end
+
+  -- FrameWidth includes the selected frame's outer outline, so the combo strip
+  -- reaches precisely from edge to edge on either player or target.
+  local width = anchor.spec and FrameWidth(anchor.spec) or nil
+  if not width or width <= 0 then return end
+
+  local inset = U.BorderSize()
+  local pipWidth = (width - inset * 2 -
+                    (COMBO_MAX - 1) * COMBO_GAP) / COMBO_MAX
+  comboPips.layer:ClearAllPoints()
+  comboPips.layer:SetWidth(width)
+  comboPips.layer:SetPoint("BOTTOMLEFT", anchor, "TOPLEFT", 0, 0)
+
+  local i
+  for i = 1, COMBO_MAX do
+    local pip = comboPips[i]
+    pip:SetWidth(pipWidth)
+    pip:ClearAllPoints()
+    pip:SetPoint("TOPLEFT", comboPips.layer, "TOPLEFT",
+                 inset + (i - 1) * (pipWidth + COMBO_GAP), -inset)
   end
 end
 
@@ -1459,15 +1516,37 @@ local function SetComboPoints(count)
   local i
   for i = 1, COMBO_MAX do
     if i <= count then
-      U.SetBackgroundColor(comboPips[i], M.Unpack(M.class.ROGUE))
+      U.SetStatusBarColor(comboPips[i], M.Unpack(M.rogueCombo[i]))
     else
-      U.SetBackgroundColor(comboPips[i], M.Unpack(COMBO_EMPTY))
+      U.SetStatusBarColor(comboPips[i], M.Unpack(COMBO_EMPTY))
     end
   end
 end
 
 local function RefreshComboPoints()
   if not comboPips then return end
+
+  local shown = true
+  -- UnitPowerType is already the unit-frame module's form-safe signal for a
+  -- druid: Cat Form uses energy (3), whereas Bear uses rage and caster forms
+  -- use mana. Rogues always keep the strip available.
+  if comboPips.druid then
+    shown = ApiNumber("UnitPowerType", "player") == 3
+  end
+
+  -- A strip anchored to the target frame must not linger when the target frame
+  -- has nothing to represent. PLAYER_TARGET_CHANGED is an accelerator; the
+  -- existing combo-point events also refresh this state.
+  if shown and comboPips.anchor == "target" then
+    local exists = ResolveApiFn("UnitExists")
+    local ok, value = false, nil
+    if exists then ok, value = pcall(exists, "target") end
+    shown = ok and value and true or false
+  end
+
+  if shown then comboPips.layer:Show() else comboPips.layer:Hide() end
+  if not shown then return end
+
   local get = ResolveApiFn("GetComboPoints")
   if not get then return end
   local ok, value = pcall(get, "target")
@@ -1476,7 +1555,7 @@ end
 
 local COMBO_EVENTS = {
   "UNIT_COMBO_POINTS", "PLAYER_COMBO_POINTS",
-  "PLAYER_TARGET_CHANGED", "PLAYER_ENTERING_WORLD",
+  "PLAYER_TARGET_CHANGED", "PLAYER_ENTERING_WORLD", "UNIT_DISPLAYPOWER",
 }
 
 local function RegisterComboEvents()
@@ -1501,6 +1580,318 @@ local function SetBar(bar, value, maximum)
   if bar.uuiValue ~= value then
     pcall(bar.SetValue, bar, value)
   end
+end
+
+-- Player mana / energy tick
+--
+-- UnrealPfUI's modules/energytick.lua demonstrates the timing model used here:
+-- energy gains synchronise a repeating two-second cycle, while spending mana
+-- starts the five-second regeneration delay and the first real mana gain
+-- synchronises the following two-second ticks. That source is WORKING_SOURCE,
+-- not runtime verification; the client pieces used by this implementation are
+-- independently established here: GetTime is measured by core.time.v1,
+-- UNIT_MANA is observed, and every event remains an accelerator over the
+-- unit-frame polling pass.
+--
+-- Keep the subsystem on one table so this already-large Lua chunk stays well
+-- under the client's silent 200-local failure limit.
+local powerTick = {
+  defaults = { manaTick = true, energyTick = true, comboAnchor = "player" },
+  mode = nil,
+  lastPower = nil,
+  badTick = nil,
+  startAt = nil,
+  duration = nil,
+  markerX = nil,
+  layer = nil,
+  marker = nil,
+  -- Everything below exists to keep the per-render-tick and per-event paths
+  -- cheap: a cached settings table, cached GetTime, the cached bar width, the
+  -- visibility already applied to the layer and the spark, and the flag that
+  -- collapses the client's power-event burst into one sample per pass.
+  cfg = nil,
+  getTime = nil,
+  width = nil,
+  visible = nil,
+  markerShown = nil,
+  dirty = nil,
+  running = nil,
+}
+
+-- U.ModuleConfig re-validates every default against the stored table on each
+-- call. Sample runs on every power event and on the shared refresh, so that
+-- loop was being paid several times a second for a table that never changes
+-- identity once the config has loaded.
+function powerTick.Config()
+  if powerTick.cfg then return powerTick.cfg end
+  local cfg = U.ModuleConfig("unitframes", powerTick.defaults)
+  -- Before LoadConfig, ModuleConfig hands back the defaults table itself, so
+  -- only the real stored table is worth caching.
+  if U.db then powerTick.cfg = cfg end
+  return cfg
+end
+
+function U.GetComboPointAnchor()
+  return powerTick.Config().comboAnchor
+end
+
+function U.SetComboPointAnchor(value)
+  value = value == "target" and "target" or "player"
+  powerTick.Config().comboAnchor = value
+  U.ApplyComboPointAnchor(value)
+  RefreshComboPoints()
+end
+
+function powerTick.WantedMode()
+  -- A dead/ghost player keeps the same power type, so power type alone would
+  -- leave an in-flight spark cycling over the bar. Use the same death queries
+  -- as the player frame and let SetMode stop and hide the subsystem until the
+  -- periodic sample sees the player alive again.
+  if ApiTruth("UnitIsDead", "player") or
+     ApiTruth("UnitIsGhost", "player") then
+    return nil
+  end
+
+  local powerType = ApiNumber("UnitPowerType", "player")
+  local cfg = powerTick.Config()
+  if powerType == 0 and cfg.manaTick then return "MANA" end
+  if powerType == 3 and cfg.energyTick then return "ENERGY" end
+  return nil
+end
+
+-- Called once per updater pass while the marker runs. The first call is
+-- protected; after GetTime has answered once it is called directly, the same
+-- memoisation compat.native_suppression_pcall_burst_stutter applied to the
+-- suppression sweep. A type check still guards the arithmetic below.
+function powerTick.Now()
+  local getTime = powerTick.getTime
+  if getTime then
+    local value = getTime()
+    if type(value) ~= "number" then return nil end
+    return value
+  end
+
+  getTime = ResolveApiFn("GetTime")
+  if not getTime then return nil end
+  local ok, value = pcall(getTime)
+  if not ok or type(value) ~= "number" then return nil end
+  powerTick.getTime = getTime
+  return value
+end
+
+function powerTick.SetMode(force)
+  if not powerTick.layer then return nil end
+  local mode = powerTick.WantedMode()
+  if force or mode ~= powerTick.mode then
+    powerTick.mode = mode
+    powerTick.lastPower = ApiNumber("UnitMana", "player")
+    powerTick.badTick = nil
+    powerTick.width = nil
+    powerTick.Stop()
+  end
+
+  -- Show/Hide only when the visibility actually changes. This used to run on
+  -- every sample, so a full-mana or steady-energy player paid a native
+  -- visibility pass several times a second to re-show an already-shown frame.
+  local visible = mode and true or false
+  if force or powerTick.visible ~= visible then
+    powerTick.visible = visible
+    if visible then powerTick.layer:Show() else powerTick.layer:Hide() end
+  end
+  return mode
+end
+
+-- Power events and the 0.2s compatibility fallback wake the marker updater.
+-- Once that sample finds no active regeneration cycle it unregisters again;
+-- the 50 Hz cadence is retained unchanged for the period in which the spark
+-- is actually moving.
+function powerTick.Wake()
+  if powerTick.running or not powerTick.layer then return end
+  powerTick.running = true
+  U.RegisterUpdate("unitframes.powertick", 0.02, powerTick.Update)
+end
+
+function powerTick.SleepIfIdle()
+  if not powerTick.running or powerTick.dirty or powerTick.startAt then return end
+  powerTick.running = nil
+  U.UnregisterUpdate("unitframes.powertick")
+end
+
+function powerTick.Stop()
+  powerTick.startAt = nil
+  powerTick.duration = nil
+  powerTick.markerX = nil
+  if powerTick.marker and powerTick.markerShown ~= false then
+    powerTick.markerShown = false
+    powerTick.marker:Hide()
+  end
+  powerTick.SleepIfIdle()
+end
+
+function powerTick.Start(duration)
+  local now = powerTick.Now()
+  duration = tonumber(duration)
+  if not now or not duration or duration <= 0 then return end
+  powerTick.startAt = now
+  powerTick.duration = duration
+  powerTick.markerX = nil
+  -- Re-read the bar width once per cycle instead of once per render tick. A
+  -- width change (theme swap, frame scale) is picked up on the next cycle at
+  -- the latest, and Update re-reads it itself if the cached value is unusable.
+  powerTick.width = nil
+  if powerTick.marker and not powerTick.markerShown then
+    powerTick.markerShown = true
+    powerTick.marker:Show()
+  end
+  powerTick.Wake()
+end
+
+function powerTick.Sample()
+  if not powerTick.layer then return end
+  local mode = powerTick.SetMode()
+  local current = ApiNumber("UnitMana", "player")
+  if not current then return end
+
+  local previous = powerTick.lastPower
+  powerTick.lastPower = current
+  local maximum = ApiNumber("UnitManaMax", "player")
+  if maximum and maximum > 0 and current >= maximum then
+    powerTick.Stop()
+    return
+  end
+  if not previous or not mode then return end
+  local diff = current - previous
+
+  if mode == "MANA" and diff < 0 then
+    powerTick.Start(5)
+  elseif mode == "MANA" and diff > 0 then
+    local threshold = powerTick.badTick and powerTick.badTick * 1.2 or 5
+    if powerTick.duration ~= 5 and diff > threshold then
+      powerTick.Start(2)
+    else
+      powerTick.badTick = diff
+    end
+  elseif mode == "ENERGY" and diff > 0 then
+    powerTick.Start(2)
+  end
+end
+
+-- The client delivers the regeneration tick itself as a burst of power events
+-- on one frame, and each one used to run a complete Sample -- settings read,
+-- three protected API calls and a Show/Hide -- at exactly the moment the
+-- marker reaches the end of the bar. Flag the sample instead and let Update
+-- take it once, the same accelerator-over-polling shape the unit frames use.
+-- Reading the value once per pass reads the final value of the burst, which is
+-- what the diff heuristic wants anyway.
+function powerTick.Request()
+  if not powerTick.layer then return end
+  powerTick.dirty = true
+  powerTick.Wake()
+end
+
+function powerTick.OnUnitEvent(event, unit)
+  if not powerTick.layer then return end
+  if event == "UNIT_DISPLAYPOWER" then powerTick.SetMode() end
+  if unit == "player" and
+     (event == "UNIT_MANA" or event == "UNIT_ENERGY") then
+    powerTick.Request()
+  end
+end
+
+function powerTick.Update()
+  if not powerTick.layer then return end
+
+  if powerTick.dirty then
+    powerTick.dirty = nil
+    powerTick.Sample()
+  end
+
+  if not powerTick.mode or not powerTick.startAt or
+     not powerTick.duration then
+    powerTick.SleepIfIdle()
+    return
+  end
+
+  local now = powerTick.Now()
+  if not now then return end
+  local elapsed = now - powerTick.startAt
+  if elapsed < 0 then
+    powerTick.Start(powerTick.duration)
+    elapsed = 0
+  elseif elapsed > powerTick.duration then
+    -- Mana's five-second delay becomes the normal two-second regeneration
+    -- cycle. Energy is already on that cycle, so both paths meet here.
+    powerTick.startAt = now
+    powerTick.duration = 2
+    powerTick.width = nil
+    elapsed = 0
+  end
+
+  local width = powerTick.width
+  if not width or width <= 0 then
+    width = tonumber(powerTick.layer:GetWidth()) or 0
+    powerTick.width = width
+    powerTick.markerX = nil
+  end
+  if width <= 0 then return end
+
+  local x = math.floor(width * (elapsed / powerTick.duration) + 0.5)
+  if x < 0 then x = 0 elseif x > width then x = width end
+  if x == powerTick.markerX then return end
+  powerTick.markerX = x
+  -- One anchor point, re-set in place. UnrealPfUI's modules/energytick.lua
+  -- moves its spark the same way on this client, re-calling SetPoint for the
+  -- same anchor with no ClearAllPoints; that is WORKING_SOURCE, not runtime
+  -- verification, and a client that stacked points instead of replacing them
+  -- would show it immediately as a stretched spark.
+  powerTick.marker:SetPoint("CENTER", powerTick.layer, "LEFT", x, 0)
+end
+
+function powerTick.Build(bar, barHeight, health)
+  if not bar or powerTick.layer then return end
+
+  powerTick.layer = CreateFrame("Frame", nil, bar)
+  powerTick.layer:SetAllPoints(bar)
+  local ok, level = pcall(bar.GetFrameLevel, bar)
+  level = ok and tonumber(level) or nil
+  local healthRaised = false
+  if level then
+    pcall(powerTick.layer.SetFrameLevel, powerTick.layer, level + 5)
+
+    -- Modern lets the larger spark extend into the row above. Raise the entire
+    -- health-bar stack one level beyond the tick so its backdrop, fill and text
+    -- remain the visible top layer wherever the two overlap.
+    if health then
+      local healthLevel = level + 6
+      healthRaised = pcall(health.SetFrameLevel, health, healthLevel)
+      if healthRaised then
+        if health.bar then
+          pcall(health.bar.SetFrameLevel, health.bar, healthLevel + 1)
+        end
+        if health.textLayer then
+          pcall(health.textLayer.SetFrameLevel, health.textLayer, healthLevel + 10)
+        end
+      end
+    end
+  end
+
+  barHeight = tonumber(barHeight) or classicNative.Dimension(bar, "GetHeight")
+  if barHeight <= 0 then barHeight = 10 end
+  powerTick.marker = powerTick.layer:CreateTexture(nil, "OVERLAY")
+  powerTick.marker:SetTexture("Interface\\CastingBar\\UI-CastingBar-Spark")
+  -- Classic stays inside its native power row. Modern restores the larger
+  -- casting-bar spark; its health stack was explicitly raised above it above.
+  powerTick.marker:SetHeight(healthRaised and (barHeight + 15) or barHeight)
+  powerTick.marker:SetWidth(barHeight + 5)
+  if powerTick.marker.SetBlendMode then
+    pcall(powerTick.marker.SetBlendMode, powerTick.marker, "ADD")
+  end
+  powerTick.marker:Hide()
+  powerTick.SetMode(true)
+end
+
+function powerTick.ApplySettings()
+  powerTick.SetMode()
 end
 
 -- Health/power bar colours are user-configurable (settings tab below); values
@@ -2200,10 +2591,18 @@ local function RefreshScheduledUnits()
 
   refreshCycle = refreshCycle + 1
 
+  -- Events are accelerators only. Sampling here also catches an unreported
+  -- power-type change and supplies the fallback for UNIT_ENERGY, which has no
+  -- observed capture in the compact runtime evidence. The request is taken by
+  -- the tick's own updater, so a burst of events and this fallback landing in
+  -- the same pass still costs one sample.
+  powerTick.Request()
+
   -- Two pcall'd reads for druids, nothing at all for every other class: form
   -- changes have no observed event on this client, so the bar's visibility
   -- rides the same tick the frames do.
   RefreshDruidMana()
+  if comboPips and comboPips.druid then RefreshComboPoints() end
 
   -- Reflows the party block when a member's pet appears or disappears, and
   -- when edit mode opens or closes. Nothing here has an event either, and the
@@ -2418,6 +2817,7 @@ local function RegisterEvents()
   local i
   for i = 1, table.getn(UNIT_EVENTS) do
     U.RegisterEvent(UNIT_EVENTS[i], function(event, unit)
+      powerTick.OnUnitEvent(event, unit)
       local mode = "full"
       if HEALTH_EVENTS[event] then
         mode = "health"
@@ -2447,7 +2847,10 @@ local function RegisterEvents()
     classicNative.Reanchor()
   end)
 
-  U.RegisterEvent("PLAYER_ENTERING_WORLD", classicNative.Reanchor)
+  U.RegisterEvent("PLAYER_ENTERING_WORLD", function()
+    classicNative.Reanchor()
+    powerTick.SetMode(true)
+  end)
 
   -- Unverified event (see the Rest icon section above) -- an accelerator on
   -- top of the existing 1s full-refresh cycle, which still catches the state
@@ -2587,13 +2990,13 @@ end
 -- Settings
 -- ---------------------------------------------------------------------------
 -- Used by the Unit Frames settings page, which is registered by auras.lua.
--- Keep the controls here because this module owns the party layout, the colour
--- configuration and the live frame refresh.
+-- Keep the controls here because this module owns the party layout, power tick,
+-- colour configuration and the live frame refresh.
 --
--- The party section is the first block on that page, so its height is what
--- auras.lua shifts its own controls down by. One checkbox under one heading:
--- 18 for the heading, 12 clear of it and 14 for the box.
-local PARTY_SETTINGS_HEIGHT = 44
+-- These module-owned sections are the first block on that page, so their total
+-- height is what auras.lua shifts its own controls down by. Party frames keep
+-- their existing row, followed by power-tick and combo-point placement controls.
+local PARTY_SETTINGS_HEIGHT = 168
 
 local function BuildUnitFramePartySettings(parent, y, width)
   y = y or -4
@@ -2618,8 +3021,85 @@ local function BuildUnitFramePartySettings(parent, y, width)
   petToggle.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, y - 30)
   table.insert(widgets, petToggle)
 
+  local tickHeader = U.CreateSectionHeader(parent, {
+    text = U.L("UF_POWER_TICK_HEADER"),
+    width = width or 496,
+    y = y - 56,
+  })
+  table.insert(widgets, tickHeader)
+
+  local manaTick = U.CreateCheckbox(parent, {
+    name = "UnrealUISettingsManaTick",
+    text = U.L("UF_MANA_TICK"),
+    textWidth = 214,
+    value = powerTick.Config().manaTick,
+    onChange = function(value)
+      powerTick.Config().manaTick = value and true or false
+      powerTick.ApplySettings()
+    end,
+  })
+  manaTick.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, y - 82)
+  table.insert(widgets, manaTick)
+
+  local energyTick = U.CreateCheckbox(parent, {
+    name = "UnrealUISettingsEnergyTick",
+    text = U.L("UF_ENERGY_TICK"),
+    textWidth = 214,
+    value = powerTick.Config().energyTick,
+    onChange = function(value)
+      powerTick.Config().energyTick = value and true or false
+      powerTick.ApplySettings()
+    end,
+  })
+  energyTick.SetPoint("TOPLEFT", parent, "TOPLEFT", 240, y - 82)
+  table.insert(widgets, energyTick)
+
+  local comboHeader = U.CreateSectionHeader(parent, {
+    text = U.L("UF_COMBO_POINTS_HEADER"),
+    width = width or 496,
+    y = y - 112,
+  })
+  -- Section headers are composite controls, so give this one the same
+  -- visibility contract as other settings widgets. Rogues configure this in
+  -- their own class tab; the shared Unit Frames page exposes it to Druids.
+  comboHeader.uuiSetShown = function(shown)
+    local i
+    for i = 1, table.getn(comboHeader.uuiParts or {}) do
+      if shown then
+        comboHeader.uuiParts[i]:Show()
+      else
+        comboHeader.uuiParts[i]:Hide()
+      end
+    end
+  end
+  table.insert(widgets, comboHeader)
+
+  local comboAnchor = U.CreateDropdown(parent, {
+    name = "UnrealUISettingsComboPointAnchor",
+    width = 240,
+    height = 24,
+    rowHeight = 20,
+    value = U.GetComboPointAnchor(),
+    items = {
+      { value = "player", text = U.L("UF_COMBO_POINTS_PLAYER_FRAME") },
+      { value = "target", text = U.L("UF_COMBO_POINTS_TARGET_FRAME") },
+    },
+    onChange = function(value)
+      U.SetComboPointAnchor(value)
+    end,
+  })
+  comboAnchor.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, y - 138)
+  table.insert(widgets, comboAnchor)
+
   local function Refresh()
     petToggle.SetValue(PartyConfig().partyPets)
+    manaTick.SetValue(powerTick.Config().manaTick)
+    energyTick.SetValue(powerTick.Config().energyTick)
+    local class = UnitClassToken("player")
+    local supported = class == "DRUID"
+    comboHeader.uuiSetShown(supported)
+    comboAnchor.uuiSetShown(supported)
+    if supported then comboAnchor.SetValue(U.GetComboPointAnchor()) end
   end
 
   return widgets, Refresh
@@ -2747,8 +3227,8 @@ end
 
 U.BuildUnitFrameColorSettings = BuildUnitFrameColorSettings
 U.BuildUnitFramePartySettings = BuildUnitFramePartySettings
--- The vertical space BuildUnitFramePartySettings occupies, so the page that
--- stacks the other sections under it never has to restate the number.
+-- The vertical space the module-owned opening sections occupy, so the page that
+-- stacks the other sections under them never has to restate the number.
 U.UnitFramePartySettingsHeight = PARTY_SETTINGS_HEIGHT
 
 function UF:OnEnable()
@@ -2800,18 +3280,37 @@ function UF:OnEnable()
   -- and the pet rows stay off in the Classic theme.
   LayoutParty(true)
 
+  local tickBar, tickHeight
+  if nativeChrome then
+    -- unitframes.player_click_hit_route.v1 confirms PlayerFrameManaBar exists,
+    -- is visible and is a native StatusBar in the Classic path. The overlay is
+    -- an addon-owned child, so the stock bar remains responsible for its fill.
+    tickBar = classicNative.Resolve({ "PlayerFrameManaBar" })
+    tickHeight = classicNative.Dimension(tickBar, "GetHeight")
+  elseif frames.player and frames.player.power then
+    tickBar = frames.player.power.bar
+    tickHeight = frames.player.spec.power
+  end
+  if tickBar then
+    powerTick.Build(tickBar, tickHeight,
+                    not nativeChrome and frames.player.health or nil)
+  end
+
   RegisterEvents()
 
-  if not nativeChrome and frames.player and UnitClassToken("player") == "ROGUE" then
+  local playerClass = UnitClassToken("player")
+  if not nativeChrome and frames.player and
+     (playerClass == "ROGUE" or playerClass == "DRUID") then
     SuppressStockComboFrame()
-    BuildComboPoints(frames.player)
+    BuildComboPoints(frames.player, playerClass == "DRUID")
+    U.SetComboPointAnchor(powerTick.Config().comboAnchor)
     RegisterComboEvents()
     RefreshComboPoints()
   end
 
   -- Druid only: this is what puts the "Druid Mana" anchor in edit mode for a
   -- druid and leaves every other class's mover list untouched.
-  if UnitClassToken("player") == "DRUID" then
+  if playerClass == "DRUID" then
     BuildDruidManaBar()
     RegisterDruidEvents()
     RefreshDruidMana()

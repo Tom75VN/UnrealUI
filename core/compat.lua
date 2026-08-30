@@ -486,6 +486,61 @@ function U.HideRegion(region)
 end
 
 -- ---------------------------------------------------------------------------
+-- Tooltip line reading
+--
+-- knowledge.json / tooltip.right_line_text_survives_clearlines. behavior.json /
+-- tooltipread caught it in a capture: a unit tooltip reading "Froswald" /
+-- "Level 2 Human (Player)" with NumLines 2 still returned "Rank 1" on
+-- TextRight1 and "30 yd range" on TextRight2 -- the right-hand columns of a
+-- spell tooltip shown in the same frame earlier, alive inside the current line
+-- count while the left column had been rewritten.
+--
+-- documentation.json / GameTooltip:ClearLines says why: it "hides every left
+-- and right line (built-in and extra), clears left-line text". Left text only.
+-- A right-hand fontstring keeps whatever the previous tooltip wrote on it and
+-- is merely hidden, and AddLine fills a row's left column alone -- so inside
+-- the *current* NumLines a right region can still read back a string from a
+-- completely different tooltip.
+--
+-- That is not a cosmetic slip once anything scrapes those lines. The item
+-- comparison in modules/tooltip.lua read "30 yd range" off
+-- GameTooltipTextRight2 -- left there by the spell tooltip modules/actionbar.lua
+-- shows through the same shared frame -- and reported "+30 Yd Range" as a stat
+-- of a cloth robe (user report with screenshot, 2026-08-30).
+--
+-- So every tooltip line this addon reads back goes through here, and a region
+-- has to be shown before its text counts: ClearLines hides what it invalidates,
+-- which makes the shown flag the one reliable marker of a live line. Nothing
+-- else about the frame is trusted -- a hidden region is stale by definition,
+-- whatever it still holds. modules/spellbook.lua carries the same guard locally
+-- for its private action scanner, on the sequence verified there.
+-- ---------------------------------------------------------------------------
+
+-- The text one tooltip line region is currently drawing, or nil for a hidden,
+-- empty or unreadable one.
+function U.TooltipRegionText(region)
+  if not region or type(region.GetText) ~= "function" then return nil end
+
+  if type(region.IsShown) == "function" then
+    local shownOk, shown = pcall(region.IsShown, region)
+    if not shownOk or not shown then return nil end
+  end
+
+  local ok, text = pcall(region.GetText, region)
+  if not ok or type(text) ~= "string" or text == "" then return nil end
+  return text
+end
+
+-- The same reading addressed the way tooltip lines are named:
+-- U.TooltipLineText("GameTooltip", "Right", 2).
+function U.TooltipLineText(name, side, index)
+  if type(name) ~= "string" or name == "" then return nil end
+  if type(side) ~= "string" or side == "" then side = "Left" end
+
+  return U.TooltipRegionText(U.G(name .. "Text" .. side .. index))
+end
+
+-- ---------------------------------------------------------------------------
 -- Cursor and mouse input
 --
 -- Two readings that several surfaces need whenever they wrap a stock button's
@@ -591,6 +646,11 @@ local suppressedGroups = {}
 local suppressionArmed = false
 local suppressionCursor = 1
 local SUPPRESSION_BATCH_SIZE = 60
+-- Assigned once the sweep is armed at the bottom of U.SuppressNativeFrame. It
+-- is a forward local because it is built from GroupSweeper, which is defined
+-- further down, while the target-state watcher above needs to be able to run
+-- it.
+local targetSweep
 
 -- knowledge.json / compat.native_suppression_pcall_burst_stutter: this sweep
 -- used to resolve every name through U.G (its own pcall) and then run the full
@@ -641,6 +701,9 @@ local targetVisualEpoch = 0
 -- caused the rewrite rather than waiting for the periodic batch.
 local volatileNames = {}
 local volatileList = {}
+-- volatileNames now covers more than the aura block, so it can no longer double
+-- as the "already in volatileList" guard.
+local volatileListSeen = {}
 -- TargetLevelText is rewritten a few render ticks after the target event on
 -- this client. Retry only this text for a short bounded window; keeping the
 -- target frame lifecycle intact remains mandatory for the confirmed Tab-spam
@@ -886,10 +949,10 @@ local function ContentCleared(object, visualKind, volatile)
   return contentKnown and contentAnswer
 end
 
-local function KillNativeObject(object, visualOnly, visualKind, volatile)
+local function KillNativeObject(object, visualOnly, visualKind, volatile, level)
   if not object then return end
 
-  local level = SuppressLevel()
+  level = level or SuppressLevel()
   if level <= 0 then return end
 
   statVisited = statVisited + 1
@@ -1001,28 +1064,147 @@ end
 
 local function SweepNames(names)
   if not names then return end
+  local level = SuppressLevel()
+  if level <= 0 then return end
   local i
   for i = 1, table.getn(names) do
     local name = names[i]
     KillNativeObject(ResolveNativeObject(name), visualOnlyNames[name],
-                     visualOnlyKinds[name], volatileNames[name])
+                     visualOnlyKinds[name], volatileNames[name], level)
   end
 end
 
 local function SweepNameRange(names, first, last)
   if not names then return end
+  local level = SuppressLevel()
+  if level <= 0 then return end
   local count = table.getn(names)
   if last > count then last = count end
   local i
   for i = first, last do
     local name = names[i]
     KillNativeObject(ResolveNativeObject(name), visualOnlyNames[name],
-                     visualOnlyKinds[name], volatileNames[name])
+                     visualOnlyKinds[name], volatileNames[name], level)
   end
 end
 
 local function ApplyNativeSuppression()
   SweepNames(suppressedNames)
+end
+
+-- ---------------------------------------------------------------------------
+-- Target rewrites the epoch cannot see
+--
+-- targetVisualEpoch used to advance on PLAYER_TARGET_CHANGED and nothing else,
+-- and events.json records that event as observed but only PARTIALLY tested
+-- here. Anything that redraws the stock target frame without one -- a missed
+-- event, a corpse the client drops the target on, or simply the target dying,
+-- which this client answers with TargetFrame_CheckDead -- left every
+-- stamp-verified name in the group frozen at "already cleared" for the rest of
+-- that target. What that looks like in game is a stock target frame that comes
+-- back over a dead mob and that no later target replaces.
+--
+-- The two facts that mean the client has something different to draw there are
+-- who the target is and whether it is dead, and both are one API call. Polling
+-- them on the batch tick advances the epoch from observed state as well as
+-- from the event. Two same-named mobs are not distinguished by this: that case
+-- still needs the event, so this is a backstop for it rather than a
+-- replacement.
+-- ---------------------------------------------------------------------------
+local lastTargetKey
+local targetApiCache = {}
+local targetStateCache = {}
+
+local function TargetApiValue(name)
+  local fn = targetApiCache[name]
+  if fn == nil then
+    fn = U.G(name)
+    if type(fn) ~= "function" then fn = false end
+    targetApiCache[name] = fn
+  end
+  if fn == false then return nil end
+  local ok, value = pcall(fn, "target")
+  if not ok then return nil end
+  return value
+end
+
+-- Vanilla's boolean-ish APIs answer 1 or nil, which is not guaranteed here, so
+-- this reads the same way modules/unitframes.lua's ApiTruth does.
+local function TargetFlag(value)
+  if value == nil or value == false or value == 0 or value == "" then
+    return "0"
+  end
+  return "1"
+end
+
+local function TargetStateKey()
+  local name = TargetApiValue("UnitName")
+  if type(name) ~= "string" then name = "" end
+  local exists = TargetFlag(TargetApiValue("UnitExists"))
+  local dead = TargetFlag(TargetApiValue("UnitIsDead"))
+  if targetStateCache.exists == exists and targetStateCache.dead == dead and
+     targetStateCache.name == name then
+    return targetStateCache.key
+  end
+  targetStateCache.exists, targetStateCache.dead, targetStateCache.name =
+    exists, dead, name
+  targetStateCache.key = exists .. dead .. name
+  return targetStateCache.key
+end
+
+-- round 3: the target sweep used to run inline, in the same frame
+-- PLAYER_TARGET_CHANGED fires in. That is also the frame this client re-shows
+-- TargetFrame in -- the whole reason the sweep exists -- so the ~122 objects
+-- that fail the IsShown fast path and take the full teardown were doing it
+-- stacked on top of the client's own target-acquisition work. U.DeferOnce
+-- moves it one driver tick later instead, and a second target change before it
+-- runs replaces the pending sweep rather than queuing both, which is the right
+-- outcome for the fast-tabbing case.
+local function TargetSweepBracketed()
+  if not targetSweep then return end
+  -- Bracket the sweep so the counters describe one target-change sweep
+  -- specifically, separated from the 0.05s periodic batch that is also
+  -- incrementing the same totals.
+  local visited, torn = statVisited, statTornDown
+  targetSweep()
+  lastTargetVisited = statVisited - visited
+  lastTargetTornDown = statTornDown - torn
+end
+
+local function BumpTargetVisualEpoch(key)
+  lastTargetKey = key or TargetStateKey()
+  targetVisualEpoch = targetVisualEpoch + 1
+
+  -- Modern registers TargetLevelText because it replaces the native target
+  -- frame. Classic registers only the native aura slots, but that still arms
+  -- this shared path. Never let an aura-only Classic registration start the
+  -- Modern level-clearing retry.
+  if suppressedSeen["TargetLevelText"] then
+    targetLevelRetryPasses = TARGET_LEVEL_RETRY_PASSES
+  else
+    targetLevelRetryPasses = 0
+  end
+
+  -- Cache canary. This client owns the target widgets natively and creates
+  -- UObjects for them as targets change (knowledge.json /
+  -- compat.target_storm_uobject_exhaustion), while resolvedNative memoizes
+  -- name -> object once and never again. If the client ever rebinds these
+  -- globals to fresh objects, the adapter would spend the rest of the session
+  -- clearing orphans while the live frame stayed fully drawn -- the same
+  -- symptom as the stamp freeze above. Whether it rebinds them is NOT
+  -- established; this is one global read per target change to make the
+  -- question moot, not a fix for a measured behaviour.
+  local root = U.G("TargetFrame")
+  local cached = resolvedNative["TargetFrame"]
+  if root and cached and root ~= cached then
+    local names = suppressedGroups["target"]
+    local i
+    for i = 1, table.getn(names or {}) do
+      resolvedNative[names[i]] = nil
+    end
+  end
+
+  U.DeferOnce("compat.target-sweep", TargetSweepBracketed)
 end
 
 -- The periodic guarantee used to inspect the complete ~1150-name list inside
@@ -1034,7 +1216,14 @@ end
 -- but no render tick inherits the whole scan.
 local function ApplyNativeSuppressionBatch()
   if U.PerfDisabled and U.PerfDisabled("sweep") then return end
-  if SuppressLevel() <= 0 then return end
+  local level = SuppressLevel()
+  if level <= 0 then return end
+
+  -- Three API calls a tick, and the only thing standing between a client
+  -- rewrite with no target-change event behind it and a stock frame that stays
+  -- on screen for the rest of the target. See BumpTargetVisualEpoch.
+  local targetKey = TargetStateKey()
+  if targetKey ~= lastTargetKey then BumpTargetVisualEpoch(targetKey) end
 
   -- PLAYER_TARGET_CHANGED can precede the native level renderer's final write.
   -- One deferred sweep was therefore early enough for the yellow number to
@@ -1060,7 +1249,7 @@ local function ApplyNativeSuppressionBatch()
     if suppressionCursor > count then suppressionCursor = 1 end
     local name = suppressedNames[suppressionCursor]
     KillNativeObject(ResolveNativeObject(name), visualOnlyNames[name],
-                     visualOnlyKinds[name], volatileNames[name])
+                     visualOnlyKinds[name], volatileNames[name], level)
     suppressionCursor = suppressionCursor + 1
     processed = processed + 1
   end
@@ -1158,11 +1347,37 @@ function U.SuppressNativeFrame(names, group)
         visualOnlyKinds[name] = "texture"
       end
 
-      -- The aura block, and only it: "[Bb]uff%d" matches TargetFrameBuff1 and
-      -- TargetFrameDebuff12Icon alike while missing every other name this
-      -- group carries (bars, portrait, name, level, frame art). These are the
-      -- slots the client rewrites without a target change; see volatileNames.
-      if not volatileNames[name] and string.find(name, "[Bb]uff%d") then
+      -- Verify the content instead of trusting the epoch stamp.
+      --
+      -- The stamp assumes this client writes the target frame once, when the
+      -- target is acquired. Anything it rewrites *inside* one target keeps the
+      -- stamp's "already cleared" answer for the rest of that target and stays
+      -- drawn. The aura block was the first case found; the dead state is the
+      -- second and the visible one. TargetFrame_CheckDead exists on this
+      -- client (probe global enumeration, 2026-08-16), so a target dying
+      -- redraws the stock name, portrait and dead text with no
+      -- PLAYER_TARGET_CHANGED to advance the epoch -- reported in game as the
+      -- stock target frame reappearing over a dead mob and staying there while
+      -- later targets never replace it.
+      --
+      -- Cost is one GetText/GetTexture readback per visited object. The aura
+      -- block is around 100 of this group's ~120 names and already paid it, so
+      -- extending it to the dozen remaining text/texture names is not a
+      -- measurable change in sweep cost. Bars keep the stamp: ClearBarVisual
+      -- walks regions and children and has no single cheap readback to verify
+      -- it with (see ContentCleared).
+      local kind = visualOnlyKinds[name]
+      if kind == "text" or kind == "texture" then
+        volatileNames[name] = true
+      end
+
+      -- The aura block, and only it, also gets its own UNIT_AURA-driven sweep:
+      -- "[Bb]uff%d" matches TargetFrameBuff1 and TargetFrameDebuff12Icon alike
+      -- while missing every other name this group carries (bars, portrait,
+      -- name, level, frame art). An aura landing on the target you already
+      -- have is the rewrite that event exists to answer.
+      if not volatileListSeen[name] and string.find(name, "[Bb]uff%d") then
+        volatileListSeen[name] = true
         volatileNames[name] = true
         table.insert(volatileList, name)
       end
@@ -1205,37 +1420,13 @@ function U.SuppressNativeFrame(names, group)
       ApplyNativeSuppression()
     end)
 
-    -- round 3: this used to run GroupSweeper("target") inline, in the same
-    -- frame PLAYER_TARGET_CHANGED fires in. That is also the frame this
-    -- client re-shows TargetFrame in -- the whole reason the sweep exists --
-    -- so the ~122 objects that fail the IsShown fast path and take the full
-    -- ~5-pcall teardown were doing it stacked on top of whatever native work
-    -- the client's own target-acquisition path does in that same frame.
-    -- U.DeferOnce moves the sweep one driver tick later instead, so the two
-    -- no longer compete for the same frame; a second target change before the
-    -- deferred sweep runs replaces the pending one rather than queuing both,
-    -- which is the right outcome for the fast-tabbing case.
-    local targetSweep = GroupSweeper("target")
+    -- The event stays the fast path -- it is the only thing that can tell two
+    -- same-named mobs apart -- but everything it used to do inline now lives
+    -- in BumpTargetVisualEpoch, so the batch tick's state watcher reaches the
+    -- identical work when no event arrives.
+    targetSweep = GroupSweeper("target")
     U.RegisterEvent("PLAYER_TARGET_CHANGED", function()
-      targetVisualEpoch = targetVisualEpoch + 1
-      -- Modern registers TargetLevelText because it replaces the native target
-      -- frame. Classic registers only the native aura slots, but that still
-      -- arms this shared target-group event handler. Never let an aura-only
-      -- Classic registration start the Modern level-clearing retry.
-      if suppressedSeen["TargetLevelText"] then
-        targetLevelRetryPasses = TARGET_LEVEL_RETRY_PASSES
-      else
-        targetLevelRetryPasses = 0
-      end
-      U.DeferOnce("compat.target-sweep", function()
-        -- Bracket the sweep so the counters below describe one target-change
-        -- sweep specifically, separated from the 0.05s periodic batch that is
-        -- also incrementing the same totals.
-        local visited, torn = statVisited, statTornDown
-        targetSweep()
-        lastTargetVisited = statVisited - visited
-        lastTargetTornDown = statTornDown - torn
-      end)
+      BumpTargetVisualEpoch()
     end)
     -- The aura block's own event. PLAYER_TARGET_CHANGED is not the only thing
     -- that repopulates the stock frame's buff/debuff slots -- an aura landing

@@ -254,7 +254,25 @@ end
 -- Failures here are reported through U.Error, not U.Debug: a mover that cannot
 -- be dragged is the whole feature failing, and debug output is off by default.
 -- ---------------------------------------------------------------------------
+local function ReadDragPosition(frame)
+  local point, _, relativePoint, x, y = U.GetFramePoint(frame, 1)
+  if not point then return nil end
+  return { point = point, relativePoint = relativePoint, x = x, y = y }
+end
+
+local function PositionChanged(before, after)
+  if not before or not after then return true end
+  return before.point ~= after.point or
+         before.relativePoint ~= after.relativePoint or
+         before.x ~= after.x or before.y ~= after.y
+end
+
 local function StartDrag(entry)
+  -- OnMouseDown starts the move immediately; the client may then also deliver
+  -- OnDragStart after its internal movement threshold. Treat that second path
+  -- as confirmation, not a request to restart the native move.
+  if entry.dragging then return true end
+
   local frame = entry.frame
 
   if not pcall(frame.SetMovable, frame, true) then
@@ -272,6 +290,9 @@ local function StartDrag(entry)
   end
 
   entry.dragging = true
+  -- Read after the throwaway pair has normalised multi-point anchors. This lets
+  -- an ordinary click select a mover without being mistaken for a placement.
+  entry.dragStartPosition = ReadDragPosition(frame)
   return true
 end
 
@@ -280,11 +301,32 @@ local function StopDrag(entry)
   entry.dragging = false
 
   pcall(entry.frame.StopMovingOrSizing, entry.frame)
+  local before = entry.dragStartPosition
+  entry.dragStartPosition = nil
+  if not PositionChanged(before, ReadDragPosition(entry.frame)) then
+    return true
+  end
   return CapturePosition(entry)
 end
 
 local function SetActiveMover(entry)
   activeMover = entry
+end
+
+local function IsLeftMouseButton(a, b)
+  local button
+  if type(a) == "string" then
+    button = a
+  elseif type(b) == "string" then
+    button = b
+  else
+    button = U.G("arg1")
+  end
+
+  -- Some scripts on this client expose no direct arguments and no arg1. This
+  -- handle is registered only for left-button dragging, so an unknown button
+  -- is safely treated as the registered one.
+  return button == nil or button == "LeftButton"
 end
 
 -- ---------------------------------------------------------------------------
@@ -300,7 +342,21 @@ end
 -- OnDragStart is indistinguishable from one whose StartMoving failed.
 -- ---------------------------------------------------------------------------
 local handleCount = 0
-local HANDLE_LEVEL_OFFSET = 10
+-- Mover handles cover complete interface elements while edit mode is active.
+-- A small offset is not enough for elements with raised child frames (action
+-- buttons and their cooldown/readout layers are one example): those children
+-- can win mouse hit-testing over part of the mover. Keep the offset relative
+-- to the moved frame so separate frame ordering is preserved, but leave enough
+-- room above its complete child hierarchy for one continuous drag surface.
+local HANDLE_LEVEL_OFFSET = 100
+
+local function RaiseHandle(entry)
+  if not entry or not entry.handle then return false end
+  local levelOk, level = pcall(entry.frame.GetFrameLevel, entry.frame)
+  if not levelOk or not tonumber(level) then return false end
+  return pcall(entry.handle.SetFrameLevel, entry.handle,
+               level + HANDLE_LEVEL_OFFSET)
+end
 
 local function CreateHandle(entry)
   handleCount = handleCount + 1
@@ -315,11 +371,6 @@ local function CreateHandle(entry)
   -- A Button is mouse-enabled by default; this is belt and braces, and is
   -- pcall'd because the call is not verified on this client either.
   pcall(handle.EnableMouse, handle, true)
-
-  local levelOk, level = pcall(entry.frame.GetFrameLevel, entry.frame)
-  if levelOk and tonumber(level) then
-    pcall(handle.SetFrameLevel, handle, level + HANDLE_LEVEL_OFFSET)
-  end
 
   U.CreateBackdrop(handle, {
     background = M.color.mover,
@@ -342,6 +393,19 @@ local function CreateHandle(entry)
 
   -- knowledge.json / scripts.handler_arguments_direct: handler argument shape
   -- is not guaranteed, so these close over `entry` instead of reading `this`.
+  handle:SetScript("OnMouseDown", function(a, b)
+    if not IsLeftMouseButton(a, b) then return end
+    SetActiveMover(entry)
+    StartDrag(entry)
+  end)
+
+  handle:SetScript("OnMouseUp", function(a, b)
+    if not IsLeftMouseButton(a, b) then return end
+    StopDrag(entry)
+  end)
+
+  -- Retain the native drag scripts as a fallback. StartDrag/StopDrag are
+  -- idempotent, so receiving both the press/release and drag paths is safe.
   handle:SetScript("OnDragStart", function()
     SetActiveMover(entry)
     entry.dragStarts = entry.dragStarts + 1
@@ -368,11 +432,16 @@ local function CreateHandle(entry)
   end)
 
   entry.handle = handle
+  RaiseHandle(entry)
   return handle
 end
 
 local function HideHandle(entry)
   if not entry.handle then return end
+  -- Hiding a Button during a drag does not reliably promise an OnDragStop on
+  -- this client. Finish it explicitly so locking the UI or hiding an element
+  -- can never leave its frame attached to the cursor.
+  if entry.dragging then StopDrag(entry) end
   if entry.handle.label then entry.handle.label:Hide() end
   entry.handle:Hide()
 end
@@ -394,6 +463,9 @@ local function ShowHandle(entry)
   end
 
   if not entry.handle then CreateHandle(entry) end
+  -- Parent/native frame levels can change while the handle is hidden. Refresh
+  -- on every unlock instead of trusting the value captured at construction.
+  RaiseHandle(entry)
   entry.handle:Show()
   -- rendering.parent_alpha_not_propagated: children are shown and hidden
   -- explicitly rather than relying on the parent's visibility carrying.

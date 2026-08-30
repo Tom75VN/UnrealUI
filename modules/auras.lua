@@ -564,6 +564,14 @@ local ROW_GAP = 4
 -- CD_TICK so the tenths shown in the last five seconds actually count down;
 -- the aura scan itself stays on the slower tick below.
 local TIMER_TICK = 0.1
+local timerRunning = false
+local RefreshTimers
+
+local function WakeTimers()
+  if timerRunning then return end
+  timerRunning = true
+  U.RegisterUpdate("auras.timers", TIMER_TICK, RefreshTimers)
+end
 
 local rows = {}       -- row id -> row frame
 local rowOrder = {}   -- stable iteration order for the timer tick
@@ -812,10 +820,10 @@ local function RefreshTimer(icon, now, enabled)
   -- keeps the artwork readable while preserving the useful expiry motion.
   if icon.uuiRadialOnly then
     HideTimerText(icon)
-    return
+    return true
   end
 
-  if not icon.timer then return end
+  if not icon.timer then return true end
 
   local text, tier = U.FormatTimeShort(remaining)
   if icon.uuiTimerText ~= text then
@@ -831,6 +839,7 @@ local function RefreshTimer(icon, now, enabled)
     icon.uuiTimerShown = true
     icon.timer:Show()
   end
+  return true
 end
 
 -- Everything in ApplyIcon is written only when the value it writes actually
@@ -879,7 +888,7 @@ local function ApplyIcon(icon, texture, count, borderColor, size, entry, now, ti
   end
 
   icon.uuiEntry = entry
-  RefreshTimer(icon, now, timers)
+  if RefreshTimer(icon, now, timers) then WakeTimers() end
 
   if not icon.uuiShown then
     icon.uuiShown = true
@@ -1105,18 +1114,23 @@ local function RefreshUnitToken(token)
 end
 
 -- The fast half: clock only, over the icons that are already on screen.
-local function RefreshTimers()
+RefreshTimers = function()
   if U.PerfDisabled and U.PerfDisabled("auras") then return end
 
   local now = Now()
   local timers = U.GetAuraSetting("showTimers")
+  local active = false
   local r, i
   for r = 1, table.getn(rowOrder) do
     local row = rowOrder[r]
     for i = 1, table.getn(row.icons) do
       local icon = row.icons[i]
-      if icon.uuiShown then RefreshTimer(icon, now, timers) end
+      if icon.uuiShown and RefreshTimer(icon, now, timers) then active = true end
     end
+  end
+  if not active then
+    timerRunning = false
+    U.UnregisterUpdate("auras.timers")
   end
 end
 
@@ -1306,11 +1320,11 @@ end
 local PAGE_WIDTH = 484
 local FILTER_COLUMN_X = 160
 
--- The Unit Frames page opens with the party-frame section, which is owned by
--- modules/unitframes.lua because that module owns the layout it changes. Every
--- offset below is measured from the bottom of that section plus the 8-unit gap
--- the other section headings use, so the aura controls keep their own spacing
--- whatever is stacked above them.
+-- The Unit Frames page opens with the party-frame and power-tick sections,
+-- which are owned by modules/unitframes.lua because that module owns the state
+-- they change. Every offset below is measured from the bottom of that block plus
+-- the 8-unit gap the other section headings use, so the aura controls keep their
+-- own spacing whatever is stacked above them.
 local SECTION_TOP = (U.UnitFramePartySettingsHeight or 0)
 if SECTION_TOP > 0 then SECTION_TOP = SECTION_TOP + 8 end
 
@@ -1587,7 +1601,6 @@ function A:OnEnable()
   -- captured the event for "target", not for party tokens, and party roster
   -- events are accepted but unobserved on this client.
   U.RegisterUpdate("auras.party-refresh", 1.0, function() RefreshParty(false) end)
-  U.RegisterUpdate("auras.timers", TIMER_TICK, RefreshTimers)
 
   RefreshAll()
 end

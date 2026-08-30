@@ -103,6 +103,102 @@ local function LineText(index)
 end
 
 -- ---------------------------------------------------------------------------
+-- Item name rarity colour
+--
+-- The tooltip cannot be asked what it is showing. This client's GameTooltip
+-- has no GetItem -- documentation.json records 46 GameTooltip widget methods
+-- and that is not one of them -- and GetItemInfo takes an item id or an item
+-- string / hyperlink only, never a display name, so line 1's own text is not a
+-- lookup key either.
+--
+-- The item identity therefore arrives from the hover surface, exactly the way
+-- modules/itemprice.lua resolves its price, and the consequence is the one
+-- that file already states: this appears on the surfaces unrealUI owns a hover
+-- hook for -- bag and bank slots, character-sheet slots, vendor rows and quest
+-- rewards. Loot and chat links keep whatever the client draws until they get
+-- a hook of their own.
+--
+-- The colour is remembered rather than applied once, because a native item
+-- setter can rewrite its own lines while the tooltip stays up and a rewritten
+-- line comes back in the client's colour. It is reasserted on every styling
+-- pass, keyed to the line-1 text it was resolved for: if the tooltip goes on
+-- to show something else without a hook clearing it first, the name no longer
+-- matches and the colour is dropped rather than painted onto an unrelated
+-- subject.
+-- ---------------------------------------------------------------------------
+local itemNameColor, itemNameSubject
+
+local function ApplyItemNameColor()
+  if not itemNameColor then return end
+
+  local label, text = LineText(1)
+  if not label or not label.SetTextColor then return end
+
+  if itemNameSubject and text ~= itemNameSubject then
+    itemNameColor, itemNameSubject = nil, nil
+    return
+  end
+
+  pcall(label.SetTextColor, label,
+        itemNameColor[1], itemNameColor[2], itemNameColor[3])
+end
+
+-- `quality` is used when the hover surface reports the index directly, which
+-- container slots and equipped slots both do; `link` is resolved through the
+-- shared item helper otherwise. Neither resolving -- an uncached item, a
+-- missing API -- clears any remembered colour and leaves the native one alone.
+--
+-- `expect` is the optional name the caller believes the tooltip is showing.
+-- Where a hover surface can be sure of the item it hands in, it is left out;
+-- vendor rows pass it because the stock row buttons are shared between the
+-- vendor and buyback lists and only one of those has a link getter here, so
+-- the row's index alone does not prove which list the tooltip came from.
+function U.ColorTooltipItemName(link, quality, expect)
+  local _, text = LineText(1)
+
+  if type(expect) == "string" and text ~= expect then
+    U.ClearTooltipItemName()
+    return
+  end
+
+  local color = nil
+  if U.ItemQualityColor then color = U.ItemQualityColor(quality) end
+  if not color and link and U.ItemLinkQualityColor then
+    color = U.ItemLinkQualityColor(link)
+  end
+
+  itemNameColor = color
+  itemNameSubject = text
+  if not color then
+    itemNameSubject = nil
+    return
+  end
+
+  ApplyItemNameColor()
+end
+
+function U.ClearTooltipItemName()
+  itemNameColor, itemNameSubject = nil, nil
+end
+
+-- ShoppingTooltip1/2 carry the equipped counterpart during a comparison.
+-- core/itemslot.lua populates them and knows the worn item's link, so it calls
+-- in here immediately after SetInventoryItem and before the CURRENTLY_EQUIPPED
+-- heading is inserted -- the heading's line shift copies each row's colour
+-- along with its text, so colouring line 1 first is what carries the colour
+-- down to the row the name ends up on.
+function U.ColorCompareTooltipItemName(name, link)
+  if type(name) ~= "string" or not U.ItemLinkQualityColor then return end
+
+  local color = U.ItemLinkQualityColor(link)
+  if not color then return end
+
+  local label = U.G(name .. "TextLeft1")
+  if not label or not label.SetTextColor then return end
+  pcall(label.SetTextColor, label, color[1], color[2], color[3])
+end
+
+-- ---------------------------------------------------------------------------
 -- Flat frame styling
 --
 -- The stock edge art comes back after the tooltip is populated, so this is
@@ -492,6 +588,247 @@ local function RefreshCompareTooltip(index, force)
 end
 
 -- ---------------------------------------------------------------------------
+-- Comparison placement
+--
+-- The comparison frames were chained straight off the item tooltip's left
+-- border, which is right only while that side has room. Hovering a bag slot
+-- near the left edge of the screen pushed the equipped-item frame out of the
+-- draw area, and the client's own clamp then slid it back inwards -- on top of
+-- the item tooltip it was meant to sit beside (user report with screenshot,
+-- 2026-08-30).
+--
+-- Placement is therefore measured before it is applied: the free width on
+-- either side of the host tooltip is weighed against what the visible
+-- comparison frames need, the side that fits wins, and every frame is kept
+-- inside the draw area by this code rather than by the client's clamp. When
+-- neither border can hold a frame it is stacked off the host's top or bottom
+-- instead, which is the one remaining way to keep it off the item's text.
+--
+-- Geometry is handled in UIParent units. knowledge.json /
+-- frames.scaled_frame_edge_coordinates_mixed_space (PARTIAL) records that on a
+-- frame whose scale is not 1 this client returns the origin in the parent's
+-- space while the extent stays in the frame's own, so GetLeft/GetBottom are
+-- taken as they come back and GetWidth/GetHeight are converted through the
+-- frame's effective-scale ratio. Both are identities for the scale-1 tooltips
+-- this actually runs on, and neither guesses at a mixed-space rule.
+-- ---------------------------------------------------------------------------
+
+-- Between the host tooltip and a comparison frame, and between two comparison
+-- frames. The same gap the chained anchor carried.
+local COMPARE_EDGE_GAP = 3
+-- Held clear of the draw area's border, so the client's own clamp never has a
+-- reason to move a frame this pass has already placed.
+local COMPARE_SCREEN_MARGIN = 4
+
+-- Where each frame was last put, so the 0.10s pass re-points one only when the
+-- placement it computes has actually changed.
+local comparePlacement = {}
+
+-- GameTooltip owns every hover path; ItemRefTooltip is the chat-link case,
+-- where re-anchoring to a hidden GameTooltip would throw the comparison into
+-- the corner of the screen.
+local COMPARE_HOSTS = { "GameTooltip", "ItemRefTooltip" }
+
+local function CompareVisible(frame)
+  if not frame or not frame.IsShown then return false end
+  local ok, shown = pcall(frame.IsShown, frame)
+  if ok and shown then return true end
+  return false
+end
+
+local function CompareHost()
+  local i
+  for i = 1, table.getn(COMPARE_HOSTS) do
+    local frame = U.G(COMPARE_HOSTS[i])
+    if CompareVisible(frame) then return frame end
+  end
+  return nil
+end
+
+local function CompareScaleRatio(frame)
+  local ok, scale = pcall(frame.GetEffectiveScale, frame)
+  if not ok or type(scale) ~= "number" or scale <= 0 then return 1 end
+
+  local uiOk, uiScale = pcall(UIParent.GetEffectiveScale, UIParent)
+  if not uiOk or type(uiScale) ~= "number" or uiScale <= 0 then return 1 end
+  return scale / uiScale
+end
+
+-- left, bottom, width and height in UIParent units, or nil for a frame the
+-- client cannot measure yet.
+local function CompareBox(frame)
+  if not frame then return nil end
+
+  local leftOk, left = pcall(frame.GetLeft, frame)
+  local bottomOk, bottom = pcall(frame.GetBottom, frame)
+  local widthOk, width = pcall(frame.GetWidth, frame)
+  local heightOk, height = pcall(frame.GetHeight, frame)
+  if not leftOk or not bottomOk or not widthOk or not heightOk then return nil end
+  if type(left) ~= "number" or type(bottom) ~= "number" then return nil end
+  if type(width) ~= "number" or type(height) ~= "number" then return nil end
+  if width <= 0 or height <= 0 then return nil end
+
+  local ratio = CompareScaleRatio(frame)
+  return left, bottom, width * ratio, height * ratio
+end
+
+-- SetPoint offsets are read in the positioned frame's own units, so the
+-- UIParent-space delta goes back through the ratio the box was measured with.
+-- The frame's measured corner is checked alongside the remembered offset: a
+-- native compare setter can re-anchor a frame this pass already placed, and a
+-- cache hit on its own would then leave it wherever the client put it.
+local function ApplyComparePlacement(entry, host, hostLeft, hostBottom, x, y)
+  local ratio = CompareScaleRatio(entry.frame)
+  if ratio <= 0 then ratio = 1 end
+
+  local dx = (x - hostLeft) / ratio
+  local dy = (y - hostBottom) / ratio
+
+  local previous = comparePlacement[entry.index]
+  if previous and previous.host == host and previous.x == dx and
+     previous.y == dy and math.abs(entry.left - x) < 0.5 and
+     math.abs(entry.bottom - y) < 0.5 then
+    return
+  end
+
+  if not pcall(entry.frame.ClearAllPoints, entry.frame) then return end
+  if not pcall(entry.frame.SetPoint, entry.frame, "BOTTOMLEFT", host,
+               "BOTTOMLEFT", dx, dy) then
+    comparePlacement[entry.index] = nil
+    return
+  end
+
+  comparePlacement[entry.index] = { host = host, x = dx, y = dy }
+end
+
+local function PositionCompareTooltips()
+  local host = CompareHost()
+  if not host then return end
+
+  local hostLeft, hostBottom, hostWidth, hostHeight = CompareBox(host)
+  if not hostLeft then return end
+
+  local shown, count = {}, 0
+  local i
+  for i = 1, 2 do
+    local frame = U.G("ShoppingTooltip" .. i)
+    if not CompareVisible(frame) then
+      comparePlacement[i] = nil
+    else
+      local left, bottom, width, height = CompareBox(frame)
+      if width then
+        count = count + 1
+        shown[count] = {
+          frame = frame, index = i,
+          left = left, bottom = bottom, width = width, height = height,
+        }
+      end
+    end
+  end
+  if count < 1 then return end
+
+  -- The draw area's own borders, not 0 and the width: UIParent is read for its
+  -- origin as well as its extent so nothing here assumes it starts at the
+  -- screen corner. U.UIWidth/U.UIHeight are the addon's single source for the
+  -- extent (core/compat.lua: GetScreenWidth is not in this unit space).
+  local uiLeft, uiBottom = 0, 0
+  local originOk, originLeft, originBottom = pcall(function()
+    return UIParent:GetLeft(), UIParent:GetBottom()
+  end)
+  if originOk and type(originLeft) == "number" and type(originBottom) == "number" then
+    uiLeft, uiBottom = originLeft, originBottom
+  end
+
+  local minX = uiLeft + COMPARE_SCREEN_MARGIN
+  local maxX = uiLeft + U.UIWidth() - COMPARE_SCREEN_MARGIN
+  local minY = uiBottom + COMPARE_SCREEN_MARGIN
+  local maxY = uiBottom + U.UIHeight() - COMPARE_SCREEN_MARGIN
+
+  local hostRight = hostLeft + hostWidth
+  local hostTop = hostBottom + hostHeight
+
+  local needed = 0
+  for i = 1, count do
+    needed = needed + COMPARE_EDGE_GAP + shown[i].width
+  end
+
+  -- Left first, because that is the side this client puts a comparison on when
+  -- it fits. The right border is the fallback, and when neither can take the
+  -- whole set the wider of the two is used, so the vertical stack below stays
+  -- the last resort it is meant to be.
+  local roomLeft = hostLeft - minX
+  local roomRight = maxX - hostRight
+  local toLeft = true
+  if roomLeft < needed and (roomRight >= needed or roomRight > roomLeft) then
+    toLeft = false
+  end
+
+  local cursor = hostLeft
+  if not toLeft then cursor = hostRight end
+  local stackTop, stackBottom = hostTop, hostBottom
+
+  for i = 1, count do
+    local entry = shown[i]
+    local x, y = nil, nil
+
+    if toLeft then
+      local candidate = cursor - COMPARE_EDGE_GAP - entry.width
+      if candidate >= minX then
+        x = candidate
+        cursor = candidate
+      end
+    else
+      local candidate = cursor + COMPARE_EDGE_GAP
+      if candidate + entry.width <= maxX then
+        x = candidate
+        cursor = candidate + entry.width
+      end
+    end
+
+    if x then
+      -- Bottom-aligned with the host, as the chained anchor was, then pulled
+      -- back inside the draw area here instead of by the client's clamp.
+      y = hostBottom
+      if y + entry.height > maxY then y = maxY - entry.height end
+      if y < minY then y = minY end
+    else
+      -- No border has room for this frame beside the item, so it goes above
+      -- the host, or below it once the band above is used. A frame with no
+      -- clear band left is not moved at all: covering the item is the one
+      -- outcome this pass exists to prevent.
+      y = stackTop + COMPARE_EDGE_GAP
+      if y + entry.height <= maxY then
+        stackTop = y + entry.height
+      else
+        y = stackBottom - COMPARE_EDGE_GAP - entry.height
+        if y < minY then
+          y = nil
+        else
+          stackBottom = y
+        end
+      end
+
+      if y then
+        x = hostLeft
+        if x + entry.width > maxX then x = maxX - entry.width end
+        if x < minX then x = minX end
+      end
+    end
+
+    if x and y then
+      ApplyComparePlacement(entry, host, hostLeft, hostBottom, x, y)
+    end
+  end
+end
+
+-- Shared with core/itemslot.lua, which populates the comparison frames for bag
+-- and quest-reward hovers and hands placement back here rather than carrying a
+-- second copy of the edge arithmetic.
+function U.PositionItemCompare()
+  PositionCompareTooltips()
+end
+
+-- ---------------------------------------------------------------------------
 -- Comparison stat scraping
 --
 -- Both items' stat lines are read straight off the two populated tooltips, so
@@ -690,6 +1027,15 @@ end
 -- readable stat name each key was first seen with and the order they appeared
 -- in. Both text sides are read: this client puts armour and damage on the left
 -- and the secondary weapon columns on the right.
+--
+-- Every read goes through U.TooltipLineText, which drops a line region that is
+-- not currently shown. That guard is what keeps a right-hand column honest:
+-- ClearLines clears left text but only *hides* the right lines
+-- (documentation.json / GameTooltip:ClearLines), and AddLine fills the left
+-- column alone, so a row inside this tooltip's own NumLines can still hold the
+-- right-hand text of whatever was in the frame before it. Read unguarded, the
+-- "30 yd range" a spell tooltip leaves on GameTooltipTextRight2 became a
+-- "+30 Yd Range" stat on a cloth robe.
 local function StatMapFor(name)
   local tooltip = U.G(name)
   if not tooltip or not tooltip.IsShown then return nil end
@@ -707,18 +1053,15 @@ local function StatMapFor(name)
   local index, sideIndex
   for index = 1, lineCount do
     for sideIndex = 1, table.getn(COMPARE_TEXT_SIDES) do
-      local label = U.G(name .. "Text" .. COMPARE_TEXT_SIDES[sideIndex] .. index)
-      if label and label.GetText then
-        local textOk, text = pcall(label.GetText, label)
-        if textOk then
-          local key, value = StatLineKey(text)
-          if key and not IsIgnoredStatKey(key) then
-            if map[key] == nil then
-              table.insert(info.order, key)
-              info.labels[key] = CompareStatLabel(text)
-            end
-            map[key] = (map[key] or 0) + value
+      local text = U.TooltipLineText(name, COMPARE_TEXT_SIDES[sideIndex], index)
+      if text then
+        local key, value = StatLineKey(text)
+        if key and not IsIgnoredStatKey(key) then
+          if map[key] == nil then
+            table.insert(info.order, key)
+            info.labels[key] = CompareStatLabel(text)
           end
+          map[key] = (map[key] or 0) + value
         end
       end
     end
@@ -1005,6 +1348,7 @@ local function RefreshTooltip(force)
   local shownOk, shown = pcall(tooltip.IsShown, tooltip)
   if not shownOk or not shown then
     styledFor = nil
+    U.ClearTooltipItemName()
     return
   end
 
@@ -1032,6 +1376,10 @@ local function RefreshTooltip(force)
     -- full style passes so that late refresh cannot leave the divider visible.
     ClearNativeTextures("GameTooltip")
   end
+
+  -- Before the unit path, which owns the name colour on a unit tooltip and
+  -- overwrites this one when both somehow apply to the same frame.
+  ApplyItemNameColor()
 
   if not IsTruthy(Call("UnitIsPlayer", "mouseover")) then return end
 
@@ -1131,6 +1479,13 @@ local function InstallTriggers()
     installed = true
   end
 
+  -- A remembered rarity colour belongs to one hover. Dropping it the moment
+  -- the tooltip hides is what keeps it from reaching the next subject in the
+  -- window before the 0.10s backstop pass notices the frame went away.
+  U.PostHookScript(tooltip, "OnHide", function()
+    U.ClearTooltipItemName()
+  end)
+
   return installed
 end
 
@@ -1148,6 +1503,10 @@ local function InstallCompareTrigger(index)
     U.DeferOnce("tooltip.compare-restyle." .. index, function()
       RefreshCompareTooltip(index, true)
       ApplyCompareSummary(index)
+      -- Last, because the summary rows are what give the frame its final
+      -- width: placing it before them would measure a box the player never
+      -- sees and could leave the wider one overlapping the item after all.
+      PositionCompareTooltips()
     end)
   end
 
@@ -1203,5 +1562,10 @@ function TT.OnEnable()
     for compareIndex = 1, 2 do
       ApplyCompareSummary(compareIndex)
     end
+    -- Backstop for the placement, on the same terms as the styling: a native
+    -- compare setter can re-anchor a frame after our pass, and the host
+    -- tooltip itself can move without either frame being hidden. The pass
+    -- re-points nothing while the computed placement still holds.
+    PositionCompareTooltips()
   end)
 end

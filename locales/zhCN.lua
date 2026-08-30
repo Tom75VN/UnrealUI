@@ -11,6 +11,16 @@
 
 UnrealUI.RegisterLocale("zhCN", {
 
+-- Opt-in custom pet bar (native remains the default).
+CMD_PETBAR                = "  |cffffff00/uui petbar <native/custom>|r - 选择宠物动作条（需要 /reload）",
+PETBAR_MODE_NATIVE        = "原生",
+PETBAR_MODE_CUSTOM        = "自定义（现代）",
+PETBAR_MODE_STATUS        = "宠物动作条：%s。下次重载后使用：%s。",
+PETBAR_MODE_SELECTED      = "已选择宠物动作条：%s。输入 /reload 应用。",
+PETBAR_CUSTOM_WARNING     = "实验性自定义宠物动作条：此客户端禁止通过自定义按钮点击施放宠物法术。输入 /uui petbar native，再输入 /reload 可恢复原生施法。",
+PETBAR_ACTION_UNAVAILABLE = "此客户端不支持该宠物动作。",
+PETBAR_UNAVAILABLE        = "当前会话无法切换宠物动作条模式。",
+
 -- ---------------------------------------------------------------------------
 -- Shared controls
 -- ---------------------------------------------------------------------------
@@ -55,9 +65,11 @@ MOVER_LABEL_PARTY_N       = "队伍 %d",
 MOVER_LABEL_DRUID_MANA    = "德鲁伊法力",
 MOVER_LABEL_CASTBAR       = "施法条",
 MOVER_LABEL_TARGET_CASTBAR = "目标施法条",
+MOVER_LABEL_PET_CASTBAR   = "宠物施法条",
 MOVER_LABEL_XP_BAR        = "经验条",
 MOVER_LABEL_REP_BAR       = "声望条",
 MOVER_LABEL_BREATH_BAR    = "呼吸条",
+MOVER_LABEL_SWING_BAR     = "自动攻击：攻击计时条",
 MOVER_LABEL_MICRO_BAR     = "微型菜单条",
 MOVER_LABEL_BUFFS         = "增益与减益",
 MOVER_LABEL_MINIMAP       = "小地图",
@@ -93,12 +105,18 @@ SETTINGS_QUICKBIND        = "快速绑定",
 SETTINGS_QUICKBIND_HINT   = "将鼠标悬停在动作条或姿态条按钮上并按下按键即可绑定。在按钮上按 Esc 可清除绑定。",
 SETTINGS_AUTO_ATTACK      = "选中目标时自动攻击",
 SETTINGS_AUTO_ATTACK_HINT = "通过点击或按 Tab 选中可攻击目标时，自动开始普通攻击。潜行者或德鲁伊处于潜行状态时不会触发。",
+SETTINGS_SWING_BAR        = "显示自动攻击计时条",
+SETTINGS_SWING_BAR_HINT   = "在目标处于攻击距离内时显示主手、副手以及弓或远程武器的攻击计时。可在“移动界面”中调整位置。",
 SETTINGS_MICROBAR         = "启用微型菜单条",
 SETTINGS_MICROBAR_HINT    = "将原生的角色、法术书、天赋、任务日志、社交、地图、菜单和帮助按钮集中到一排可移动的按钮中。禁用后它们会回到原来的位置。",
 SETTINGS_REPUTATION_BAR   = "显示声望条",
 SETTINGS_MINIMAP_BUTTON   = "在小地图旁显示设置按钮",
 SETTINGS_ZONE_LEVELS      = "在世界地图上显示区域等级范围",
 SETTINGS_ZONE_LEVELS_HINT = "在大陆地图上悬停某个区域时，会在名称旁显示其等级范围：绿色表示低于你的等级，橙色表示与你同级，红色表示高于你的等级。",
+
+SWING_BAR_MAIN            = "主手",
+SWING_BAR_OFF             = "副手",
+SWING_BAR_RANGED          = "远程",
 
 ROGUE_SETTINGS_HEADER         = "毒药快捷操作",
 ROGUE_POISON_SHIFT_CLICK      = "启用毒药 Shift 点击",
@@ -201,6 +219,12 @@ UF_POWER_ENERGY           = "能量",
 
 UF_PARTY_HEADER           = "小队框体",
 UF_PARTY_PETS             = "显示队友嬠物",
+UF_POWER_TICK_HEADER      = "玩家资源恢复节拍",
+UF_MANA_TICK              = "显示法力恢复节拍",
+UF_ENERGY_TICK            = "显示能量恢复节拍",
+UF_COMBO_POINTS_HEADER    = "连击点数",
+UF_COMBO_POINTS_PLAYER_FRAME = "玩家框体",
+UF_COMBO_POINTS_TARGET_FRAME = "目标框体",
 
 AURAS_HEADER              = "单位框体光环",
 AURAS_ON_PLAYER_FRAME     = "在玩家框体上显示光环",
@@ -266,6 +290,10 @@ STATUS_ONLINE             = "在线玩家",
 WORLDMAP_CURSOR           = "光标：--, --",
 WORLDMAP_CURSOR_OFF_MAP   = "光标：地图之外",
 QUESTLOG_LEVELS           = "等级",
+SPELLBOOK_HIGHEST_RANK    = "仅最高等级",
+SPELLBOOK_HIGHEST_RANK_TOOLTIP = "只显示每个法术的最高等级。",
+SPELLBOOK_BAR_HINT        = "不在动作条上",
+SPELLBOOK_BAR_HINT_TOOLTIP = "高亮未放入动作条的法术。",
 GAMEMENU_OPTIONS          = "设置",
 
 -- ---------------------------------------------------------------------------

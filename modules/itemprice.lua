@@ -525,19 +525,15 @@ end
 -- GameTooltip, mirroring the proven bag/button hover path above. Call() keeps
 -- either quest API non-fatal, and QuestLinkByInfo handles the confirmed case
 -- where the documented link getter still returns nil for a visible reward.
-function U.ShowQuestItemPrice(itemType, index)
-  U.HideMoneyRows()
-
-  if itemType ~= "choice" and itemType ~= "reward" then return end
-  index = tonumber(index)
-  if not index or index < 1 then return end
-
+--
+-- Both quest reward surfaces -- the quest-giver frame and the quest log --
+-- describe a reward the same way (a "choice"/"reward" list plus a 1-based
+-- index) but read it through different API families, so only the getters
+-- differ and everything after the lookup is shared here.
+local function QuestRewardPrice(source, link, name, texture, quality, count)
   local tooltip = U.G("GameTooltip")
-  if not tooltip then return end
+  if not tooltip then return nil end
 
-  local link = Call("GetQuestItemLink", itemType, index)
-  local name, texture, count, quality =
-    Call("GetQuestItemInfo", itemType, index)
   local lookup = "quest link"
   if not LinkID(link) then
     link = QuestLinkByInfo(name, texture, quality)
@@ -545,7 +541,7 @@ function U.ShowQuestItemPrice(itemType, index)
   end
   Remember(tooltip, link, count)
 
-  trace.source = "quest " .. itemType .. " " .. tostring(index)
+  trace.source = source
   trace.lookup = lookup
   trace.link = link
   trace.id = LinkID(link)
@@ -560,10 +556,50 @@ function U.ShowQuestItemPrice(itemType, index)
     U.Debug("itemprice quest hover: " .. tostring(err))
   end
 
-  -- The quest module also hands this resolved link to core/itemslot.lua's
+  -- The calling module also hands this resolved link to core/itemslot.lua's
   -- shared comparison renderer. Returning it keeps price and compare on the
   -- same guarded identity path, including the confirmed nil-link fallback.
   return link
+end
+
+function U.ShowQuestItemPrice(itemType, index)
+  U.HideMoneyRows()
+
+  if itemType ~= "choice" and itemType ~= "reward" then return end
+  index = tonumber(index)
+  if not index or index < 1 then return end
+
+  local link = Call("GetQuestItemLink", itemType, index)
+  local name, texture, count, quality =
+    Call("GetQuestItemInfo", itemType, index)
+  return QuestRewardPrice("quest " .. itemType .. " " .. tostring(index),
+                          link, name, texture, quality, count)
+end
+
+-- The quest log's own reward buttons carry the same "choice"/"reward" identity
+-- -- that is what the native QuestLogItem OnEnter already feeds to
+-- GameTooltip:SetQuestLogItem -- but the log reads through a separate API
+-- family: GetQuestLogItemLink(type, index) for the link, and one info getter
+-- per list rather than a single type-taking one. All three are
+-- OFFICIAL_CLIENT_DOCUMENTATION / DOCUMENTED_NOT_RUNTIME_VERIFIED on this
+-- client, so Call() keeps each of them non-fatal, and a nil link still falls
+-- back to the confirmed priced-item name scan the quest frame relies on.
+function U.ShowQuestLogItemPrice(itemType, index)
+  U.HideMoneyRows()
+
+  if itemType ~= "choice" and itemType ~= "reward" then return end
+  index = tonumber(index)
+  if not index or index < 1 then return end
+
+  local link = Call("GetQuestLogItemLink", itemType, index)
+  local name, texture, count, quality
+  if itemType == "choice" then
+    name, texture, count, quality = Call("GetQuestLogChoiceInfo", index)
+  else
+    name, texture, count, quality = Call("GetQuestLogRewardInfo", index)
+  end
+  return QuestRewardPrice("questlog " .. itemType .. " " .. tostring(index),
+                          link, name, texture, quality, count)
 end
 
 function U.HideItemPrice()

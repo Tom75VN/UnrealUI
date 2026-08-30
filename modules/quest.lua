@@ -174,11 +174,20 @@ local function HookRewardTooltip(button, prefix)
     if type(U.ShowQuestItemPrice) == "function" then
       link = U.ShowQuestItemPrice(button.type, index)
     end
+    -- The same resolved link carries the reward's rarity onto the tooltip's
+    -- name line. A reward that only resolved through the name fallback simply
+    -- leaves the native colour alone.
+    if type(U.ColorTooltipItemName) == "function" then
+      U.ColorTooltipItemName(link)
+    end
     if type(U.ShowItemCompare) == "function" then
       U.ShowItemCompare(link)
     end
   end)
   U.PostHookScript(button, "OnLeave", function()
+    if type(U.ClearTooltipItemName) == "function" then
+      U.ClearTooltipItemName()
+    end
     if type(U.HideItemPrice) == "function" then U.HideItemPrice() end
     if type(U.HideItemCompare) == "function" then U.HideItemCompare() end
   end)

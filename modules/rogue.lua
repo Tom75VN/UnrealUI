@@ -260,8 +260,38 @@ function rogue.BuildSettingsPage(parent)
     table.insert(widgets, hint)
   end
 
+  local comboHeader = U.CreateSectionHeader(parent, {
+    text = U.L("UF_COMBO_POINTS_HEADER"),
+    width = 484,
+    y = -94,
+  })
+  table.insert(widgets, comboHeader)
+
+  local comboAnchor = U.CreateDropdown(parent, {
+    name = "UnrealUIRogueComboPointAnchor",
+    width = 240,
+    height = 24,
+    rowHeight = 20,
+    value = type(U.GetComboPointAnchor) == "function" and
+            U.GetComboPointAnchor() or "player",
+    items = {
+      { value = "player", text = U.L("UF_COMBO_POINTS_PLAYER_FRAME") },
+      { value = "target", text = U.L("UF_COMBO_POINTS_TARGET_FRAME") },
+    },
+    onChange = function(value)
+      if type(U.SetComboPointAnchor) == "function" then
+        U.SetComboPointAnchor(value)
+      end
+    end,
+  })
+  comboAnchor.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -122)
+  table.insert(widgets, comboAnchor)
+
   local function Refresh()
     poison.SetValue(rogue.Config().poisonShiftClick)
+    if type(U.GetComboPointAnchor) == "function" then
+      comboAnchor.SetValue(U.GetComboPointAnchor())
+    end
   end
   return widgets, Refresh
 end

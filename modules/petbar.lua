@@ -1,10 +1,9 @@
 -- unrealUI :: modules/petbar.lua
 --
--- The native pet action bar, left exactly as the client draws it, with one
--- unrealUI addition: a mover handle so it can be placed like the rest of the
--- interface.
+-- Native mode keeps the original pet buttons, adds a mover handle and removes
+-- only the two outer decorative textures. Custom mode is explicitly opt-in.
 --
--- Why there is no unrealUI pet bar any more
+-- Why the native bar is the default
 --
 --   documentation.json / global:Pet:CastPetAction (OFFICIAL_CLIENT_DOCUMENTATION)
 --   marks the call this client uses to activate a pet action as *protected*:
@@ -22,14 +21,17 @@
 --   module made that worse by also suppressing (hide + alpha 0 + neutralised
 --   Show + EnableMouse(false)) the native bar that can.
 --
---   That is a client capability limit, not a bug with a workaround, so the
---   feature is gone rather than emulated. Per .claude/rules/unreal-ui.md: a
---   pfUI behaviour with no reliable Unreal equivalent is omitted, not faked.
+--   That is a client capability limit, not a bug with a workaround. The user
+--   explicitly requested the old Modern bar as an opt-in experiment; it lives
+--   in petbarcustom.lua and warns rather than pretending spell clicks work.
+--   Native is the default regardless of theme or legacy petbar.enabled values.
 --
--- What is left
+-- Native mode
 --
---   The native bar is never hidden, reskinned or click-handled. An unrealUI-
---   owned anchor frame carries the mover handle, and the native bar is pointed
+--   The native bar and its buttons are never hidden or click-handled. Only
+--   the separately captured outer artwork is stripped; icons, cooldowns and
+--   autocast/state regions are untouched. An unrealUI-owned anchor frame
+--   carries the mover handle, and the native bar is pointed
 --   at it only once the player has actually placed it. Until then the anchor
 --   follows the native bar and its position is not written at all, so an
 --   untouched interface keeps the client's own pet bar position.
@@ -42,10 +44,9 @@
 --   * The handle lives on an unrealUI frame rather than on PetActionBarFrame
 --     directly (the way modules/minimap.lua registers MinimapCluster). The
 --     mover handle is SetAllPoints to the frame it is registered on, and this
---     client's pet bar reports no dependable size for that to cover -- there
---     is no runtime record for PetActionBarFrame at all (frames.json and
---     interface.json contain no pet capture). An owned frame has a size we
---     set, so the handle is always there to grab.
+--     client's root size need not match its visible buttons. The 2026-08-30
+--     interface capture measured a 509x43 root and ten 30x30 buttons. An owned
+--     frame gives the mover its own footprint without resizing native buttons.
 --   * The native bar's own anchor is not UIParent-relative, so it cannot be
 --     expressed as a mover `default`. core/mover.lua documents U.OnPositionReset
 --     as the route for exactly that case; the anchor read at load is replayed
@@ -64,6 +65,42 @@ local U = UnrealUI
 local PB = U.RegisterModule("petbar")
 
 local NATIVE_NAME = "PetActionBarFrame"
+local DEFAULTS = {
+  mode = "native",
+  perRow = 10,
+  size = 24,
+  spacing = 2,
+  showAutocast = true,
+}
+local cfg
+local activeMode = "native"
+
+local function Config()
+  cfg = U.ModuleConfig("petbar", DEFAULTS)
+  if cfg.mode ~= "custom" then cfg.mode = "native" end
+  return cfg
+end
+
+local function ModeLabel(mode)
+  return U.L(mode == "custom" and "PETBAR_MODE_CUSTOM" or "PETBAR_MODE_NATIVE")
+end
+
+-- Native suppression is not reversible in-session. Save the preference only;
+-- the next reload builds exactly one bar and registers exactly one pet mover.
+function U.PetBarCommand(choice)
+  if not U.db then U.Print(U.L("PETBAR_UNAVAILABLE")); return end
+  local config = Config()
+  choice = type(choice) == "string" and string.lower(choice) or ""
+  choice = string.gsub(string.gsub(choice, "^%s+", ""), "%s+$", "")
+  if choice == "native" or choice == "custom" then
+    config.mode = choice
+    U.Print(U.L("PETBAR_MODE_SELECTED", ModeLabel(choice)))
+  else
+    U.Print(U.L("PETBAR_MODE_STATUS", ModeLabel(activeMode), ModeLabel(config.mode)))
+    U.Print(U.L("CMD_PETBAR"))
+  end
+  if config.mode == "custom" then U.Print(U.L("PETBAR_CUSTOM_WARNING")) end
+end
 
 -- Used only until the native bar reports its own size, and as the handle's
 -- footprint if it never does: ten stock pet buttons in a row.
@@ -79,6 +116,7 @@ local nativeAnchor = nil
 local nativeParent = nil
 local driving = false
 local reparented = false
+local driveFailures = 0
 
 -- ---------------------------------------------------------------------------
 -- Client calls
@@ -116,6 +154,22 @@ local function Number(value)
   value = tonumber(value)
   if not value or value <= 0 then return nil end
   return value
+end
+
+-- The 2026-08-30 interface capture identifies exactly these two Texture regions
+-- directly on PetActionBarFrame. Do not strip the whole hierarchy or the button
+-- faces: the buttons also carry meaningful flash, border and autocast state.
+-- Re-resolve on the existing refresh so newly created/re-shown art is covered,
+-- without replacing any native Show, update, mouse or click handler.
+local function HideNativeBorder()
+  local i
+  for i = 0, 1 do
+    local region = U.G("SlidingActionBarTexture" .. i)
+    if region then
+      local ok, objectType = pcall(region.GetObjectType, region)
+      if ok and objectType == "Texture" then U.HideRegion(region) end
+    end
+  end
 end
 
 -- ---------------------------------------------------------------------------
@@ -221,7 +275,13 @@ end
 
 -- Is the native bar still sitting on our anchor, or has the client re-anchored
 -- it (a pet summon, a bar page change, a zone-in)?
+-- frames.extra_anchor_point_survives_addon_setpoint: the native castbar kept
+-- point 1 on its mover while another point displaced it. Use the same guarded
+-- count check here; point 1 alone cannot detect that case.
 local function NativeDrifted()
+  local okCount, count = pcall(native.GetNumPoints, native)
+  if okCount and tonumber(count) and tonumber(count) ~= 1 then return true end
+
   local point, relative, relativePoint, x, y = U.GetFramePoint(native, 1)
   if type(point) ~= "string" then return true end
   if relative ~= anchor then return true end
@@ -232,13 +292,21 @@ end
 
 -- Size-agnostic on purpose: centre-on-centre needs neither frame to know how
 -- wide the other is, which matters because the native bar's size is exactly
--- what this client has no record for.
+-- what can differ from the visible button footprint on this client.
 local function DriveNative()
-  pcall(function()
+  local ok = pcall(function()
     native:ClearAllPoints()
     native:SetPoint("CENTER", anchor, "CENTER", 0, 0)
   end)
-  driving = true
+  -- This reports whether the placement call succeeded, not visual proof that
+  -- the client's buttons followed it. A refused write must not claim success.
+  driving = ok
+  if not ok then
+    driveFailures = driveFailures + 1
+    if driveFailures == 1 then
+      U.Debug("petbar: re-anchoring " .. NATIVE_NAME .. " was refused")
+    end
+  end
 end
 
 local function FollowNative()
@@ -272,10 +340,9 @@ end
 --
 -- What is checked rather than assumed
 --
---   This client has no runtime record of the pet bar at all (frames.json and
---   interface.json hold no pet capture), so the parent is *read* and the move
---   only happens when it is not already UIParent. A client that parents its
---   pet bar somewhere safe is left completely alone.
+--   The interface capture establishes the bar's children, not its own parent.
+--   The parent is therefore *read* and the move only happens when it is not
+--   already UIParent.
 --
 --   Scale multiplies down the parent chain here
 --   (frames.json / frames.parent_effective_scale.v1, SUPPORTED /
@@ -340,6 +407,7 @@ local function Apply()
   -- First: a bar hidden by an ancestor cannot be fixed by anything below.
   EnsureParent()
   MirrorNativeSize()
+  HideNativeBorder()
 
   local position = StoredPosition()
   local unlocked = U.IsUnlocked()
@@ -390,7 +458,23 @@ local function RegisterEvents()
   U.RegisterEvent("PET_BAR_UPDATE", refresh)
 end
 
+function PB:OnInit()
+  Config()
+end
+
 function PB:OnEnable()
+  Config()
+  if cfg.mode == "custom" then
+    if type(U.EnableCustomPetBar) == "function" then
+      U.EnableCustomPetBar(cfg)
+      activeMode = "custom"
+      U.Print(U.L("PETBAR_CUSTOM_WARNING"))
+      return
+    end
+    -- Missing helper: leave the native bar available rather than suppress it.
+    U.Print(U.L("PETBAR_UNAVAILABLE"))
+  end
+
   native = U.G(NATIVE_NAME)
   if not native then
     U.Debug("petbar: " .. NATIVE_NAME .. " not found; no pet bar mover")
@@ -417,8 +501,8 @@ function PB:OnEnable()
   RegisterEvents()
 
   -- One anchor read per tick against a bar that changes position rarely. The
-  -- old module swept ten buttons twice a second; this is the whole cost of the
-  -- feature now.
+  -- old module swept ten buttons twice a second; this refresh places the root
+  -- and suppresses only its two decorative textures.
   U.RegisterUpdate("petbar.anchor", 1.0, Apply)
 end
 
@@ -456,12 +540,18 @@ end
 
 -- Reported by /uui check.
 function U.PetBarReport()
+  local okCount, count = false, nil
+  if native then okCount, count = pcall(native.GetNumPoints, native) end
   return {
+    mode = activeMode,
+    selectedMode = cfg and cfg.mode or "native",
     native = native and true or false,
     anchor = anchor and true or false,
     hasPetBar = Call("PetHasActionBar") and true or false,
     placed = StoredPosition() and true or false,
     driving = driving,
+    driveFailures = driveFailures,
+    nativePoints = okCount and tonumber(count) or nil,
     nativeAnchorCaptured = nativeAnchor and true or false,
     reparented = reparented,
     originalParent = ParentName(nativeParent),

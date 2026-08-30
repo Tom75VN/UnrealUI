@@ -85,6 +85,51 @@ local function StyleItemRows()
   end
 end
 
+-- Rarity colour on a vendor tooltip's name line.
+--
+-- Behavior only -- no texture, font or anchor -- so it is installed in both
+-- themes, unlike the skinning above. The stock row buttons are reused by the
+-- vendor and buyback lists and the native OnEnter picks its setter from
+-- whichever tab is selected, while this client documents GetMerchantItemLink
+-- and no buyback link getter at all (modules/itemprice.lua records the same
+-- gap). The merchant name is therefore handed to the tooltip writer as the
+-- name it expects to find: a buyback tooltip will not match it and keeps the
+-- client's own colour instead of taking the vendor list's.
+local function HookItemTooltip(itemButton)
+  if not itemButton or itemButton.uuiMerchantTooltipHook then return end
+  itemButton.uuiMerchantTooltipHook = true
+
+  U.PostHookScript(itemButton, "OnEnter", function()
+    if type(U.ColorTooltipItemName) ~= "function" then return end
+
+    local idOk, index = pcall(itemButton.GetID, itemButton)
+    if not idOk or not tonumber(index) then return end
+
+    local getLink = G("GetMerchantItemLink")
+    local getInfo = G("GetMerchantItemInfo")
+    if type(getLink) ~= "function" or type(getInfo) ~= "function" then return end
+
+    local linkOk, link = pcall(getLink, index)
+    local infoOk, name = pcall(getInfo, index)
+    if not linkOk or not infoOk or type(name) ~= "string" then return end
+
+    U.ColorTooltipItemName(link, nil, name)
+  end)
+
+  U.PostHookScript(itemButton, "OnLeave", function()
+    if type(U.ClearTooltipItemName) == "function" then
+      U.ClearTooltipItemName()
+    end
+  end)
+end
+
+local function HookItemTooltips()
+  local i
+  for i = 1, ITEM_ROWS do
+    HookItemTooltip(G("MerchantItem" .. i .. "ItemButton"))
+  end
+end
+
 local function StyleBuyBackSlot()
   local slot = G("MerchantBuyBackItem")
   if not slot then return end
@@ -257,6 +302,10 @@ local function BuildFrame()
 end
 
 function MER:OnEnable()
+  -- Ahead of the theme gate: the tooltip hooks change no artwork, so Classic
+  -- gets them on its untouched vendor window too.
+  HookItemTooltips()
+
   if U.ThemeStyleUsesNativeChrome() then return end
   BuildFrame()
 end

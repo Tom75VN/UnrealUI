@@ -15,10 +15,17 @@
 
 local U = UnrealUI
 
-local HEADER_HEIGHT = 24
+-- Four times the former 24px strip so grabbing a window does not require
+-- finding a narrow title-bar line with the mouse. Callers with a deliberately
+-- sized custom header (the Settings window) can still override this value.
+local HEADER_HEIGHT = 96
 local HEADER_INSET = 26
 local WINDOW_GAP = 10
 local SCREEN_MARGIN = 10
+-- Keep the header above every interactive child of its own window. The offset
+-- remains relative to the parent so a background window cannot jump ahead of
+-- a foreground window merely because its drag handle was created later.
+local HANDLE_LEVEL_OFFSET = 100
 local dragCount = 0
 local windowStates = {}
 local frameStates = {}
@@ -315,7 +322,24 @@ function U.RefreshWindowOverlap(frame)
   return true
 end
 
+local function ReadDragPosition(frame)
+  local point, _, relativePoint, x, y = U.GetFramePoint(frame, 1)
+  if not point then return nil end
+  return { point = point, relativePoint = relativePoint, x = x, y = y }
+end
+
+local function PositionChanged(before, after)
+  if not before or not after then return true end
+  return before.point ~= after.point or
+         before.relativePoint ~= after.relativePoint or
+         before.x ~= after.x or before.y ~= after.y
+end
+
 local function StartDrag(state)
+  -- Start immediately from OnMouseDown. If the client later delivers its
+  -- threshold-based OnDragStart too, do not restart an already active move.
+  if state.dragging then return true end
+
   local frame = state.frame
   if not pcall(frame.SetMovable, frame, true) then
     U.Error("windowdrag " .. state.id .. ": SetMovable failed")
@@ -332,6 +356,7 @@ local function StartDrag(state)
   end
 
   state.dragging = true
+  state.dragStartPosition = ReadDragPosition(frame)
   return true
 end
 
@@ -348,6 +373,11 @@ local function StopDrag(state)
   if not state.dragging then return false end
   state.dragging = false
   pcall(state.frame.StopMovingOrSizing, state.frame)
+  local before = state.dragStartPosition
+  state.dragStartPosition = nil
+  if not PositionChanged(before, ReadDragPosition(state.frame)) then
+    return true
+  end
   local captured = CapturePosition(state)
   ScheduleOverlapCheck(state, true)
   return captured
@@ -357,6 +387,26 @@ local function ApplyStoredPosition(state)
   local saved = U.GetPosition(state.id)
   if not saved then return false end
   return U.ApplyFramePoint(state.frame, saved)
+end
+
+local function RaiseHandle(state)
+  if not state or not state.handle then return false end
+  local levelOk, level = pcall(state.frame.GetFrameLevel, state.frame)
+  if not levelOk or not tonumber(level) then return false end
+  return pcall(state.handle.SetFrameLevel, state.handle,
+               level + HANDLE_LEVEL_OFFSET)
+end
+
+local function IsLeftMouseButton(a, b)
+  local button
+  if type(a) == "string" then
+    button = a
+  elseif type(b) == "string" then
+    button = b
+  else
+    button = U.G("arg1")
+  end
+  return button == nil or button == "LeftButton"
 end
 
 -- id       stable string key; stored under "window."..id so it cannot collide
@@ -392,25 +442,36 @@ function U.MakeWindowDraggable(id, frame, options)
   handle:RegisterForDrag("LeftButton")
   pcall(handle.EnableMouse, handle, true)
 
-  local levelOk, level = pcall(frame.GetFrameLevel, frame)
-  if levelOk and tonumber(level) then
-    pcall(handle.SetFrameLevel, handle, level + 10)
-  end
-
+  handle:SetScript("OnMouseDown", function(a, b)
+    if IsLeftMouseButton(a, b) then StartDrag(state) end
+  end)
+  handle:SetScript("OnMouseUp", function(a, b)
+    if IsLeftMouseButton(a, b) then StopDrag(state) end
+  end)
+  -- Keep the native drag route as a fallback for any mouse path that does not
+  -- expose press/release scripts. Both handlers are safe to receive twice.
   handle:SetScript("OnDragStart", function() StartDrag(state) end)
   handle:SetScript("OnDragStop", function() StopDrag(state) end)
 
+  state.handle = handle
+  RaiseHandle(state)
   pcall(frame.SetMovable, frame, true)
   U.PostHookScript(frame, "OnShow", function()
+    -- Native panel management may change the frame level between openings.
+    -- Reassert the header above the window's children before it receives the
+    -- next mouse press.
+    RaiseHandle(state)
     ApplyStoredPosition(state)
     -- Some native Show functions keep changing anchors after OnShow returns
     -- (QuestLog_OnShow is one known example). Resolve on the next shared-driver
     -- tick, after that call chain has settled and before the next layout sticks.
     ScheduleOverlapCheck(state, false)
   end)
+  U.PostHookScript(frame, "OnHide", function()
+    if state.dragging then StopDrag(state) end
+  end)
   ApplyStoredPosition(state)
   if IsShown(state) then ScheduleOverlapCheck(state, false) end
 
-  state.handle = handle
   return state
 end
