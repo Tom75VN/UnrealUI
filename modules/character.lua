@@ -1044,6 +1044,23 @@ local function Reapply()
   StyleAttributes()
 end
 
+local function CharacterDragControls()
+  local controls = {}
+  local close = G("CharacterFrameCloseButton")
+  if close then table.insert(controls, close) end
+
+  local i
+  for i = 1, table.getn(SLOTS) do
+    local slot = G("Character" .. SLOTS[i])
+    if slot then table.insert(controls, slot) end
+  end
+  for i = 1, TAB_COUNT do
+    local tab = G("CharacterFrameTab" .. i)
+    if tab then table.insert(controls, tab) end
+  end
+  return controls
+end
+
 local function BuildFrame()
   frame = G("CharacterFrame")
   if not frame then
@@ -1078,11 +1095,19 @@ local function BuildFrame()
     end)
   end
 
-  U.StyleStockCloseButton(G("CharacterFrameCloseButton"), panel, -6, -6)
+  local close = G("CharacterFrameCloseButton")
+  U.StyleStockCloseButton(close, panel, -6, -6)
   -- The close button is anchored to panel, whose right edge is 30px inside
   -- CharacterFrame. Reserve its full horizontal bounds so the raised header
   -- drag handle cannot steal hover/clicks from the button's upper section.
-  U.MakeWindowDraggable("character", frame, { headerInset = 54 })
+  U.MakeWindowDraggable("character", frame, {
+    headerHeight = 76,
+    headerInset = 54,
+    -- Character's mouse-enabled model catcher sits above the base frame, so
+    -- this window needs the proven high drag level rather than the shared +1.
+    headerLevelOffset = 100,
+    interactiveFrames = CharacterDragControls(),
+  })
   StyleTabs()
   StyleModel()
 
@@ -1124,7 +1149,13 @@ function CH:OnEnable()
   -- supplies its mover. Only the semantic rarity outlines are layered above
   -- the stock item slots.
   if U.ThemeStyleUsesNativeChrome() then
-    BuildClassicSlotBorders()
+    if BuildClassicSlotBorders() then
+      U.MakeWindowDraggable("character", frame, {
+        headerInset = 40,
+        headerLevelOffset = 100,
+        interactiveFrames = CharacterDragControls(),
+      })
+    end
     return
   end
   BuildFrame()

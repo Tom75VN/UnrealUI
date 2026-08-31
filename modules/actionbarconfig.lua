@@ -226,6 +226,7 @@ local function BuildGeneralPage(parent)
     color = M.color.textDim,
     inherits = "GameFontNormalSmall",
     justify = "LEFT",
+    width = PAGE_WIDTH,
   })
   if hint then
     U.AnchorSettingsDescription(hint, controls[GLOBALS[table.getn(GLOBALS)].key].box)

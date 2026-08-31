@@ -370,12 +370,44 @@ local CYCLE_ORDER = { "none", "sweep", "frames", "auras", "plates", "bars",
 -- the scenario the bug is absent from cleared them wrongly, so they are back.
 local CYCLE_SECONDS = 8
 
+-- Dead time at the start of every phase, charged to nothing.
+--
+-- A phase change is not free: the bars mode re-lays out up to ten bars and the
+-- levels mode re-applies a suppression recipe, both of which land as one large
+-- frame in whichever phase is entered next. Charging that to the new phase
+-- biases the measurement in the exact direction the bars run is testing --
+-- more bars means a bigger transition -- so it would manufacture the slope it
+-- is supposed to measure. Three quarters of a second is well past the
+-- transition frame and its immediate aftermath while still leaving most of the
+-- 8s window as steady state.
+local CYCLE_SETTLE = 0.75
+local cycleSettled = false
+
 -- Two cycle modes share one engine. "switches" rotates the subsystem switches
 -- above; "levels" rotates core/compat.lua's suppression recipe level 0..4,
 -- which is the one that actually found something. Levels are RAISED in place --
 -- each level only adds operations, so the session can walk 0->4 without a
 -- reload, where the per-level manual test needed five.
 local CYCLE_LEVELS = { 0, 1, 2, 3, 4 }
+
+-- Third cycle mode: how many action bars are enabled. The other two ask which
+-- subsystem costs what; this one asks whether one subsystem's cost is
+-- proportional to a number the player controls, which is a different question
+-- and the one behind "every extra bar drops the framerate".
+--
+-- The counts are not 1..10. A per-bar cost is a slope, and a slope is read
+-- from its ends far more reliably than from ten adjacent points that differ by
+-- less than the frame-time noise: 0 is the control (the module loaded, every
+-- bar hidden, its updaters still registered), and 10 is the loudest case. The
+-- points between are there to say whether the slope is straight -- a straight
+-- line means per-button work, a knee means a threshold was crossed.
+local CYCLE_BARS = { 0, 1, 2, 4, 6, 8, 10 }
+
+-- Restored verbatim when the run stops. A bar-count run writes real config --
+-- the same table the settings panel writes -- so leaving it unrestored would
+-- persist a diagnostic layout on the next logout.
+local barsRestore = nil
+
 local cycleMode = "switches"
 
 local cycleActive = false
@@ -397,6 +429,54 @@ local function PhaseEntry(key)
     phaseStats[key] = entry
   end
   return entry
+end
+
+local function ReadStatsTable(fn)
+  if type(fn) ~= "function" then return nil end
+  local ok, stats = pcall(fn)
+  if ok and type(stats) == "table" then return stats end
+  return nil
+end
+
+-- Adds one snapshot's counts into the phase they were produced in, then clears
+-- the module counters so the next phase starts from zero. Accumulating rather
+-- than overwriting is what lets several rotations of the same phase be read as
+-- one measurement.
+local function AddWork(entry, stats, keys)
+  if not stats then return end
+  entry.work = entry.work or {}
+  local i
+  for i = 1, table.getn(keys) do
+    local key = keys[i]
+    local value = tonumber(stats[key])
+    if value then entry.work[key] = (entry.work[key] or 0) + value end
+  end
+end
+
+local BAR_WORK_KEYS = { "buttonVisits", "slotSweeps", "stateSweeps",
+                        "gcdSweeps", "gcdVisits", "cooldownSweeps",
+                        "cooldownVisits" }
+local WIPE_WORK_KEYS = { "applies", "rows", "writes", "gradients" }
+
+-- Called on every phase change and once when the run stops, so the last phase
+-- is not lost. Visible bars/buttons are recorded as the phase's own figure
+-- rather than summed: they are a state, not an amount of work.
+local function ResetPhaseWork()
+  if type(U.ResetActionBarStats) == "function" then pcall(U.ResetActionBarStats) end
+  if type(U.ResetRadialWipeStats) == "function" then pcall(U.ResetRadialWipeStats) end
+end
+
+local function CollectPhaseWork(key)
+  local entry = PhaseEntry(key)
+  local bars = ReadStatsTable(U.ActionBarStats)
+  if bars then
+    entry.enabledBars = bars.enabledBars
+    entry.visibleButtons = bars.visibleButtons
+    entry.builtWipes = bars.builtWipes
+    AddWork(entry, bars, BAR_WORK_KEYS)
+  end
+  AddWork(entry, ReadStatsTable(U.RadialWipeStats), WIPE_WORK_KEYS)
+  ResetPhaseWork()
 end
 
 local function ResetState()
@@ -478,8 +558,55 @@ local function ApplyPhase(key)
   if key ~= "none" then switches[key] = true end
 end
 
+-- The bars this character can actually own. Class-reserved stance pages are
+-- not in the list, so "6 bars" means six real bars on every class rather than
+-- six indices of which one silently does nothing.
+local function BarIds()
+  local ids = ReadStatsTable(U.ActionBarIDs)
+  if ids and table.getn(ids) > 0 then return ids end
+  return nil
+end
+
+-- Enables exactly the first `count` available bars and disables the rest.
+-- Every bar keeps its own size/rows/spacing: the run measures bar count, so
+-- nothing else may move between phases.
+local function ApplyBarCount(count)
+  local ids = BarIds()
+  if not ids or type(U.SetActionBarSetting) ~= "function" then return end
+  local i
+  for i = 1, table.getn(ids) do
+    U.SetActionBarSetting(ids[i], "Enabled", i <= count)
+  end
+end
+
+-- Captures what the player actually had, so the run can hand it back.
+local function CaptureBarState()
+  local ids = BarIds()
+  if not ids or type(U.GetActionBarSetting) ~= "function" then return nil end
+  local saved, i = {}, nil
+  for i = 1, table.getn(ids) do
+    saved[ids[i]] = U.GetActionBarSetting(ids[i], "Enabled") and true or false
+  end
+  return saved
+end
+
+local function RestoreBarState()
+  if not barsRestore or type(U.SetActionBarSetting) ~= "function" then return end
+  local bar, enabled
+  for bar, enabled in pairs(barsRestore) do
+    U.SetActionBarSetting(bar, "Enabled", enabled)
+  end
+  barsRestore = nil
+end
+
 local function AdvanceCycle()
-  local order = (cycleMode == "levels") and CYCLE_LEVELS or CYCLE_ORDER
+  local order = CYCLE_ORDER
+  if cycleMode == "levels" then order = CYCLE_LEVELS
+  elseif cycleMode == "bars" then order = CYCLE_BARS end
+
+  -- Charge the work just done to the phase that did it, before the phase key
+  -- moves. Skipped on the very first entry, where there is nothing to charge.
+  if cycleMode == "bars" and cycleIndex > 0 then CollectPhaseWork(currentPhase) end
 
   cycleIndex = cycleIndex + 1
   if cycleIndex > table.getn(order) then
@@ -487,6 +614,26 @@ local function AdvanceCycle()
     cycleRotations = cycleRotations + 1
   end
   cycleElapsed = 0
+  cycleSettled = false
+
+  if cycleMode == "bars" then
+    -- Clamped to what this class actually has: a Warrior owns seven bars, not
+    -- ten, and a phase labelled "10" that could only show seven would report a
+    -- per-bar slope over three bars that were never there. Two clamped phases
+    -- collapse onto the same key and simply merge into one longer sample.
+    local ids = BarIds()
+    local count = order[cycleIndex]
+    local maximum = ids and table.getn(ids) or 0
+    if count > maximum then count = maximum end
+    currentPhase = "bars" .. tostring(count)
+    ApplyBarCount(count)
+    U.Print("perf bars |cffffff00" .. tostring(count) .. "|r bar" ..
+            (count == 1 and "" or "s") ..
+            (count == 0 and " |cff888888(control: module loaded, nothing shown)|r"
+                         or "") ..
+            "  |cff888888rotation " .. tostring(cycleRotations + 1) .. "|r")
+    return
+  end
 
   if cycleMode == "levels" then
     local level = order[cycleIndex]
@@ -539,7 +686,15 @@ function U.PerfTick(elapsed)
 
   if cycleActive then
     cycleElapsed = cycleElapsed + elapsed
-    if cycleElapsed >= CYCLE_SECONDS then AdvanceCycle() end
+    if cycleElapsed >= CYCLE_SECONDS then
+      AdvanceCycle()
+    elseif not cycleSettled and cycleElapsed >= CYCLE_SETTLE then
+      -- Steady state reached. The counters hold the transition's own work at
+      -- this point, so clearing them here is what keeps the work census and
+      -- the frame times describing the same window.
+      cycleSettled = true
+      ResetPhaseWork()
+    end
   end
 
   -- Per-phase frame stats, counted for EVERY frame including the ones inside a
@@ -549,10 +704,13 @@ function U.PerfTick(elapsed)
   -- marked, so the phase mean was computed from the handful left over. The
   -- reported symptom is a sustained framerate drop (144 -> 40fps), so the
   -- phase mean has to be the true mean frame time, marks included.
-  local phase = PhaseEntry(currentPhase)
-  phase.frames = phase.frames + 1
-  phase.totalMs = phase.totalMs + ms
-  if ms > phase.worstMs then phase.worstMs = ms end
+  -- Not charged while a phase is still settling: see CYCLE_SETTLE.
+  if not cycleActive or cycleSettled then
+    local phase = PhaseEntry(currentPhase)
+    phase.frames = phase.frames + 1
+    phase.totalMs = phase.totalMs + ms
+    if ms > phase.worstMs then phase.worstMs = ms end
+  end
 
   if pending > 0 and current then
     table.insert(current, ms)
@@ -712,6 +870,7 @@ local function BuildExport()
     cycleRotations = cycleRotations,
     phases = phaseStats,
     actionbar = ReadStats(U.ActionBarStats),
+    radialwipe = ReadStats(U.RadialWipeStats),
     nameplates = ReadStats(U.NameplateStats),
     auras = ReadStats(U.AuraStats),
     unitframes = ReadStats(U.UnitFrameStats),
@@ -783,11 +942,95 @@ local function Report()
           (runIndex and (" + perfLog[" .. tostring(runIndex) .. "]") or "") ..
           " - |cffffff00/reload|r to write it out")
 
+  -- The bar-count comparison, printed first when there is one: it answers a
+  -- single question and the subsystem table below cannot.
+  -- Collected from the recorded phases rather than from CYCLE_BARS, because a
+  -- class with fewer than ten bars clamps two of those steps onto a key that
+  -- is not in the list. Sorted numerically so the slope reads down the column.
+  local barCounts, i = {}, nil
+  for i = 1, table.getn(CYCLE_BARS) do
+    local key = "bars" .. tostring(CYCLE_BARS[i])
+    if phaseStats[key] then table.insert(barCounts, CYCLE_BARS[i]) end
+  end
+  local phaseKey, phaseEntry
+  for phaseKey, phaseEntry in pairs(phaseStats) do
+    local _, _, digits = string.find(phaseKey, "^bars(%d+)$")
+    if digits then
+      local value, seen, j = tonumber(digits), false, nil
+      for j = 1, table.getn(barCounts) do
+        if barCounts[j] == value then seen = true end
+      end
+      if not seen then table.insert(barCounts, value) end
+    end
+  end
+  table.sort(barCounts)
+
+  if table.getn(barCounts) > 0 then
+    U.Print("  |cffffff00per bar count|r (" .. tostring(cycleRotations) ..
+            " rotations, " .. tostring(CYCLE_SECONDS) .. "s per phase):")
+
+    -- The shared Format is one decimal, which is right for a target-change
+    -- peak and useless for a slope: one bar's marginal cost is expected to be
+    -- a fraction of a millisecond, and rounded to 0.1ms an honest measurement
+    -- reads as a column of zeroes.
+    local function Fine(ms) return string.format("%.3f", ms) end
+
+    local zero = phaseStats["bars0"]
+    local zeroMean = 0
+    if zero and zero.frames > 0 then zeroMean = zero.totalMs / zero.frames end
+
+    local lastMean, lastCount = nil, nil
+    for i = 1, table.getn(barCounts) do
+      local count = barCounts[i]
+      local e = phaseStats["bars" .. tostring(count)]
+      if e and e.frames > 0 then
+        local mean = e.totalMs / e.frames
+
+        -- Cost against the control, and the marginal cost of the bars added
+        -- since the previous point. The second number is the one the report
+        -- exists for: a flat per-bar figure across the row means the cost is
+        -- linear in buttons, which is a per-button loop; a rising one means
+        -- something else grows with it.
+        local total = ""
+        if count > 0 and zeroMean > 0 then
+          total = "  |cffff9900+" .. Fine(mean - zeroMean) .. "ms|r"
+        end
+
+        local marginal = ""
+        if lastMean and count > lastCount then
+          marginal = "  |cff888888" ..
+                     Fine((mean - lastMean) / (count - lastCount)) ..
+                     "ms/bar|r"
+        end
+
+        U.Print("    " .. tostring(count) .. " bars: frame " .. Fine(mean) ..
+                "ms" .. total .. marginal .. " (worst " ..
+                Format(e.worstMs) .. ")")
+
+        -- The work census for the same phase. Frame time says how bad it is;
+        -- these say what was actually executed to make it that bad, and the
+        -- ratio between the two rows is what an optimisation has to move.
+        local w = e.work
+        if w then
+          U.Print("      " .. tostring(e.visibleButtons or 0) ..
+                  " buttons, gcd " .. tostring(w.gcdSweeps or 0) ..
+                  " sweeps / " .. tostring(w.gcdVisits or 0) ..
+                  " visits, wipe rows " .. tostring(w.rows or 0) ..
+                  " -> writes " .. tostring(w.writes or 0))
+          U.Print("      state+slot visits " .. tostring(w.buttonVisits or 0) ..
+                  ", wipes built " .. tostring(e.builtWipes or 0) ..
+                  " of " .. tostring(e.visibleButtons or 0))
+        end
+
+        lastMean, lastCount = mean, count
+      end
+    end
+  end
+
   -- Per-phase comparison. This is the whole point of a cycle run, so it prints
   -- before the aggregate numbers: the aggregates mix every phase together and
   -- are meaningless while cycling.
   local ran = false
-  local i
   for i = 1, table.getn(CYCLE_ORDER) do
     if phaseStats[CYCLE_ORDER[i]] then ran = true end
   end
@@ -953,6 +1196,8 @@ local function ShowUsage()
           tostring(CYCLE_SECONDS) .. "s each, and compare them")
   U.Print("  |cffffff00/uui perf levels|r - walk suppression level 0-4 in one " ..
           "run (needs |cffffff00/uui suppress 0|r + reload first)")
+  U.Print("  |cffffff00/uui perf bars|r - walk 0-10 action bars in one run; " ..
+          "stay in combat and keep casting")
   U.Print("  bisect (toggle one, change target again, re-read the peak):")
   local i, line = nil, ""
   for i = 1, table.getn(SWITCH_ORDER) do
@@ -1006,6 +1251,40 @@ function U.PerfCommand(rest)
     return
   end
 
+  -- The bar-count run. Every bar is constructed once up front: a bar enabled
+  -- for the first time builds twelve buttons, and that one-off construction
+  -- landing inside a timed phase would be charged to that bar count as if it
+  -- were a recurring cost.
+  if argument == "bars" then
+    if type(U.SetActionBarSetting) ~= "function" then
+      U.Print("perf bars: action bar module not loaded")
+      return
+    end
+
+    ResetState()
+    barsRestore = CaptureBarState()
+    if not barsRestore then
+      U.Print("perf bars: no available bars to cycle")
+      return
+    end
+
+    ApplyBarCount(table.getn(BarIds()))
+    ResetPhaseWork()
+
+    active = true
+    U.perfActive = true
+    cycleMode = "bars"
+    cycleActive = true
+    cycleIndex = 0
+    AdvanceCycle()
+    U.Print("perf: |cff55ff55bar count|r - |cffffff00stay in combat and keep " ..
+            "casting|r so the global-cooldown sweep is actually running; " ..
+            "each count gets " .. tostring(CYCLE_SECONDS) .. "s.")
+    U.Print("  let it run several rotations, then |cffffff00/uui perf stop|r " ..
+            "and |cffffff00/reload|r - your own bars come back at stop")
+    return
+  end
+
   if argument == "cycle" then
     ResetState()
     active = true
@@ -1033,6 +1312,9 @@ function U.PerfCommand(rest)
   end
 
   if argument == "stop" or argument == "off" then
+    -- The phase in progress has not been charged yet -- AdvanceCycle does that
+    -- on the way out of a phase, and stopping never reaches one.
+    if cycleActive and cycleMode == "bars" then CollectPhaseWork(currentPhase) end
     Report()
     active = false
     U.perfActive = false
@@ -1044,7 +1326,10 @@ function U.PerfCommand(rest)
       for i = 1, table.getn(SWITCH_ORDER) do
         switches[SWITCH_ORDER[i]] = true
       end
-      if cycleMode == "levels" and U.db then
+      if cycleMode == "bars" then
+        RestoreBarState()
+        U.Print("perf: bar run ended, your own bars restored")
+      elseif cycleMode == "levels" and U.db then
         -- Leave the addon in its shipped state rather than at whichever level
         -- the rotation happened to stop on.
         U.db.suppressLevel = 4

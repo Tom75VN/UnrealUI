@@ -133,11 +133,11 @@ local function SetDetailVisible(show)
 end
 
 local function BuildQuestLevelToggle(collapseAll)
-  if not collapseAll then return end
+  if not collapseAll then return nil end
 
   local ok, toggle = pcall(CreateFrame, "CheckButton",
     "UnrealUIQuestLogLevels", frame, "UICheckButtonTemplate")
-  if not ok or not toggle then return end
+  if not ok or not toggle then return nil end
 
   toggle:SetPoint("LEFT", collapseAll, "RIGHT", 4, 1)
   toggle:SetChecked(config.showQuestLevels and true or nil)
@@ -155,6 +155,7 @@ local function BuildQuestLevelToggle(collapseAll)
     local update = G("QuestLog_Update")
     if type(update) == "function" then pcall(update) end
   end)
+  return toggle
 end
 
 -- Header expand/collapse.
@@ -562,8 +563,8 @@ local function BuildFrame()
       title:SetPoint("TOP", frame, "TOP", 0, -10)
     end)
   end
-  U.StyleStockCloseButton(G("QuestLogFrameCloseButton"), frame, -6, -6)
-  U.MakeWindowDraggable("questlog", frame)
+  local close = G("QuestLogFrameCloseButton")
+  U.StyleStockCloseButton(close, frame, -6, -6)
 
   local count = G("QuestLogQuestCount")
   if count then
@@ -652,7 +653,7 @@ local function BuildFrame()
       collapseAll:SetPoint("BOTTOMLEFT", G("QuestLogTitle1"), "TOPLEFT", -6, 4)
     end)
   end
-  BuildQuestLevelToggle(collapseAll)
+  local levelToggle = BuildQuestLevelToggle(collapseAll)
 
   U.StripStockTextures(listScroll)
   U.StyleStockScrollbar(G("QuestLogListScrollFrameScrollBar"))
@@ -718,6 +719,28 @@ local function BuildFrame()
   end
   local trackTitle = G("QuestLogTrackTitle")
   if trackTitle then pcall(trackTitle.Hide, trackTitle) end
+
+  -- Keep the modern Quest Log's controls explicitly above the shared low-level
+  -- drag strip because several of them occupy that same header area.
+  local headerControls = {}
+  local headerControlOffsets = {}
+  if close then table.insert(headerControls, close) end
+  if collapseAll then
+    table.insert(headerControls, collapseAll)
+    if collapseAll.uuiCollapseIcon then
+      table.insert(headerControls, collapseAll.uuiCollapseIcon)
+      -- Preserve the icon's normal one-level lead over its clickable parent.
+      headerControlOffsets[collapseAll.uuiCollapseIcon] = 2
+    end
+  end
+  if levelToggle then table.insert(headerControls, levelToggle) end
+  if track then table.insert(headerControls, track) end
+  U.MakeWindowDraggable("questlog", frame, {
+    headerHeight = 48,
+    headerLevelOffset = 1,
+    interactiveFrames = headerControls,
+    interactiveFrameOffsets = headerControlOffsets,
+  })
 
   BuildRows()
   StyleQuestItems()

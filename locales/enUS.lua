@@ -184,7 +184,7 @@ ABC_SHOW_KEYBIND          = "Show keybinds",
 ABC_SHOW_MACRO            = "Show macro names",
 ABC_SHOW_COUNT            = "Show item counts",
 ABC_SHOW_COOLDOWN         = "Show cooldown timers",
-ABC_SHOW_GCD              = "Show global cooldown wipe",
+ABC_SHOW_GCD              = "Show global cooldown",
 ABC_GENERAL_HINT          = "%d independent bars are available. Pages used by this class's forms are shown only on Bar 1.",
 ABC_BIND_HINT             = "Hover a slot and press a key to bind it. Escape over a slot clears it. Bars 1-5 are bindable; bars 6-10 have no key command in this client, so they are shown but cannot take one.",
 

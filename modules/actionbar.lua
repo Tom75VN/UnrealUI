@@ -33,6 +33,13 @@
 --     OnUpdate. Refreshes run on the shared driver -- including the cooldown
 --     countdown, which is why there is no per-button cooldown OnUpdate here
 --     even though UnrealPfUI's own cooldown module uses one.
+--   * knowledge.json / cooldown.model_swipe_not_rendered: the native
+--     Model/CooldownFrameTemplate swipe draws nothing on this client, so no
+--     button creates one. The countdown number, the red icon tint and the
+--     hand-drawn global-cooldown wipe are the whole cooldown display.
+--   * knowledge.json / actionbars.frame_cost_scales_with_regions: this
+--     module's frame cost tracks how many texture regions exist, not how much
+--     Lua runs over them, so per-button regions are created on demand.
 --   * knowledge.json / rendering.parent_alpha_not_propagated: every child
 --     region is shown and hidden explicitly, never via its parent.
 
@@ -189,6 +196,105 @@ local GCD_THRESHOLD = 2
 -- The countdown is re-read from the clock this often. Fast enough that the
 -- tenths shown in the last five seconds actually count down.
 local CD_TICK = 0.1
+
+-- ---------------------------------------------------------------------------
+-- Global cooldown readout
+--
+-- Two shapes, and the difference between them is measured rather than a
+-- preference. The clock wipe is core/style.lua's hand-drawn radial: at a 30px
+-- button that is 34 texture regions and, because the leading edge moves every
+-- tick, about 13 texture width-writes per button on each of the 25 ticks a
+-- second it runs at. With eleven filled slots that is roughly 3700 texture
+-- writes a second for the whole 1.5s of every cast -- user-reported as a ~40fps
+-- drop while casting, on top of a client where frame cost already tracks region
+-- count (knowledge.json / actionbars.frame_cost_scales_with_regions).
+--
+-- The client's own cooldown frames draw the readout wherever they exist (see
+-- the Native cooldown frames note below), which is bars 1-5. That is not a
+-- choice a player makes any more: it is free, it is the client's own art, and
+-- it also covers real spell cooldowns, so it is simply what this module uses.
+--
+-- Bars 6-10 have no native counterpart at all and still need to show a global
+-- cooldown, so they fall back to a shade unrealUI draws itself: one full-height
+-- dark panel over the icon, receding to the right as the lockout runs out. One
+-- texture region and one SetWidth per button per tick.
+--
+-- M.color.cooldownWipe is deliberately the shared token rather than a new one:
+-- it is already defined as the shade this addon lays over game content during a
+-- cooldown, which is exactly what this is.
+--
+-- core/style.lua's hand-drawn radial wipe is no longer used here. It remains
+-- the right primitive for modules/auras.lua, stancebar.lua and petbarcustom.lua,
+-- where each icon shows a genuinely different progress and there is no native
+-- frame to borrow.
+local GCD_SHADE_COLOR = M.color.cooldownWipe
+
+-- ---------------------------------------------------------------------------
+-- Native cooldown frames ("native" style)
+--
+-- The client draws a proper radial cooldown on its own action buttons, and
+-- knowledge.json / cooldown.native_model_borrowable_but_undrivable records what
+-- can and cannot be done with that: an addon-CREATED Model never renders, a
+-- borrowed native one does, and driving it from Lua gives a position that is
+-- not reproducible. What was left untested there was leaving it entirely alone,
+-- and CooldownBorrowProbe's client_driven run answered it -- reparent a native
+-- cooldown onto an unrealUI button, show its stock button so the client's own
+-- update path stays alive, touch nothing else, and the client draws and
+-- advances it correctly. USER_CONFIRMED_INGAME 2026-09-01.
+--
+-- Two consequences shape this:
+--
+--   * It costs nothing per tick. The client animates it in C; unrealUI never
+--     writes to it after the borrow. That makes it cheaper than the shade,
+--     which is one SetWidth per button per tick.
+--   * It covers only bars 1-5. Those are the five families the client owns --
+--     unrealUI bar 1 is paged in step with the client's own ActionButton page,
+--     and bars 2-5 sit on the four MultiBar families in BAR_SLOT_BASE order.
+--     Bar 6 (page 2) and the class pages 7-10 have no native counterpart at
+--     all, so they fall back to the shade and say so in the settings text.
+--
+-- It also brings back something the other two styles cannot: a swipe on real
+-- spell cooldowns, not just the global one, because the client drives the frame
+-- for every cooldown that slot has.
+local NATIVE_CD_FAMILY = {
+  [1] = "ActionButton",
+  [2] = "MultiBarRightButton",
+  [3] = "MultiBarLeftButton",
+  [4] = "MultiBarBottomRightButton",
+  [5] = "MultiBarBottomLeftButton",
+}
+
+-- Stock buttons this module has already shown. The client's cooldown update
+-- runs off the stock button, so it has to stay shown; its own art does not come
+-- back, because its parent (MainMenuBarArtFrame and friends) is still
+-- suppressed -- measured as shown=true / visible=false in the same probe run.
+local nativeStockShown = {}
+
+-- ---------------------------------------------------------------------------
+-- Work census
+--
+-- One table rather than one local per counter: this file is already carrying
+-- ~150 top-level locals and the 200-slot chunk limit fails silently (see
+-- CLAUDE.md / lua.top_level_local_limit_silent_file_failure).
+--
+-- These are counters, not timers -- this client has no intra-frame profiler
+-- (debugprofilestop is a documented no-op), so "how many per-button operations
+-- did each recurring loop run" is the attribution available. Read by
+-- U.ActionBarStats and exported by core/perf.lua, whose per-phase frame mean
+-- supplies the milliseconds these counts have to be divided into.
+--
+-- gcdVisits is the figure to watch when a bar is added: the GCD sweep is the
+-- only recurring loop here that ticks at render cadence (0.04s), and each
+-- visit runs a full radial-wipe redraw. The 2026-08-31 run showed it does not
+-- scale with bar count at all -- it skips empty slots, so it touched ~11
+-- buttons per tick at ten bars against ~5 at one -- which is what moved the
+-- investigation off this module's Lua and onto how many regions exist
+-- (knowledge.json / actionbars.frame_cost_scales_with_regions).
+local work = {
+  slotSweeps = 0, stateSweeps = 0, buttonVisits = 0,
+  gcdSweeps = 0, gcdVisits = 0,
+  cdSweeps = 0, cdVisits = 0,
+}
 
 local bars = {}         -- bar index -> { frame, buttons, mover }
 local pressedButtons = {}
@@ -777,6 +883,18 @@ end
 -- open, so the client has nothing to report until it closes. U.SlotBindingKey
 -- answers with what the player has staged in that window and with the client's
 -- own key at every other time.
+--
+-- Deliberately uncached. A label cache was built here and measured on
+-- 2026-08-31: it removed the string work but moved nothing. Across four
+-- /uui perf bars runs, including one from a cold client start, the slot
+-- sweep's allocation went 26.3 -> 25.0 KB per fire and the per-bar frame cost
+-- did not change at all (0.463 / 0.467 / 0.441 normalised to each run's own
+-- control, a spread wider than the effect). The sweep's allocation is the ~360
+-- protected client calls it makes over 120 buttons, not these strings. Caching
+-- them bought about 1KB/s and cost an invalidation contract plus a staleness
+-- window on a client whose UPDATE_BINDINGS is accepted but never observed, so
+-- it was reverted. See knowledge.json /
+-- actionbars.frame_cost_scales_with_regions.
 local function BindingFor(bar, index)
   local prefix = BindingPrefix(bar)
   if not prefix then return "" end
@@ -1203,6 +1321,99 @@ local function HideTooltip()
   if tooltip then pcall(tooltip.Hide, tooltip) end
 end
 
+-- ---------------------------------------------------------------------------
+-- Button labels, built on demand
+--
+-- Four of the regions a button carries are text: the keybind, the stack count,
+-- the macro name and the cooldown countdown. Most action slots need none of
+-- them at any given moment -- an empty slot needs none at all, and a slot
+-- holding a plain spell with no key bound needs none either -- yet every button
+-- used to create all four at construction time.
+--
+-- On this client that is the wrong default: frame cost tracks how many regions
+-- exist rather than how much code touches them (knowledge.json /
+-- actionbars.frame_cost_scales_with_regions), so a region that is created and
+-- never shown is not free. Each is therefore created the first time it actually
+-- has something to display, and a button that never displays one never has it.
+--
+-- Layout is shared with SizeButton rather than duplicated: a label built long
+-- after its button was sized still has to land in the right corner at the right
+-- font, and a resize still has to move whichever labels exist.
+-- ---------------------------------------------------------------------------
+local function LayoutButtonLabel(button, key)
+  local label = button[key]
+  local size = button.uuiSize
+  if not label or not size then return end
+
+  if key == "uuiCooldownText" then
+    -- The countdown is the readout, not a corner label, so it scales off the
+    -- button rather than off the small-label size. pfUI's dynamic cooldown font
+    -- uses height * .64; half the button is the same idea, one step calmer.
+    local cdSize = math.floor(size * 0.5)
+    if cdSize < 10 then cdSize = 10 end
+    if cdSize > 24 then cdSize = 24 end
+    label:ClearAllPoints()
+    label:SetPoint("CENTER", button.uuiCooldownLayer, "CENTER", 0, 0)
+    U.SetFont(label, cdSize)
+    return
+  end
+
+  -- Label sizes follow the button so a 60px button does not carry 9px text and
+  -- a 15px one is not covered by it.
+  local small = math.floor(size / 2.6)
+  if small < 7 then small = 7 end
+  if small > 14 then small = 14 end
+
+  -- fonts.stretched_justification_ignored: each label is anchored to the one
+  -- corner it belongs in rather than stretched across the button.
+  label:ClearAllPoints()
+  if key == "uuiKeybind" then
+    label:SetPoint("TOPRIGHT", button, "TOPRIGHT", -2, -2)
+  elseif key == "uuiCount" then
+    label:SetPoint("BOTTOMRIGHT", button, "BOTTOMRIGHT", -2, 2)
+  else
+    label:SetPoint("BOTTOMLEFT", button, "BOTTOMLEFT", 2, 2)
+    label:SetWidth(size - 6)
+  end
+  U.SetFont(label, small)
+end
+
+local LABEL_COLOR = {
+  uuiKeybind = COLOR.keybind,
+  uuiCount = COLOR.count,
+  uuiMacro = COLOR.macro,
+}
+
+-- Returns nil once and for good if this client refuses the fontstring, rather
+-- than retrying the failed creation on every sweep.
+local function EnsureButtonLabel(button, key)
+  local existing = button[key]
+  if existing ~= nil then return existing or nil end
+
+  local label
+  if key == "uuiCooldownText" then
+    label = U.CreateLabel(button.uuiCooldownLayer, {
+      size = M.fontSize.normal, color = CD_COLOR.normal,
+      inherits = "GameFontNormal",
+    })
+  else
+    label = U.CreateLabel(button, {
+      size = M.fontSize.tiny, color = LABEL_COLOR[key],
+      inherits = "GameFontNormalSmall",
+    })
+  end
+
+  if not label then
+    button[key] = false
+    return nil
+  end
+
+  button[key] = label
+  label:Hide()
+  LayoutButtonLabel(button, key)
+  return label
+end
+
 local function CreateButton(bar, index)
   local name = "UnrealUIActionBar" .. bar .. "Button" .. index
   local button = CreateFrame("Button", name, bars[bar].frame)
@@ -1222,45 +1433,29 @@ local function CreateButton(bar, index)
   pcall(icon.SetTexCoord, icon, 0.08, 0.92, 0.08, 0.92)
   button.uuiIcon = icon
 
-  -- fonts.stretched_justification_ignored: each label is anchored to the one
-  -- corner it belongs in rather than stretched across the button.
-  button.uuiKeybind = U.CreateLabel(button, {
-    size = M.fontSize.tiny, color = COLOR.keybind, inherits = "GameFontNormalSmall",
-  })
-  button.uuiCount = U.CreateLabel(button, {
-    size = M.fontSize.small, color = COLOR.count, inherits = "GameFontNormalSmall",
-  })
-  button.uuiMacro = U.CreateLabel(button, {
-    size = M.fontSize.tiny, color = COLOR.macro, inherits = "GameFontNormalSmall",
-  })
+  -- No native cooldown swipe is created here.
+  --
+  -- knowledge.json / cooldown.model_swipe_not_rendered (BROKEN,
+  -- RUNTIME_FAILURE_CONFIRMED): CreateFrame("Model", name, button,
+  -- "CooldownFrameTemplate") driven by CooldownFrame_SetTimer is the Vanilla
+  -- shape UnrealPfUI uses, and on this client it produces a frame that draws
+  -- nothing. It was kept anyway on the chance the record was wrong about some
+  -- slot or state; the /uui perf bars run of 2026-08-31 priced what that
+  -- chance cost -- one Model frame per button, 120 of them across ten enabled
+  -- bars, plus a protected CooldownFrame_SetTimer on each one five times a
+  -- second -- against a frame time already rising 0.72ms per bar. A frame that
+  -- has been confirmed to render nothing is not worth one render object per
+  -- action slot.
+  --
+  -- The cooldown readout is therefore the numeric countdown (uuiCooldownText)
+  -- and the red COLOR.cooldown icon tint, both of which were already carrying
+  -- the whole display. The hand-drawn radial wipe in core/style.lua remains
+  -- the global-cooldown feedback.
 
-  -- Cooldown swipe -- the radial wipe animation, driven natively rather than
-  -- drawn by hand. CreateFrame("Model", ..., "CooldownFrameTemplate") is the
-  -- Vanilla shape UnrealPfUI uses for it on this client (COOLDOWN_FRAME_TYPE in
-  -- compat/vanilla.lua, and the same call shape modules/actionbar.lua,
-  -- bags.lua, nameplates.lua, totems.lua and unitframes.lua all use there): in
-  -- 1.12-shaped clients the cooldown swipe is itself a Model-type frame, not a
-  -- dedicated Cooldown widget, so this is not a synthetic reimplementation --
-  -- it is the same primitive Blizzard's own action buttons animate with.
-  -- Distinct from unitframes.portrait_model_crash (BROKEN): that record is the
-  -- full PlayerModel character-rendering chain (SetModel/SetUnit/
-  -- SetModelScale), a different call sequence on the same frame type. Neither
-  -- the frame type nor the template has its own compact record here, so
-  -- failure is still a real possibility -- if this swipe stays invisible in
-  -- game, that means Has("CooldownFrame_SetTimer") read false or the client
-  -- rejected the template, and the numeric countdown is the fallback.
-  local ok, cooldown = pcall(CreateFrame, "Model", name .. "Cooldown", button,
-                             "CooldownFrameTemplate")
-  if ok and cooldown and Has("CooldownFrame_SetTimer") then
-    pcall(cooldown.SetAllPoints, cooldown, button)
-    button.uuiCooldown = cooldown
-  end
-
-  -- The swipe above is a Model child of the button, so a fontstring living on
-  -- the button's own OVERLAY layer can be drawn underneath it. The countdown
-  -- therefore sits on a raised child frame -- the same raised-layer trick the
-  -- unit frames use for bar labels, and what UnrealPfUI does for its cooldown
-  -- text (modules/cooldown.lua parents it to the button at a higher level).
+  -- The countdown sits on a raised child frame rather than the button's own
+  -- OVERLAY layer -- the same raised-layer trick the unit frames use for bar
+  -- labels, and what UnrealPfUI does for its cooldown text
+  -- (modules/cooldown.lua parents it to the button at a higher level).
   -- The layer takes no mouse input, so clicks and drags still reach the button.
   local textLayer = CreateFrame("Frame", nil, button)
   pcall(textLayer.SetAllPoints, textLayer, button)
@@ -1270,7 +1465,7 @@ local function CreateButton(bar, index)
   end
   button.uuiCooldownLayer = textLayer
 
-  -- A raised translucent fill stays visible above the icon and cooldown swipe
+  -- A raised translucent fill stays visible above the icon and the GCD wipe
   -- while leaving the key/count/macro labels readable. It is driven by the
   -- shared updater rather than an unreliable child-frame OnUpdate.
   local pressed = textLayer:CreateTexture(nil, "ARTWORK")
@@ -1279,23 +1474,6 @@ local function CreateButton(bar, index)
   U.SetColor(pressed, 1, 1, 1, 0.28)
   pressed:Hide()
   button.uuiPressed = pressed
-
-  -- Global-cooldown feedback: the clock wipe, drawn by hand because the
-  -- Model/CooldownFrameTemplate shape above renders nothing here (see the
-  -- Radial wipe note in core/style.lua). It goes on the raised layer so it
-  -- covers the icon, at BACKGROUND within that layer so the press flash and the
-  -- countdown number stay on top of it. Sized by SizeButton, driven by
-  -- RefreshGCDSweep.
-  button.uuiGcd = U.CreateRadialWipe(textLayer)
-
-  button.uuiCooldownText = U.CreateLabel(textLayer, {
-    size = M.fontSize.normal, color = CD_COLOR.normal,
-    inherits = "GameFontNormal",
-  })
-  if button.uuiCooldownText then
-    button.uuiCooldownText:SetPoint("CENTER", textLayer, "CENTER", 0, 0)
-    button.uuiCooldownText:Hide()
-  end
 
   classicAction.StyleButton(button, textLayer)
 
@@ -1329,45 +1507,24 @@ end
 local function SizeButton(button, size)
   button:SetWidth(size)
   button:SetHeight(size)
+  -- Read back by the GCD bar, which is sized from the button rather than from
+  -- its own geometry so it can be built long after this ran.
+  button.uuiSize = size
 
   local icon = button.uuiIcon
   icon:ClearAllPoints()
   icon:SetPoint("TOPLEFT", button, "TOPLEFT", ICON_INSET, -ICON_INSET)
   icon:SetPoint("BOTTOMRIGHT", button, "BOTTOMRIGHT", -ICON_INSET, ICON_INSET)
 
-  -- Label sizes follow the button so a 60px button does not carry 9px text and
-  -- a 15px one is not covered by it.
-  local small = math.floor(size / 2.6)
-  if small < 7 then small = 7 end
-  if small > 14 then small = 14 end
+  -- Whichever of the four exist; LayoutButtonLabel is a no-op for the rest.
+  LayoutButtonLabel(button, "uuiKeybind")
+  LayoutButtonLabel(button, "uuiCount")
+  LayoutButtonLabel(button, "uuiMacro")
+  LayoutButtonLabel(button, "uuiCooldownText")
 
-  if button.uuiKeybind then
-    button.uuiKeybind:ClearAllPoints()
-    button.uuiKeybind:SetPoint("TOPRIGHT", button, "TOPRIGHT", -2, -2)
-    U.SetFont(button.uuiKeybind, small)
-  end
-  if button.uuiCount then
-    button.uuiCount:ClearAllPoints()
-    button.uuiCount:SetPoint("BOTTOMRIGHT", button, "BOTTOMRIGHT", -2, 2)
-    U.SetFont(button.uuiCount, small)
-  end
-  if button.uuiMacro then
-    button.uuiMacro:ClearAllPoints()
-    button.uuiMacro:SetPoint("BOTTOMLEFT", button, "BOTTOMLEFT", 2, 2)
-    button.uuiMacro:SetWidth(size - 6)
-    U.SetFont(button.uuiMacro, small)
-  end
-  U.SizeRadialWipe(button.uuiGcd, size)
-
-  if button.uuiCooldownText then
-    -- The countdown is the readout, not a corner label, so it scales off the
-    -- button rather than off the small-label size. pfUI's dynamic cooldown font
-    -- uses height * .64; half the button is the same idea, one step calmer.
-    local cdSize = math.floor(size * 0.5)
-    if cdSize < 10 then cdSize = 10 end
-    if cdSize > 24 then cdSize = 24 end
-    U.SetFont(button.uuiCooldownText, cdSize)
-  end
+  -- The shade spans the slot through its own corner anchors, so a resize only
+  -- has to drop the cached width; its height follows the button by itself.
+  if button.uuiGcdShade then button.uuiGcdShadeWidth = nil end
 
   classicAction.SizeButton(button, size)
 end
@@ -1399,12 +1556,11 @@ local function HideButton(button)
   button.uuiTint = nil
   button.uuiCdActive = false
   button.uuiCdShown = false
-  -- CooldownFrame_SetTimer may show its Model child. Mark the native timer
-  -- cache invalid whenever the button is hidden so the first refresh after a
-  -- bar is re-enabled always re-applies the current pair.
-  button.uuiCooldownApplied = nil
-  if button.uuiCooldown then pcall(button.uuiCooldown.Hide, button.uuiCooldown) end
-  U.HideRadialWipe(button.uuiGcd)
+  if button.uuiGcdShade then
+    button.uuiGcdShadeShown = false
+    button.uuiGcdShadeWidth = nil
+    button.uuiGcdShade:Hide()
+  end
   button:Hide()
 end
 
@@ -1449,34 +1605,34 @@ local function UpdateSlot(button)
     local n = tonumber(Call("GetActionCount", slot))
     if n and n > 0 then count = tostring(n) end
   end
-  if button.uuiCount then
-    if button.uuiCountText ~= count then
-      button.uuiCountText = count
-      button.uuiCount:SetText(count)
-      ShowRegion(button.uuiCount, count ~= "")
-    end
+  -- Built only when non-empty. A slot that never carries a stack count never
+  -- creates the fontstring; one that already has it still clears it correctly,
+  -- because the second branch runs whenever the label exists.
+  if count ~= "" then EnsureButtonLabel(button, "uuiCount") end
+  if button.uuiCount and button.uuiCountText ~= count then
+    button.uuiCountText = count
+    button.uuiCount:SetText(count)
+    ShowRegion(button.uuiCount, count ~= "")
   end
 
   local macro = ""
   if cfg.showMacro then macro = Call("GetActionText", slot) end
   if type(macro) ~= "string" then macro = "" end
-  if button.uuiMacro then
-    if button.uuiMacroText ~= macro then
-      button.uuiMacroText = macro
-      button.uuiMacro:SetText(macro)
-      ShowRegion(button.uuiMacro, macro ~= "")
-    end
+  if macro ~= "" then EnsureButtonLabel(button, "uuiMacro") end
+  if button.uuiMacro and button.uuiMacroText ~= macro then
+    button.uuiMacroText = macro
+    button.uuiMacro:SetText(macro)
+    ShowRegion(button.uuiMacro, macro ~= "")
   end
 
   local key = ""
   if cfg.showKeybind then key = BindingFor(button.uuiBar, button.uuiIndex) end
   if type(key) ~= "string" then key = "" end
-  if button.uuiKeybind then
-    if button.uuiKeybindText ~= key then
-      button.uuiKeybindText = key
-      button.uuiKeybind:SetText(key)
-      ShowRegion(button.uuiKeybind, key ~= "")
-    end
+  if key ~= "" then EnsureButtonLabel(button, "uuiKeybind") end
+  if button.uuiKeybind and button.uuiKeybindText ~= key then
+    button.uuiKeybindText = key
+    button.uuiKeybind:SetText(key)
+    ShowRegion(button.uuiKeybind, key ~= "")
   end
 end
 
@@ -1588,9 +1744,8 @@ end
 -- Redraws one button's number from its cached pair. Cheap on purpose: this is
 -- what runs at CD_TICK, so it re-reads the clock but not the action API.
 local function RefreshCooldownText(button)
-  local label = button.uuiCooldownText
-  if not label then return end
-
+  -- The decision comes before the fontstring: a slot with nothing to count down
+  -- must not create one, and most slots are in that state most of the time.
   local remaining = nil
   if button.uuiCdActive and cfg and cfg.showCooldown then
     remaining = U.CooldownRemaining(button.uuiCdStart, button.uuiCdDuration)
@@ -1598,14 +1753,18 @@ local function RefreshCooldownText(button)
 
   if not remaining or remaining <= 0 then
     if remaining and remaining <= 0 then button.uuiCdActive = false end
-    if button.uuiCdShown then
+    local existing = button.uuiCooldownText
+    if existing and button.uuiCdShown then
       button.uuiCdShown = false
       button.uuiCdColor = nil
-      label:SetText("")
-      label:Hide()
+      existing:SetText("")
+      existing:Hide()
     end
     return
   end
+
+  local label = EnsureButtonLabel(button, "uuiCooldownText")
+  if not label then return end
 
   local text, color = FormatCooldown(remaining)
   label:SetText(text)
@@ -1623,6 +1782,7 @@ end
 
 local activeCooldownSeen = false
 local function RefreshActiveCooldown(button)
+  work.cdVisits = work.cdVisits + 1
   if RefreshCooldownText(button) then activeCooldownSeen = true end
 end
 
@@ -1663,7 +1823,8 @@ local function NoteGCD(slot, start, duration)
   WakeGCDSweep()
 end
 
--- Re-reads the slot's cooldown pair and drives both the swipe and the number.
+-- Re-reads the slot's cooldown pair and drives the countdown and the icon
+-- tint. There is no native swipe to drive: see CreateButton.
 local function UpdateCooldown(button)
   local slot = ButtonSlot(button)
   local start, duration, enable = Call("GetActionCooldown", slot)
@@ -1671,26 +1832,6 @@ local function UpdateCooldown(button)
   start = tonumber(start) or 0
   duration = tonumber(duration) or 0
   enable = tonumber(enable)
-
-  if button.uuiCooldown then
-    -- Resolved through the memoizing helper: this runs once per visible button
-    -- on every state tick, so an uncached U.G here is one extra pcall per
-    -- button five times a second.
-    local fn = ResolveApiFn("CooldownFrame_SetTimer")
-    local timerEnable = enable or 1
-    if fn and
-       (not button.uuiCooldownApplied or
-        button.uuiCooldownStart ~= start or
-        button.uuiCooldownDuration ~= duration or
-        button.uuiCooldownEnable ~= timerEnable) then
-      if pcall(fn, button.uuiCooldown, start, duration, timerEnable) then
-        button.uuiCooldownApplied = true
-        button.uuiCooldownStart = start
-        button.uuiCooldownDuration = duration
-        button.uuiCooldownEnable = timerEnable
-      end
-    end
-  end
 
   -- enable == 0 is Vanilla's "this slot has a cooldown but must not display
   -- one" flag; a missing value is read as enabled, the way pfUI reads it.
@@ -1745,19 +1886,49 @@ local function FullUpdate(button)
   UpdateActive(button)
 end
 
--- Work counters. buttonVisits is the scale figure: every recurring action bar
--- read funnels through ForEachVisibleButton, so it counts every per-button
--- callback the module ran. slotSweeps vs stateSweeps says which of the two
--- costs is being paid -- a slot sweep is the full rebuild, a state sweep is the
--- cheap one.
-local statSlotSweeps, statStateSweeps, statButtonVisits = 0, 0, 0
-
+-- buttonVisits is the scale figure: every recurring action bar read funnels
+-- through ForEachVisibleButton, so it counts every per-button callback the
+-- module ran. slotSweeps vs stateSweeps says which of the two costs is being
+-- paid -- a slot sweep is the full rebuild, a state sweep is the cheap one.
+--
+-- enabledBars/visibleButtons are read live rather than counted, because they
+-- are the divisor: a per-bar cost is only visible as work-per-button, and the
+-- bar-count cycle in core/perf.lua changes this number between phases.
 function U.ActionBarStats()
+  local shownBars, shownButtons = 0, 0
+  local bar, i = nil, nil
+  for bar = 1, BAR_COUNT do
+    local entry = bars[bar]
+    if entry then
+      if entry.shown then shownBars = shownBars + 1 end
+      for i = 1, table.getn(entry.buttons) do
+        local button = entry.buttons[i]
+        if entry.shown and button.uuiShown then
+          shownButtons = shownButtons + 1
+        end
+      end
+    end
+  end
+
   return {
-    slotSweeps = statSlotSweeps,
-    stateSweeps = statStateSweeps,
-    buttonVisits = statButtonVisits,
+    enabledBars = shownBars,
+    visibleButtons = shownButtons,
+    slotSweeps = work.slotSweeps,
+    stateSweeps = work.stateSweeps,
+    buttonVisits = work.buttonVisits,
+    gcdSweeps = work.gcdSweeps,
+    gcdVisits = work.gcdVisits,
+    cooldownSweeps = work.cdSweeps,
+    cooldownVisits = work.cdVisits,
   }
+end
+
+-- Cleared between phases of a bar-count run so each phase's counts describe
+-- that phase only. Never called by the addon itself.
+function U.ResetActionBarStats()
+  work.slotSweeps, work.stateSweeps, work.buttonVisits = 0, 0, 0
+  work.gcdSweeps, work.gcdVisits = 0, 0
+  work.cdSweeps, work.cdVisits = 0, 0
 end
 
 local function ForEachVisibleButton(callback)
@@ -1770,7 +1941,7 @@ local function ForEachVisibleButton(callback)
       for i = 1, table.getn(entry.buttons) do
         local button = entry.buttons[i]
         if button.uuiShown then
-          statButtonVisits = statButtonVisits + 1
+          work.buttonVisits = work.buttonVisits + 1
           callback(button)
         end
       end
@@ -1781,15 +1952,128 @@ end
 -- ---------------------------------------------------------------------------
 -- Global cooldown sweep
 -- ---------------------------------------------------------------------------
+-- Whether this button can carry a borrowed native cooldown at all.
+local function NativeCooldownFrame(button)
+  local family = NATIVE_CD_FAMILY[button.uuiBar]
+  if not family then return nil end
+  return U.G(family .. button.uuiIndex .. "Cooldown"), family
+end
+
+-- Borrows once and keeps it. Nothing writes to the frame afterwards: the client
+-- owns its animation, which is the entire point of this style.
+local function BorrowNativeCooldown(button)
+  if button.uuiNativeCd then return button.uuiNativeCd end
+
+  local frame, family = NativeCooldownFrame(button)
+  if not frame then return nil end
+
+  -- The client's cooldown update runs off the stock button, so that button has
+  -- to be shown for the frame to be driven at all. Its mouse goes away with it:
+  -- unrealUI has replaced it, and a shown stock button would otherwise be a
+  -- second, invisible click target sitting under the real interface.
+  local stockName = family .. button.uuiIndex
+  if not nativeStockShown[stockName] then
+    local stock = U.G(stockName)
+    if stock then
+      pcall(stock.Show, stock)
+      pcall(stock.EnableMouse, stock, false)
+      nativeStockShown[stockName] = true
+    end
+  end
+
+  if not pcall(frame.SetParent, frame, button.uuiCooldownLayer) then return nil end
+  pcall(frame.ClearAllPoints, frame)
+  pcall(frame.SetAllPoints, frame, button)
+  local ok, level = pcall(button.uuiCooldownLayer.GetFrameLevel, button.uuiCooldownLayer)
+  if ok and tonumber(level) then
+    pcall(frame.SetFrameLevel, frame, level - 1)
+  end
+  pcall(frame.SetAlpha, frame, 1)
+  pcall(frame.Hide, frame)
+
+  button.uuiNativeCd = frame
+  return frame
+end
+
+-- Hidden rather than handed back: its original parent is a suppressed stock
+-- button, so there is nowhere useful to return it to, and a hidden frame on a
+-- hidden parent draws nothing either way.
+local function ReleaseNativeCooldown(button)
+  if not button.uuiNativeCd then return end
+  pcall(button.uuiNativeCd.Hide, button.uuiNativeCd)
+  button.uuiNativeCd = nil
+end
+
+-- Both shapes are hidden, not just the active one: this is also the path a
+-- style change takes (SetActionBarGlobal clears the readout before re-applying),
+-- so whichever shape was on screen has to come off it.
 local function HideGCDSweep(button)
-  U.HideRadialWipe(button.uuiGcd)
+  if button.uuiGcdShadeShown then
+    button.uuiGcdShadeShown = false
+    button.uuiGcdShade:Hide()
+  end
+end
+
+-- One texture, built on first use for the same reason the wipe is: a slot that
+-- never sweeps never pays for it.
+--
+-- BACKGROUND on the raised layer, exactly where the radial wipe sits: over the
+-- icon, but under the press flash (ARTWORK) and the countdown number (OVERLAY),
+-- so the two styles stack identically and neither covers the readout. Anchored
+-- down both left corners rather than given a height, so it spans the slot at
+-- any button size and needs no resize handling of its own.
+local function EnsureGCDShade(button)
+  local shade = button.uuiGcdShade
+  if shade then return shade end
+
+  shade = button.uuiCooldownLayer:CreateTexture(nil, "BACKGROUND")
+  pcall(shade.SetTexture, shade, M.texture.plain)
+  U.SetColor(shade, M.Unpack(GCD_SHADE_COLOR))
+  shade:Hide()
+  shade:SetPoint("TOPLEFT", button, "TOPLEFT", 0, 0)
+  shade:SetPoint("BOTTOMLEFT", button, "BOTTOMLEFT", 0, 0)
+  button.uuiGcdShade = shade
+  button.uuiGcdShadeWidth = nil
+  return shade
+end
+
+local function ApplyGCDShade(button)
+  local shade = EnsureGCDShade(button)
+
+  -- Whole draw units only: this client drops fractional sizes rather than
+  -- rendering them (see the Borders note in core/style.lua), and rounding here
+  -- also means a tick that has not visibly moved the edge writes nothing.
+  local width = math.floor((button.uuiSize or 0) * (1 - gcdProgress) + 0.5)
+  if width < 1 then
+    if button.uuiGcdShadeShown then
+      button.uuiGcdShadeShown = false
+      shade:Hide()
+    end
+    return
+  end
+
+  if button.uuiGcdShadeWidth ~= width then
+    button.uuiGcdShadeWidth = width
+    shade:SetWidth(width)
+  end
+  if not button.uuiGcdShadeShown then
+    button.uuiGcdShadeShown = true
+    shade:Show()
+  end
 end
 
 local function ApplyGCDSweep(button)
   -- An empty slot has nothing to become ready, so it stays quiet. Everything
   -- else on screen sweeps together, which is the whole point of the readout.
   if button.uuiEmpty then return end
-  U.SetRadialWipeProgress(button.uuiGcd, gcdProgress)
+
+  -- A borrowed native cooldown is driven by the client. Writing to it is what
+  -- made it unreproducible in the first place, so this returns before the
+  -- work counter: these buttons genuinely cost nothing per tick.
+  if button.uuiNativeCd then return end
+
+  work.gcdVisits = work.gcdVisits + 1
+  ApplyGCDShade(button)
 end
 
 local function ClearGCD()
@@ -1822,6 +2106,7 @@ RefreshGCDSweep = function()
   if elapsed < 0 or elapsed >= gcdDuration then ClearGCD() return end
 
   gcdProgress = elapsed / gcdDuration
+  work.gcdSweeps = work.gcdSweeps + 1
   ForEachVisibleButton(ApplyGCDSweep)
 end
 
@@ -1909,9 +2194,26 @@ local function LayoutBar(bar)
       button.uuiShown = true
       button.uuiTint = nil
       button.uuiActive = nil
+
+      -- Borrowed here rather than on demand: the client drives the frame
+      -- whether or not a cooldown is running, so there is no first-use moment
+      -- to hang it off, and a bar is laid out rarely.
+      -- Borrowed hidden, and left hidden. A shown Model animates on its own
+      -- internal loop whether or not a cooldown is running -- the same
+      -- self-animation that made SetSequenceTime unreproducible -- so showing
+      -- it here produced a permanent sweep with nothing cast.
+      -- CooldownFrame_SetTimer is what shows and hides one in Vanilla, so the
+      -- client showing this frame IS the signal that it is driving it.
+      if cfg and cfg.showGCD then
+        BorrowNativeCooldown(button)
+      else
+        ReleaseNativeCooldown(button)
+      end
+
       FullUpdate(button)
     else
       button.uuiShown = false
+      ReleaseNativeCooldown(button)
       HideButton(button)
     end
   end
@@ -1978,8 +2280,11 @@ end
 function U.SetActionBarGlobal(name, value)
   if not cfg or GLOBAL_DEFAULTS[name] == nil then return nil end
   cfg[name] = value and true or false
+  -- Turning the readout off has to take whatever is on screen off with it: the
+  -- shade is only redrawn by the sweep, and the sweep is about to stop running.
+  if name == "showGCD" then ClearGCD() end
   ApplyAll()
-  return cfg[name]
+  return U.GetActionBarGlobal(name)
 end
 
 function U.GetActionBarSetting(bar, name)
@@ -2036,9 +2341,15 @@ local NATIVE_BUTTON_PREFIXES = {
   "MultiBarBottomRightButton", "MultiBarLeftButton", "MultiBarRightButton",
 }
 
+-- "Cooldown" is deliberately absent. The native style borrows those frames, and
+-- a name registered with U.SuppressNativeFrame is hidden again on every sweep
+-- -- measured at about once a second, which is what the probe's keeper was
+-- fighting. Leaving them unregistered is safe for the other two styles: an
+-- unborrowed cooldown's parent is the stock button, which IS suppressed, so it
+-- cannot draw anywhere.
 local NATIVE_BUTTON_PARTS = {
   "Icon", "NormalTexture", "NormalTexture2", "HotKey", "Count", "Border",
-  "Cooldown", "Flash", "Name", "AutoCastable",
+  "Flash", "Name", "AutoCastable",
 }
 
 local function SuppressNativeBars()
@@ -2099,7 +2410,7 @@ local STATE_EVENTS = {
 }
 
 local function RefreshSlots()
-  statSlotSweeps = statSlotSweeps + 1
+  work.slotSweeps = work.slotSweeps + 1
   ForEachVisibleButton(FullUpdate)
 end
 
@@ -2107,6 +2418,7 @@ end
 -- state sweep and by ACTIONBAR_UPDATE_COOLDOWN; this is what makes the digits
 -- move between those.
 RefreshCooldownTimers = function()
+  work.cdSweeps = work.cdSweeps + 1
   activeCooldownSeen = false
   ForEachVisibleButton(RefreshActiveCooldown)
   if not activeCooldownSeen then
@@ -2124,7 +2436,7 @@ local function UpdateButtonState(button)
 end
 
 local function RefreshState()
-  statStateSweeps = statStateSweeps + 1
+  work.stateSweeps = work.stateSweeps + 1
   ForEachVisibleButton(UpdateButtonState)
 end
 
@@ -2372,12 +2684,10 @@ function U.ActionBarReport()
       size = Number(i, "Size"),
       spacing = Number(i, "Spacing"),
       page = (i == 1) and ActivePage() or nil,
-      cooldownFrame = (entry and entry.buttons[1] and
-                       entry.buttons[1].uuiCooldown) and true or false,
       cooldownText = (entry and entry.buttons[1] and
                       entry.buttons[1].uuiCooldownText) and true or false,
-      gcdSweep = (entry and entry.buttons[1] and
-                  entry.buttons[1].uuiGcd) and true or false,
+      nativeCooldown = (entry and entry.buttons[1] and
+                        entry.buttons[1].uuiNativeCd) and true or false,
     })
   end
   return report
@@ -2600,6 +2910,11 @@ function U.ActionBarCooldownDump()
           " alpha=" .. tostring(Ask(layer, "GetAlpha")))
 
   local label = button.uuiCooldownText
+  if label == nil then
+    U.Print("  no countdown FontString yet - this slot has not counted down " ..
+            "since login, so EnsureButtonLabel has not built one")
+    return
+  end
   if not label then
     U.Print("  no countdown FontString - U.CreateLabel returned nil")
     return

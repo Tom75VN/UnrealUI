@@ -175,7 +175,7 @@ ABC_SHOW_KEYBIND          = "显示快捷键",
 ABC_SHOW_MACRO            = "显示宏名称",
 ABC_SHOW_COUNT            = "显示物品数量",
 ABC_SHOW_COOLDOWN         = "显示冷却计时",
-ABC_SHOW_GCD              = "显示公共冷却扫描效果",
+ABC_SHOW_GCD              = "显示公共冷却",
 ABC_GENERAL_HINT          = "共有 %d 条独立动作条可用。此职业形态使用的页面仅显示在动作条 1 上。",
 ABC_BIND_HINT             = "将鼠标悬停在按钮上并按下按键即可绑定，按 Esc 可清除绑定。动作条 1-5 可以绑定；动作条 6-10 在此客户端中没有按键命令，因此会显示但无法绑定。",
 

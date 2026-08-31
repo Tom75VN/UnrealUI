@@ -174,7 +174,7 @@ ABC_SHOW_KEYBIND          = "Afficher les raccourcis",
 ABC_SHOW_MACRO            = "Afficher les noms de macro",
 ABC_SHOW_COUNT            = "Afficher le nombre d'objets",
 ABC_SHOW_COOLDOWN         = "Afficher les temps de recharge",
-ABC_SHOW_GCD              = "Afficher le balayage du temps de recharge global",
+ABC_SHOW_GCD              = "Afficher le temps de recharge global",
 ABC_GENERAL_HINT          = "%d barres independantes sont disponibles. Les pages utilisees par les formes de cette classe s'affichent uniquement sur la barre 1.",
 ABC_BIND_HINT             = "Survolez un emplacement et appuyez sur une touche pour l'assigner. Echap sur un emplacement l'efface. Les barres 1 a 5 sont assignables ; les barres 6 a 10 n'ont aucune commande de touche dans ce client, elles sont donc affichees mais ne peuvent rien recevoir.",
 

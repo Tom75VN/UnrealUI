@@ -347,6 +347,28 @@ local WIPE_STRIP_MAX = 20
 local WIPE_STRIP_UNITS = 1.0
 local WIPE_RADIANS = math.pi / 180
 
+-- Work census for the wipe, read by core/perf.lua. A redraw's real cost is the
+-- number of texture writes it makes, not the number of calls: the row loop is
+-- WIPE_STRIP_MAX long every time, but the width/alpha caches mean most rows
+-- write nothing on most ticks, and only a measurement can say how many do.
+-- Counting is gated on U.perfActive so an ordinary session pays one boolean
+-- read per redraw and nothing else.
+local wipeWork = { applies = 0, rows = 0, writes = 0, gradients = 0 }
+
+function U.RadialWipeStats()
+  return {
+    applies = wipeWork.applies,
+    rows = wipeWork.rows,
+    writes = wipeWork.writes,
+    gradients = wipeWork.gradients,
+  }
+end
+
+function U.ResetRadialWipeStats()
+  wipeWork.applies, wipeWork.rows = 0, 0
+  wipeWork.writes, wipeWork.gradients = 0, 0
+end
+
 -- The staircase is inherent to drawing a diagonal out of axis-aligned strips,
 -- and more rows only shrink the steps, never remove them -- at a 24-unit icon
 -- the quadrant is 12 units tall, so 12 strips (one per unit) is already the
@@ -454,6 +476,7 @@ local function SetFeatherAlpha(wipe, index, near, far)
   local key = math.floor(near * 64) * 128 + math.floor(far * 64)
   if wipe.featherAlpha[index] == key then return end
   wipe.featherAlpha[index] = key
+  if U.perfActive then wipeWork.gradients = wipeWork.gradients + 1 end
 
   local feather = wipe.feathers[index]
   local r, g, b, a = M.Unpack(wipe.color)
@@ -467,22 +490,12 @@ local function SetFeatherAlpha(wipe, index, near, far)
   end
 end
 
--- Rebuilds the geometry for a square of `size`. Strips are created on demand so
--- a button that is never shown never pays for them.
-function U.SizeRadialWipe(wipe, size)
-  if not wipe then return end
-
-  size = tonumber(size) or 0
-  if size <= 0 then return end
-
-  local half = size / 2
-  local count = U.Round(half / WIPE_STRIP_UNITS)
-  if count < 4 then count = 4 end
-  if count > WIPE_STRIP_MAX then count = WIPE_STRIP_MAX end
-
-  wipe.size, wipe.half = size, half
-  wipe.stripCount = count
-  wipe.stripHeight = half / count
+-- Builds and re-sizes the regions for the current geometry. Only ever reached
+-- through BuildRadialWipe, i.e. only for a wipe that has actually been asked
+-- to draw something.
+local function ApplyWipeGeometry(wipe)
+  local count = wipe.stripCount
+  local half = wipe.half
 
   local i
   for i = 1, 4 do
@@ -525,6 +538,67 @@ function U.SizeRadialWipe(wipe, size)
   wipe.quadrant = nil
 end
 
+-- ---------------------------------------------------------------------------
+-- Deferred construction
+--
+-- A 30-unit wipe is 4 quads + 15 strips + 15 feathers = 34 texture regions,
+-- and it used to create all of them the moment its owner was created. On the
+-- action bar that is the dominant term in the whole interface's object graph:
+-- ten enabled bars are 120 buttons and ~4000 wipe regions, against roughly ten
+-- more regions for everything else the button draws.
+--
+-- Measured, /uui perf bars, 2026-08-31, 26970 frames over 180s: frame time rose
+-- from 4.464ms at 0 bars to 11.656ms at 10 in a straight line, ~0.72ms per bar
+-- (~0.060ms per visible button), while the Lua actually executed did not scale
+-- with it at all -- the GCD sweep touched about 11 buttons per tick at ten bars
+-- against 5 at one, because it skips empty slots. The cost tracks the number of
+-- regions that exist, not the number the code touches, which is the renderer
+-- walking them rather than this file's arithmetic.
+--
+-- So nothing is created until a wipe is first asked to draw. An empty action
+-- slot never sweeps -- ApplyGCDSweep returns on button.uuiEmpty -- so it never
+-- builds, and the regions that exist are the ones a player actually put a
+-- spell on rather than one per slot on every enabled bar.
+local function BuildRadialWipe(wipe)
+  if wipe.built then return true end
+  if wipe.size <= 0 then return false end
+
+  local i
+  for i = 1, 4 do
+    local quad = wipe.frame:CreateTexture(nil, wipe.layer)
+    quad:SetTexture(M.texture.plain)
+    U.SetColor(quad, M.Unpack(wipe.color))
+    quad:SetPoint(WIPE_QUADS[i][1], wipe.frame, WIPE_QUADS[i][1], 0, 0)
+    quad:Hide()
+    wipe.quads[i] = quad
+  end
+
+  wipe.built = true
+  ApplyWipeGeometry(wipe)
+  return true
+end
+
+-- Records the geometry for a square of `size`. For a wipe that has never drawn
+-- this is arithmetic and nothing else; one that is already built is re-laid out
+-- immediately, because its regions are on screen.
+function U.SizeRadialWipe(wipe, size)
+  if not wipe then return end
+
+  size = tonumber(size) or 0
+  if size <= 0 then return end
+
+  local half = size / 2
+  local count = U.Round(half / WIPE_STRIP_UNITS)
+  if count < 4 then count = 4 end
+  if count > WIPE_STRIP_MAX then count = WIPE_STRIP_MAX end
+
+  wipe.size, wipe.half = size, half
+  wipe.stripCount = count
+  wipe.stripHeight = half / count
+
+  if wipe.built then ApplyWipeGeometry(wipe) end
+end
+
 function U.CreateRadialWipe(frame, options)
   if not frame or not frame.CreateTexture then return nil end
   options = options or {}
@@ -536,25 +610,19 @@ function U.CreateRadialWipe(frame, options)
     quads = {}, strips = {}, drawn = {}, shown = {}, quadShown = {},
     feathers = {}, featherDrawn = {}, featherShown = {}, featherAlpha = {},
     stripCount = 0, stripHeight = 0, size = 0, half = 0,
+    built = false,
   }
 
-  local i
-  for i = 1, 4 do
-    local quad = frame:CreateTexture(nil, wipe.layer)
-    quad:SetTexture(M.texture.plain)
-    U.SetColor(quad, M.Unpack(wipe.color))
-    quad:SetPoint(WIPE_QUADS[i][1], frame, WIPE_QUADS[i][1], 0, 0)
-    quad:Hide()
-    wipe.quads[i] = quad
-  end
-
+  -- Geometry only: see BuildRadialWipe. Creating a wipe is now free, so a
+  -- caller may hand one to every button it owns without that being a decision
+  -- about how many texture regions the interface carries.
   local okWidth, width = pcall(frame.GetWidth, frame)
   U.SizeRadialWipe(wipe, okWidth and width or options.size)
   return wipe
 end
 
 function U.HideRadialWipe(wipe)
-  if not wipe then return end
+  if not wipe or not wipe.built then return end
   local i
   for i = 1, 4 do
     if wipe.quadShown[i] then
@@ -576,11 +644,15 @@ end
 
 function U.SetRadialWipeColor(wipe, r, g, b, a)
   if not wipe then return end
+
+  -- Stored first: an unbuilt wipe has no regions to recolour, and the stored
+  -- colour is what BuildRadialWipe hands its quads and strips when it runs.
+  wipe.color = { r, g, b, a }
+  if not wipe.built then return end
+
   local i
   for i = 1, 4 do U.SetColor(wipe.quads[i], r, g, b, a) end
   for i = 1, table.getn(wipe.strips) do U.SetColor(wipe.strips[i], r, g, b, a) end
-
-  wipe.color = { r, g, b, a }
   -- The ramps are rebuilt from the new colour on the next redraw rather than
   -- here, so a recolour never has to know which row is under the edge.
   for i = 1, table.getn(wipe.feathers) do wipe.featherAlpha[i] = nil end
@@ -610,6 +682,10 @@ function U.SetRadialWipeProgress(wipe, progress)
   if progress >= 1 then U.HideRadialWipe(wipe) return end
   if progress < 0 then progress = 0 end
 
+  -- First draw builds the regions. Everything above this line is reachable
+  -- without paying for them, which is the point.
+  if not BuildRadialWipe(wipe) then return end
+
   local degrees = progress * 360
   local quadrant = math.floor(degrees / 90) + 1
   if quadrant > 4 then quadrant = 4 end
@@ -627,6 +703,11 @@ function U.SetRadialWipeProgress(wipe, progress)
   local phase = degrees - (quadrant - 1) * 90
   if mirrored then phase = 90 - phase end
   local slope = math.tan(phase * WIPE_RADIANS)
+
+  if U.perfActive then
+    wipeWork.applies = wipeWork.applies + 1
+    wipeWork.rows = wipeWork.rows + wipe.stripCount
+  end
 
   local half = wipe.half
   local limit = math.floor(half)
@@ -698,6 +779,7 @@ function U.SetRadialWipeProgress(wipe, progress)
       if wipe.drawn[i] ~= width then
         wipe.drawn[i] = width
         wipe.strips[i]:SetWidth(width)
+        if U.perfActive then wipeWork.writes = wipeWork.writes + 1 end
       end
       if not wipe.shown[i] then
         wipe.strips[i]:Show()
@@ -725,6 +807,7 @@ function U.SetRadialWipeProgress(wipe, progress)
         if wipe.featherDrawn[i] ~= feather then
           wipe.featherDrawn[i] = feather
           wipe.feathers[i]:SetWidth(feather)
+          if U.perfActive then wipeWork.writes = wipeWork.writes + 1 end
         end
         if not wipe.featherShown[i] then
           wipe.feathers[i]:Show()

@@ -2,7 +2,7 @@
 ## Title: |cffffffffUnreal |cfff5ae0aUI
 ## Notes: Unreal Azeroth native UI addon.
 ## Author: unrealUI
-## Version: 0.3.0
+## Version: 0.4.0
 ## X-License: MIT
 ## SavedVariables: UnrealUIDB, UnrealUIProfiles, UnrealUIDiagDB, UnrealUIPriceDB
 ## SavedVariablesPerCharacter: UnrealUIProfileDB
@@ -68,6 +68,7 @@ modules\bank.lua
 modules\status.lua
 modules\questlog.lua
 modules\spellbook.lua
+modules\talents.lua
 modules\character.lua
 modules\friends.lua
 modules\merchant.lua

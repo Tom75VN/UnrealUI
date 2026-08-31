@@ -603,7 +603,11 @@ function rank.BuildToggle()
     rank.box = rank.BuildModernToggle(book)
   end
 
-  if not rank.box then U.Debug("spellbook: rank toggle unavailable") end
+  if not rank.box then
+    U.Debug("spellbook: rank toggle unavailable")
+    return
+  end
+  U.AddWindowDragInteractiveFrame(book, rank.box.box or rank.box)
 end
 
 function rank.Install()
@@ -1494,7 +1498,11 @@ function missing.BuildToggle()
     missing.box = missing.BuildModernToggle(book)
   end
 
-  if not missing.box then U.Debug("spellbook: bar hint toggle unavailable") end
+  if not missing.box then
+    U.Debug("spellbook: bar hint toggle unavailable")
+    return
+  end
+  U.AddWindowDragInteractiveFrame(book, missing.box.box or missing.box)
 end
 
 function missing.Install()
@@ -2418,7 +2426,10 @@ local function BuildFrame()
   -- inside SpellBookFrame. Reserve its full horizontal bounds so the raised
   -- header drag handle cannot steal hover/clicks from the button's upper
   -- section (same fix as modules/character.lua's headerInset).
-  U.MakeWindowDraggable("spellbook", frame, { headerInset = 54 })
+  U.MakeWindowDraggable("spellbook", frame, {
+    headerHeight = 76,
+    headerInset = 54,
+  })
   StyleBookTabs()
 
   local i

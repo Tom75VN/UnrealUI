@@ -154,9 +154,6 @@ local function Call(name, a, b, c)
   return r1, r2, r3
 end
 
-local function Has(name)
-  return ResolveApiFn(name) and true or false
-end
 
 -- GetShapeshiftFormInfo returns four values; the shared Call() above only
 -- forwards three, so this gets its own fixed-arity wrapper.
@@ -282,21 +279,13 @@ local function CreateButton(index)
     button.uuiKeybind:Hide()
   end
 
-  -- Same Model-frame cooldown swipe as modules/actionbar.lua and
-  -- modules/petbar.lua; see actionbar.lua's header note for why this is the
-  -- native Vanilla-shaped primitive rather than a synthetic overlay.
-  local ok, cooldown = pcall(CreateFrame, "Model", name .. "Cooldown", button,
-                             "CooldownFrameTemplate")
-  if ok and cooldown and Has("CooldownFrame_SetTimer") then
-    pcall(cooldown.SetAllPoints, cooldown, button)
-    button.uuiCooldown = cooldown
-  end
-
   -- knowledge.json / cooldown.model_swipe_not_rendered (RUNTIME_FAILURE_
-  -- CONFIRMED): the Model swipe above draws nothing on this client, so the
-  -- cooldown a player can actually see is unrealUI's own -- the hand-drawn
-  -- radial wipe plus the countdown number, exactly as modules/actionbar.lua
-  -- draws them on an action slot.
+  -- CONFIRMED): the Model/CooldownFrameTemplate swipe draws nothing on this
+  -- client, so none is created -- the same removal modules/actionbar.lua made
+  -- after actionbars.frame_cost_scales_with_regions priced a per-button render
+  -- frame that produces no pixels. The cooldown a player can actually see is
+  -- unrealUI's own -- the hand-drawn radial wipe plus the countdown number,
+  -- exactly as modules/actionbar.lua draws them on an action slot.
   --
   -- Both sit on a raised child frame for the reason that module raises its
   -- own: the Model child is drawn above the button's own OVERLAY layer, so a
@@ -376,7 +365,6 @@ local function HideButton(button)
   ShowRegion(button.uuiKeybind, false)
   ShowRegion(button.uuiCooldownText, false)
   U.HideRadialWipe(button.uuiSweep)
-  if button.uuiCooldown then pcall(button.uuiCooldown.Hide, button.uuiCooldown) end
   button:Hide()
 end
 
@@ -489,11 +477,6 @@ local function UpdateCooldown(button)
   start = tonumber(start) or 0
   duration = tonumber(duration) or 0
   enable = tonumber(enable)
-
-  if button.uuiCooldown then
-    local fn = ResolveApiFn("CooldownFrame_SetTimer")
-    if fn then pcall(fn, button.uuiCooldown, start, duration, enable or 1) end
-  end
 
   button.uuiCdStart = start
   button.uuiCdDuration = duration

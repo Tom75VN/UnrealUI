@@ -15,17 +15,18 @@
 
 local U = UnrealUI
 
--- Four times the former 24px strip so grabbing a window does not require
--- finding a narrow title-bar line with the mouse. Callers with a deliberately
--- sized custom header (the Settings window) can still override this value.
-local HEADER_HEIGHT = 96
+-- Twice the former 24px strip: large enough to grab comfortably without
+-- covering an excessive amount of the interactive content below the header.
+-- Callers can override this per interface when its layout needs another size.
+local HEADER_HEIGHT = 48
 local HEADER_INSET = 26
 local WINDOW_GAP = 10
 local SCREEN_MARGIN = 10
--- Keep the header above every interactive child of its own window. The offset
--- remains relative to the parent so a background window cannot jump ahead of
--- a foreground window merely because its drag handle was created later.
-local HANDLE_LEVEL_OFFSET = 100
+-- Keep the drag surface just above the window background while allowing the
+-- window's normal child controls to remain above it and receive mouse input.
+-- The offset stays relative to the parent so background windows cannot jump
+-- ahead merely because their drag handles were created later.
+local HANDLE_LEVEL_OFFSET = 1
 local dragCount = 0
 local windowStates = {}
 local frameStates = {}
@@ -393,8 +394,24 @@ local function RaiseHandle(state)
   if not state or not state.handle then return false end
   local levelOk, level = pcall(state.frame.GetFrameLevel, state.frame)
   if not levelOk or not tonumber(level) then return false end
-  return pcall(state.handle.SetFrameLevel, state.handle,
-               level + HANDLE_LEVEL_OFFSET)
+  local handleLevel = level + state.handleLevelOffset
+  if not pcall(state.handle.SetFrameLevel, state.handle, handleLevel) then
+    return false
+  end
+
+  local controls = state.interactiveFrames
+  if type(controls) == "table" then
+    local i
+    for i = 1, table.getn(controls) do
+      local control = controls[i]
+      if control and control.SetFrameLevel then
+        local offset = state.interactiveFrameOffsets and
+                       tonumber(state.interactiveFrameOffsets[control]) or 1
+        pcall(control.SetFrameLevel, control, handleLevel + offset)
+      end
+    end
+  end
+  return true
 end
 
 local function IsLeftMouseButton(a, b)
@@ -412,9 +429,12 @@ end
 -- id       stable string key; stored under "window."..id so it cannot collide
 --          with core/mover.lua's own position ids.
 -- frame    the native frame to move.
--- options  { headerHeight, headerInset, avoidOverlap } -- headerInset reserves
---          space on the right edge for a close button. avoidOverlap defaults
---          to true; modal child windows can opt out explicitly.
+-- options  { headerHeight, headerInset, headerLevelOffset, interactiveFrames,
+--            interactiveFrameOffsets, avoidOverlap } -- headerInset reserves
+--          space on the right edge for a close button. interactiveFrames are
+--          kept one frame level above the drag handle unless their frame-keyed
+--          offset table says otherwise. avoidOverlap defaults to true; modal
+--          child windows can opt out explicitly.
 function U.MakeWindowDraggable(id, frame, options)
   if type(id) ~= "string" or not frame then
     U.Error("MakeWindowDraggable requires an id and a frame")
@@ -429,6 +449,9 @@ function U.MakeWindowDraggable(id, frame, options)
     frame = frame,
     dragging = false,
     avoidOverlap = options.avoidOverlap ~= false,
+    handleLevelOffset = tonumber(options.headerLevelOffset) or HANDLE_LEVEL_OFFSET,
+    interactiveFrames = options.interactiveFrames,
+    interactiveFrameOffsets = options.interactiveFrameOffsets,
   }
   table.insert(windowStates, state)
   frameStates[frame] = state
@@ -458,8 +481,8 @@ function U.MakeWindowDraggable(id, frame, options)
   pcall(frame.SetMovable, frame, true)
   U.PostHookScript(frame, "OnShow", function()
     -- Native panel management may change the frame level between openings.
-    -- Reassert the header above the window's children before it receives the
-    -- next mouse press.
+    -- Reassert the window's configured handle/control ordering before it
+    -- receives the next mouse press.
     RaiseHandle(state)
     ApplyStoredPosition(state)
     -- Some native Show functions keep changing anchors after OnShow returns
@@ -474,4 +497,32 @@ function U.MakeWindowDraggable(id, frame, options)
   if IsShown(state) then ScheduleOverlapCheck(state, false) end
 
   return state
+end
+
+-- Some controls are created after their window (Spellbook's feature toggles
+-- are current examples). Register them when they become available so they are
+-- raised immediately and included in every later OnShow reassertion.
+function U.AddWindowDragInteractiveFrame(frame, control, levelOffset)
+  local state = frameStates[frame]
+  if not state or not control then return false end
+
+  if type(state.interactiveFrames) ~= "table" then
+    state.interactiveFrames = {}
+  end
+
+  local found = false
+  local i
+  for i = 1, table.getn(state.interactiveFrames) do
+    if state.interactiveFrames[i] == control then
+      found = true
+      break
+    end
+  end
+  if not found then table.insert(state.interactiveFrames, control) end
+
+  if tonumber(levelOffset) then
+    state.interactiveFrameOffsets = state.interactiveFrameOffsets or {}
+    state.interactiveFrameOffsets[control] = tonumber(levelOffset)
+  end
+  return RaiseHandle(state)
 end
