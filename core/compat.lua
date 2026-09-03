@@ -286,9 +286,24 @@ function U.ResolveFont()
   return nil
 end
 
+-- A shadow offset smaller than one screen pixel has nothing to rasterise into:
+-- the request is legal, SetShadowOffset accepts it, and the glyph simply draws
+-- with no visible shadow. Compact unit-frame bar text asked for three quarters
+-- of a pixel and came out flat, while the shared one-pixel treatment kept
+-- drawing everywhere else. Round a sub-pixel request out to a whole physical
+-- pixel and let the shadow colour carry the lighter/stronger difference, which
+-- is the part this client can actually render.
+local function WholePixelOffset(value, fallback)
+  local n = tonumber(value) or fallback
+  if n > 0 and n < 1 then return 1 end
+  if n < 0 and n > -1 then return -1 end
+  return n
+end
+
 -- Applies a physical-pixel shadow to both owned and restyled stock text. The
--- default is the shared one-pixel treatment; compact text can request a closer
--- fractional offset. SetShadowOffset consumes UI units here: at this client's
+-- default is the shared one-pixel treatment; a caller can ask for a wider one,
+-- but not for a sub-pixel one -- see WholePixelOffset above.
+-- SetShadowOffset consumes UI units here: at this client's
 -- measured 1920 / 1365.33 scale, an unconverted offset of 1 can rasterise
 -- nearly two screen pixels away. Convert the shared physical-pixel token back
 -- into UI units so the visible separation stays crisp.
@@ -304,14 +319,23 @@ function U.SetTextShadow(fontstring, physicalOffset, shadowColor)
   local pixelScale = U.PixelScale()
   if pixelScale <= 0 then pixelScale = 1 end
   local colorOk, offsetOk = false, false
+  local r, g, b, a = M.Unpack(color)
 
   if fontstring.SetShadowColor then
-    colorOk = pcall(fontstring.SetShadowColor, fontstring, M.Unpack(color))
+    colorOk = pcall(fontstring.SetShadowColor, fontstring, r, g, b, a)
+    if not colorOk then
+      -- documentation.json / widget-method:FontString:SetShadowColor
+      -- (DOCUMENTED_NOT_RUNTIME_VERIFIED) gives the signature as (r, g, b)
+      -- with no alpha. A client that rejects the fourth argument would leave
+      -- the text on the font object's own (unset) shadow colour with nothing
+      -- visible, so retry without alpha rather than lose the shadow outright.
+      colorOk = pcall(fontstring.SetShadowColor, fontstring, r, g, b)
+    end
   end
   if fontstring.SetShadowOffset then
     offsetOk = pcall(fontstring.SetShadowOffset, fontstring,
-                     (tonumber(offset[1]) or 1) / pixelScale,
-                     (tonumber(offset[2]) or -1) / pixelScale)
+                     WholePixelOffset(offset[1], 1) / pixelScale,
+                     WholePixelOffset(offset[2], -1) / pixelScale)
   end
 
   return colorOk and offsetOk
@@ -608,6 +632,103 @@ function U.ContainerSlotHasItem(bag, slot)
 
   local linkOk, link = pcall(GetContainerItemLink, bag, slot)
   return (linkOk and link and link ~= "") and true or false
+end
+
+-- ---------------------------------------------------------------------------
+-- Bank-aware container addressing
+--
+-- The main bank pane (container -1) can be *read* through the container API,
+-- but it cannot be written through it and it does not report its own size.
+-- Two UnrealUI features need both facts -- the bank window's cross-surface
+-- drops (modules/bank.lua) and the sort engine (core/itemsort.lua) -- so the
+-- difference is absorbed here once instead of in each of them.
+--
+-- Evidence, behavior.json / bankmove (probe 1.40.1, run at a live banker):
+--
+--   * route_A.container_to_container.v1 is RUNTIME_FAILURE_CONFIRMED.
+--     PickupContainerItem(-1, slot) does not drop into the main pane, and the
+--     client answers "You can only do that with empty bags."
+--   * route_B.container_to_inventory.v1 is BEHAVIOR_VERIFIED.
+--     PickupInventoryItem(BankButtonIDToInvSlotID(slot)) does. That route's
+--     restore steps then lifted the item back out of the main pane with
+--     PickupInventoryItem and dropped it into a purchased bank bag with
+--     PickupContainerItem, so all four directions a swap needs are covered by
+--     the one measured route.
+--   * participants.v1 recorded bankContainerReportedSize = 0 while the pane
+--     held 24 usable slots, which is why the count below falls back to the
+--     stock constant instead of trusting a zero.
+--
+-- BankButtonIDToInvSlotID's own mapping is separately confirmed: probe
+-- bankbagicon.mapping.v1 (1.41.0) measured inputs 1..10 landing on inventory
+-- slots 40..49 on this client.
+-- ---------------------------------------------------------------------------
+local BANK_CONTAINER     = -1
+local BANK_GENERIC_SLOTS = 24   -- NUM_BANKGENERIC_SLOTS in Vanilla FrameXML
+
+-- Usable slots in a container. Identical to GetContainerNumSlots except for
+-- the main bank pane, which reports nothing while it is plainly usable. A
+-- bank *bag* reporting nothing really is absent, so only -1 gets a fallback.
+function U.ContainerSlotCount(bag)
+  local ok, count = pcall(GetContainerNumSlots, bag)
+  count = (ok and tonumber(count)) or 0
+  if count > 0 then return count end
+
+  if bag == BANK_CONTAINER then
+    local stock = tonumber(U.G("NUM_BANKGENERIC_SLOTS"))
+    if stock and stock > 0 then return stock end
+    return BANK_GENERIC_SLOTS
+  end
+
+  return 0
+end
+
+-- Pick up from, or drop the cursor into, one container slot: the same
+-- semantics as PickupContainerItem everywhere except the main bank pane,
+-- which is routed through the inventory API instead.
+--
+-- The return value says only whether the call could be *made*. This client
+-- refuses container moves silently often enough that a caller must always
+-- verify the outcome against the container rather than trust a true here.
+function U.PickupContainerSlot(bag, slot)
+  if bag == BANK_CONTAINER then
+    local idOk, inventorySlot = pcall(BankButtonIDToInvSlotID, slot)
+    inventorySlot = idOk and tonumber(inventorySlot) or nil
+    if not inventorySlot then return false end
+    return pcall(PickupInventoryItem, inventorySlot) and true or false
+  end
+
+  return pcall(PickupContainerItem, bag, slot) and true or false
+end
+
+-- ---------------------------------------------------------------------------
+-- Melee range
+--
+-- knowledge.json / range.no_melee_autoattack_range_api: this client exposes no
+-- API that measures melee auto-attack range. IsActionInRange always returns 1
+-- for melee Auto Attack and never measures distance, and CheckInteractDistance
+-- collapses every distIndex below 4 into one interact range while any index of
+-- 4 or more simply returns false, so the index below only satisfies the
+-- documented signature. The range it reports is a little wider than melee
+-- reach, which is the accepted approximation for both callers: the swing bar
+-- shows a melee lane slightly before the first swing can land, and auto attack
+-- engages slightly before the player is strictly in weapon range.
+--
+-- Returns true or false when the client answers and nil when the call is
+-- unreadable, so each caller picks how to degrade instead of inheriting a
+-- guess made here.
+-- ---------------------------------------------------------------------------
+local INTERACT_DISTANCE_INDEX = 1
+
+function U.MeleeInteractRange(unit)
+  local fn = U.G("CheckInteractDistance")
+  if type(fn) ~= "function" then return nil end
+
+  local ok, result = pcall(fn, unit or "target", INTERACT_DISTANCE_INDEX)
+  if not ok then return nil end
+  if result == nil or result == false or result == 0 or result == "" then
+    return false
+  end
+  return true
 end
 
 -- ---------------------------------------------------------------------------
@@ -1435,7 +1556,7 @@ function U.SuppressNativeFrame(names, group)
     -- already been cleared for this target. In the Classic theme that is
     -- directly visible: the native target frame is re-anchored onto UnrealUI's
     -- own anchor, so its aura block lands exactly where modules/auras.lua
-    -- draws the target debuff row when "below frame" is on, and a stock icon
+    -- draws the target aura rows when "below frame" is on, and a stock icon
     -- left in that slot sits over UnrealUI's own. A warrior sees it as Rend and
     -- Hamstring -- their own casts, on their current target -- never appearing.
     --

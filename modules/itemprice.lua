@@ -489,9 +489,10 @@ end
 -- populated and shown GameTooltip.
 --
 -- Consequence, stated rather than left to be discovered: the price panel
--- appears on the surfaces unrealUI owns a hover hook for. Bag/bank slots and
--- quest rewards have one. Merchant rows, loot and chat links do not yet, and
--- each needs its own button hook rather than one central tooltip hook.
+-- appears on the surfaces unrealUI owns a hover hook for. Bag/bank slots,
+-- quest rewards and loot rows have one. Merchant rows and chat links do not
+-- yet, and each needs its own button hook rather than one central tooltip
+-- hook.
 -- ---------------------------------------------------------------------------
 function U.ShowItemPrice(bag, slot)
   U.HideMoneyRows()
@@ -519,22 +520,25 @@ function U.ShowItemPrice(bag, slot)
   end
 end
 
--- Quest reward buttons already know the exact native item list they represent:
--- "choice" for choose-one rewards and "reward" for always-granted rewards.
--- modules/quest.lua passes that identity after the stock OnEnter has populated
--- GameTooltip, mirroring the proven bag/button hover path above. Call() keeps
--- either quest API non-fatal, and QuestLinkByInfo handles the confirmed case
--- where the documented link getter still returns nil for a visible reward.
+-- The shared path for every native row that names its own item without being
+-- a container slot: quest rewards on the quest-giver frame, quest rewards in
+-- the quest log, and loot rows. Each of those reads a different API family for
+-- the link and for the displayed (name, texture, quality, count) tuple, so
+-- only the getters differ per surface and everything from the lookup down is
+-- shared here. Every one of them calls in after the stock OnEnter has
+-- populated GameTooltip, mirroring the proven bag/button hover path above.
 --
--- Both quest reward surfaces -- the quest-giver frame and the quest log --
--- describe a reward the same way (a "choice"/"reward" list plus a 1-based
--- index) but read it through different API families, so only the getters
--- differ and everything after the lookup is shared here.
-local function QuestRewardPrice(source, link, name, texture, quality, count)
+-- The caller's link getter is allowed to fail: GetQuestItemLink is documented
+-- on this client and still returned nil for a visible reward
+-- (USER_CONFIRMED_INGAME, see QuestLinkByInfo), so a link carrying no item id
+-- falls back to resolving the displayed tuple against the ids this module can
+-- actually price. A surface whose texture string may not match GetItemInfo's
+-- passes `texture` as nil to keep it out of that comparison.
+local function HoverItemPrice(source, link, name, texture, quality, count)
   local tooltip = U.G("GameTooltip")
   if not tooltip then return nil end
 
-  local lookup = "quest link"
+  local lookup = "native link"
   if not LinkID(link) then
     link = QuestLinkByInfo(name, texture, quality)
     lookup = "priced-item name fallback"
@@ -553,7 +557,7 @@ local function QuestRewardPrice(source, link, name, texture, quality, count)
   local ok, err = pcall(Append, tooltip)
   if not ok then
     trace.result = "error: " .. tostring(err)
-    U.Debug("itemprice quest hover: " .. tostring(err))
+    U.Debug("itemprice hover (" .. tostring(source) .. "): " .. tostring(err))
   end
 
   -- The calling module also hands this resolved link to core/itemslot.lua's
@@ -572,8 +576,8 @@ function U.ShowQuestItemPrice(itemType, index)
   local link = Call("GetQuestItemLink", itemType, index)
   local name, texture, count, quality =
     Call("GetQuestItemInfo", itemType, index)
-  return QuestRewardPrice("quest " .. itemType .. " " .. tostring(index),
-                          link, name, texture, quality, count)
+  return HoverItemPrice("quest " .. itemType .. " " .. tostring(index),
+                        link, name, texture, quality, count)
 end
 
 -- The quest log's own reward buttons carry the same "choice"/"reward" identity
@@ -598,8 +602,42 @@ function U.ShowQuestLogItemPrice(itemType, index)
   else
     name, texture, count, quality = Call("GetQuestLogRewardInfo", index)
   end
-  return QuestRewardPrice("questlog " .. itemType .. " " .. tostring(index),
-                          link, name, texture, quality, count)
+  return HoverItemPrice("questlog " .. itemType .. " " .. tostring(index),
+                        link, name, texture, quality, count)
+end
+
+-- Loot rows. LootButton1..4 are page positions rather than loot slots, so
+-- modules/loot.lua resolves the real 1-based slot and passes it here after the
+-- native OnEnter has populated GameTooltip.
+--
+-- GetLootSlotInfo is the one getter on this path with runtime evidence:
+-- behavior.json / lootbutton records it returning exactly four values,
+-- (texture, name, quantity, quality), for a live loot row -- a different order
+-- and one value shorter than the quest getters, which is why the tuple is
+-- unpacked here rather than shared. GetNumLootItems, GetLootSlotLink and
+-- LootSlotIsCoin are OFFICIAL_CLIENT_DOCUMENTATION only, so Call() keeps each
+-- of them non-fatal.
+--
+-- The texture is deliberately not handed to the name fallback: the recorded
+-- loot texture strings use forward slashes ("Interface/Icons/INV_Misc_Bone_08")
+-- and nothing establishes that GetItemInfo reports the same form here, so
+-- comparing them could reject the correct item. Name and quality still have to
+-- agree.
+function U.ShowLootItemPrice(slot)
+  U.HideMoneyRows()
+
+  slot = tonumber(slot)
+  if not slot or slot < 1 then return nil end
+
+  -- The coin row has no item behind it, and asking for a price for "120
+  -- Copper" would only send the name fallback scanning the whole priced-item
+  -- table for something that cannot be there.
+  if Call("LootSlotIsCoin", slot) then return nil end
+
+  local link = Call("GetLootSlotLink", slot)
+  local _, name, count, quality = Call("GetLootSlotInfo", slot)
+  return HoverItemPrice("loot slot " .. tostring(slot),
+                        link, name, nil, quality, count)
 end
 
 function U.HideItemPrice()

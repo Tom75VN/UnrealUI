@@ -249,13 +249,34 @@ function rank.Range(bookType, slot)
   return nil
 end
 
+-- Rank number carried by a spellbook subtext, or nil when it holds no number
+-- at all -- "Passive", "Racial Passive" and the profession tiers all land here.
+--
+-- The digits are read positionally instead of being matched against a
+-- localized "Rank %d" template: the template global is not something this
+-- client is known to expose, every locale unrealUI ships writes the rank with
+-- Arabic numerals, and string.match does not exist on this client's Lua, so
+-- string.find's capture is the portable read.
+function rank.Number(sub)
+  if type(sub) ~= "string" or sub == "" then return nil end
+  local _, _, digits = string.find(sub, "(%d+)")
+  return tonumber(digits)
+end
+
 -- Slots to actually display for one book section, highest rank only.
 --
--- Ranks of one spell occupy consecutive slots in ascending order, so the last
--- entry of a run of identical names is the highest rank. Collapsing only
--- consecutive runs keeps two genuinely different entries that happen to share
--- a name from being merged, and needs no locale-specific parsing of the rank
--- subtext.
+-- Ranks of one spell occupy consecutive slots, but NOT reliably in ascending
+-- order on this client: /uui sb ranks measured a priest whose Shadow Magic tab
+-- listed Shadow Word: Pain as "Rank 2" at slot 27 and "Rank 1" at slot 28,
+-- while Lesser Heal (18-20) and Smite (23-24) in the same book ascended
+-- normally. Taking the last entry of a run therefore showed Rank 1 as the
+-- highest rank. The run is now resolved by comparing the rank numbers
+-- themselves, and only falls back to "last entry wins" for a run that carries
+-- no rank numbers at all, which is what it always did for those.
+--
+-- Collapsing only consecutive runs is kept: it stops two genuinely different
+-- entries that happen to share a name from being merged, and the measurement
+-- above found every rank of a spell adjacent (holes=0, one run per spell).
 function rank.List(bookType, offset, numSpells)
   local key = bookType .. ":" .. offset .. ":" .. numSpells
   if rank.key == key and rank.slots then return rank.slots end
@@ -263,15 +284,33 @@ function rank.List(bookType, offset, numSpells)
   local spellName = G("GetSpellName")
   if type(spellName) ~= "function" then return nil end
 
-  local list, last, i = {}, nil, nil
+  -- `best` is the rank number of the slot currently standing as the run's
+  -- highest, so a run is resolved in one pass without re-reading its slots.
+  local list, last, best, i = {}, nil, nil, nil
   for i = offset + 1, offset + numSpells do
-    local ok, name = pcall(spellName, i, bookType)
+    local ok, name, sub = pcall(spellName, i, bookType)
     if not ok or type(name) ~= "string" or name == "" then break end
+
+    local number = rank.Number(sub)
     if name == last then
-      list[table.getn(list)] = i
+      local take
+      if number and best then
+        take = number > best
+      elseif number then
+        -- The run's first numbered entry outranks an unnumbered incumbent: a
+        -- readable rank is better evidence than position.
+        take = true
+      else
+        take = not best
+      end
+
+      if take then
+        list[table.getn(list)] = i
+        best = number or best
+      end
     else
       table.insert(list, i)
-      last = name
+      last, best = name, number
     end
   end
 
@@ -2373,6 +2412,291 @@ function U.SpellBookBarHintDump()
           " ARTISAN=" .. report.tiers["ARTISAN"])
 
   U.Print("  full dump in UnrealUIDiagDB.spellbookBarHint - " ..
+          "|cffffff00/reload|r then open " .. U.SavedVariablesHint())
+end
+
+-- ---------------------------------------------------------------------------
+-- Highest-rank filter diagnostic (/uui sb ranks)
+-- ---------------------------------------------------------------------------
+--
+-- rank.List has exactly one behavioural assumption: the ranks of a spell
+-- occupy consecutive slots in ascending order inside a skill line, so the
+-- last entry of a run of identical names is the highest rank. That is
+-- Vanilla's layout, and knowledge.json /
+-- spellbook.rank_filter_native_mapping_unverified records it only as the
+-- *Vanilla expectation* -- it was never measured on this client.
+--
+-- Every way the assumption can fail shows the player the same thing ("the
+-- wrong rank is displayed"), so this dump records the raw layout rather than
+-- guessing which way it broke:
+--
+--   * a run whose subtexts descend -> the last slot is the LOWEST rank
+--   * ranks that are not adjacent  -> two runs, and both survive the filter
+--   * a slot inside a tab's declared range that the client has no name for
+--     -> rank.List's break silently truncates the list from there on
+--
+-- The first run of this dump answered it: the first case is real on this
+-- client and the other two are not (knowledge.json /
+-- spellbook.spell_ranks_not_always_ascending_in_slot_order). rank.List now
+-- resolves a run by rank number, and this command is what re-measures the
+-- layout if the filter ever shows the wrong rank again.
+--
+-- Nothing here is read back by the addon: the report goes to
+-- UnrealUIDiagDB.spellbookRanks, with a short form printed to chat.
+
+-- Name and rank subtext of one slot. The name is nil when the client has
+-- nothing at that slot, which is itself a finding, so the second return
+-- always carries a printable string.
+function rank.SlotText(bookType, slot)
+  local spellName = G("GetSpellName")
+  if type(spellName) ~= "function" then return nil, "<no api>" end
+
+  local ok, name, sub = pcall(spellName, slot, bookType)
+  if not ok then return nil, "<error>" end
+  if type(name) ~= "string" or name == "" then return nil, "<nil>" end
+  if sub == nil or sub == "" then return name, "" end
+  return name, tostring(sub)
+end
+
+-- One skill line: every slot in its declared range, the runs of identical
+-- names in the order the client returns them, and the slots rank.List keeps.
+function rank.DumpSection(bookType, index, name, offset, count)
+  local entry = {
+    index = index,
+    name = tostring(name),
+    offset = offset,
+    count = count,
+    slots = {},
+    runs = {},
+    holes = {},
+    filter = {},
+    multiRank = 0,
+  }
+
+  -- The whole range is walked, holes included, because rank.List stops at the
+  -- first one and the dump has to be able to show what it stopped in front of.
+  local run, s = nil, nil
+  for s = offset + 1, offset + count do
+    local spell, sub = rank.SlotText(bookType, s)
+    table.insert(entry.slots, {
+      slot = s,
+      name = spell or "<none>",
+      sub = sub,
+    })
+
+    if not spell then
+      table.insert(entry.holes, s)
+      run = nil
+    elseif run and run.name == spell then
+      run.last, run.n = s, run.n + 1
+      table.insert(run.subs, sub)
+    else
+      run = { name = spell, first = s, last = s, n = 1, subs = { sub } }
+      table.insert(entry.runs, run)
+    end
+  end
+
+  -- Built fresh, so the report describes what the filter computes right now
+  -- rather than a list cached from an earlier page.
+  rank.Invalidate()
+  local list = rank.List(bookType, offset, count)
+  if list then
+    local i
+    for i = 1, table.getn(list) do
+      local spell, sub = rank.SlotText(bookType, list[i])
+      table.insert(entry.filter, {
+        slot = list[i],
+        name = spell or "<none>",
+        sub = sub,
+      })
+    end
+  else
+    entry.filterNote = "rank.List returned nil"
+  end
+  entry.filterCount = table.getn(entry.filter)
+  rank.Invalidate()
+
+  -- Which slot of each run survived the filter, in the run's own terms. A run
+  -- reading kept=<dropped> is a spell the filtered page does not show at all.
+  local i
+  for i = 1, table.getn(entry.runs) do
+    local r = entry.runs[i]
+    r.subList = table.concat(r.subs, " | ")
+    r.kept = "<dropped>"
+    if r.n > 1 then entry.multiRank = entry.multiRank + 1 end
+
+    local k
+    for k = 1, table.getn(entry.filter) do
+      local slot = entry.filter[k].slot
+      if slot >= r.first and slot <= r.last then
+        r.kept = tostring(slot)
+        r.keptSub = entry.filter[k].sub
+      end
+    end
+  end
+
+  return entry
+end
+
+-- What the twelve spell buttons resolve to, native mapping beside filtered
+-- mapping, plus the text the player is actually reading. button:GetID() is the
+-- spell-list position; the SpellButtonN suffix is only visual row order
+-- (knowledge.json / spellbook.rank_filter_native_mapping_unverified).
+function rank.DumpButtons(report, bookType)
+  local live, native = G("SpellBook_GetSpellID"), rank.native
+
+  local i
+  for i = 1, SpellCount() do
+    local button = G("SpellButton" .. i)
+    local row = { button = "SpellButton" .. i, id = "<no GetID>" }
+
+    if button and button.GetID then
+      local ok, id = pcall(button.GetID, button)
+      if ok and type(id) == "number" then row.id = id end
+    end
+
+    local id = tonumber(row.id) or i
+    if type(native) == "function" then
+      local ok, slot = pcall(native, id)
+      row.nativeSlot = (ok and type(slot) == "number") and slot or "<error>"
+      if ok and type(slot) == "number" then
+        local spell, sub = rank.SlotText(bookType, slot)
+        row.nativeName, row.nativeSub = spell or "<none>", sub
+      end
+    end
+
+    if type(live) == "function" then
+      local ok, slot = pcall(live, id)
+      row.liveSlot = (ok and type(slot) == "number") and slot or "<error>"
+      if ok and type(slot) == "number" then
+        local spell, sub = rank.SlotText(bookType, slot)
+        row.liveName, row.liveSub = spell or "<none>", sub
+      end
+    end
+
+    row.rendered = missing.Read(G("SpellButton" .. i .. "SpellName"), "GetText")
+    row.renderedSub =
+      missing.Read(G("SpellButton" .. i .. "SubSpellName"), "GetText")
+
+    table.insert(report.buttons, row)
+  end
+end
+
+function U.SpellBookRankDump()
+  local playerBook = G("BOOKTYPE_SPELL")
+  if type(playerBook) ~= "string" or playerBook == "" then
+    playerBook = "spell"
+  end
+
+  local report = {
+    highestRankOnly = config and config.highestRankOnly or false,
+    active = rank.active,
+    mapped = rank.mapped,
+    page = rank.page,
+    pages = rank.pages,
+    perPage = SpellCount(),
+    maxSpells = tostring(G("MAX_SPELLS")),
+    bookType = tostring(rank.BookType()),
+    playerBook = playerBook,
+    wrapped = (G("SpellBook_GetSpellID") ~= rank.native) and true or false,
+    sections = {},
+    buttons = {},
+  }
+
+  -- The live wrapper is called below to record what each button resolves to,
+  -- and rank.Resolve writes the filter's page state as a side effect. It is
+  -- snapshotted and put back so the dump cannot leave the open window paging
+  -- against numbers this diagnostic produced.
+  local page, pages, mapped = rank.page, rank.pages, rank.mapped
+
+  local tabCount, tabInfo = G("GetNumSpellTabs"), G("GetSpellTabInfo")
+  if type(tabCount) == "function" and type(tabInfo) == "function" then
+    local countOk, tabs = pcall(tabCount)
+    if countOk and type(tabs) == "number" then
+      report.tabCount = tabs
+
+      local t
+      for t = 1, tabs do
+        local ok, name, texture, offset, num = pcall(tabInfo, t)
+        offset, num = tonumber(offset), tonumber(num)
+        if ok and offset and num then
+          table.insert(report.sections,
+                       rank.DumpSection(playerBook, t, name, offset, num))
+        end
+      end
+    else
+      report.tabCount = "<error>"
+    end
+  else
+    report.tabCount = "<no api>"
+  end
+
+  rank.DumpButtons(report, playerBook)
+  rank.page, rank.pages, rank.mapped = page, pages, mapped
+  rank.Invalidate()
+
+  U.SaveDiagnostic("spellbookRanks", report)
+
+  U.Print("spellbook ranks: on=" .. tostring(report.highestRankOnly) ..
+          " active=" .. tostring(report.active) ..
+          " wrapped=" .. tostring(report.wrapped) ..
+          " mapped=" .. tostring(report.mapped) ..
+          " page=" .. tostring(report.page) .. "/" .. tostring(report.pages) ..
+          " perPage=" .. tostring(report.perPage))
+  U.Print("  book=" .. report.bookType ..
+          " tabs=" .. tostring(report.tabCount) ..
+          " MAX_SPELLS=" .. report.maxSpells)
+
+  -- Only the runs that carry more than one entry are printed: a single-rank
+  -- spell cannot show the wrong rank, and the multi-rank runs are the whole
+  -- question. The cap keeps a full spellbook from flooding chat; the file has
+  -- every row either way.
+  local printed, i = 0, nil
+  for i = 1, table.getn(report.sections) do
+    local section = report.sections[i]
+    U.Print("  tab " .. section.index .. " " .. section.name ..
+            " slots " .. (section.offset + 1) .. "-" ..
+            (section.offset + section.count) ..
+            " runs=" .. table.getn(section.runs) ..
+            " multiRank=" .. section.multiRank ..
+            " filtered=" .. section.filterCount ..
+            " holes=" .. table.getn(section.holes) ..
+            (section.filterNote and (" " .. section.filterNote) or ""))
+
+    if table.getn(section.holes) > 0 then
+      U.Print("    |cffff5555holes|r: " ..
+              table.concat(section.holes, ", ") ..
+              " - rank.List stops at the first one")
+    end
+
+    local r
+    for r = 1, table.getn(section.runs) do
+      local runRow = section.runs[r]
+      if runRow.n > 1 and printed < 14 then
+        printed = printed + 1
+        U.Print("    " .. runRow.name ..
+                " slots " .. runRow.first .. "-" .. runRow.last ..
+                " [" .. runRow.subList .. "]" ..
+                " kept=" .. runRow.kept ..
+                " (" .. tostring(runRow.keptSub) .. ")")
+      end
+    end
+  end
+  if printed >= 14 then U.Print("    ... more runs in the file") end
+
+  for i = 1, table.getn(report.buttons) do
+    local row = report.buttons[i]
+    U.Print("  " .. row.button ..
+            " id=" .. tostring(row.id) ..
+            " native=" .. tostring(row.nativeSlot) ..
+            " live=" .. tostring(row.liveSlot) ..
+            " -> " .. tostring(row.liveName) ..
+            " (" .. tostring(row.liveSub) .. ")" ..
+            " rendered=" .. tostring(row.rendered) ..
+            " / " .. tostring(row.renderedSub))
+  end
+
+  U.Print("  full dump in UnrealUIDiagDB.spellbookRanks - " ..
           "|cffffff00/reload|r then open " .. U.SavedVariablesHint())
 end
 

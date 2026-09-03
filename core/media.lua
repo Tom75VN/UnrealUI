@@ -66,9 +66,13 @@ M.fontSize = {
 -- compatibility layer converts this into UIParent units before applying it,
 -- since one UI unit is wider than one screen pixel on this client.
 M.textShadowOffset = { 1, -1 }
--- Compact bar text uses a stronger three-quarter-pixel shadow for contrast
--- over bright semantic health and power fills without a detached appearance.
-M.compactTextShadowOffset = { 0.75, -0.75 }
+-- Compact bar text needs more contrast than body text: it sits directly on
+-- bright semantic health and power fills. It used to ask for a tighter
+-- three-quarter-pixel offset to stay attached to the glyph, but nothing under
+-- one screen pixel rasterises (see U.SetTextShadow), so that read as no shadow
+-- at all on the unit frames. The separation stays at the shared one pixel and
+-- M.color.shadowStrong carries the extra contrast instead.
+M.compactTextShadowOffset = { 1, -1 }
 
 -- ---------------------------------------------------------------------------
 -- Textures
@@ -95,6 +99,15 @@ M.texture = {
   -- to the accent while the rim stays dark enough to read over a bright
   -- health fill.
   leaderIcon = "Interface\\AddOns\\unrealUI\\media\\leader-star",
+  -- The sort button's icon, shared by the bag and bank windows. Central
+  -- because it is the same control twice, and because unlike the icon paths
+  -- already proven on screen beside it this one is *chosen*, not verified:
+  -- this client ships no readable icon inventory (there is no extracted
+  -- Interface Icons tree and the compact DB lists no textures). A path the
+  -- client does not have renders blank rather than raising, so
+  -- U.CreateIconButton's fallback letter cannot catch it -- swapping this one
+  -- line is the whole fix, and doing it here fixes both windows at once.
+  sortIcon = "Interface\\Icons\\INV_Misc_Note_01",
 }
 
 -- Flag artwork for the settings language selector, keyed by the locale codes
@@ -346,7 +359,7 @@ M.qualityLimit = 1
 M.slotBorder = {
   empty = { 0.16, 0.16, 0.16, 1.00 },   -- empty slot
   plain = { 0.32, 0.32, 0.32, 1.00 },   -- poor / common item
-  quest = { 0.85, 0.55, 0.55, 1.00 },   -- quest item, light pale red
+  quest = { 225 / 255, 67 / 255, 67 / 255, 1.00 }, -- quest item, #e14343
 }
 
 -- Container-window metrics. Bags and bank share them so the two windows read

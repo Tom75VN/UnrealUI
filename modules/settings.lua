@@ -1062,9 +1062,9 @@ local function BuildGeneralPage(parent)
   local autoAttack = U.CreateCheckbox(parent, {
     name = "UnrealUISettingsAutoAttack",
     text = U.L("SETTINGS_AUTO_ATTACK"),
-    value = U.ModuleConfig("autoattack", { enabled = true }).enabled,
+    value = U.ModuleConfig("autoattack", { enabled = false }).enabled,
     onChange = function(value)
-      U.ModuleConfig("autoattack", { enabled = true }).enabled = value
+      U.ModuleConfig("autoattack", { enabled = false }).enabled = value
     end,
   })
   autoAttack.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -164)
@@ -1192,7 +1192,7 @@ local function BuildGeneralPage(parent)
 
   local function Refresh()
     themes.SetValue(U.GetThemeStyle(), false)
-    autoAttack.SetValue(U.ModuleConfig("autoattack", { enabled = true }).enabled)
+    autoAttack.SetValue(U.ModuleConfig("autoattack", { enabled = false }).enabled)
     swingBar.SetValue(U.ModuleConfig("swingbar", { enabled = true }).enabled)
     microbar.SetValue(U.ModuleConfig("microbar", { enabled = true }).enabled)
     reputation.SetValue(U.ModuleConfig("xpbar", { repEnabled = true }).repEnabled)

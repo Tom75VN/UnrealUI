@@ -71,6 +71,7 @@ local cooldownDirty = false
 local bagDirty = {}
 local closing = false
 local emptyReported = false
+local sortActive = false
 
 -- The main bank pane and purchased bank bags share a visual grid, but not a
 -- cursor API. A focused live probe (behavior.json / bankmove, probe 1.40.1)
@@ -90,15 +91,11 @@ local function CursorHasInventoryItem()
   return U.CursorHasItem()
 end
 
+-- The route itself lives in core/compat.lua (U.PickupContainerSlot), which
+-- carries the bankmove evidence: the sort engine needs the identical
+-- correction, and one measured quirk should not be written down twice.
 local function DropCursorIntoBank(bag, slot)
-  if bag == BANK_CONTAINER then
-    local idOk, inventorySlot = pcall(BankButtonIDToInvSlotID, slot)
-    inventorySlot = idOk and tonumber(inventorySlot) or nil
-    if not inventorySlot then return false end
-    return pcall(PickupInventoryItem, inventorySlot)
-  end
-
-  return pcall(PickupContainerItem, bag, slot)
+  return U.PickupContainerSlot(bag, slot)
 end
 
 local function TransferCursorToBank(bag, slot)
@@ -217,23 +214,60 @@ local function BankBags()
   return list
 end
 
--- GetContainerNumSlots is the source of truth, but it has no compact record
--- for bank containers on this client and the first in-game run came back with
--- an empty grid while the stock window showed 24 usable slots. When it reports
--- nothing for the bank container, the documented Vanilla size is used instead
--- so the window still draws; a bank bag reporting nothing really is empty.
+-- ---------------------------------------------------------------------------
+-- Sorting
+--
+-- The same control the bag window carries, on the same engine
+-- (core/itemsort.lua) and the same shared icon: the bank is just another set
+-- of containers to it. BankBags() is passed unchanged, so the run fills the
+-- main pane first and then each purchased bank bag -- the order the grid packs
+-- them in, which is what makes the result read top-left to bottom-right the
+-- way it looks.
+--
+-- The engine addresses the main pane through core/compat.lua's
+-- U.PickupContainerSlot, which is the one measured route into it
+-- (behavior.json / bankmove.route_B, BEHAVIOR_VERIFIED). Purchased bank bags
+-- are ordinary containers to it. What is *not* measured is whether
+-- ContainerIDToInventoryID resolves for containers 5..10 on this client; if it
+-- does not, those bags fail the engine's "is this a plain Bag" test and are
+-- left alone, so a bank sort would visibly rearrange only the main pane. That
+-- is the safe failure and it is documented in core/itemsort.lua's
+-- IS.IsGeneralBag, where a probe would fix it.
+--
+-- One run exists at a time for the whole addon, because there is one cursor,
+-- so the desaturated look here reports the engine being busy rather than this
+-- window's own click. ProcessDirty keeps it honest while the window is open:
+-- a bag sort started before the bank was opened greys this button too, and
+-- nothing else would tell it when that run ended.
+-- ---------------------------------------------------------------------------
+local function RefreshSortButton()
+  if not frame or not frame.sort or not frame.sort.icon then return end
+
+  local active = U.BagSortActive()
+  if active == sortActive then return end
+  sortActive = active
+  pcall(frame.sort.icon.SetDesaturated, frame.sort.icon, active)
+end
+
+local function SortBank()
+  -- U.SortBags owns every refusal message (already running, cursor holding
+  -- something, nothing to do), so this only has to reflect the new state.
+  local started = U.SortBags(BankBags(), {
+    onFinish = RefreshSortButton,
+    prefix = "BANK_SORT",
+    owner = "bank",
+  })
+  if started then RefreshSortButton() end
+end
+
+-- GetContainerNumSlots is the source of truth, but it reports nothing for the
+-- main bank pane on this client -- the first in-game run drew an empty grid
+-- while the stock window showed 24 usable slots, and probe
+-- bankmove.participants.v1 later measured the same zero. The fallback to the
+-- documented Vanilla size lives in core/compat.lua, shared with the sort
+-- engine, which has to walk exactly the same slots.
 local function BagSlotCount(bag)
-  local ok, n = pcall(GetContainerNumSlots, bag)
-  n = (ok and tonumber(n)) or 0
-  if n > 0 then return n end
-
-  if bag == BANK_CONTAINER then
-    local stock = tonumber(U.G("NUM_BANKGENERIC_SLOTS"))
-    if stock and stock > 0 then return stock end
-    return BANK_SLOTS
-  end
-
-  return 0
+  return U.ContainerSlotCount(bag)
 end
 
 
@@ -624,6 +658,8 @@ local function ProcessDirty()
     RefreshBag(bag)
   end
 
+  RefreshSortButton()
+
   if cooldownDirty then
     cooldownDirty = false
     local bags = BankBags()
@@ -667,6 +703,22 @@ end
 -- Build
 -- ---------------------------------------------------------------------------
 local function BuildHeader()
+  -- Left inset of the header, matching where the bag window keeps its icon
+  -- group so the same control is in the same place in both windows. Centred on
+  -- the header strip rather than pinned to its top, which is the line the bag
+  -- row, the title and the close glyph all sit on.
+  frame.sort = U.CreateIconButton(frame, {
+    name = "UnrealUIBankSort",
+    texture = M.texture.sortIcon,
+    fallback = "S",
+    size = BAG_BUTTON,
+    title = U.L("BANK_SORT"),
+    detail = function() return U.L("BANK_SORT_HINT") end,
+    onClick = SortBank,
+  })
+  frame.sort:SetPoint("LEFT", frame, "TOPLEFT", PADDING,
+                      -math.floor(HEADER_HEIGHT / 2))
+
   frame.close = U.CreateButton(frame, {
     name = "UnrealUIBankClose",
     text = "X",
@@ -730,10 +782,13 @@ end
 
 -- Anchored to frame.bags's live left edge rather than a captured width, so it
 -- keeps clear of the bank bag row as slots are bought and stays correct
--- without its own LayoutHeader hook.
+-- without its own LayoutHeader hook. It starts after the sort button for the
+-- same reason -- a drag strip drawn over a button would swallow its clicks --
+-- using that button's own footprint rather than a second copy of its position.
 local function BuildDragHandle()
   local handle = CreateFrame("Button", "UnrealUIBankDrag", frame)
-  handle:SetPoint("TOPLEFT", frame, "TOPLEFT", 0, 0)
+  handle:SetPoint("TOPLEFT", frame, "TOPLEFT",
+                  PADDING + BAG_BUTTON + SLOT_GAP, 0)
   handle:SetPoint("TOPRIGHT", frame.bags, "TOPLEFT", -4, 0)
   handle:SetHeight(HEADER_HEIGHT)
   handle:RegisterForDrag("LeftButton")
@@ -781,6 +836,11 @@ local function Build()
     U.UnregisterUpdate("bank.refresh")
     U.HideConfirm("bank")
     cursorBankBag = nil
+    -- The bank's containers stop being writable when the session ends, so a
+    -- run in flight is stopped here instead of being left to discover that one
+    -- failed swap later. Silent by design: the window closing is the reason.
+    -- A bag sort is another owner's run and is untouched.
+    U.StopSort("bank")
     if closing then return end
     closing = true
     pcall(CloseBankFrame)

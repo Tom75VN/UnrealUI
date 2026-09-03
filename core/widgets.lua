@@ -406,6 +406,90 @@ function U.CreateCheckbox(parent, options)
 end
 
 -- ---------------------------------------------------------------------------
+-- Collapse control
+--
+-- The sharp +/- box .claude/rules/unreal-ui-design.md names as an established
+-- pattern. The recipe was born inside core/stockui.lua's native-header adapter
+-- and lives here now because the bag's category sections need the identical
+-- control on a frame unrealUI owns outright; that adapter builds its icon
+-- through this function, so there is still exactly one +/- box in the addon.
+--
+-- knowledge.json / buttons.plain_settext_no_fontstring: an untemplated Button
+-- accepts SetText without ever showing a FontString, so the glyph is a
+-- FontString this code creates and owns.
+--
+-- USER_CONFIRMED_INGAME (recorded against the stock adapter): SetHitRectInsets
+-- with negative values made the box's left portion unclickable on this client
+-- instead of growing the hit area, so the click target is the button's real
+-- size and no inset call is made. Callers wanting a roomier target pass size.
+--
+-- options: size (16 default, 18 for a roomier host), level (frame levels above
+-- the parent, default 2), collapsed (initial state), onClick(collapsed) --
+-- called with the state the click is asking for, not the current one.
+--
+-- Created hidden: callers Show it once they have anchored it.
+-- ---------------------------------------------------------------------------
+local collapseCount = 0
+
+function U.CreateCollapseButton(parent, options)
+  if not parent then return nil end
+  options = options or {}
+  collapseCount = collapseCount + 1
+
+  local created, button = pcall(CreateFrame, "Button",
+    "UnrealUICollapseIcon" .. collapseCount, parent)
+  if not created or not button then return nil end
+
+  local size = options.size or 16
+  button:SetWidth(size)
+  button:SetHeight(size)
+  U.CreateBackdrop(button, { background = { 0.03, 0.03, 0.03, 0.90 } })
+  pcall(button.EnableMouse, button, true)
+
+  local levelOk, level = pcall(parent.GetFrameLevel, parent)
+  if levelOk and tonumber(level) then
+    pcall(button.SetFrameLevel, button, level + (options.level or 2))
+  end
+
+  -- unrealUI's own hover feedback, replacing any native highlight the host may
+  -- have: the outline brightens to the addon accent like every other control.
+  button:SetScript("OnEnter", function()
+    U.SetBorderColor(button, M.Unpack(M.color.accent))
+  end)
+  button:SetScript("OnLeave", function()
+    U.SetBorderColor(button, M.Unpack(M.color.border))
+  end)
+
+  button.text = U.CreateLabel(button, {
+    size = M.fontSize.small,
+    color = M.color.text,
+    inherits = "GameFontNormalSmall",
+  })
+  if button.text then
+    button.text:SetPoint("CENTER", button, "CENTER", 0, 0)
+  end
+
+  -- uui-prefixed like every other field unrealUI adds to a frame it did not
+  -- define, so it cannot collide with a widget method this client may expose.
+  button.uuiSetCollapsed = function(collapsed)
+    button.uuiCollapsed = collapsed and true or false
+    if button.text then
+      button.text:SetText(button.uuiCollapsed and "+" or "-")
+    end
+  end
+
+  button:SetScript("OnClick", function()
+    if type(options.onClick) ~= "function" then return end
+    local ok, err = pcall(options.onClick, not button.uuiCollapsed)
+    if not ok then U.Error("collapse click: " .. tostring(err)) end
+  end)
+
+  button.uuiSetCollapsed(options.collapsed)
+  button:Hide()
+  return button
+end
+
+-- ---------------------------------------------------------------------------
 -- Radio group
 --
 -- A compact mutually-exclusive selector built from the same flat primitives

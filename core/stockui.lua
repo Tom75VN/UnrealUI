@@ -764,78 +764,33 @@ end
 --    so the icon is a Button and carries the click itself. `uuiCollapseClick`
 --    lets the caller own the action; with no override the click forwards to the
 --    parent's native OnClick, which is what keeps the All button native.
-local collapseIconCount = 0
-
 function U.StyleStockCollapseButton(button, expandedSize)
   if not button or button.uuiCollapseStyled then return button end
   button.uuiCollapseStyled = true
 
-  -- USER_CONFIRMED_INGAME: SetHitRectInsets with negative values (tried here
-  -- previously to pad a small icon's click area) made the icon's left portion
-  -- unclickable instead of expanding the hit area -- this client does not
-  -- treat negative insets as "grow outward" the way retail does. No
-  -- compact-DB record covers SetHitRectInsets at all, so rather than guess at
-  -- a second sign/clamp convention, the icon is simply built larger: its real
-  -- clickable frame size now matches what a comfortable click target needs,
-  -- with no inset call at all.
-  local size = expandedSize and 18 or 16
-  collapseIconCount = collapseIconCount + 1
-
-  local created, icon = pcall(CreateFrame, "Button",
-    "UnrealUICollapseIcon" .. collapseIconCount, button)
-  if not created or not icon then return button end
-
-  icon:SetWidth(size)
-  icon:SetHeight(size)
-  icon:SetPoint("LEFT", button, "LEFT", 2, 1)
-  U.CreateBackdrop(icon, { background = { 0.03, 0.03, 0.03, 0.90 } })
-  pcall(icon.EnableMouse, icon, true)
-
-  local levelOk, level = pcall(button.GetFrameLevel, button)
-  if levelOk and tonumber(level) then
-    pcall(icon.SetFrameLevel, icon, level + 2)
-  end
-
-  -- unrealUI's own hover feedback: the icon's border brightens to the addon
-  -- accent, matching every other stock control's OnEnter/OnLeave treatment.
-  -- This replaces relying on the row's native highlight (below), whose fixed
-  -- native anchor is what previously made the hover glow appear beside the
-  -- icon instead of on it.
-  icon:SetScript("OnEnter", function()
-    U.SetBorderColor(icon, M.Unpack(M.color.accent))
-  end)
-  icon:SetScript("OnLeave", function()
-    U.SetBorderColor(icon, M.Unpack(M.color.border))
-  end)
-
-  -- knowledge.json / buttons.plain_settext_no_fontstring: an untemplated Button
-  -- accepts SetText without ever showing a FontString, so the +/- glyph has to
-  -- be a FontString unrealUI creates and owns.
-  icon.text = U.CreateLabel(icon, {
-    size = M.fontSize.small,
-    color = M.color.text,
-    inherits = "GameFontNormalSmall",
+  -- The box itself is the shared control (U.CreateCollapseButton in
+  -- core/widgets.lua), which carries the size rule, the accent hover and the
+  -- owned +/- glyph. Everything below is the part that is specific to adapting
+  -- a *native* stock header: placing the box on the row and taking the client's
+  -- own art and highlight out of the render.
+  local icon = U.CreateCollapseButton(button, {
+    size = expandedSize and 18 or 16,
+    onClick = function()
+      if type(button.uuiCollapseClick) == "function" then
+        button.uuiCollapseClick(button)
+        return
+      end
+      -- No override: hand the click straight back to the stock button so a
+      -- control that already works natively keeps working.
+      if button.GetScript then
+        local scriptOk, native = pcall(button.GetScript, button, "OnClick")
+        if scriptOk and native then pcall(native, button) end
+      end
+    end,
   })
-  if icon.text then
-    icon.text:SetPoint("CENTER", icon, "CENTER", 0, 0)
-    icon.text:SetText("-")
-  end
+  if not icon then return button end
 
-  icon:SetScript("OnClick", function()
-    if type(button.uuiCollapseClick) == "function" then
-      local ok, err = pcall(button.uuiCollapseClick, button)
-      if not ok then U.Error("collapse click: " .. tostring(err)) end
-      return
-    end
-    -- No override: hand the click straight back to the stock button so a
-    -- control that already works natively keeps working.
-    if button.GetScript then
-      local scriptOk, native = pcall(button.GetScript, button, "OnClick")
-      if scriptOk and native then pcall(native, button) end
-    end
-  end)
-
-  icon:Hide()
+  icon:SetPoint("LEFT", button, "LEFT", 2, 1)
   button.uuiCollapseIcon = icon
 
   if button.GetNormalTexture then
@@ -890,7 +845,11 @@ function U.SetStockCollapseState(button, shown, collapsed)
     return true
   end
 
-  if icon.text then icon.text:SetText(collapsed and "+" or "-") end
+  if type(icon.uuiSetCollapsed) == "function" then
+    icon.uuiSetCollapsed(collapsed)
+  elseif icon.text then
+    icon.text:SetText(collapsed and "+" or "-")
+  end
   icon:Show()
   return true
 end

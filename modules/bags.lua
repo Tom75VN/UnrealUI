@@ -50,7 +50,20 @@ local HEADER_HEIGHT = M.slot.header
 local ICON_SIZE     = M.slot.icon
 local TRAY_SLOT     = M.slot.tray   -- keyring / bag-slot button size
 
+-- Category view metrics (the optional grouped layout, off by default). A
+-- category is a titled box holding the same COLUMNS-wide slot rhythm as the
+-- flat grid, and the boxes stack downwards, so the window keeps one width and
+-- only grows taller as categories appear.
+local SECTION_TITLE  = 18   -- heading strip above each category box
+local SECTION_TOGGLE = 16   -- the +/- collapse box in that strip
+local SECTION_INSET  = 4    -- slot inset inside a category box
+local SECTION_GAP    = 6    -- between one category box and the next heading
+
+-- Centres the collapse box in its heading strip.
+local SECTION_TOGGLE_Y = math.floor((SECTION_TITLE - SECTION_TOGGLE) / 2)
+
 local anchor, frame, grid
+local sections = {}     -- sections[categoryKey] = { box, title, toggle }
 local slots = {}        -- slots[bag][slot] = button
 local containers = {}   -- containers[bag] = per-bag parent frame, SetID(bag)
 
@@ -61,6 +74,39 @@ local vendorDirty = false
 local keyringDirty = false
 
 local pending    -- { items, index, mode = "sell"|"delete", startGold }
+
+-- Whole-module switch, so somebody running a third-party bag addon can hand the
+-- container UI back to the client instead of fighting unrealUI for it. Read
+-- once at OnEnable: with it off nothing here is built, the stock
+-- ToggleBackpack/OpenAllBags globals are left alone and ContainerFrame1..5 are
+-- never registered for native suppression, which is the only way the client
+-- keeps its own bag windows. Turning it back on therefore needs a reload as
+-- well -- core/compat.lua's suppression is one-way within a session (it
+-- replaces Show without keeping the original), so the settings checkbox asks
+-- for /reload in both directions rather than pretending either can be undone
+-- live.
+local config
+
+-- ---------------------------------------------------------------------------
+-- Config
+-- ---------------------------------------------------------------------------
+local function EnsureConfig()
+  -- categories is the optional grouped view. It defaults off: the flat grid
+  -- stays the shipped bag, and nothing about the window changes for a player
+  -- who never opens the settings page.
+  -- collapsed is keyed by category; only the collapsed ones are present, so the
+  -- table stays empty until the player actually folds something away.
+  if not config then
+    config = U.ModuleConfig("bags",
+                            { enabled = true, categories = false,
+                              collapsed = {} })
+  end
+  return config
+end
+
+function U.BagsEnabled()
+  return EnsureConfig().enabled and true or false
+end
 
 -- Classic keeps the merged UnrealUI container but paints it from the live
 -- native ContainerFrame texture objects before those stock windows are
@@ -429,6 +475,21 @@ local function RefreshVendorButton()
   pcall(frame.sell.icon.SetDesaturated, frame.sell.icon, n == 0)
 end
 
+-- The sort button's disabled look while a run is draining, matching the way the
+-- vendor button above reports that it has nothing to do. core/itemsort.lua
+-- calls this again when the run ends, so nothing has to poll for it.
+local function RefreshSortButton()
+  if not frame or not frame.sortBags or not frame.sortBags.icon then return end
+  pcall(frame.sortBags.icon.SetDesaturated, frame.sortBags.icon,
+        U.BagSortActive())
+end
+
+local function SetSortButtonShown(shown)
+  if not frame or not frame.sortBags then return end
+  if shown then frame.sortBags:Show() else frame.sortBags:Hide() end
+  RefreshSortButton()
+end
+
 -- ---------------------------------------------------------------------------
 -- Header icon buttons -- U.CreateIconButton (core/widgets.lua) now owns this;
 -- this module used to keep a private copy until modules/bank.lua needed the
@@ -540,6 +601,17 @@ local function EnsureBagRoot(bag, parent)
   local root = CreateFrame("Frame", nil, parent)
   root:SetID(bag)
   root:SetAllPoints(parent)
+
+  -- The category view anchors these buttons over category boxes that are
+  -- siblings of this root under the same grid, so both would land on the
+  -- parent's level + 1 and their draw order would be undefined. Lift the item
+  -- roots clear of it once, here, rather than fighting it per box. Harmless in
+  -- the flat grid, where nothing is drawn underneath the slots at all.
+  local levelOk, level = pcall(parent.GetFrameLevel, parent)
+  if levelOk and tonumber(level) then
+    pcall(root.SetFrameLevel, root, level + 5)
+  end
+
   containers[bag] = root
   slots[bag] = slots[bag] or {}
   return root
@@ -827,12 +899,265 @@ local function LayoutBagSlots()
 end
 
 -- ---------------------------------------------------------------------------
+-- Category view
+--
+-- Optional stacked-section layout over the very same slot buttons the flat
+-- grid uses: nothing is created, destroyed or re-parented when the view is
+-- switched, the buttons are only re-anchored. Click, drag, tooltip, price,
+-- comparison and cooldown behavior are therefore identical in both views, and
+-- switching costs one relayout rather than a rebuild.
+--
+-- What an item *is* belongs to core/itemcategory.lua; this file only decides
+-- where a category goes on screen.
+-- ---------------------------------------------------------------------------
+-- Forward declaration. The collapse handler is built in EnsureSection, above
+-- the layout it has to re-run, and a fold should redraw on the click rather
+-- than waiting up to a refresh tick for the dirty flag to be noticed.
+local LayoutCategories
+
+local function HideSection(section)
+  if not section then return end
+  if section.box then section.box:Hide() end
+  if section.toggle then section.toggle:Hide() end
+  if section.title then section.title:Hide() end
+end
+
+local function HideSections()
+  local key, section
+  for key, section in pairs(sections) do HideSection(section) end
+end
+
+local function ToggleSection(key, collapsed)
+  -- Only collapsed categories are stored, so folding one back open removes its
+  -- entry rather than leaving a false behind in SavedVariables.
+  EnsureConfig().collapsed[key] = collapsed or nil
+  LayoutCategories()
+end
+
+-- Used / total carried slots, shown in the header beside the money readout.
+--
+-- It belongs to the category view alone. The flat grid draws every free slot as
+-- an empty square, so the same information is already on screen there and a
+-- second copy of it would just be header noise; the category view draws no
+-- empty squares at all, which is exactly why it needs the number.
+--
+-- Keyring slots are excluded on purpose: BAG_IDS is what the window shows, and
+-- a keyring the player has not opened must not change a count that is meant to
+-- describe the bags in front of them.
+local function RefreshSlotCount(used, total)
+  local label = frame and frame.slotCount
+  if not label then return end
+
+  if not used or not total then
+    label:Hide()
+    return
+  end
+
+  label:SetText(U.L("BAGS_SLOT_COUNT", used, total))
+  label:Show()
+end
+
+-- A section is a heading row plus a box of slots. The heading is deliberately
+-- *not* part of the box: a collapsed category keeps its title and its +/-
+-- control on screen while the box goes away, and a region belonging to a hidden
+-- frame cannot stay visible. All three are children of the grid instead.
+local function EnsureSection(key, contentWidth)
+  local section = sections[key]
+  if section then return section end
+
+  section = {}
+
+  section.box = U.CreatePanel(grid, {
+    name = "UnrealUIBagCategory_" .. key,
+    width = contentWidth + SECTION_INSET * 2,
+    height = SLOT_SIZE + SECTION_INSET * 2,
+  })
+  classicBag.StylePanel(section.box, false)
+  -- Purely a backdrop for the slots anchored over it; it must not eat the
+  -- clicks and drags those slots depend on.
+  pcall(section.box.EnableMouse, section.box, false)
+
+  -- The shared collapse control (U.CreateCollapseButton), not a local variant:
+  -- same sharp box, same accent hover, same owned +/- glyph as every other
+  -- collapsible header in the addon.
+  section.toggle = U.CreateCollapseButton(grid, {
+    size = SECTION_TOGGLE,
+    collapsed = EnsureConfig().collapsed[key],
+    onClick = function(collapsed) ToggleSection(key, collapsed) end,
+  })
+
+  section.title = U.CreateLabel(grid, {
+    size = M.fontSize.small,
+    color = M.color.accent,
+    inherits = "GameFontNormalSmall",
+    justify = "LEFT",
+  })
+  if section.title then section.title:SetText(U.ItemCategoryLabel(key)) end
+
+  sections[key] = section
+  return section
+end
+
+-- One pass over every carried slot, bucketed by category. Free slots are only
+-- counted: they are not content, so they get no section and no button. The
+-- header readout reports them instead, which is why the used and total counts
+-- come back alongside the buckets.
+local function CollectCategories()
+  local buckets = {}
+  local used, total = 0, 0
+  local i
+
+  for i = 1, table.getn(BAG_IDS) do
+    local bag = BAG_IDS[i]
+    local ok, n = pcall(GetContainerNumSlots, bag)
+    n = (ok and tonumber(n)) or 0
+
+    local slot
+    for slot = 1, n do
+      total = total + 1
+
+      local key = U.ItemCategoryForSlot(bag, slot)
+      if key ~= "empty" then
+        used = used + 1
+        if not buckets[key] then buckets[key] = {} end
+        table.insert(buckets[key], { bag = bag, slot = slot })
+      end
+    end
+  end
+
+  return buckets, used, total
+end
+
+-- Assigns the local forward-declared above ToggleSection.
+function LayoutCategories()
+  local slotGap = classicBag.SlotGap()
+  local contentWidth = COLUMNS * (SLOT_SIZE + slotGap) - slotGap
+  local buckets, usedSlots, totalSlots = CollectCategories()
+  local order = U.ItemCategoryOrder()
+  local live = {}    -- every (bag, slot) this pass actually placed
+  local drawn = {}   -- every category this pass actually drew
+  local y = 0
+  local i
+
+  RefreshSlotCount(usedSlots, totalSlots)
+  SetSortButtonShown(false)
+
+  for i = 1, table.getn(order) do
+    local key = order[i]
+    local entries = buckets[key]
+
+    local n = (entries and table.getn(entries)) or 0
+    if n > 0 then
+      local section = EnsureSection(key, contentWidth)
+      local collapsed = EnsureConfig().collapsed[key] and true or false
+      drawn[key] = true
+
+      -- Heading row: the +/- control and the category name, on screen whether
+      -- or not the box below them is.
+      if section.toggle then
+        section.toggle:ClearAllPoints()
+        section.toggle:SetPoint("TOPLEFT", grid, "TOPLEFT", 0,
+                                -(y + SECTION_TOGGLE_Y))
+        section.toggle.uuiSetCollapsed(collapsed)
+        section.toggle:Show()
+      end
+      if section.title then
+        section.title:ClearAllPoints()
+        if section.toggle then
+          section.title:SetPoint("LEFT", section.toggle, "RIGHT", 4, 0)
+        else
+          section.title:SetPoint("TOPLEFT", grid, "TOPLEFT", 2, -y)
+        end
+        section.title:Show()
+      end
+
+      y = y + SECTION_TITLE
+
+      if collapsed then
+        -- The slots are simply not placed. Nothing marks them live, so the
+        -- sweep at the end of this function is what takes them off screen.
+        section.box:Hide()
+      else
+        local rows = math.ceil(n / COLUMNS)
+        local height = SECTION_INSET * 2 + rows * (SLOT_SIZE + slotGap) - slotGap
+
+        section.box:SetWidth(contentWidth + SECTION_INSET * 2)
+        section.box:SetHeight(height)
+        section.box:ClearAllPoints()
+        section.box:SetPoint("TOPLEFT", grid, "TOPLEFT", 0, -y)
+        section.box:Show()
+
+        local j
+        for j = 1, n do
+          local entry = entries[j]
+          local button = EnsureSlot(entry.bag, entry.slot, grid)
+          if button then
+            local col = math.mod(j - 1, COLUMNS)
+            local row = math.floor((j - 1) / COLUMNS)
+            button:ClearAllPoints()
+            button:SetPoint("TOPLEFT", section.box, "TOPLEFT",
+                            SECTION_INSET + col * (SLOT_SIZE + slotGap),
+                            -(SECTION_INSET + row * (SLOT_SIZE + slotGap)))
+            button:SetWidth(SLOT_SIZE)
+            button:SetHeight(SLOT_SIZE)
+            classicBag.StyleItemSlot(button, SLOT_SIZE)
+            UpdateSlotAppearance(entry.bag, entry.slot)
+            button:Show()
+            live[entry.bag .. ":" .. entry.slot] = true
+          end
+        end
+
+        y = y + height
+      end
+
+      y = y + SECTION_GAP
+    end
+  end
+
+  if y > 0 then y = y - SECTION_GAP end
+
+  -- Everything this pass did not place: every free slot, which the header
+  -- readout accounts for instead, every slot inside a collapsed category, and
+  -- any button left over from a bag since swapped for a smaller one.
+  for i = 1, table.getn(BAG_IDS) do
+    local bag = BAG_IDS[i]
+    local bagSlots = slots[bag]
+    if bagSlots then
+      local slot
+      for slot = 1, table.getn(bagSlots) do
+        if bagSlots[slot] and not live[bag .. ":" .. slot] then
+          bagSlots[slot]:Hide()
+        end
+      end
+    end
+  end
+
+  local key, section
+  for key, section in pairs(sections) do
+    if not drawn[key] then HideSection(section) end
+  end
+
+  -- No bags at all (or none readable yet): keep one slot row of window rather
+  -- than collapsing the frame onto its header.
+  if y <= 0 then y = SLOT_SIZE end
+
+  anchor:SetWidth(contentWidth + SECTION_INSET * 2 + PADDING * 2)
+  anchor:SetHeight(classicBag.HeaderHeight() + y + PADDING)
+end
+
+-- ---------------------------------------------------------------------------
 -- Layout
 -- ---------------------------------------------------------------------------
 local function LayoutSlots()
   local x, y = 0, 0
   local slotGap = classicBag.SlotGap()
   local i
+
+  -- Switching back out of the category view leaves its boxes and its header
+  -- readout behind otherwise; the slot buttons themselves are re-anchored below.
+  HideSections()
+  RefreshSlotCount(nil, nil)
+  SetSortButtonShown(true)
 
   for i = 1, table.getn(BAG_IDS) do
     local bag = BAG_IDS[i]
@@ -887,7 +1212,15 @@ local function ProcessDirty()
 
   if layoutDirty then
     layoutDirty = false
-    LayoutSlots()
+    -- Read the setting per pass rather than latching it: toggling the category
+    -- view only has to mark the layout dirty, and the next tick draws the other
+    -- view over the same buttons. No reload, and no second code path to keep
+    -- in step.
+    if EnsureConfig().categories then
+      LayoutCategories()
+    else
+      LayoutSlots()
+    end
     if frame.keyring and frame.keyring:IsShown() then LayoutKeyring() end
     -- The bag-slot tray draws the equipped bags themselves, which change
     -- without any container's contents changing. It was only ever refreshed by
@@ -1102,6 +1435,47 @@ local function BuildHeader()
   })
   classicBag.StyleIconButton(frame.sell)
   frame.sell:SetPoint("LEFT", frame.bagsToggle, "RIGHT", 4, 0)
+
+  -- Sort, last in the icon group. It belongs to the flat grid only: the
+  -- category view already groups everything by the very order this sorts into,
+  -- so rearranging the underlying slots there would move items around for no
+  -- visible change. SetSortButtonShown drives that.
+  frame.sortBags = U.CreateIconButton(frame, {
+    name = "UnrealUIBagSort",
+    texture = M.texture.sortIcon,
+    fallback = "S",
+    title = U.L("BAGS_SORT"),
+    detail = function() return U.L("BAGS_SORT_HINT") end,
+    -- U.SortBags owns every refusal message (already running, cursor holding
+    -- something, nothing to do), so this only has to reflect the new state.
+    onClick = function()
+      if U.SortBags(BAG_IDS, { onFinish = RefreshSortButton, owner = "bags" })
+      then
+        RefreshSortButton()
+      end
+    end,
+  })
+  classicBag.StyleIconButton(frame.sortBags)
+  frame.sortBags:SetPoint("LEFT", frame.sell, "RIGHT", 4, 0)
+  frame.sortBags:Hide()
+
+  -- Slot readout, left-aligned after the header icon group. Anchored to the
+  -- sell button because that is the last icon in the group either way: the
+  -- Rogue Pick Lock shortcut is inserted before it, and RefreshRogueBagButton
+  -- re-anchors sell when the skill is missing, so following sell keeps the
+  -- readout in place without repeating that rule. Hidden until the category
+  -- view asks for it; see RefreshSlotCount.
+  frame.slotCount = U.CreateLabel(frame, {
+    size = M.fontSize.small,
+    color = M.color.textDim,
+    inherits = "GameFontNormalSmall",
+    justify = "LEFT",
+  })
+  if frame.slotCount then
+    frame.slotCount:SetPoint("LEFT", frame.sell, "RIGHT", 8, 0)
+    frame.slotCount:Hide()
+  end
+
   RefreshRogueBagButton()
 end
 
@@ -1152,8 +1526,14 @@ local function Build()
     frame.bagslots:Hide()
   end)
 
+  -- The window's height follows its contents -- a bag swapped for a bigger one
+  -- in the flat grid, and every category that appears or empties in the
+  -- category view. anchorEdge keeps it pinned by its bottom edge whatever
+  -- corner a drag left it on, so it extends upwards instead of pushing its
+  -- lower rows off the bottom of the screen.
   U.RegisterMover("bags.main", anchor, {
     label = U.L("MOVER_LABEL_BAGS"),
+    anchorEdge = "BOTTOM",
     default = { point = "BOTTOMRIGHT", relativePoint = "BOTTOMRIGHT",
                 x = -20, y = 20 },
   })
@@ -1167,8 +1547,110 @@ local function Build()
   })
 end
 
+-- ---------------------------------------------------------------------------
+-- Settings page
+--
+-- Registered from OnInit rather than OnEnable so the page exists even when the
+-- module never enabled itself -- otherwise switching the bags back on would
+-- need a hand-edited SavedVariables file.
+-- ---------------------------------------------------------------------------
+local function BuildSettingsPage(parent)
+  local widgets = {}
+
+  local header = U.CreateSectionHeader(parent, {
+    text = U.L("BAGS_TITLE"),
+    width = 484,
+    y = -4,
+  })
+  table.insert(widgets, header)
+
+  local enable = U.CreateCheckbox(parent, {
+    name = "UnrealUISettingsBagsEnable",
+    text = U.L("SETTINGS_BAGS_ENABLE"),
+    value = EnsureConfig().enabled,
+    onChange = function(value)
+      EnsureConfig().enabled = value and true or false
+      U.ShowConfirm({
+        owner = "bags.enable-reload",
+        centered = true,
+        text = U.L("SETTINGS_BAGS_CHANGED"),
+        detail = value and U.L("SETTINGS_BAGS_RELOAD_ON")
+                        or U.L("SETTINGS_BAGS_RELOAD_OFF"),
+        acceptText = U.L("COMMON_OK_SHORT"),
+        cancelText = U.L("COMMON_CLOSE"),
+      })
+    end,
+  })
+  enable.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -34)
+  table.insert(widgets, enable)
+
+  local hint = U.CreateSettingsLabel(parent, {
+    size = M.fontSize.small,
+    color = M.color.textDim,
+    inherits = "GameFontNormalSmall",
+    justify = "LEFT",
+    width = 484,
+  })
+  if hint then
+    U.AnchorSettingsDescription(hint, enable.box)
+    hint:SetText(U.L("SETTINGS_BAGS_ENABLE_HINT"))
+    table.insert(widgets, hint)
+  end
+
+  local categories = U.CreateCheckbox(parent, {
+    name = "UnrealUISettingsBagsCategories",
+    text = U.L("SETTINGS_BAGS_CATEGORIES"),
+    value = EnsureConfig().categories,
+    onChange = function(value)
+      EnsureConfig().categories = value and true or false
+      -- Both views run on the same buttons, so the next refresh tick simply
+      -- draws the other one. Nothing to reload and nothing to rebuild.
+      layoutDirty = true
+    end,
+  })
+  -- Anchored under the description above rather than at a computed offset: that
+  -- text wraps to a different number of lines per language, and
+  -- unreal-ui-design.md forbids giving it a fixed height to measure.
+  if hint then
+    categories.SetPoint("TOPLEFT", hint, "BOTTOMLEFT", 0, -12)
+  else
+    categories.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -78)
+  end
+  table.insert(widgets, categories)
+
+  local categoriesHint = U.CreateSettingsLabel(parent, {
+    size = M.fontSize.small,
+    color = M.color.textDim,
+    inherits = "GameFontNormalSmall",
+    justify = "LEFT",
+    width = 484,
+  })
+  if categoriesHint then
+    U.AnchorSettingsDescription(categoriesHint, categories.box)
+    categoriesHint:SetText(U.L("SETTINGS_BAGS_CATEGORIES_HINT"))
+    table.insert(widgets, categoriesHint)
+  end
+
+  local function Refresh()
+    enable.SetValue(EnsureConfig().enabled)
+    categories.SetValue(EnsureConfig().categories)
+  end
+
+  return widgets, Refresh
+end
+
+function BG:OnInit()
+  if type(U.RegisterSettingsTab) == "function" then
+    U.RegisterSettingsTab("bags", U.L("SETTINGS_PAGE_BAGS"), BuildSettingsPage)
+  end
+end
+
 function BG:OnEnable()
   if frame then return end
+  -- Off: no merged window, no toggle overrides and no ContainerFrame
+  -- suppression, so the client's own bag windows keep working for whatever
+  -- addon the player installed instead.
+  if not EnsureConfig().enabled then return end
 
   InstallToggleOverrides()
   classicBag.Capture()

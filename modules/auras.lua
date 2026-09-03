@@ -8,7 +8,7 @@
 -- the actionable row always has the stable, more prominent position. Raid
 -- auras, weapon enchants, and pfUI's whole buff/debuff module framework are not
 -- reproduced here. The player frame carries both rows, laid out exactly like
--- the target frame's: debuffs against the frame edge, buffs stacked outside
+-- the target frame's: buffs against the frame edge, debuffs stacked outside
 -- them, so your own auras are readable without having to target yourself.
 -- Hovering an icon shows the shared client GameTooltip (SetUnitBuff /
 -- SetUnitDebuff), the same native widget xpbar.lua already owns for the rest
@@ -741,10 +741,10 @@ end
 -- pattern as the geometry reads below) so a mid-session setting change takes
 -- effect without a reload.
 --
--- The offset is how the target's two rows stack: debuffs take the edge, buffs
--- are pushed out past whatever height the debuffs ended up needing. Anchoring
--- the buff row to the debuff row instead would leave it reading a stale height
--- on the pass where the debuff row is empty and hidden.
+-- The offset is how the target's two rows stack: buffs take the edge, debuffs
+-- are pushed out past whatever height the buffs ended up needing. Anchoring
+-- the debuff row to the buff row instead would leave it reading a stale height
+-- on the pass where the buff row is empty and hidden.
 local function PositionRow(row, below, offset)
   offset = offset or 0
   row:ClearAllPoints()
@@ -1053,19 +1053,28 @@ local function RefreshRow(row, offset)
   return 0
 end
 
--- Debuffs take the frame edge and buffs stack outside them, so the row a player
--- reads mid-fight never moves because a buff came or went. The player frame is
--- stacked the same way as the target frame so the two read identically; both
--- halves of the player pair come from the native GetPlayerBuff path, so their
--- timers are the client's own number either way.
+-- Buffs take the frame edge and debuffs stack outside them, the same way in
+-- both positions: shown above the frame the buffs are the bottom line and a
+-- debuff coming in moves up past them; shown below the frame the buffs are the
+-- first line and the debuffs sit under them. Requested layout.
+--
+-- The trade is that the debuff row now shifts by a line whenever a buff comes
+-- or goes -- the near row is the stable one, and it is the buffs. The empty
+-- case falls out of the same offset: a row with nothing to draw hides itself
+-- and returns 0 height, so a debuff row with no buffs under/over it takes the
+-- frame edge instead of leaving a gap where the buff line would have been.
+--
+-- The player frame is stacked the same way as the target frame so the two read
+-- identically; both halves of the player pair come from the native
+-- GetPlayerBuff path, so their timers are the client's own number either way.
 local function RefreshPlayer()
-  local used = RefreshRow(rows.player, 0)
-  RefreshRow(rows.playerBuff, used > 0 and used + ROW_GAP or 0)
+  local used = RefreshRow(rows.playerBuff, 0)
+  RefreshRow(rows.player, used > 0 and used + ROW_GAP or 0)
 end
 
 local function RefreshTarget()
-  local used = RefreshRow(rows.target, 0)
-  RefreshRow(rows.targetBuff, used > 0 and used + ROW_GAP or 0)
+  local used = RefreshRow(rows.targetBuff, 0)
+  RefreshRow(rows.target, used > 0 and used + ROW_GAP or 0)
 end
 
 local function RefreshPrimary()

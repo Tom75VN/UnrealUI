@@ -124,9 +124,16 @@ end
 --
 -- Default anchors are UIParent-relative, which is what the mover position
 -- store requires. A frame with anchorTo instead rides another frame's mover:
--- target-of-target follows the target frame, and party members follow the
--- party anchor, so none of them can drift out of alignment with what they are
--- attached to.
+-- target-of-target starts docked under the target frame and party members
+-- follow the party anchor, so none of them drift out of alignment with what
+-- they are attached to.
+--
+-- Target-of-target is the one anchorTo frame that also gets its own mover
+-- (spec.mover): it stays docked to the target frame until the user drags it in
+-- edit mode, after which its own UIParent-relative saved position wins like any
+-- other mover. /uui reset drops that position and re-docks it through the
+-- OnPositionReset hook in OnEnable. Party members never get an individual
+-- mover -- LayoutParty owns their positions inside the block.
 -- ---------------------------------------------------------------------------
 -- Target-of-target shares PRIMARY_WIDTH with target rather than carrying its
 -- own literal, so the two can never drift apart again.
@@ -164,6 +171,9 @@ local SPECS = {
     anchorTo = "target",
     anchorPoint = "TOP", anchorRelativePoint = "BOTTOM",
     anchorOffsetX = 0, anchorOffsetY = 1,
+    -- Docks under the target frame by default (above), but also carries its own
+    -- edit-mode handle so it can be pulled off onto a fixed screen position.
+    mover = true,
   },
   {
     -- Hunter (or warlock) pet frame: portrait to the left, health/power
@@ -2665,7 +2675,7 @@ end
 UF.Refresh = RefreshAll
 
 -- Anchor lookup for overlays that ride a unit frame without owning one.
--- modules/auras.lua attaches its debuff row to the top of the player and target
+-- modules/auras.lua attaches its aura rows to the edge of the player and target
 -- frames this way, so it never has to know the generated frame names or
 -- duplicate the mover wiring. Returns nil before OnEnable has built the frames.
 function U.GetUnitFrame(id)
@@ -3231,6 +3241,18 @@ U.BuildUnitFramePartySettings = BuildUnitFramePartySettings
 -- stacks the other sections under them never has to restate the number.
 U.UnitFramePartySettingsHeight = PARTY_SETTINGS_HEIGHT
 
+-- Docks an anchorTo frame onto its parent at the spec's offset. Used both when
+-- the frames are first built and by target-of-target's position-reset hook, so
+-- clearing its saved mover position puts it back exactly where it started.
+local function DockToParent(frame, spec, parent)
+  if not frame or not parent then return false end
+  frame:ClearAllPoints()
+  frame:SetPoint(spec.anchorPoint or "TOPLEFT", parent,
+                 spec.anchorRelativePoint or "TOPLEFT",
+                 spec.anchorOffsetX or 0, spec.anchorOffsetY or 0)
+  return true
+end
+
 function UF:OnEnable()
   if table.getn(frameOrder) > 0 then return end
 
@@ -3253,11 +3275,15 @@ function UF:OnEnable()
     frames[spec.id] = frame
     table.insert(frameOrder, spec.id)
 
+    -- A parent anchor is the resting default for anchorTo frames. spec.mover
+    -- (target-of-target only) then registers a handle on top of it: RegisterMover
+    -- re-applies a saved UIParent-relative position if one exists and otherwise
+    -- leaves the parent anchor in place, so it starts docked and stays draggable.
     if parent then
-      frame:SetPoint(spec.anchorPoint or "TOPLEFT", parent,
-                     spec.anchorRelativePoint or "TOPLEFT",
-                     spec.anchorOffsetX or 0, spec.anchorOffsetY or 0)
-    else
+      DockToParent(frame, spec, parent)
+    end
+
+    if not parent or spec.mover then
       U.RegisterMover("unitframes." .. spec.id, frame, {
         label = U.L(spec.labelKey, spec.labelArg),
         default = spec.default,
@@ -3270,6 +3296,21 @@ function UF:OnEnable()
       unitMouse.Enable(frame)
     end
   end
+
+  -- /uui reset clears every saved mover position. Any spec.mover frame that also
+  -- has a parent anchor (target-of-target) has a default the position store
+  -- cannot express, so re-dock it by hand the way the build loop did. Returns
+  -- true so the frame is counted among the restored ones.
+  U.OnPositionReset(function()
+    local n
+    for n = 1, table.getn(SPECS) do
+      local spec = SPECS[n]
+      if spec.mover and spec.anchorTo then
+        return DockToParent(frames[spec.id], spec, frames[spec.anchorTo])
+      end
+    end
+    return false
+  end)
 
   if nativeChrome then
     classicNative.SuppressStockAuras()

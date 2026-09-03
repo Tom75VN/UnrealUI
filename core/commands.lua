@@ -94,8 +94,11 @@ local DIAGNOSTIC_HELP = {
   "  |cffffff00/uui keytest|r - measure whether key events reach addon frames",
   "  |cffffff00/uui elite|r - cycle the classification icon test",
   "  |cffffff00/uui np|r - dump WorldFrame children (nameplates)",
+  "  |cffffff00/uui bagcat|r - dump what the client calls each bag item and " ..
+    "which category it lands in",
   "  |cffffff00/uui sb|r - dump why a spellbook entry is marked off the action bars",
   "  |cffffff00/uui sb trace|r - record what the mark does as a spell goes on/off a bar",
+  "  |cffffff00/uui sb ranks|r - dump the spell list layout the highest-rank filter reads",
   "  |cffffff00/uui aura|r - dump the aura rows and why a timer is missing",
   "  |cffffff00/uui map|r - arm the map hover watch before opening it",
   "  |cffffff00/uui res|r - dump the Character sheet resistance frames",
@@ -354,6 +357,48 @@ local function ShowNameplateDump()
           " - saved to UnrealUIDiagDB.nameplateDump")
   U.Print("  |cffffff00/reload|r then open " ..
           U.SavedVariablesHint() .. " to read it")
+end
+
+-- What this client actually calls each item, and which bag category that
+-- resolves to.
+--
+-- The distinct class/subclass pairs go to chat because that is the answer most
+-- of the time and needs no reload; the full per-slot dump goes to
+-- SavedVariables because a bag holds more rows than a chat frame should carry.
+local SUMMARY_LIMIT = 16
+
+local function ShowItemCategoryDump()
+  if type(U.ItemCategoryDump) ~= "function" then
+    U.Print("item category classifier is not loaded")
+    return
+  end
+
+  local dump = U.ItemCategoryDump()
+  SaveDiagnostic("bagCategories", dump)
+
+  local seen, rows = {}, {}
+  local i
+  for i = 1, table.getn(dump.items) do
+    local item = dump.items[i]
+    local pair = tostring(item.itemType) .. " / " .. tostring(item.subType)
+    if not seen[pair] then
+      seen[pair] = true
+      table.insert(rows, pair .. "  ->  " .. tostring(item.category))
+    end
+  end
+
+  U.Print("bag items: " .. tostring(table.getn(dump.items)) ..
+          ", auction classes: " .. tostring(table.getn(dump.classes)))
+  for i = 1, table.getn(rows) do
+    if i > SUMMARY_LIMIT then
+      U.Print("  ... " .. tostring(table.getn(rows) - SUMMARY_LIMIT) .. " more")
+      break
+    end
+    U.Print("  " .. rows[i])
+  end
+
+  U.Print("  saved to UnrealUIDiagDB.bagCategories - |cffffff00/reload|r " ..
+          "then open " .. U.SavedVariablesHint() .. " for the full dump")
 end
 
 -- Elite/classification icon test.
@@ -999,6 +1044,7 @@ handlers["check"]  = function() ShowSelfCheck() end
 handlers["help"]   = function(rest) ShowHelp(rest) end
 handlers["movertest"] = function() ShowMoverTest() end
 handlers["np"] = function() ShowNameplateDump() end
+handlers["bagcat"] = function() ShowItemCategoryDump() end
 -- Why a spellbook entry is, or is not, marked as absent from the action bars.
 -- The command being unavailable is itself an answer: modules/spellbook.lua did
 -- not load, or the hint never installed.
@@ -1020,6 +1066,18 @@ handlers["sb"] = function(rest)
   if mode == "trace off" or mode == "off" then
     if type(U.SpellBookBarHintTrace) ~= "function" then return end
     U.SpellBookBarHintTrace("off")
+    return
+  end
+
+  -- The highest-rank filter is a separate question from the bar hint: it turns
+  -- on the layout of the spell list itself, so it gets the layout dump rather
+  -- than the action-slot one. Run it with the Spellbook open.
+  if mode == "ranks" or mode == "rank" then
+    if type(U.SpellBookRankDump) ~= "function" then
+      U.Print("spellbook rank dump unavailable - modules/spellbook.lua did not load")
+      return
+    end
+    U.SpellBookRankDump()
     return
   end
 

@@ -51,14 +51,14 @@ function U.ItemLinkQualityColor(link)
   return U.ItemQualityColor(quality)
 end
 
--- No compact runtime record establishes GetItemInfo's full Vanilla tuple shape
--- on this client; this mirrors UnrealPfUI's working itemType == "Quest" check
--- (UnrealPfUI/modules/bags.lua:460) as WORKING_SOURCE evidence only.
+-- The client's documented GetItemInfo tuple puts the item class fifth, after
+-- minLevel (documentation.json / global:Item:GetItemInfo; documented, not
+-- runtime verified). Read the native tuple directly, without pfUI's adapter.
 local function IsQuestItem(bag, slot)
   local ok, link = pcall(GetContainerItemLink, bag, slot)
   if not ok or not link then return false end
 
-  local infoOk, _, _, _, _, _, _, itemType = pcall(GetItemInfo, link)
+  local infoOk, _, _, _, _, itemType = pcall(GetItemInfo, link)
   return infoOk and itemType == "Quest"
 end
 

@@ -48,6 +48,85 @@ local MAGNET_DISTANCE = 8
 -- so a drop is captured and stored, and the frame is left exactly where the
 -- user released it rather than being re-anchored on the spot.
 -- ---------------------------------------------------------------------------
+-- ---------------------------------------------------------------------------
+-- Bottom-anchored windows
+--
+-- A window whose height follows its content grows away from the point it is
+-- anchored by, so one the client left on a TOP* corner pushes its lower rows
+-- off the bottom of the screen as it gets taller. The bag's category view is
+-- the first UnrealUI window that changes height this way. anchorEdge =
+-- "BOTTOM" pins such a frame by its bottom edge instead, so it can only ever
+-- extend upwards, and the converted point is stored so a reload keeps it.
+--
+-- The conversion is done in screen space rather than by arithmetic over the
+-- stored offsets: GetLeft/GetBottom report where the frame actually is, so one
+-- expression covers whichever of the eight point names a drag was collapsed
+-- onto, with no second Y convention to get wrong. Reading a rect and then
+-- applying a stored-shaped point is the direction knowledge.json /
+-- frames.getpoint_relative_name_y_inverted confirms works; the failed approach
+-- that record warns about -- recapturing through GetPoint and immediately
+-- re-applying that same tuple -- is not what happens here.
+-- ---------------------------------------------------------------------------
+local BOTTOM_POINTS = { BOTTOM = true, BOTTOMLEFT = true, BOTTOMRIGHT = true }
+
+local function Edge(frame, method)
+  local fn = frame and frame[method]
+  if type(fn) ~= "function" then return nil end
+  local ok, value = pcall(fn, frame)
+  if not ok then return nil end
+  return tonumber(value)
+end
+
+local function NormaliseAnchorEdge(entry)
+  if not entry or entry.anchorEdge ~= "BOTTOM" then return end
+
+  -- Already growing upwards: a frame held by any bottom point keeps its bottom
+  -- edge when it is resized, which is the whole point of the conversion.
+  local stored = U.GetPosition(entry.id)
+  local active = stored or entry.default
+  if active and BOTTOM_POINTS[active.point] then return end
+
+  local left = Edge(entry.frame, "GetLeft")
+  local bottom = Edge(entry.frame, "GetBottom")
+  if not left or not bottom then
+    -- A frame registered during load can have no resolved rect yet, and this
+    -- runs from RegisterMover. Failing quietly there would leave the window
+    -- top-anchored for the whole session, so retry once on the next
+    -- shared-driver tick before giving up.
+    if entry.anchorEdgeRetried then
+      U.Debug("mover " .. entry.id .. ": no readable rect to bottom-anchor")
+      return
+    end
+    entry.anchorEdgeRetried = true
+
+    local update = "mover.anchorEdge." .. entry.id
+    U.RegisterUpdate(update, 0, function()
+      U.UnregisterUpdate(update)
+      NormaliseAnchorEdge(entry)
+    end)
+    return
+  end
+
+  -- UIParent's origin is subtracted rather than assumed to be (0, 0), so a
+  -- client that does not place it flush with the screen corner still converts
+  -- to the right offsets.
+  local x = left - (Edge(UIParent, "GetLeft") or 0)
+  local y = bottom - (Edge(UIParent, "GetBottom") or 0)
+
+  if not U.ApplyFramePoint(entry.frame, {
+       point = "BOTTOMLEFT", relativePoint = "BOTTOMLEFT", x = x, y = y }) then
+    U.Debug("mover " .. entry.id .. ": failed to apply bottom anchor")
+    return
+  end
+
+  -- Only a position the player actually placed is written back. A frame still
+  -- sitting on its default is re-derived from that default on every login, so
+  -- persisting one here would invent a saved placement nobody made.
+  if stored then
+    U.SavePosition(entry.id, "BOTTOMLEFT", "BOTTOMLEFT", x, y)
+  end
+end
+
 local function ApplyStoredPosition(entry)
   local saved = U.GetPosition(entry.id)
   local position = saved or entry.default
@@ -62,6 +141,8 @@ local function ApplyStoredPosition(entry)
   if saved then
     U.Debug("mover " .. entry.id .. ": restored saved position")
   end
+
+  NormaliseAnchorEdge(entry)
   return true
 end
 
@@ -176,6 +257,9 @@ local function ApplyPendingSnap()
 
   local stored = U.GetPosition(entry.id)
   if stored then U.ApplyFramePoint(entry.frame, stored) end
+  -- After the snap, not before: converting a pre-snap rect would pin the frame
+  -- to the bottom edge it had while it was still off the grid.
+  NormaliseAnchorEdge(entry)
 end
 
 local function CapturePosition(entry)
@@ -222,6 +306,10 @@ local function CapturePosition(entry)
   if saved and snapped then
     pendingSnap = entry
     U.RegisterUpdate("mover.snap", 0, ApplyPendingSnap)
+  elseif saved then
+    -- The snapping path converts from ApplyPendingSnap instead, once the frame
+    -- has actually been moved onto the grid.
+    NormaliseAnchorEdge(entry)
   end
 
   return saved
@@ -721,6 +809,98 @@ function U.HideAlignmentGrid()
 end
 
 -- ---------------------------------------------------------------------------
+-- Edit-mode diagnostic snapshot
+--
+-- Anchors that appear on the first unlock and not on the second cannot be
+-- diagnosed from chat: CreateEditKeys' keyboard capture means no slash command
+-- is reachable while edit mode is open, and the per-mover readout is far past
+-- what is worth screenshotting. Every unlock and lock therefore appends one
+-- machine-readable snapshot to UnrealUIDiagDB.moverLog, read straight out of
+-- SavedVariables after a /reload.
+--
+-- Write-only, capped by U.AppendDiagnostic, and every client call is pcall'd:
+-- the diagnostic must never become the thing that breaks edit mode.
+-- ---------------------------------------------------------------------------
+local function Probe(object, method)
+  if not object then return "-" end
+  local fn = object[method]
+  if type(fn) ~= "function" then return "?" end
+  local ok, value = pcall(fn, object)
+  if not ok then return "err" end
+  if value == nil then return "nil" end
+  return value
+end
+
+local function Stamp()
+  if type(date) ~= "function" then return "?" end
+  local ok, formatted = pcall(date, "%Y-%m-%d %H:%M:%S")
+  if ok and type(formatted) == "string" then return formatted end
+  return "?"
+end
+
+-- failures is the list built by the Show/HideHandle walks below: a mover whose
+-- handle call threw is exactly what a blank edit mode looks like, and it is
+-- invisible in any readback taken afterwards.
+local function SnapshotMovers(phase, failures, overlayError)
+  if type(U.AppendDiagnostic) ~= "function" then return end
+
+  local entries, i = {}, nil
+  for i = 1, table.getn(moverOrder) do
+    local entry = movers[moverOrder[i]]
+    local handle = entry and entry.handle
+    table.insert(entries, {
+      id = entry and entry.id or "?",
+      order = i,
+      entryVisible = entry and IsEntryVisible(entry) and true or false,
+      frameShown = Probe(entry and entry.frame, "IsShown"),
+      frameVisible = Probe(entry and entry.frame, "IsVisible"),
+      frameLevel = Probe(entry and entry.frame, "GetFrameLevel"),
+      frameAlpha = Probe(entry and entry.frame, "GetAlpha"),
+      hasHandle = handle and true or false,
+      handleShown = Probe(handle, "IsShown"),
+      handleVisible = Probe(handle, "IsVisible"),
+      handleLevel = Probe(handle, "GetFrameLevel"),
+      handleWidth = Probe(handle, "GetWidth"),
+      handleHeight = Probe(handle, "GetHeight"),
+    })
+  end
+
+  U.AppendDiagnostic("moverLog", {
+    phase = phase,
+    at = Stamp(),
+    unlocked = unlocked and true or false,
+    moverCount = table.getn(moverOrder),
+    overlayError = overlayError,
+    failures = failures,
+    gridShown = Probe(grid, "IsShown"),
+    panelShown = Probe(editPanel, "IsShown"),
+    keysShown = Probe(editKeys, "IsShown"),
+    entries = entries,
+  })
+end
+
+-- One mover whose handle call throws must not cost every anchor after it in
+-- moverOrder, which an unguarded walk did. Each call is isolated and the
+-- failure recorded for the snapshot instead.
+local function WalkHandles(action)
+  local i, failures = nil, nil
+  for i = 1, table.getn(moverOrder) do
+    local entry = movers[moverOrder[i]]
+    local ok, err = pcall(action, entry)
+    if not ok then
+      failures = failures or {}
+      table.insert(failures, {
+        id = entry and entry.id or "?",
+        order = i,
+        err = tostring(err),
+      })
+      U.Error("mover " .. (entry and entry.id or "?") .. ": " .. tostring(err))
+    end
+  end
+  return failures
+end
+
+-- ---------------------------------------------------------------------------
 -- Public API
 -- ---------------------------------------------------------------------------
 
@@ -746,6 +926,9 @@ function U.RegisterMover(id, frame, options)
     label = options.label or id,
     default = options.default,
     visible = options.visible,
+    -- "BOTTOM" for a window that changes height with its content: it is then
+    -- always held by its bottom edge and grows upwards. See NormaliseAnchorEdge.
+    anchorEdge = options.anchorEdge,
     dragging = false,
     -- Measured drag activity; reported by U.MoverReport.
     enters = 0,
@@ -773,12 +956,19 @@ function U.UnlockUI()
   if U.db then U.db.locked = false end
 
   SetActiveMover(nil)
-  ShowEditOverlay()
 
-  local i
-  for i = 1, table.getn(moverOrder) do
-    ShowHandle(movers[moverOrder[i]])
+  -- Isolated for the same reason the handle walk is: the overlay failing must
+  -- not stop every anchor from being shown, and the error has to survive into
+  -- the snapshot rather than vanishing under error suppression.
+  local overlayOk, overlayError = pcall(ShowEditOverlay)
+  if not overlayOk then
+    U.Error("mover overlay: " .. tostring(overlayError))
+  else
+    overlayError = nil
   end
+
+  local failures = WalkHandles(ShowHandle)
+  SnapshotMovers("unlock", failures, overlayError and tostring(overlayError))
 
   U.Print(U.L("MOVER_ENTERED"))
 end
@@ -789,10 +979,8 @@ function U.LockUI()
 
   HideEditOverlay()
 
-  local i
-  for i = 1, table.getn(moverOrder) do
-    HideHandle(movers[moverOrder[i]])
-  end
+  local failures = WalkHandles(HideHandle)
+  SnapshotMovers("lock", failures)
 
   U.Print(U.L("MOVER_SAVED"))
 end
