@@ -485,6 +485,70 @@ function U.GetColor(texture)
 end
 
 -- ---------------------------------------------------------------------------
+-- Icon identity
+--
+-- Icon paths are not portable between the APIs that hand them out here. Three
+-- forms of the same art are already measured on this client:
+--
+--   * behavior.json / auras.unitbuff_unitdebuff_contract_unverified --
+--     UnitDebuff returns a UAsset reference, forward slashes, with a prefix and
+--     a suffix: "/Game/Interface/Icons/Spell_Fire_Immolation_TEX".
+--   * api.json / actionbars.action_texture_1.v1 -- GetActionTexture returns
+--     neither: "Interface/Icons/INV_Staff_08".
+--   * This addon's own fallbacks, UnrealPfUI's filter tables and anything
+--     ported from Vanilla use backslashes: "Interface\Icons\INV_Staff_08".
+--
+-- Comparing any two of those as strings fails.
+--
+-- So no code compares two icon paths directly. Everything that has to decide
+-- "is this the same icon" folds both sides through here first: leaf name,
+-- lowercased, with the client's "_tex" suffix and any file extension removed.
+-- That is what makes modules/hots.lua able to match a spellbook texture from
+-- GetSpellTexture against a buff texture from UnitBuff without either side
+-- having to know which form the client used.
+-- ---------------------------------------------------------------------------
+function U.IconKey(texture)
+  if type(texture) ~= "string" or texture == "" then return nil end
+
+  local key = string.lower(texture)
+  -- Both separators, because the two forms above disagree about which one the
+  -- path uses and a mixed path is cheaper to handle than to rule out.
+  key = string.gsub(key, "^.*[\\/]", "")
+  key = string.gsub(key, "%.[a-z0-9]+$", "")
+  key = string.gsub(key, "_tex$", "")
+  if key == "" then return nil end
+  return key
+end
+
+-- ---------------------------------------------------------------------------
+-- Spell rank subtext -> number
+--
+-- knowledge.json / spellbook.spell_ranks_not_always_ascending_in_slot_order
+-- (USER_CONFIRMED_INGAME, BEHAVIOR_VERIFIED): the ranks of one spell are
+-- adjacent in this client's spellbook but are not reliably in ascending slot
+-- order -- a level-10 priest had Shadow Word: Pain listed Rank 2 then Rank 1
+-- while Smite in the same book ascended. Position therefore says nothing about
+-- which slot holds the highest rank, and anything that needs the answer has to
+-- compare the rank numbers themselves.
+--
+-- The number comes from GetSpellName's second return, the localized rank
+-- subtext. Reading the first run of digits out of it is locale-free, which is
+-- the point: "Rank 4" and every translation of it give 4, and a subtext that
+-- carries no number at all (a shapeshift form, a summon) gives nil rather than
+-- a wrong rank.
+--
+-- Central because two features now depend on it for different reasons:
+-- modules/spellbook.lua's highest-rank filter, and modules/castbar.lua's
+-- spellbook walk, whose rank feeds the rank-dependent durations in
+-- core/auradata.lua.
+-- ---------------------------------------------------------------------------
+function U.SpellRankNumber(subtext)
+  if type(subtext) ~= "string" or subtext == "" then return nil end
+  local _, _, digits = string.find(subtext, "(%d+)")
+  return tonumber(digits)
+end
+
+-- ---------------------------------------------------------------------------
 -- Region suppression
 --
 -- knowledge.json / rendering.native_texture_strip_requires_alpha: native
@@ -507,6 +571,56 @@ function U.HideRegion(region)
     if region.Hide then region:Hide() end
   end)
   return true
+end
+
+-- ---------------------------------------------------------------------------
+-- Mouse click identity
+--
+-- knowledge.json / scripts.handler_arguments_direct: this client does not
+-- guarantee where a script handler's arguments land, and the Vanilla-era
+-- `arg1` global may or may not be populated. modules/rogue.lua established
+-- the working resolution order for an OnClick handler on this client -- first
+-- string argument, then the legacy global -- and modules/bagfavorites.lua now
+-- needs the identical answer, so it lives here rather than being copied.
+--
+-- Returns "LeftButton" / "RightButton" / ... or nil when the button cannot be
+-- identified, which every caller must treat as "do not claim this click".
+-- ---------------------------------------------------------------------------
+function U.ClickButtonName(a, b)
+  if type(a) == "string" then return a end
+  if type(b) == "string" then return b end
+  local legacy = U.G("arg1")
+  if type(legacy) == "string" then return legacy end
+  return nil
+end
+
+-- True while the cursor is already carrying an item or a spell. A click chord
+-- on an item button must not claim the click in that state: the client is
+-- about to drop what is on the cursor into the slot, and swallowing the click
+-- would strand it there.
+function U.CursorBusy()
+  local hasItem = U.G("CursorHasItem")
+  if type(hasItem) == "function" then
+    local ok, value = pcall(hasItem)
+    if ok and value then return true end
+  end
+
+  local hasSpell = U.G("CursorHasSpell")
+  if type(hasSpell) == "function" then
+    local ok, value = pcall(hasSpell)
+    if ok and value then return true end
+  end
+  return false
+end
+
+-- True while the player is typing in a chat edit box. Shift-click chords on
+-- item buttons must yield to it: a Shift-click with chat open is the client's
+-- item-link gesture and taking it over would break linking items into chat.
+function U.ChatEditBoxActive()
+  local edit = U.G("ChatFrameEditBox")
+  if not edit or type(edit.IsVisible) ~= "function" then return false end
+  local ok, visible = pcall(edit.IsVisible, edit)
+  return ok and visible and true or false
 end
 
 -- ---------------------------------------------------------------------------
@@ -698,6 +812,23 @@ function U.PickupContainerSlot(bag, slot)
   end
 
   return pcall(PickupContainerItem, bag, slot) and true or false
+end
+
+-- ---------------------------------------------------------------------------
+-- Unit-object availability
+--
+-- Shared by party auras and frame colours. UnitExists stays true for distant
+-- group members; UnitIsVisible reports whether their world object is loaded.
+-- This is the existing aura guard (auras.party_out_of_range_duplicate_slots),
+-- not a spell-range or line-of-sight test. An absent/failing API stays unknown
+-- so callers do not hide or grey every party member on an unreadable check.
+-- ---------------------------------------------------------------------------
+function U.UnitObjectVisible(unit)
+  local fn = U.G("UnitIsVisible")
+  if type(fn) ~= "function" then return nil end
+  local ok, value = pcall(fn, unit)
+  if not ok then return nil end
+  return (value and value ~= 0) and true or false
 end
 
 -- ---------------------------------------------------------------------------

@@ -1661,17 +1661,12 @@ function U.CreateSlider(parent, options)
   end
 
   -- Drag thumb. A native Slider widget produced no visible or draggable
-  -- control in-session, so this reuses core/mover.lua's proven drag recipe
-  -- instead: a Button (the only widget type this client delivers OnDragStart
-  -- to), RegisterForDrag, SetMovable immediately before each drag, and a
-  -- throwaway StartMoving/StopMovingOrSizing pair before the real StartMoving.
-  --
-  -- The client moves the thumb freely rather than constraining it to the
-  -- track, so OnDragStop reads its dropped position back and snaps it onto
-  -- the track at the nearest valid value; GetLeft/GetWidth have no compact
-  -- record either way, so the readback is pcall'd and a failed read just
-  -- snaps the thumb back to the current value instead of leaving it adrift.
-  local THUMB_WIDTH, THUMB_HEIGHT = 12, 14
+  -- control in-session, so this is still a Button (the only widget type this
+  -- client delivers OnDragStart to). Its native movement remains invisible;
+  -- the verified GetCursorPosition/GetEffectiveScale pair supplies X to the
+  -- separate visible square, permanently locking that square's Y to zero and
+  -- clamping the entire shape inside the track.
+  local THUMB_WIDTH, THUMB_HEIGHT = 14, 14
 
   local thumb = CreateFrame("Button", options.name and (options.name .. "Thumb"),
                             track)
@@ -1679,15 +1674,29 @@ function U.CreateSlider(parent, options)
   thumb:SetHeight(THUMB_HEIGHT)
   pcall(thumb.EnableMouse, thumb, true)
   pcall(thumb.RegisterForDrag, thumb, "LeftButton")
-  U.CreateBackdrop(thumb, { background = M.color.accent, border = M.color.border })
   Part(control, thumb)
   control.thumb = thumb
 
+  -- StartMoving is required on this client for a matching OnDragStop, but the
+  -- frame it moves is unconstrained. Keep that Button as an invisible input
+  -- handle and draw the square on a separate, mouse-transparent frame whose
+  -- anchor remains under this component's control.
+  local visual = CreateFrame("Frame", options.name and
+                             (options.name .. "ThumbVisual"), track)
+  visual:SetWidth(THUMB_WIDTH)
+  visual:SetHeight(THUMB_HEIGHT)
+  U.CreateBackdrop(visual, {
+    background = M.color.accent,
+    border = M.color.border,
+  })
+  Part(control, visual)
+  control.thumbVisual = visual
+
   thumb:SetScript("OnEnter", function()
-    U.SetBorderColor(thumb, M.Unpack(M.color.moverEdge))
+    U.SetBorderColor(visual, M.Unpack(M.color.moverEdge))
   end)
   thumb:SetScript("OnLeave", function()
-    U.SetBorderColor(thumb, M.Unpack(M.color.border))
+    U.SetBorderColor(visual, M.Unpack(M.color.border))
   end)
 
   local function PlaceThumb(value)
@@ -1698,6 +1707,8 @@ function U.CreateSlider(parent, options)
     end
     thumb:ClearAllPoints()
     thumb:SetPoint("LEFT", track, "LEFT", offset, 0)
+    visual:ClearAllPoints()
+    visual:SetPoint("LEFT", track, "LEFT", offset, 0)
   end
 
   -- Minimum / maximum captions, anchored to the single edge each belongs to
@@ -1759,13 +1770,9 @@ function U.CreateSlider(parent, options)
   if readout then readout:SetPoint("CENTER", box, "CENTER", 0, 0) end
   control.readout = readout
 
-  -- Sets the displayed value without touching the thumb's anchor. Split out
-  -- from Publish because re-anchoring the thumb (PlaceThumb) while a native
-  -- drag is in progress was tried and confirmed to break the drag outright
-  -- (knowledge.json / widgets.thumb_reposition_during_drag_breaks_drag) --
-  -- calling SetPoint on a frame mid-StartMoving stops the client from
-  -- tracking further mouse movement. The live per-tick readout below must
-  -- therefore only read the thumb's position, never write it.
+  -- Sets the displayed value without snapping the thumb to a stepped value.
+  -- During a drag the square follows the cursor continuously while the
+  -- readout is rounded; Publish performs the final step snap on release.
   local function UpdateReadout(raw)
     local clamped = Clamp(raw)
     control.current = clamped
@@ -1783,15 +1790,18 @@ function U.CreateSlider(parent, options)
     return clamped
   end
 
-  -- Converts the thumb's own on-screen position back to a value. GetLeft/
-  -- GetWidth have no compact record either way, so every call is pcall'd; a
-  -- failed read returns nil and the caller falls back to the last known value
-  -- instead of guessing one.
-  local function ReadThumbValue()
-    local leftOk, thumbLeft = pcall(thumb.GetLeft, thumb)
+  -- Converts the cursor's X position to a value and a legal thumb offset.
+  -- Every geometry read is guarded so a control that has not laid out yet
+  -- simply keeps its last valid value instead of jumping.
+  local function ReadCursorValue()
+    if type(GetCursorPosition) ~= "function" then return nil end
+
+    local cursorOk, cursorX = pcall(GetCursorPosition)
+    local scaleOk, scale = pcall(track.GetEffectiveScale, track)
     local trackOk, trackLeft = pcall(track.GetLeft, track)
     local widthOk, trackWidth = pcall(track.GetWidth, track)
-    if not (leftOk and trackOk and widthOk and tonumber(thumbLeft) and
+    if not (cursorOk and scaleOk and trackOk and widthOk and
+            tonumber(cursorX) and tonumber(scale) and scale > 0 and
             tonumber(trackLeft) and tonumber(trackWidth)) then
       return nil
     end
@@ -1799,54 +1809,79 @@ function U.CreateSlider(parent, options)
     local usable = trackWidth - THUMB_WIDTH
     if usable <= 0 then return nil end
 
-    local offset = thumbLeft - trackLeft
+    -- The cursor owns the thumb centre. Clamping the left-edge offset to the
+    -- usable span keeps both circular edges inside their matching track edge.
+    local offset = cursorX / scale - trackLeft - THUMB_WIDTH / 2
     if offset < 0 then offset = 0 end
     if offset > usable then offset = usable end
 
-    return min + offset / usable * (max - min)
+    return min + offset / usable * (max - min), offset
   end
 
-  -- The native drag moves the thumb freely in both axes and there is no
-  -- verified cursor-position API to build a constrained drag from scratch, so
-  -- the Y axis cannot be locked live -- it can only be corrected once the
-  -- drag ends (below). While dragging, this only reads the thumb's position
-  -- back and updates the readout so the number tracks the drag live; it never
-  -- repositions the thumb. Runs on the shared driver (core/init.lua's
-  -- U.RegisterUpdate) instead of an OnUpdate on the thumb itself, per
-  -- knowledge.json / scripts.child_onupdate_unreliable.
+  -- Runs on the shared driver (core/init.lua's U.RegisterUpdate) instead of an
+  -- OnUpdate on the thumb itself, per scripts.child_onupdate_unreliable.
   local dragTicker = "slider." .. (options.name or tostring(thumb))
+  local dragging = false
+
+  -- OnDragStop is expected after the proven StartMoving recipe below. The
+  -- button-state check is a second teardown path for a missed callback, which
+  -- otherwise leaves an every-frame cursor follower running indefinitely.
+  local function LeftButtonStillDown()
+    if type(IsMouseButtonDown) ~= "function" then return true end
+    local ok, down = pcall(IsMouseButtonDown, "LeftButton")
+    if not ok then return true end
+    return down and true or false
+  end
+
+  local function FinishDrag()
+    if not dragging then return end
+    dragging = false
+    U.UnregisterUpdate(dragTicker)
+    pcall(thumb.StopMovingOrSizing, thumb)
+
+    local value = ReadCursorValue()
+    if value then
+      Publish(value)
+    else
+      PlaceThumb(control.current or min)
+    end
+  end
 
   local function LiveReadoutFromDrag()
-    local value = ReadThumbValue()
-    if value then UpdateReadout(value) end
+    if not LeftButtonStillDown() then
+      FinishDrag()
+      return
+    end
+
+    local value, offset = ReadCursorValue()
+    if not value then return end
+
+    visual:ClearAllPoints()
+    visual:SetPoint("LEFT", track, "LEFT", offset, 0)
+    UpdateReadout(value)
   end
 
   thumb:SetScript("OnDragStart", function()
     if not pcall(thumb.SetMovable, thumb, true) then return end
-    -- Collapses whatever multi-point anchor the thumb currently has down to
-    -- the single point the client will actually move, then starts the real
-    -- drag -- the same throwaway pair core/mover.lua's StartDrag uses.
     if pcall(thumb.StartMoving, thumb) then
       pcall(thumb.StopMovingOrSizing, thumb)
     end
-    pcall(thumb.StartMoving, thumb)
+    if not pcall(thumb.StartMoving, thumb) then return end
+
+    dragging = true
     U.RegisterUpdate(dragTicker, 0, LiveReadoutFromDrag)
+    LiveReadoutFromDrag()
   end)
 
-  thumb:SetScript("OnDragStop", function()
-    U.UnregisterUpdate(dragTicker)
-    pcall(thumb.StopMovingOrSizing, thumb)
+  thumb:SetScript("OnDragStop", FinishDrag)
 
-    -- Only now is the thumb's anchor touched: this reads the final dropped
-    -- position and snaps the thumb onto the track (clamped X, locked Y),
-    -- which is also where the axis lock actually takes effect.
-    local value = ReadThumbValue()
+  -- The track itself is a direct-position surface: a click publishes the
+  -- nearest stepped value and places both the input handle and visible square.
+  pcall(track.EnableMouse, track, true)
+  track:SetScript("OnMouseDown", function()
+    local value = ReadCursorValue()
     if value then
       Publish(value)
-    else
-      -- Position could not be read back; snap to the last known value rather
-      -- than leave the thumb wherever the client dropped it.
-      PlaceThumb(control.current or min)
     end
   end)
 
@@ -2176,6 +2211,116 @@ function U.HideMoneyRows()
   end
 end
 
+-- The panel itself, for a caller that has to stack something under it. Nil
+-- while nothing is showing, so a caller can fall back to the tooltip.
+function U.MoneyRowsFrame()
+  if not moneyPanel then return nil end
+  local ok, shown = pcall(moneyPanel.IsShown, moneyPanel)
+  if not ok or not shown then return nil end
+  return moneyPanel
+end
+
+-- ---------------------------------------------------------------------------
+-- Tooltip note
+--
+-- One line of dim explanatory text hung under a tooltip -- currently the bag
+-- favourite shortcut (modules/bagfavorites.lua). Its own owned frame for the
+-- same reason the money panel above is one: USER_CONFIRMED_INGAME, this client
+-- accepts lines appended to a populated GameTooltip and then declines to
+-- relayout for them, so nothing an addon wants to add can be a tooltip line.
+--
+-- Separate from the money panel rather than a row inside it because the two
+-- are independent: an item with no known sell price shows no money panel at
+-- all, and the shortcut still has to be legible. The caller decides what this
+-- hangs under -- the money panel when there is one, the tooltip when there is
+-- not -- so the pieces stack in one column either way.
+-- ---------------------------------------------------------------------------
+local notePanel
+
+local NOTE_PANEL_INSET = 6
+local NOTE_ROW_HEIGHT = 14
+local NOTE_WIDTH_TICKER = "widgets.note-width"
+
+local function ApplyNotePanelWidth()
+  if not notePanel then return end
+
+  local width = notePanel.contentWidth or 0
+  local anchorFrame = notePanel.matchFrame
+
+  if anchorFrame then
+    local ok, value = pcall(anchorFrame.GetWidth, anchorFrame)
+    local anchorWidth = ok and tonumber(value) or nil
+    if anchorWidth and anchorWidth > width then width = anchorWidth end
+  end
+
+  if width <= 0 or width == notePanel.appliedWidth then return end
+  notePanel.appliedWidth = width
+  notePanel:SetWidth(width)
+end
+
+-- anchorFrame: what the note hangs under. matchFrame: the frame whose width it
+-- should grow to, read from the next shared-driver tick onwards for the reason
+-- ApplyMoneyPanelWidth documents -- a width read during this call still
+-- describes the previous tooltip's contents.
+function U.ShowTooltipNote(anchorFrame, text, matchFrame)
+  if not anchorFrame or type(text) ~= "string" or text == "" then
+    U.HideTooltipNote()
+    return nil
+  end
+
+  if not notePanel then
+    notePanel = U.CreatePanel(UIParent, {
+      name = "UnrealUITooltipNote",
+      width = 10,
+      height = 10,
+    })
+    pcall(notePanel.SetFrameStrata, notePanel, "TOOLTIP")
+    notePanel.label = U.CreateLabel(notePanel, {
+      size = M.fontSize.small,
+      color = M.color.textDim,
+      inherits = "GameFontNormalSmall",
+      justify = "LEFT",
+    })
+    if notePanel.label then
+      notePanel.label:SetPoint("TOPLEFT", notePanel, "TOPLEFT",
+                              NOTE_PANEL_INSET, -NOTE_PANEL_INSET)
+    end
+    notePanel:Hide()
+  end
+
+  if not notePanel.label then return nil end
+  notePanel.label:SetText(text)
+
+  notePanel.contentWidth = LabelWidth(notePanel.label) + NOTE_PANEL_INSET * 2
+  notePanel.matchFrame = nil
+  notePanel.appliedWidth = nil
+  ApplyNotePanelWidth()
+
+  notePanel:SetHeight(NOTE_ROW_HEIGHT + NOTE_PANEL_INSET * 2)
+  notePanel:ClearAllPoints()
+  notePanel:SetPoint("TOPLEFT", anchorFrame, "BOTTOMLEFT", 0, 0)
+  notePanel:Show()
+  -- rendering.parent_alpha_not_propagated: the text is shown explicitly.
+  notePanel.label:Show()
+
+  notePanel.matchFrame = matchFrame
+  if matchFrame then
+    U.RegisterUpdate(NOTE_WIDTH_TICKER, 0, ApplyNotePanelWidth)
+  else
+    U.UnregisterUpdate(NOTE_WIDTH_TICKER)
+  end
+
+  return notePanel
+end
+
+function U.HideTooltipNote()
+  U.UnregisterUpdate(NOTE_WIDTH_TICKER)
+  if notePanel then
+    notePanel.matchFrame = nil
+    notePanel:Hide()
+  end
+end
+
 -- The bank purchase hover is one row of the same panel. It keeps its own
 -- centred anchor so the confirmed placement under that button does not move.
 local function ShowPricePanel(anchorFrame, copper)
@@ -2342,7 +2487,8 @@ local function BuildConfirmDialog()
   return dialog
 end
 
--- options: text, detail, acceptText, cancelText, onAccept, owner, centered
+-- options: text, detail, acceptText, cancelText, onAccept, onCancel, owner,
+-- centered
 --
 -- `owner` is an opaque tag so a caller can take its own dialog down again
 -- (U.HideConfirm(owner)) without cancelling one another window put up.
@@ -2375,6 +2521,16 @@ function U.ShowConfirm(options)
   dialog.accept:SetScript("OnClick", function()
     dialog:Hide()
     if type(options.onAccept) == "function" then options.onAccept() end
+  end)
+
+  -- Cancel is normally just "put the dialog away", which is why the build
+  -- above already wires it. A caller that offers a real second choice --
+  -- modules/bags.lua asking whether a bulk run should include the favourite
+  -- items in it -- passes onCancel and gets that branch instead. Re-set on
+  -- every show so one caller's callback cannot outlive its dialog.
+  dialog.cancel:SetScript("OnClick", function()
+    dialog:Hide()
+    if type(options.onCancel) == "function" then options.onCancel() end
   end)
 
   -- rendering.parent_alpha_not_propagated: every part is shown explicitly

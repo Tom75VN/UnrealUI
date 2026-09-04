@@ -54,7 +54,12 @@
 --
 -- Being hidden suspends the engagement rather than ending it: a rogue who picks
 -- a target while stealthed and then opens used to arrive with nothing watching,
--- because the very first check had already thrown the watch away.
+-- because the very first check had already thrown the watch away. It does end
+-- any attack that is already running, though -- refusing to start one does
+-- nothing for a rogue who vanishes mid-fight, and the next swing reveals them.
+-- There is no player-side StopAttack on this client, so the stop is the same
+-- toggle, which is why it is only ever issued against a state the client
+-- itself reported; see StopAttackWhileHidden.
 --
 -- Bow/gun Shoot uses its action's min/max range. That takes precedence over
 -- the wider melee-interact approximation, including where both report true.
@@ -389,6 +394,98 @@ function U.IsAttackTargetValid()
   return TargetIsAttackable()
 end
 
+-- ---------------------------------------------------------------------------
+-- Being hidden must also stop an attack that is already running
+-- ---------------------------------------------------------------------------
+
+-- Refusing to start one is not enough: a rogue who vanishes mid-fight, or a
+-- druid who prowls with the swing still up, is revealed again by the very next
+-- swing, and the client offers no player-side StopAttack -- PetStopAttack is
+-- the only stop in the documentation. So the running attack is ended with the
+-- same toggles that start it.
+--
+-- Which makes the reading of the current state the whole safety argument here,
+-- and it is the opposite of the one starting an attack makes. A stop issued
+-- against a state that turns out to be wrong does not miss a swing, it STARTS
+-- one while hidden -- exactly the failure this exists to prevent. So a stop is
+-- only ever issued against a state the client itself reported: the ranged
+-- auto-repeat flag, or the live Attack action pair once it has proven it
+-- reports at all. The module's fallback belief is never enough. On a character
+-- with no Attack action anywhere on the bars the melee toggle stays
+-- unreadable (combat.attack_toggle_state_unreadable_without_attack_action) and
+-- the melee stop therefore cannot fire; doing nothing is the safe half of that
+-- gap.
+--
+-- One attempt per mode per hidden episode, for the same reason: a state
+-- readback that lags the toggle by a tick would otherwise turn the attack
+-- straight back on, and the range watch asks several times a second. The flags
+-- re-arm as soon as the player is no longer hidden.
+local hiddenStoppedMelee = false
+local hiddenStoppedRanged = false
+
+local function StopAttackWhileHidden()
+  local ranged, _, rangedSlot = U.RangedAttackState()
+  if ranged and rangedSlot and not hiddenStoppedRanged then
+    local useAction = U.G("UseAction")
+    if type(useAction) == "function" then
+      hiddenStoppedRanged = true
+      -- Dropped before the toggle so this module's own STOP_AUTOREPEAT_SPELL
+      -- is not classified as the player retiring the shot.
+      followMode = nil
+      followConfirmed = false
+      followPendingUntil = 0
+      switchingAttack = true
+      pcall(useAction, rangedSlot)
+      switchingAttack = false
+    end
+  end
+
+  local melee, readable = IsAttacking()
+  if melee and readable and not hiddenStoppedMelee then
+    local attackTarget = U.G("AttackTarget")
+    if type(attackTarget) == "function" then
+      hiddenStoppedMelee = true
+      followMode = nil
+      followConfirmed = false
+      followPendingUntil = 0
+      switchingAttack = true
+      pcall(attackTarget)
+      switchingAttack = false
+      attacking = false
+      attackConfirmed = false
+    end
+  end
+end
+
+-- true while the player is hidden, in which case any running attack has just
+-- been stopped. Being hidden still suspends the engagement rather than ending
+-- it: the target picked from stealth is the one the opener lands on.
+local function HiddenGate()
+  if not config or not config.enabled then return false end
+  local class = PlayerClass()
+  if class ~= "ROGUE" and class ~= "DRUID" then return false end
+
+  if not IsHidden() then
+    hiddenStoppedMelee = false
+    hiddenStoppedRanged = false
+    return false
+  end
+
+  StopAttackWhileHidden()
+  return true
+end
+
+-- Becoming hidden has to reach the gate even when nothing is watching a
+-- target: the range watch is only armed by this module's own engagements, and
+-- the attack a Vanish has to end is usually one the player started themselves.
+-- Deferred so the aura list is read after the client has finished applying the
+-- state change that invalidated it.
+local function OnHiddenStateChanged()
+  ForgetHidden()
+  if not config or not config.enabled then return end
+  U.DeferOnce("autoattack.hidden", HiddenGate)
+end
+
 -- U.MeleeInteractRange is the shared CheckInteractDistance approximation, and
 -- it returns nil when the client cannot answer. That degrades open: an
 -- unreadable range call leaves auto attack behaving as it did before this gate
@@ -460,8 +557,9 @@ function TryStartAttack(epoch)
     StopRangeWatch()
     return
   end
-  -- Hidden is a state to wait out, not a reason to forget the target.
-  if IsHidden() then
+  -- Hidden is a state to wait out, not a reason to forget the target -- but
+  -- any attack already running is stopped rather than left to reveal it.
+  if HiddenGate() then
     WatchAttackRange(epoch)
     return
   end
@@ -703,9 +801,9 @@ function AA:OnEnable()
   U.RegisterEvent("ACTIONBAR_SLOT_CHANGED", ForgetAttackSlot)
   U.RegisterEvent("ACTIONBAR_PAGE_CHANGED", ForgetAttackSlot)
   U.RegisterEvent("UPDATE_BONUS_ACTIONBAR", ForgetAttackSlot)
-  U.RegisterEvent("UPDATE_BONUS_ACTIONBAR", ForgetHidden)
-  U.RegisterEvent("PLAYER_AURAS_CHANGED", ForgetHidden)
-  U.RegisterEvent("UPDATE_SHAPESHIFT_FORM", ForgetHidden)
+  U.RegisterEvent("UPDATE_BONUS_ACTIONBAR", OnHiddenStateChanged)
+  U.RegisterEvent("PLAYER_AURAS_CHANGED", OnHiddenStateChanged)
+  U.RegisterEvent("UPDATE_SHAPESHIFT_FORM", OnHiddenStateChanged)
   U.RegisterEvent("PLAYER_ENTERING_WORLD", ForgetAttackSlot)
   U.RegisterEvent("ACTIONBAR_SLOT_CHANGED", U.InvalidateRangedAttack)
   U.RegisterEvent("ACTIONBAR_PAGE_CHANGED", U.InvalidateRangedAttack)

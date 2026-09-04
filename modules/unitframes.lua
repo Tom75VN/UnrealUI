@@ -216,6 +216,7 @@ do
     table.insert(SPECS, {
       id = "party" .. i,
       unit = "party" .. i,
+      partyIndex = i,
       name = "Party" .. i,
       labelKey = "MOVER_LABEL_PARTY_N", labelArg = i,
       -- Same treatment as player/target/pet: no separate values strip -- the
@@ -228,6 +229,8 @@ do
       -- health readout stronger hierarchy than the compact power/pet rows.
       healthLabelSize = M.fontSize.large,
       healthLabelInherits = "GameFontNormal",
+      nameClassColor = true,
+      rangeCheck = true,
       powerLabels = { right = "powerdyn" },
       anchorTo = PARTY_ANCHOR,
       -- No fixed offset: LayoutParty owns every position inside the block,
@@ -494,6 +497,13 @@ local function ReadIdentity(frame)
   else
     data.connected = true
   end
+  -- Only party-member frames use distance styling. The same object-visibility
+  -- guard already protects party auras; nil means the check was unreadable.
+  data.outOfRange = frame.spec.rangeCheck and data.connected ~= false and
+                   U.UnitObjectVisible(unit) == false or false
+  -- Distant members still report live health. Reserve grey for offline units;
+  -- distance only darkens the background and the existing bar colours.
+  data.muted = data.connected == false
   data.class = UnitClassToken(unit)
   data.reaction = ApiNumber("UnitReaction", unit, "player")
 end
@@ -521,6 +531,17 @@ local function ReadHealth(frame)
   -- dynamic text carries no extra information, so only the percentage is
   -- drawn.
   data.healthIsPercent = data.healthMax == 100 and not REAL_HEALTH_UNITS[unit]
+
+  -- A disconnected unit stops reporting, and UnitHealth keeps handing back the
+  -- last value it saw -- which draws a live-looking fill underneath the offline
+  -- word. Drain the bar instead, as UnrealPfUI's RefreshUnitState does for the
+  -- same state. connected is only read by ReadIdentity, so on a health/vitals
+  -- pass this is what the last full refresh established: at most one second
+  -- old, and the drain lands on the same pass that prints the word.
+  if data.connected == false then
+    data.health = 0
+    data.healthPercent = 0
+  end
 end
 
 local function ReadPower(frame)
@@ -530,6 +551,10 @@ local function ReadPower(frame)
   data.power = ApiNumber("UnitMana", unit) or 0
   data.powerMax = ApiNumber("UnitManaMax", unit) or 0
   data.powerType = ApiNumber("UnitPowerType", unit)
+
+  -- Same stale reading as health above, so the second bar drains with it
+  -- rather than leaving the frame half alive.
+  if data.connected == false then data.power = 0 end
 end
 
 local function ReadUnit(frame)
@@ -589,14 +614,25 @@ end
 
 -- Shared by StatusText's name/level tokens and the target frame's split
 -- name/level labels (BuildBarLabels), so both colour text identically.
-local function ColoredName(data)
+local function ColoredName(data, nameClassColor)
   local name, truncated = TruncateName(data.name)
   name = name or U.G("UNKNOWN") or "Unknown"
-  local nr, ng, nb = PastelText(UnitNameColor(data))
+  if data.muted then
+    return Hex(M.Unpack(M.color.textDim)) .. name, truncated
+  end
+  local nr, ng, nb = UnitNameColor(data)
+  -- Party player names retain the full shared class colour instead of the
+  -- muted pastel treatment, making classes easier to distinguish at a glance.
+  if not (nameClassColor and data.isPlayer and data.class) then
+    nr, ng, nb = PastelText(nr, ng, nb)
+  end
   return Hex(nr, ng, nb) .. name, truncated
 end
 
 local function ColoredLevel(data)
+  if data.muted then
+    return Hex(M.Unpack(M.color.textDim)) .. LevelString(data)
+  end
   local lr, lg, lb = PastelText(DifficultyColor(data.level))
   return Hex(lr, lg, lb) .. LevelString(data)
 end
@@ -609,6 +645,10 @@ local function StatusText(frame, token)
   if not token or token == "none" then return "" end
 
   if token == "nameplain" then
+    if data.muted then
+      return Hex(M.Unpack(M.color.textDim)) ..
+             (TruncateName(data.name) or U.G("UNKNOWN") or "Unknown")
+    end
     return TruncateName(data.name) or U.G("UNKNOWN") or "Unknown"
   end
 
@@ -617,7 +657,7 @@ local function StatusText(frame, token)
   end
 
   if token == "unit" or token == "unitrev" or token == "name" then
-    local colored = ColoredName(data)
+    local colored = ColoredName(data, frame.spec.nameClassColor)
 
     if token == "name" then return colored end
 
@@ -628,7 +668,15 @@ local function StatusText(frame, token)
   end
 
   if token == "healthdyn" then
+    -- A disconnected unit stops reporting, so its last health value is stale
+    -- and the offline word replaces the readout rather than sitting beside it.
+    -- Match the offline name and level with the shared muted-grey text.
+    if data.connected == false then
+      return Hex(M.Unpack(M.color.textDim)) .. U.L("UF_OFFLINE")
+    end
+
     local hr, hg, hb = PastelText(Gradient(data.healthPercent))
+    if data.muted then hr, hg, hb = M.Unpack(M.color.textDim) end
     local prefix = Hex(hr, hg, hb)
 
     if data.isDead then return prefix .. (U.G("DEAD") or "Dead") end
@@ -646,7 +694,12 @@ local function StatusText(frame, token)
   end
 
   if token == "powerdyn" then
+    -- Nothing to report while the unit is offline, and a bare "0" beside the
+    -- offline word reads as a real reading rather than as missing data.
+    if data.connected == false then return "" end
+
     local pr, pg, pb = PastelText(M.Unpack(M.power[data.powerType] or M.power.fallback))
+    if data.muted then pr, pg, pb = M.Unpack(M.color.textDim) end
     local prefix = Hex(pr, pg, pb)
 
     -- Only mana is worth a percentage; rage and energy are already a 0-100
@@ -682,8 +735,10 @@ local unitMouse = {}
 local classicNative = {
   active = false,
   roots = {
-    { id = "player",       names = { "PlayerFrame" } },
-    { id = "target",       names = { "TargetFrame" } },
+    { id = "player",       names = { "PlayerFrame" },
+      auraAnchorName = "PlayerFrameHealthBar" },
+    { id = "target",       names = { "TargetFrame" },
+      auraAnchorName = "TargetFrameHealthBar" },
     { id = "targettarget", names = { "TargetofTargetFrame", "TargetofTarget" } },
     { id = "pet",          names = { "PetFrame" } },
     { id = "party1",       names = { "PartyMemberFrame1" } },
@@ -770,8 +825,14 @@ function classicNative.Bind(entry, order)
   end
 
   anchor.classicNativeFrame = native
+  anchor.uuiClassicEntry = entry
+  -- Publish only the global name. The aura module resolves the native child
+  -- solely when it must write a changed point; it does not retain or poll the
+  -- health-bar object for width or other geometry.
+  anchor.uuiAuraTopAnchorName = entry.auraAnchorName
   entry.anchor = anchor
   entry.native = native
+  entry.order = order
 
   -- unitframes.player_click_hit_route.v1 first confirmed that neither the
   -- native Button nor its mouse-enabled StatusBar children deliver Lua mouse
@@ -779,9 +840,14 @@ function classicNative.Bind(entry, order)
   -- overlay variant then verified both exact production actions end-to-end:
   -- left-click TargetUnit("player") and right-click ToggleDropDownMenu both
   -- succeed. Reproduce that measured construction above every native root.
-  local catcherName = "UnrealUIClassicUnitClick" .. entry.id
-  local catcherOk, catcher = pcall(CreateFrame, "Button", catcherName, UIParent)
-  if catcherOk and catcher then
+  local catcher = anchor.uuiClassicClickCatcher
+  if not catcher then
+    local catcherName = "UnrealUIClassicUnitClick" .. entry.id
+    local catcherOk
+    catcherOk, catcher = pcall(CreateFrame, "Button", catcherName, UIParent)
+    if not catcherOk then catcher = nil end
+  end
+  if catcher then
     anchor.uuiClassicClickCatcher = catcher
     pcall(catcher.SetFrameStrata, catcher, "LOW")
     -- Later roots such as target-of-target and pet can overlap their owner;
@@ -803,6 +869,7 @@ function classicNative.Bind(entry, order)
   if not native.uuiClassicAnchorHooked then
     native.uuiClassicAnchorHooked = true
     U.PostHookScript(native, "OnShow", function()
+      if anchor.classicNativeFrame ~= native then return end
       classicNative.Anchor(anchor, native)
       if anchor.uuiClassicClickCatcher then
         pcall(anchor.uuiClassicClickCatcher.Show,
@@ -810,6 +877,7 @@ function classicNative.Bind(entry, order)
       end
     end)
     U.PostHookScript(native, "OnHide", function()
+      if anchor.classicNativeFrame ~= native then return end
       if anchor.uuiClassicClickCatcher then
         pcall(anchor.uuiClassicClickCatcher.Hide,
               anchor.uuiClassicClickCatcher)
@@ -823,9 +891,64 @@ function classicNative.Reanchor()
   local i
   for i = 1, table.getn(classicNative.roots) do
     local entry = classicNative.roots[i]
-    if entry.anchor and entry.native then
+    local live = classicNative.Resolve(entry.names)
+    if live and live ~= entry.native then
+      classicNative.Bind(entry, entry.order or i)
+    elseif entry.anchor and entry.native then
       classicNative.Anchor(entry.anchor, entry.native)
     end
+  end
+end
+
+-- Is the native root still held by the mover anchor? The client has other
+-- native surfaces that add or replace anchor points during their own refresh,
+-- and the reported corpse frame no longer followed the Target mover. Check the
+-- complete point count as well as point 1: an extra point can displace a frame
+-- while point 1 still looks like ours.
+function classicNative.TargetDrifted(anchor, native)
+  if not anchor or not native then return false end
+
+  if type(native.GetNumPoints) == "function" then
+    local okCount, count = pcall(native.GetNumPoints, native)
+    if okCount and tonumber(count) and tonumber(count) ~= 1 then return true end
+  end
+
+  local point, relative, relativePoint, x, y = U.GetFramePoint(native, 1)
+  if type(point) ~= "string" then return true end
+  if relative ~= anchor then return true end
+  if point ~= "CENTER" or relativePoint ~= "CENTER" then return true end
+  if math.abs(x) > 0.5 or math.abs(y) > 0.5 then return true end
+  return false
+end
+
+-- The client occasionally leaves its native TargetFrame shown after the
+-- target unit has gone away. Because the next target then reuses an already
+-- shown root, only the newly written pieces (most visibly the health bar) are
+-- refreshed and they draw over the dead target's stale name and portrait. The
+-- same occurrence was reported not to follow its Move UI anchor, so resolve
+-- the live global and repair a changed object or changed anchor as part of the
+-- same target refresh.
+--
+-- Do not hide the native root when the target disappears. In-game testing
+-- confirmed that this client then fails to show TargetFrame for later targets,
+-- and forcing Show would take the lifecycle away from the client. The repair
+-- below is deliberately limited to binding and anchor state for a valid target.
+function classicNative.ReconcileTarget(frame, exists)
+  if not classicNative.active or not frame or frame.unit ~= "target" then
+    return
+  end
+
+  local entry = frame.uuiClassicEntry
+  if entry then
+    local live = classicNative.Resolve(entry.names)
+    if live and live ~= entry.native then
+      classicNative.Bind(entry, entry.order)
+    end
+  end
+
+  local native = frame.classicNativeFrame
+  if exists and classicNative.TargetDrifted(frame, native) then
+    classicNative.Anchor(frame, native)
   end
 end
 
@@ -1276,7 +1399,13 @@ local function BuildLeaderIcon(frame, health)
   layer:SetPoint("CENTER", frame, "TOPRIGHT", 0, 0)
   local levelOk, level = pcall(health.GetFrameLevel, health)
   if levelOk and tonumber(level) then
-    pcall(layer.SetFrameLevel, layer, level + 10)
+    -- Well above the other raised children rather than the shared +10: the
+    -- half of the star that sits outside the frame lands exactly on the combo
+    -- strip. The strip itself is a sibling at +10, but its five pips are
+    -- CreateStatusBar frames parented to it, so they inherit +11 -- a star at
+    -- +11 tied with them and lost, being built first. +20 clears the strip and
+    -- anything else this module raises off the health bar.
+    pcall(layer.SetFrameLevel, layer, level + 20)
   end
 
   local icon = layer:CreateTexture(nil, "OVERLAY")
@@ -1488,6 +1617,25 @@ local function BuildComboPoints(playerFrame, isDruid)
   end
 end
 
+-- The strip covers the exact edge an aura row above a unit frame anchors to,
+-- so a rogue's buffs -- and a druid's while in Cat Form -- would sit on top of
+-- the pips. Publish the strip's height on whichever frame currently carries it
+-- and clear it from the other; modules/auras.lua reads the field the same way
+-- it reads the classic-chrome edge offsets, on every refresh pass, so the
+-- druid's form change moves the row without an event of its own.
+local function UpdateComboAuraOffset()
+  local onTarget = comboPips and comboPips.anchor == "target"
+  local shown = comboPips and comboPips.layer and
+                comboPips.layer:IsShown() and true or false
+  local height = shown and COMBO_HEIGHT or 0
+  if frames.player then
+    frames.player.uuiAuraComboOffset = (not onTarget) and height or 0
+  end
+  if frames.target then
+    frames.target.uuiAuraComboOffset = onTarget and height or 0
+  end
+end
+
 -- Re-anchor and resize the strip in place so changing its setting is visible
 -- immediately. Player and target frames can have different configured widths.
 function U.ApplyComboPointAnchor(location)
@@ -1517,6 +1665,8 @@ function U.ApplyComboPointAnchor(location)
     pip:SetPoint("TOPLEFT", comboPips.layer, "TOPLEFT",
                  inset + (i - 1) * (pipWidth + COMBO_GAP), -inset)
   end
+
+  UpdateComboAuraOffset()
 end
 
 local function SetComboPoints(count)
@@ -1555,6 +1705,7 @@ local function RefreshComboPoints()
   end
 
   if shown then comboPips.layer:Show() else comboPips.layer:Hide() end
+  UpdateComboAuraOffset()
   if not shown then return end
 
   local get = ResolveApiFn("GetComboPoints")
@@ -1993,7 +2144,10 @@ local function ApplyHealthColor(frame)
   -- Target and party health always carry normTex2, including theme-colour
   -- mode. Other health bars use it only for class colouring.
   local textured = frame.spec and frame.spec.healthTexture and true or false
-  if cfg.classHealthColors and frame.data.isPlayer and frame.data.class then
+  if frame.data.muted then
+    r, g, b = M.Unpack(M.unitFrame.inactiveFill)
+    textured = false
+  elseif cfg.classHealthColors and frame.data.isPlayer and frame.data.class then
     r, g, b = M.ClassColor(frame.data.class)
     if r then textured = true end
   end
@@ -2010,6 +2164,11 @@ local function ApplyHealthColor(frame)
     b = cb * perc + b * (1 - perc)
   end
 
+  if frame.data.outOfRange and not frame.data.muted then
+    local brightness = M.unitFrame.distantBrightness
+    r, g, b = r * brightness, g * brightness, b * brightness
+  end
+
   if frame.healthColorR == r and frame.healthColorG == g and
      frame.healthColorB == b and
      frame.healthColorTextured == textured then return end
@@ -2023,6 +2182,12 @@ end
 local function ApplyPowerColor(frame)
   if not frame.power then return end
   local r, g, b, a = PowerBarColor(frame.data.powerType)
+  if frame.data.muted then
+    r, g, b, a = M.Unpack(M.unitFrame.inactiveFill)
+  elseif frame.data.outOfRange then
+    local brightness = M.unitFrame.distantBrightness
+    r, g, b = r * brightness, g * brightness, b * brightness
+  end
   if frame.powerColorR == r and frame.powerColorG == g and
      frame.powerColorB == b and frame.powerColorA == a then return end
   frame.powerColorR, frame.powerColorG = r, g
@@ -2048,7 +2213,7 @@ local function ApplyBarLabels(frame, box, labels, mode)
   end
   if box.rightLabel and TokenNeedsRefresh(labels.right, mode) then
     if box.rightNameLabel and labels.right == "unitrev" then
-      local name, truncated = ColoredName(frame.data)
+      local name, truncated = ColoredName(frame.data, frame.spec.nameClassColor)
       SetLabelText(box.rightNameLabel, name)
       SetLabelText(box.rightLabel, ColoredLevel(frame.data))
       box.rightNameLabel:SetPoint("RIGHT", box.rightLabel, "LEFT",
@@ -2194,10 +2359,23 @@ local function SetFrameShown(frame, shown)
   if shown then frame:Show() else frame:Hide() end
 end
 
-local function ApplyConnectedAlpha(frame)
-  local alpha = frame.data.connected and 1 or 0.35
-  if frame.uuiAlpha == alpha then return end
-  if pcall(frame.SetAlpha, frame, alpha) then frame.uuiAlpha = alpha end
+-- unitalpha.v2 confirmed that parent alpha does not fade the test hierarchy
+-- (knowledge.json / rendering.parent_alpha_not_propagated). Tint our owned
+-- textures directly: grey for offline units, darker live colours for distance.
+local function ApplyAvailabilityStyle(frame, muted, distant)
+  if frame.uuiAlpha ~= 1 and pcall(frame.SetAlpha, frame, 1) then
+    frame.uuiAlpha = 1
+  end
+  if frame.uuiMuted == muted and frame.uuiDistant == distant then return end
+  frame.uuiMuted = muted
+  frame.uuiDistant = distant
+  local color = M.color.healthBg
+  if muted then color = M.unitFrame.inactiveBackground
+  elseif distant then color = M.unitFrame.distantBackground end
+  U.SetColor(frame.health.bar.uuiBackground, M.Unpack(color))
+  if frame.power then
+    U.SetColor(frame.power.bar.uuiBackground, M.Unpack(color))
+  end
 end
 
 local statFrameRefreshes, statFullRefreshes = 0, 0
@@ -2207,6 +2385,68 @@ function U.UnitFrameStats()
     frameRefreshes = statFrameRefreshes,
     fullRefreshes = statFullRefreshes,
   }
+end
+
+-- The incoming-heal segments on a health bar. modules/healpredict.lua owns the
+-- numbers and this owns the bar, so the two meet here and nowhere else; the
+-- module is optional, and a build without it leaves every bar untouched.
+--
+-- Only the amounts are pushed, the player's own and everyone else's. Where the
+-- segments actually land -- chained onto the end of the fill in that order --
+-- is core/style.lua's arithmetic, recomputed on every SetValue, so a unit
+-- taking damage under an incoming heal slides the prediction along with the
+-- fill without this being called again.
+local function ApplyIncomingHeal(frame)
+  if not frame or not frame.health or not frame.health.bar then return end
+  if type(U.UnitIncomingHeal) ~= "function" then return end
+
+  local ok, mine, others = pcall(U.UnitIncomingHeal, frame.unit)
+  if not ok then mine, others = 0, 0 end
+  U.SetStatusBarPrediction(frame.health.bar, mine, others)
+
+  -- Preview only ("/uui heal test"). Nothing can be drawn past a full bar, so
+  -- the demo holds the fill at a wounded value to make room for the segments,
+  -- and restores the unit's real health the moment the preview ends. Ordinary
+  -- refreshes never reach here with a fraction, so this is inert in normal play.
+  local demo = nil
+  if type(U.HealPredictPreviewFill) == "function" then
+    local okFill, fraction = pcall(U.HealPredictPreviewFill)
+    if okFill then demo = tonumber(fraction) end
+  end
+
+  local maximum = frame.data and tonumber(frame.data.healthMax) or nil
+  if demo and maximum and maximum > 0 then
+    frame.uuiHealthDemo = true
+    SetBar(frame.health.bar, maximum * demo, maximum)
+  elseif frame.uuiHealthDemo then
+    frame.uuiHealthDemo = nil
+    if maximum and maximum > 0 then
+      SetBar(frame.health.bar, tonumber(frame.data.health) or 0, maximum)
+    end
+  end
+end
+
+-- Called by modules/healpredict.lua when a prediction opens, closes or times
+-- out. Every other move of the segment rides on the health refresh below.
+function U.ApplyHealPrediction()
+  local i
+  for i = 1, table.getn(frameOrder) do
+    ApplyIncomingHeal(frames[frameOrder[i]])
+  end
+end
+
+-- Party membership outlives a member's world unit during zone transitions.
+-- GetPartyMember is documented as roster-slot occupancy; keep polling vitals
+-- when it is occupied even if UnitExists cannot resolve the member. The exact
+-- transition tuple still needs an in-game capture (knowledge.json /
+-- unitframes.party_zone_transition_visibility). Pets must keep their own gate.
+local function FrameUnitExists(frame)
+  local exists = ApiTruth("UnitExists", frame.unit)
+  local inParty = false
+  if frame.spec.partyIndex and not frame.spec.partyPet then
+    inParty = ApiTruth("GetPartyMember", frame.spec.partyIndex)
+  end
+  return exists or inParty, exists, inParty
 end
 
 local function RefreshFrame(frame, mode)
@@ -2223,7 +2463,8 @@ local function RefreshFrame(frame, mode)
   statFrameRefreshes = statFrameRefreshes + 1
   if mode == "full" then statFullRefreshes = statFullRefreshes + 1 end
 
-  local exists = ApiTruth("UnitExists", frame.unit)
+  local exists = FrameUnitExists(frame)
+  classicNative.ReconcileTarget(frame, exists)
 
   if not exists then
     frame.data.initialised = false
@@ -2231,6 +2472,12 @@ local function RefreshFrame(frame, mode)
     HideHappinessIndicator(frame)
     HideRestIcon(frame)
     HideLeaderIcon(frame)
+    -- Clear state styling before this slot becomes an empty mover.
+    ApplyAvailabilityStyle(frame, false, false)
+    -- Before the shell branch, so it happens either way: a prediction left on
+    -- the bar of a unit that has gone away would be inherited by whoever fills
+    -- the slot next.
+    ApplyIncomingHeal(frame)
     -- An empty shell stays on screen while the UI is unlocked, otherwise a
     -- frame with no unit could never be dragged into place.
     if U.IsUnlocked() then
@@ -2290,6 +2537,10 @@ local function RefreshFrame(frame, mode)
   if healthChanged then
     SetBar(frame.health.bar, frame.data.health, frame.data.healthMax)
     ApplyHealthColor(frame)
+    -- The unit behind this frame can change without any prediction changing --
+    -- a new target, a party slot filled by someone else -- so the segment is
+    -- re-read here rather than only when modules/healpredict.lua pushes.
+    ApplyIncomingHeal(frame)
   end
   if frame.power and powerChanged then
     SetBar(frame.power.bar, frame.data.power, frame.data.powerMax)
@@ -2313,12 +2564,11 @@ local function RefreshFrame(frame, mode)
   if mode == "full" then ApplyRestIcon(frame) end
   if mode == "full" then ApplyLeaderIcon(frame) end
 
-  -- Offline party members are dimmed rather than hidden, matching pfUI's
-  -- alpha_offline treatment without importing its alpha config. Unverified on
-  -- this client: rendering.parent_alpha_not_propagated says a parent's alpha
-  -- does not reliably carry to its children, so this may end up a no-op. It is
-  -- cosmetic either way, and the frame's own state stays correct.
-  if mode == "full" then ApplyConnectedAlpha(frame) end
+  -- Connection and party visibility are read by ReadIdentity, so styling
+  -- follows the same full refresh, at most one second behind a state change.
+  if mode == "full" then
+    ApplyAvailabilityStyle(frame, frame.data.muted, frame.data.outOfRange)
+  end
 
   return true
 end
@@ -2999,14 +3249,17 @@ end
 -- ---------------------------------------------------------------------------
 -- Settings
 -- ---------------------------------------------------------------------------
--- Used by the Unit Frames settings page, which is registered by auras.lua.
--- Keep the controls here because this module owns the party layout, power tick,
--- colour configuration and the live frame refresh.
+-- The "Unit Frames" entry in the settings window is a collapsible group with
+-- one sub-page per subject, the same shape modules/actionbarconfig.lua uses for
+-- ActionBars. This module registers the group and owns three of its pages
+-- because it owns the party layout, the power tick, the combo-point anchor and
+-- the colour configuration; modules/auras.lua registers the Auras page beside
+-- them, and modules/hots.lua contributes its section to the Party page.
 --
--- These module-owned sections are the first block on that page, so their total
--- height is what auras.lua shifts its own controls down by. Party frames keep
--- their existing row, followed by power-tick and combo-point placement controls.
-local PARTY_SETTINGS_HEIGHT = 168
+-- Each page starts at the top of its own content frame, so nothing here has to
+-- know what any other page is doing.
+local SETTINGS_GROUP = "unitframes"
+local PAGE_WIDTH = 484
 
 local function BuildUnitFramePartySettings(parent, y, width)
   y = y or -4
@@ -3031,10 +3284,21 @@ local function BuildUnitFramePartySettings(parent, y, width)
   petToggle.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, y - 30)
   table.insert(widgets, petToggle)
 
+  local function Refresh()
+    petToggle.SetValue(PartyConfig().partyPets)
+  end
+
+  return widgets, Refresh
+end
+
+local function BuildUnitFrameGeneralSettings(parent, y, width)
+  y = y or -4
+  local widgets = {}
+
   local tickHeader = U.CreateSectionHeader(parent, {
     text = U.L("UF_POWER_TICK_HEADER"),
     width = width or 496,
-    y = y - 56,
+    y = y,
   })
   table.insert(widgets, tickHeader)
 
@@ -3048,7 +3312,7 @@ local function BuildUnitFramePartySettings(parent, y, width)
       powerTick.ApplySettings()
     end,
   })
-  manaTick.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, y - 82)
+  manaTick.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, y - 26)
   table.insert(widgets, manaTick)
 
   local energyTick = U.CreateCheckbox(parent, {
@@ -3061,17 +3325,17 @@ local function BuildUnitFramePartySettings(parent, y, width)
       powerTick.ApplySettings()
     end,
   })
-  energyTick.SetPoint("TOPLEFT", parent, "TOPLEFT", 240, y - 82)
+  energyTick.SetPoint("TOPLEFT", parent, "TOPLEFT", 240, y - 26)
   table.insert(widgets, energyTick)
 
   local comboHeader = U.CreateSectionHeader(parent, {
     text = U.L("UF_COMBO_POINTS_HEADER"),
     width = width or 496,
-    y = y - 112,
+    y = y - 56,
   })
   -- Section headers are composite controls, so give this one the same
   -- visibility contract as other settings widgets. Rogues configure this in
-  -- their own class tab; the shared Unit Frames page exposes it to Druids.
+  -- their own class tab; the shared General page exposes it to Druids.
   comboHeader.uuiSetShown = function(shown)
     local i
     for i = 1, table.getn(comboHeader.uuiParts or {}) do
@@ -3098,11 +3362,26 @@ local function BuildUnitFramePartySettings(parent, y, width)
       U.SetComboPointAnchor(value)
     end,
   })
-  comboAnchor.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, y - 138)
+  comboAnchor.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, y - 82)
   table.insert(widgets, comboAnchor)
 
+  -- The incoming-heal segment applies to every frame this module draws, not
+  -- just the party rows, so it belongs on the General page. modules/healpredict.
+  -- lua owns its state and builds it; this page only says where it goes. The
+  -- offset clears the combo-point section's reserved space, which stays
+  -- reserved for a class that does not show it so nothing below ever shifts.
+  local refreshHeal
+  if type(U.BuildHealPredictSettings) == "function" then
+    local healWidgets
+    healWidgets, refreshHeal = U.BuildHealPredictSettings(parent, y - 122,
+                                                          width or 496)
+    local n
+    for n = 1, table.getn(healWidgets) do
+      table.insert(widgets, healWidgets[n])
+    end
+  end
+
   local function Refresh()
-    petToggle.SetValue(PartyConfig().partyPets)
     manaTick.SetValue(powerTick.Config().manaTick)
     energyTick.SetValue(powerTick.Config().energyTick)
     local class = UnitClassToken("player")
@@ -3110,6 +3389,7 @@ local function BuildUnitFramePartySettings(parent, y, width)
     comboHeader.uuiSetShown(supported)
     comboAnchor.uuiSetShown(supported)
     if supported then comboAnchor.SetValue(U.GetComboPointAnchor()) end
+    if refreshHeal then refreshHeal() end
   end
 
   return widgets, Refresh
@@ -3235,11 +3515,64 @@ local function BuildUnitFrameColorSettings(parent, y, width)
   return widgets, Refresh
 end
 
-U.BuildUnitFrameColorSettings = BuildUnitFrameColorSettings
-U.BuildUnitFramePartySettings = BuildUnitFramePartySettings
--- The vertical space the module-owned opening sections occupy, so the page that
--- stacks the other sections under them never has to restate the number.
-U.UnitFramePartySettingsHeight = PARTY_SETTINGS_HEIGHT
+-- ---------------------------------------------------------------------------
+-- Settings pages
+--
+-- One page per subject under the Unit Frames group. Each returns the widget
+-- array and the refresh the settings window expects.
+-- ---------------------------------------------------------------------------
+local function BuildGeneralPage(parent)
+  return BuildUnitFrameGeneralSettings(parent, -4, PAGE_WIDTH)
+end
+
+-- Party frames and the HoT indicators that sit on them. modules/hots.lua owns
+-- the second section's state, so it builds it; this page only places it under
+-- the party controls and merges the two refreshes.
+local function BuildPartyPage(parent)
+  local widgets, refreshParty = BuildUnitFramePartySettings(parent, -4,
+                                                            PAGE_WIDTH)
+  local refreshHots
+  if type(U.BuildHotSettings) == "function" then
+    local hotWidgets
+    hotWidgets, refreshHots = U.BuildHotSettings(parent, -64, PAGE_WIDTH)
+    local i
+    for i = 1, table.getn(hotWidgets) do
+      table.insert(widgets, hotWidgets[i])
+    end
+  end
+
+  local function Refresh()
+    if refreshParty then refreshParty() end
+    if refreshHots then refreshHots() end
+  end
+
+  return widgets, Refresh
+end
+
+local function BuildColorPage(parent)
+  return BuildUnitFrameColorSettings(parent, -4, PAGE_WIDTH)
+end
+
+-- modules/auras.lua registers its own page into this group with
+-- after = "unitframes.party", which is what puts Auras between Party Frames and
+-- Colors regardless of module load order.
+U.UnitFrameSettingsGroup = SETTINGS_GROUP
+U.UnitFrameSettingsPageWidth = PAGE_WIDTH
+
+function UF:OnInit()
+  if type(U.RegisterSettingsGroup) ~= "function" then
+    U.Error("settings window has no category API; unit frame options unavailable")
+    return
+  end
+
+  U.RegisterSettingsGroup(SETTINGS_GROUP, U.L("UF_PAGE"))
+  U.RegisterSettingsTab(SETTINGS_GROUP .. ".general", U.L("UF_TAB_GENERAL"),
+                        BuildGeneralPage, { parent = SETTINGS_GROUP })
+  U.RegisterSettingsTab(SETTINGS_GROUP .. ".party", U.L("UF_TAB_PARTY"),
+                        BuildPartyPage, { parent = SETTINGS_GROUP })
+  U.RegisterSettingsTab(SETTINGS_GROUP .. ".colors", U.L("UF_TAB_COLORS"),
+                        BuildColorPage, { parent = SETTINGS_GROUP })
+end
 
 -- Docks an anchorTo frame onto its parent at the spec's offset. Used both when
 -- the frames are first built and by target-of-target's position-reset hook, so
@@ -3374,9 +3707,11 @@ function U.UnitFrameReport()
     local frame = frames[frameOrder[i]]
     local line = { id = frameOrder[i], unit = frame.unit }
 
-    line.exists = ApiTruth("UnitExists", frame.unit)
+    line.exists, line.unitExists, line.inParty = FrameUnitExists(frame)
     if line.exists then
       local data = ReadUnit(frame)
+      line.outOfRange = data.outOfRange
+      line.muted = data.muted
       line.name = data.name or "?"
       line.health = data.health
       line.healthMax = data.healthMax

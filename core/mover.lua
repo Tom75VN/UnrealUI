@@ -904,6 +904,28 @@ end
 -- Public API
 -- ---------------------------------------------------------------------------
 
+-- A window that is dragged directly and never registers a mover still needs
+-- the same bottom-edge conversion the anchorEdge option gives a mover: a drag
+-- the client collapses onto a TOP point would otherwise make a content-sized
+-- window grow downwards, pushing its lower rows off the screen. Takes the same
+-- id, frame and default a mover entry carries so both paths run one
+-- implementation instead of a module-local copy. modules/bags.lua is the
+-- current caller.
+function U.PinFrameToBottomEdge(id, frame, default)
+  if type(id) ~= "string" or not frame then
+    U.Error("PinFrameToBottomEdge requires an id and a frame")
+    return false
+  end
+
+  NormaliseAnchorEdge({
+    id = id,
+    frame = frame,
+    anchorEdge = "BOTTOM",
+    default = default,
+  })
+  return true
+end
+
 -- id       stable string key, also the SavedVariables key
 -- frame    the frame the user drags
 -- options  { label = "Player", default = { point, relativePoint, x, y },

@@ -89,6 +89,12 @@ M.texture = {
   -- Official client documentation uses this native TargetingFrame texture as
   -- the StatusBar example; the Classic unit-frame theme reuses it directly.
   classicStatusBar = "Interface\\TargetingFrame\\UI-StatusBar",
+  -- knowledge.json / castbar.native_frame_hierarchy: measured native castbar
+  -- geometry plus the isolated addon-owned visual probe. Candidate A was
+  -- user-confirmed visible in game; neither path requires reading a native
+  -- CastingBarFrame region at startup.
+  classicCastbarBorder = "Interface\\CastingBar\\UI-CastingBar-Border",
+  classicCastbarSpark = "Interface\\CastingBar\\UI-CastingBar-Spark",
   chatResizeGrip = "Interface\\AddOns\\unrealUI\\media\\resize",
   restIcon = "Interface\\AddOns\\unrealUI\\media\\rest-icon",
   -- Party-leader star. unrealUI's own art rather than the stock GroupFrame
@@ -99,6 +105,13 @@ M.texture = {
   -- to the accent while the rim stays dark enough to read over a bright
   -- health fill.
   leaderIcon = "Interface\\AddOns\\unrealUI\\media\\leader-star",
+  -- Bag favourite marker (modules/bagfavorites.lua). Deliberately the same
+  -- star art as the party-leader icon above, as requested: one shape means
+  -- "marked" everywhere in this interface, and it is art already proven to
+  -- render on this client, which a freshly chosen texture path would not be.
+  -- Named separately so a later change to either marker cannot silently move
+  -- the other.
+  favoriteIcon = "Interface\\AddOns\\unrealUI\\media\\leader-star",
   -- The sort button's icon, shared by the bag and bank windows. Central
   -- because it is the same control twice, and because unlike the icon paths
   -- already proven on screen beside it this one is *chosen*, not verified:
@@ -173,6 +186,22 @@ M.color = {
   -- themes/modern.lua re-applies this token on a theme switch; keep both in sync.
   healthFull = { 0.18, 0.50, 0.22, 1.00 },
 
+  -- The two segments modules/healpredict.lua paints past the end of the health
+  -- fill for heals that are on their way, chained
+  -- [ health ][ yours ][ everyone else's ] with no gap between them.
+  --
+  -- ElvUI's healPrediction recipe verbatim, by request: mint #00FF80 for your
+  -- own cast, pure #00FF00 for other players', both at 25% alpha, and no
+  -- overflow past maximum health (ElvUI/Settings/Profile.lua, healPrediction).
+  -- The two hues are close on purpose -- they read as one continuous "incoming"
+  -- band whose first part is attributable to you -- and the low alpha is what
+  -- keeps them from being mistaken for health that already exists.
+  --
+  -- Deliberately not the accent: an incoming heal is game state, not unrealUI
+  -- chrome.
+  healPredictionMine   = { 0.00, 1.00, 0.50, 0.25 },
+  healPredictionOthers = { 0.00, 1.00, 0.00, 0.25 },
+
   -- Castbar fill. Distinct from the accent so a cast in progress reads as game
   -- state, not chrome, and distinct from the health/power colours so it never
   -- looks like a third unit-frame bar.
@@ -196,6 +225,11 @@ M.color = {
 -- generated frame names and aura attachment points are deliberately not part
 -- of it: themes may change appearance, never the unit-frame feature contract.
 M.unitFrame = {
+  -- Grey is reserved for offline slots; distant members keep darker live colours.
+  inactiveBackground = { 0.18, 0.18, 0.18, 1.00 },
+  inactiveFill = { 0.24, 0.24, 0.24, 1.00 },
+  distantBackground = { 0.04, 0.04, 0.04, 1.00 },
+  distantBrightness = 0.55,
   usePastelGradient = true,
   statusTexture = M.texture.statusBar,
   background = { 0.06, 0.06, 0.06, 0.85 },

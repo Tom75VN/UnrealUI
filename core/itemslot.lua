@@ -436,6 +436,88 @@ function U.CreateItemSlot(parent, name, bag, slot)
 end
 
 -- ---------------------------------------------------------------------------
+-- Favourite marker
+--
+-- The star modules/bagfavorites.lua puts on a marked bag item. It lives here
+-- because it is item-slot chrome, not favourite bookkeeping: the same rule
+-- that moved the count region and the rarity border into this shared
+-- component (.claude/rules/unreal-ui-design.md, "add the smallest central
+-- reusable component first").
+--
+-- Built on the raised-child-frame pattern EnsureSlotCount already uses above,
+-- and that modules/unitframes.lua uses for its own leader star: a texture put
+-- straight on the button competes with the template's icon and count for draw
+-- order, whereas a child Frame at a higher frame level is the arrangement this
+-- client has been confirmed to honour. Created on first use so a slot that is
+-- never favourited costs nothing.
+--
+-- Accent-tinted, per the design system: a favourite is unrealUI's own
+-- checked/marked state, not game-state information like quality or health.
+-- ---------------------------------------------------------------------------
+local FAVORITE_STAR_SIZE = 12
+
+local function EnsureFavoriteStar(button)
+  if button.uuiFavoriteStar then return button.uuiFavoriteStar end
+  if type(button.GetFrameLevel) ~= "function" then return nil end
+
+  local ok, layer = pcall(CreateFrame, "Frame", nil, button)
+  if not ok or not layer then return nil end
+
+  pcall(layer.SetWidth, layer, FAVORITE_STAR_SIZE)
+  pcall(layer.SetHeight, layer, FAVORITE_STAR_SIZE)
+  pcall(layer.EnableMouse, layer, false)
+  -- Inside the slot's own top-right corner rather than straddling it: bag
+  -- slots sit three units apart, so a star hanging outside would overlap the
+  -- neighbouring item. Inset by the border width so it lands on the item icon
+  -- and not on the slot's rarity outline, which is what the icon is inset by
+  -- in U.StyleItemSlot above.
+  local edge = U.BorderSize()
+  pcall(layer.SetPoint, layer, "TOPRIGHT", button, "TOPRIGHT", -edge, -edge)
+
+  local levelOk, level = pcall(button.GetFrameLevel, button)
+  if levelOk and tonumber(level) then
+    -- Above the raised count layer (+10) so the two cannot trade places; they
+    -- occupy opposite corners, but the ordering should not depend on that.
+    pcall(layer.SetFrameLevel, layer, level + 15)
+  end
+
+  local iconOk, icon = pcall(layer.CreateTexture, layer, nil, "OVERLAY")
+  if not iconOk or not icon then return nil end
+
+  pcall(icon.SetAllPoints, icon, layer)
+  pcall(icon.SetTexture, icon, M.texture.favoriteIcon)
+  U.SetColor(icon, M.color.accent[1], M.color.accent[2], M.color.accent[3], 1)
+
+  pcall(layer.Hide, layer)
+  button.uuiFavoriteStar = layer
+  button.uuiFavoriteState = false
+  return layer
+end
+
+-- `favorite` nil/false hides the star without building one, so the common case
+-- of an unmarked slot never creates a frame.
+function U.SetItemSlotFavorite(button, favorite)
+  if not button then return end
+
+  if not favorite then
+    if button.uuiFavoriteStar and button.uuiFavoriteState ~= false then
+      button.uuiFavoriteState = false
+      pcall(button.uuiFavoriteStar.Hide, button.uuiFavoriteStar)
+    end
+    return
+  end
+
+  local layer = EnsureFavoriteStar(button)
+  if not layer or button.uuiFavoriteState == true then return end
+
+  button.uuiFavoriteState = true
+  -- rendering.parent_alpha_not_propagated: show the layer explicitly rather
+  -- than relying on the slot it hangs off.
+  pcall(layer.SetAlpha, layer, 1)
+  pcall(layer.Show, layer)
+end
+
+-- ---------------------------------------------------------------------------
 -- Update
 -- ---------------------------------------------------------------------------
 function U.UpdateItemSlotCooldown(bag, button)

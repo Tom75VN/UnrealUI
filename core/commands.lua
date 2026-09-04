@@ -100,6 +100,11 @@ local DIAGNOSTIC_HELP = {
   "  |cffffff00/uui sb trace|r - record what the mark does as a spell goes on/off a bar",
   "  |cffffff00/uui sb ranks|r - dump the spell list layout the highest-rank filter reads",
   "  |cffffff00/uui aura|r - dump the aura rows and why a timer is missing",
+  "  |cffffff00/uui hot|r - dump the HoT indicators: resolved spells, live stamps, party buffs",
+  "  |cffffff00/uui heal|r - dump incoming-heal prediction: templates, learned " ..
+    "amounts, live predictions",
+  "  |cffffff00/uui heal test|r - paint both prediction segments for 10s to " ..
+    "check their appearance",
   "  |cffffff00/uui map|r - arm the map hover watch before opening it",
   "  |cffffff00/uui res|r - dump the Character sheet resistance frames",
   "  |cffffff00/uui abhl [alpha] [hover] [rest]|r - dump or tune the classic hover highlight",
@@ -184,11 +189,38 @@ local function ShowUnitFrameCheck()
   -- instead of another assumption.
   if type(U.CastbarReport) == "function" then
     local cb = U.CastbarReport()
+
+    -- Both reconstructed bars read out the same way, and the pet one is
+    -- the open question: no capture says which CHAT_MSG_SPELL event carries
+    -- a pet's cast text here, so starts/event is the evidence.
+    local PrintCastTracker = function(label, tracker)
+      if not tracker then return end
+      U.Print(label .. " castbar: casting " .. tostring(tracker.casting) ..
+              ", starts " .. tostring(tracker.starts) ..
+              ", unknown " .. tostring(tracker.unknown) ..
+              ", patterns " .. tostring(tracker.patterns))
+      if tracker.casting then
+        U.Print("  " .. tostring(tracker.caster) .. ": " ..
+                tostring(tracker.spell) .. ", " ..
+                tostring(tracker.remaining) .. "s remaining")
+      elseif tracker.lastUnknown then
+        U.Print("  last unknown spell: " .. tostring(tracker.lastUnknown))
+      end
+      U.Print("  event " .. tostring(tracker.lastEvent) ..
+              ", icon " .. tostring(tracker.iconSource))
+    end
+
     if cb and cb.native then
-      -- Native-chrome theme: the client's own CastingBarFrame is in use and
-      -- this module built nothing, so there is no unrealUI state to read.
+      -- Native-chrome theme: the client's own CastingBarFrame draws the
+      -- player's casts, so there is no unrealUI player state to read. The
+      -- target bar is addon-owned under this theme too and still reads out.
       U.Print("castbar: native client bar (theme " ..
               tostring(U.GetActiveThemeStyle()) .. ")")
+      -- Which target bar was built. "native (...)" means the client's own
+      -- castbar art was readable and cloned; anything starting "modern"
+      -- names the read that came back empty and sent it to the flat bar.
+      U.Print("  target bar: " .. tostring(cb.targetStyle))
+      PrintCastTracker("target", cb.target)
     elseif cb then
       U.Print("castbar: casting " .. tostring(cb.casting) ..
               ", shown " .. tostring(cb.shown))
@@ -203,26 +235,6 @@ local function ShowUnitFrameCheck()
               ", delays " .. tostring(cb.delays) ..
               " (+" .. string.format("%.2f", tonumber(cb.delaySeconds) or 0) ..
               "s)")
-      -- Both reconstructed bars read out the same way, and the pet one is
-      -- the open question: no capture says which CHAT_MSG_SPELL event carries
-      -- a pet's cast text here, so starts/event is the evidence.
-      local PrintCastTracker = function(label, tracker)
-        if not tracker then return end
-        U.Print(label .. " castbar: casting " .. tostring(tracker.casting) ..
-                ", starts " .. tostring(tracker.starts) ..
-                ", unknown " .. tostring(tracker.unknown) ..
-                ", patterns " .. tostring(tracker.patterns))
-        if tracker.casting then
-          U.Print("  " .. tostring(tracker.caster) .. ": " ..
-                  tostring(tracker.spell) .. ", " ..
-                  tostring(tracker.remaining) .. "s remaining")
-        elseif tracker.lastUnknown then
-          U.Print("  last unknown spell: " .. tostring(tracker.lastUnknown))
-        end
-        U.Print("  event " .. tostring(tracker.lastEvent) ..
-                ", icon " .. tostring(tracker.iconSource))
-      end
-
       PrintCastTracker("target", cb.target)
       PrintCastTracker("pet", cb.pet)
     end
@@ -1097,9 +1109,50 @@ handlers["aura"] = function()
   end
   U.AuraDebugDump()
 end
+-- The two things modules/hots.lua cannot confirm from the compact evidence, in
+-- one readout: whether each tracked HoT resolved to a real spellbook texture,
+-- and whether that texture's key is the same key the unit's own UnitBuff walk
+-- produces. If a HoT is cast and this prints a resolved spell, a live stamp and
+-- no matching party buff, the two paths disagree about the icon and U.IconKey
+-- is where to look.
+handlers["hot"] = function()
+  if type(U.HotDebugDump) ~= "function" then
+    U.Print("hot dump unavailable - modules/hots.lua did not load")
+    return
+  end
+  U.HotDebugDump()
+end
 -- Whether the hovered zone name reaches unrealUI at all. The command being
 -- unavailable is itself the first answer: it means modules/worldmap.lua did not
 -- load, which no amount of reading the map code would have shown.
+-- The one thing modules/healpredict.lua cannot settle from the compact evidence:
+-- whether this client emits the self-heal combat text its amounts are learned
+-- from. Templates listed as compiled with nothing learned after a few heals
+-- means the message never arrives, and no amount of reading that module would
+-- have shown it.
+handlers["heal"] = function(rest)
+  local mode = Trim(rest or "")
+
+  -- The appearance cannot be summoned on demand otherwise: your own segment
+  -- needs a heal of that rank already observed landing once, and the other
+  -- players' segment has no source on this client. This paints both.
+  if mode == "test" then
+    if type(U.HealPredictTest) ~= "function" then
+      U.Print("heal test unavailable - modules/healpredict.lua did not load")
+      return
+    end
+    local seconds = U.HealPredictTest(10)
+    U.Print("unrealUI: heal prediction preview for " .. tostring(seconds) ..
+            "s - your heal then another player's, on every unit frame")
+    return
+  end
+
+  if type(U.HealPredictDebugDump) ~= "function" then
+    U.Print("heal dump unavailable - modules/healpredict.lua did not load")
+    return
+  end
+  U.HealPredictDebugDump()
+end
 handlers["map"] = function()
   if type(U.WorldMapDebugDump) ~= "function" then
     U.Print("map dump unavailable - modules/worldmap.lua did not load")

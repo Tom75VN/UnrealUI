@@ -439,6 +439,27 @@ local function ShowDeleteConfirm(items)
   })
 end
 
+-- The run itself, once the item list is final. Split out from the entry point
+-- below so the favourite confirmation can sit between the two: whichever list
+-- the player settles on -- everything, or everything except their marked items
+-- -- arrives here as an ordinary run.
+local function RunGreyQueue(items, atVendor)
+  if table.getn(items) == 0 then return end
+
+  if atVendor then
+    local goldOk, goldNow = pcall(GetMoney)
+    pending = {
+      items = items,
+      index = 1,
+      mode = "sell",
+      startGold = (goldOk and tonumber(goldNow)) or 0,
+    }
+    U.RegisterUpdate("bags.sellDelete", 0.15, ProcessPending)
+  else
+    ShowDeleteConfirm(items)
+  end
+end
+
 local function SellOrDeleteGreys()
   if pending then return end
 
@@ -455,18 +476,17 @@ local function SellOrDeleteGreys()
     atVendor = ok and shown and true or false
   end
 
-  if atVendor then
-    local goldOk, goldNow = pcall(GetMoney)
-    pending = {
-      items = items,
-      index = 1,
-      mode = "sell",
-      startGold = (goldOk and tonumber(goldNow)) or 0,
-    }
-    U.RegisterUpdate("bags.sellDelete", 0.15, ProcessPending)
-  else
-    ShowDeleteConfirm(items)
+  -- A grey item can still be marked as a favourite, and this sweep is exactly
+  -- the "by mistake" the mark exists to stop. modules/bagfavorites.lua asks
+  -- once, for the whole run, and hands back the list to actually process; with
+  -- nothing marked it hands the list straight back and nothing is asked.
+  if type(U.ConfirmBagFavoriteBatch) == "function" then
+    U.ConfirmBagFavoriteBatch(items, atVendor and "sell" or "delete",
+      function(finalItems) RunGreyQueue(finalItems, atVendor) end)
+    return
   end
+
+  RunGreyQueue(items, atVendor)
 end
 
 local function RefreshVendorButton()
@@ -627,19 +647,43 @@ local function EnsureSlot(bag, slot, parent)
   local button = U.CreateItemSlot(root, name, bag, slot)
   if not button then return nil end
 
-  -- Preserve the stock container handler exactly unless the Rogue-only helper
-  -- claims an enabled Shift-click on a poison. Passing the original argument
-  -- shape through unchanged keeps both direct and legacy template handlers
-  -- working, including chat-linking and stack splitting.
-  if bag >= 0 and type(U.IsRogue) == "function" and U.IsRogue() and
-     type(U.TryRoguePoisonClick) == "function" then
+  -- Preserve the stock container handler exactly unless one of unrealUI's own
+  -- chords claims the click. Passing the original argument shape through
+  -- unchanged keeps both direct and legacy template handlers working.
+  --
+  -- Order matters: the Rogue poison helper is opt-in and only fires on a
+  -- poison, so it is asked first and the favourite mark takes whatever
+  -- Shift-click it did not want. Neither claims a click the other handled.
+  local rogueClick = bag >= 0 and type(U.IsRogue) == "function" and U.IsRogue() and
+                     type(U.TryRoguePoisonClick) == "function"
+  local favoriteClick = type(U.TryBagFavoriteClick) == "function" and
+                        type(U.BagFavoriteBag) == "function" and
+                        U.BagFavoriteBag(bag)
+
+  if rogueClick or favoriteClick then
     local stockClick = button:GetScript("OnClick")
     if type(stockClick) == "function" then
       button:SetScript("OnClick", function(a, b, c)
-        if U.TryRoguePoisonClick(bag, slot, a, b) then return end
+        if rogueClick and U.TryRoguePoisonClick(bag, slot, a, b) then return end
+        if favoriteClick and U.TryBagFavoriteClick(bag, slot, a, b) then return end
         stockClick(a, b, c)
       end)
     end
+  end
+
+  -- The shortcut line under the tooltip. core/itemslot.lua already post-hooks
+  -- this button for the rarity colour, the price panel and the equipped-item
+  -- comparison; this hook is installed after those, so it runs last and the
+  -- note can be hung under whatever they left on screen. It lives here rather
+  -- than in the shared component because the mark is a carried-bag feature and
+  -- the bank uses the same component.
+  if favoriteClick then
+    U.PostHookScript(button, "OnEnter", function()
+      U.ShowBagFavoriteHint(bag, slot)
+    end)
+    U.PostHookScript(button, "OnLeave", function()
+      U.HideBagFavoriteHint()
+    end)
   end
 
   slots[bag][slot] = button
@@ -651,7 +695,14 @@ local function UpdateCooldown(bag, slot)
 end
 
 local function UpdateSlotAppearance(bag, slot)
-  U.UpdateItemSlot(slots[bag] and slots[bag][slot], bag, slot)
+  local button = slots[bag] and slots[bag][slot]
+  U.UpdateItemSlot(button, bag, slot)
+  -- The single funnel every layout and refresh path already goes through, so
+  -- the favourite star follows item movement, sorting and stack changes with
+  -- nothing else to keep in step.
+  if type(U.RefreshBagSlotFavorite) == "function" then
+    U.RefreshBagSlotFavorite(button, bag, slot)
+  end
 end
 
 local function RefreshBag(bag)
@@ -1007,6 +1058,16 @@ local function CollectCategories()
   local used, total = 0, 0
   local i
 
+  -- The favourite section overrides whatever the item would otherwise be
+  -- filed under, so a marked item is in one place and only one place. Resolved
+  -- once per pass rather than per slot; nil when modules/bagfavorites.lua is
+  -- not loaded, and the view then behaves exactly as it did before.
+  local favoriteKey = nil
+  if type(U.ItemCategoryFavorite) == "function" and
+     type(U.IsBagSlotFavorite) == "function" then
+    favoriteKey = U.ItemCategoryFavorite()
+  end
+
   for i = 1, table.getn(BAG_IDS) do
     local bag = BAG_IDS[i]
     local ok, n = pcall(GetContainerNumSlots, bag)
@@ -1017,6 +1078,12 @@ local function CollectCategories()
       total = total + 1
 
       local key = U.ItemCategoryForSlot(bag, slot)
+      -- After the classification, not instead of it: an empty slot is still
+      -- empty, and the mark is only ever asked about a slot that holds
+      -- something.
+      if key ~= "empty" and favoriteKey and U.IsBagSlotFavorite(bag, slot) then
+        key = favoriteKey
+      end
       if key ~= "empty" then
         used = used + 1
         if not buckets[key] then buckets[key] = {} end
@@ -1200,7 +1267,7 @@ local function LayoutSlots()
   if y == 0 then y = 1 end
 
   -- The anchor owns the rect; the visible frame is stretched over it, so the
-  -- mover handle keeps the same bounds whether or not the bag is open.
+  -- stored placement keeps the same bounds whether or not the bag is open.
   anchor:SetWidth(COLUMNS * (SLOT_SIZE + slotGap) - slotGap + PADDING * 2)
   anchor:SetHeight(classicBag.HeaderHeight() +
                    y * (SLOT_SIZE + slotGap) - slotGap
@@ -1265,6 +1332,20 @@ local function MarkAllBagsDirty()
   local i
   for i = 1, table.getn(BAG_IDS) do bagDirty[BAG_IDS[i]] = true end
   keyringDirty = true
+end
+
+-- The same request from outside the module: modules/bagfavorites.lua marks an
+-- item id, and every stack of it already on screen has to redraw. Through the
+-- existing dirty flags rather than a direct redraw, so it costs one refresh
+-- tick like every other bag change.
+--
+-- The layout flag as well as the per-bag ones: in the category view a mark
+-- moves the item into (or out of) the favourites section, which only a full
+-- relayout can do. In the flat grid the extra pass is the same idempotent
+-- LayoutSlots the window already runs on any bag change.
+function U.MarkBagsDirty()
+  MarkAllBagsDirty()
+  layoutDirty = true
 end
 
 -- ---------------------------------------------------------------------------
@@ -1479,11 +1560,98 @@ local function BuildHeader()
   RefreshRogueBagButton()
 end
 
+-- ---------------------------------------------------------------------------
+-- Direct drag
+--
+-- The bag is not part of edit mode. It is placed by dragging its own header,
+-- the way the rest of unrealUI's windows are moved -- core/windowdrag.lua for
+-- the native ones, modules/bank.lua for the bank -- so it can be moved at any
+-- time without unlocking the interface first.
+--
+-- The drag moves the anchor, the frame that owns the window rect, and saves to
+-- "bags.main": the id the retired mover used, so a placement made before this
+-- change is still the position the bag opens on.
+--
+-- Reuses the throwaway StartMoving/StopMovingOrSizing pair before the real
+-- StartMoving that core/mover.lua, core/windowdrag.lua and modules/bank.lua
+-- all use (knowledge.json / frames.movable_drag_requires_button_handle).
+-- ---------------------------------------------------------------------------
+local BAG_POSITION_ID = "bags.main"
+local BAG_DEFAULT_POSITION = {
+  point = "BOTTOMRIGHT", relativePoint = "BOTTOMRIGHT", x = -20, y = 20,
+}
+
+-- The window's height follows its contents -- a bag swapped for a bigger one
+-- in the flat grid, and every category that appears or empties in the category
+-- view. U.PinFrameToBottomEdge holds it by its bottom edge whatever corner a
+-- drag left it on, so it extends upwards instead of pushing its lower rows off
+-- the bottom of the screen. That is what the mover's anchorEdge option did for
+-- it before, and it is the same implementation rather than a copy of it.
+local function ApplyBagPosition()
+  local saved = U.GetPosition(BAG_POSITION_ID)
+  if not U.ApplyFramePoint(anchor, saved or BAG_DEFAULT_POSITION) then
+    U.Debug("bags: failed to apply position")
+    return false
+  end
+  U.PinFrameToBottomEdge(BAG_POSITION_ID, anchor, BAG_DEFAULT_POSITION)
+  return true
+end
+
+local function StartBagDrag()
+  if not pcall(anchor.SetMovable, anchor, true) then
+    U.Error("bags: SetMovable failed; the bag cannot be moved")
+    return
+  end
+
+  if pcall(anchor.StartMoving, anchor) then
+    pcall(anchor.StopMovingOrSizing, anchor)
+  end
+
+  if not pcall(anchor.StartMoving, anchor) then
+    U.Error("bags: StartMoving failed; the bag will not drag")
+  end
+end
+
+local function StopBagDrag()
+  pcall(anchor.StopMovingOrSizing, anchor)
+
+  local point, _, relativePoint, x, y = U.GetFramePoint(anchor, 1)
+  if not point then
+    U.Debug("bags: no readable anchor after drag")
+    return
+  end
+  if U.SavePosition(BAG_POSITION_ID, point, relativePoint, x, y) then
+    U.PinFrameToBottomEdge(BAG_POSITION_ID, anchor, BAG_DEFAULT_POSITION)
+  end
+end
+
+-- The grab strip runs from the header icon group to the close button. It is
+-- anchored to the live edges of the buttons either side of it rather than to
+-- computed offsets, so RefreshRogueBagButton re-anchoring the icon group when
+-- the Pick Lock shortcut appears or goes moves the strip with it, without a
+-- second copy of that rule. It spans the money readout, which is a plain
+-- display frame that never enables mouse input, and stops short of the close
+-- button so that click is not swallowed.
+local function BuildDragHandle()
+  local handle = CreateFrame("Button", "UnrealUIBagDrag", frame)
+  handle:SetPoint("TOPLEFT", frame.sortBags, "TOPRIGHT", 4, 0)
+  handle:SetPoint("TOPRIGHT", frame.close, "TOPLEFT", -4, 0)
+  handle:SetHeight(classicBag.HeaderHeight() - PADDING)
+  handle:RegisterForDrag("LeftButton")
+  pcall(handle.EnableMouse, handle, true)
+
+  handle:SetScript("OnDragStart", StartBagDrag)
+  handle:SetScript("OnDragStop", StopBagDrag)
+
+  frame.dragHandle = handle
+  return handle
+end
+
 local function Build()
-  -- The anchor is the mover target and is never hidden, so edit mode can place
-  -- the bag with the bag itself closed. The visible frame is its child and is
-  -- stretched over it, which also keeps the drag handle (created at the
-  -- anchor's frame level + 10, see core/mover.lua) above the bag's own chrome.
+  -- The anchor owns the window rect and is never hidden, so the placement
+  -- survives the bag being closed and reopened. The visible frame is its child
+  -- and is stretched over it; the header drag strip moves the anchor, not the
+  -- panel, so a drag cannot break that relationship.
   local slotGap = classicBag.SlotGap()
   anchor = CreateFrame("Frame", "UnrealUIBagAnchor", UIParent)
   anchor:SetWidth(COLUMNS * (SLOT_SIZE + slotGap) - slotGap + PADDING * 2)
@@ -1504,6 +1672,7 @@ local function Build()
 
   BuildHeader()
   classicBag.StyleHeader(frame)
+  BuildDragHandle()
 
   grid = CreateFrame("Frame", "UnrealUIBagGrid", frame)
   grid:SetPoint("TOPLEFT", frame, "TOPLEFT", PADDING,
@@ -1526,17 +1695,13 @@ local function Build()
     frame.bagslots:Hide()
   end)
 
-  -- The window's height follows its contents -- a bag swapped for a bigger one
-  -- in the flat grid, and every category that appears or empties in the
-  -- category view. anchorEdge keeps it pinned by its bottom edge whatever
-  -- corner a drag left it on, so it extends upwards instead of pushing its
-  -- lower rows off the bottom of the screen.
-  U.RegisterMover("bags.main", anchor, {
-    label = U.L("MOVER_LABEL_BAGS"),
-    anchorEdge = "BOTTOM",
-    default = { point = "BOTTOMRIGHT", relativePoint = "BOTTOMRIGHT",
-                x = -20, y = 20 },
-  })
+  -- No mover: the bag is dragged directly by its header instead of being
+  -- placed in edit mode, so the stored position -- or the default -- is
+  -- applied here rather than by U.RegisterMover, and re-applied through the
+  -- reset hook once /uui reset has cleared the store.
+  pcall(anchor.SetMovable, anchor, true)
+  ApplyBagPosition()
+  U.OnPositionReset(ApplyBagPosition)
 
   -- Nothing on this client should be able to bring the native container
   -- windows back over unrealUI's frame. Uses the shared native-suppression

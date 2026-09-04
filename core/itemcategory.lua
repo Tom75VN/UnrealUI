@@ -47,6 +47,12 @@ local IC = {}
 -- rather than drawing a section for them. U.ItemCategoryForSlot still returns
 -- the key, because counting those slots is what the readout is made of.
 IC.order = {
+  -- The overlay category, first so a marked item is the first thing the bag
+  -- window shows. It is the one key IC.FromLink never returns: a favourite is
+  -- a mark the player puts on and takes off at runtime, while everything below
+  -- it is what the item *is*, and IC.cache exists precisely because that never
+  -- changes. Mixing the two would cache a mark. See U.ItemCategoryFavorite.
+  "favorite",
   "gear",
   "quest",
   "consumable",
@@ -68,6 +74,7 @@ IC.order = {
 
 -- Locale key per category; the strings themselves live in locales/.
 IC.label = {
+  favorite    = "ITEM_CATEGORY_FAVORITE",
   gear        = "ITEM_CATEGORY_GEAR",
   quest       = "ITEM_CATEGORY_QUEST",
   consumable  = "ITEM_CATEGORY_CONSUMABLE",
@@ -214,6 +221,19 @@ function U.ItemCategoryOrder()
   local i
   for i = 1, table.getn(IC.order) do list[i] = IC.order[i] end
   return list
+end
+
+-- The overlay category's key, for a view that groups by something the
+-- classifier deliberately does not know about. modules/bags.lua substitutes it
+-- for a slot modules/bagfavorites.lua reports as marked, after this file has
+-- classified the item -- so the classification and its cache stay about what
+-- the item is, and the mark stays a property of the view.
+--
+-- Named rather than written as a literal in the bag window: the key also has
+-- to line up with IC.order and IC.label above, and with the per-category
+-- collapse state persisted under it.
+function U.ItemCategoryFavorite()
+  return "favorite"
 end
 
 function U.ItemCategoryLabel(key)

@@ -1,13 +1,17 @@
-## UnrealUI 0.4.0
+## UnrealUI 0.5.0
 
-- Auto Attack now only starts when in range, allowing ranged attacks to cast normally.
-- Hunter Auto Attack is now progressive: it starts at range, then continues in melee.
-- Fixed on the spellbook the highest rank option sometimes showing a lower spell rank.
-- Added an option to use category-based filter bags.
-- Added bank and bag sorting. (need a test for bank)
-- Quest items now have a colored border in bags.
-- Added a bag sorting button.
-- Added an option to disable the bags UI module.
-- Added an anchor in UI edit mode, to move the target-of-target frame.
-- Added itemCompare and sellPrice to the loot interface. (need a test)
-- Unit frame auras now place buffs toward the frame edge and stack debuffs outward.
+- Added heal prediction.
+- Added HoTs to party frames.
+- Added a favorite system for items in bags.
+- Added the target castbar for the Classic theme.
+- Fixed aura timers using a spell's max-rank duration instead of the known rank.
+- Fixed aura durations from same-named creature abilities using the player spell duration.
+- Fixed the position of unitframe auras for the Classic theme so they now stay at the top of the unitframe.
+- Party member frames are now grey when the player is offline.
+- Party member frames now get darker when out of range.
+- Bags can now be moved freely without using UI Move Edit Mode.
+- Improved the range slider so the thumb cannot move outside the slider, and clicking the slider moves the thumb to that position.
+- Added local time display to the status overlay.
+- Increased player name color contrast on party frames based on class.
+- Sellprice and itemCompare now show on loot tooltips.
+- Rogue and Druid auras at the top of the player frame no longer overlap with the combo frame.

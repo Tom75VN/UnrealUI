@@ -53,7 +53,7 @@
 -- CastingBarFrame instead of this one: every cast the client draws a bar for --
 -- a spell, a channel, a quest-object loot channel -- stays in the client's own
 -- style rather than mixing one modern bar into an otherwise native interface.
--- None of the unrealUI bar is built and, more importantly,
+-- None of the unrealUI player bar is built and, more importantly,
 -- SuppressNativeCastbar is not called, so the stock frame keeps the events and
 -- scripts the client gave it and needs no API assumption from us.
 --
@@ -72,9 +72,19 @@
 -- into place. And the anchor is given a floor height, because the stock bar is
 -- too thin to be a comfortable grab target; placement is unaffected, since the
 -- native bar is anchored CENTER-to-CENTER and neither frame needs to know how
--- large the other is. There is no target castbar mover in this mode: this
--- client has no native target castbar to place. The reconstructed UnrealUI
--- target bar is part of the modern castbar mode rather than a stock frame.
+-- large the other is.
+--
+-- Classic adds one reconstructed target bar using the separately verified
+-- stock border/status/spark paths. It is entirely addon-owned and never reads
+-- or retains CastingBarFrame regions; the unsafe discovery experiment remains
+-- quarantined below for comparison with the focused runtime evidence.
+--
+-- The pet bar is the one reconstruction left out under native chrome. It owns
+-- no mover and is parented to the pet unit frame, which in this mode is an
+-- invisible anchor sitting under the client's own pet art at whatever size
+-- that art happens to be, so a bar hung off its bottom edge has no reliable
+-- relationship to what the player sees. It stays a modern-mode feature until
+-- there is a measured anchor to hang it from.
 --
 -- Target casts use the client path verified by TargetedProbes 1.37.0. Native
 -- UnitCastingInfo("target") and UnitChannelInfo("target") were both nil on all
@@ -331,20 +341,43 @@ local function Call(name, a, b)
 end
 
 -- ---------------------------------------------------------------------------
--- Spell name -> icon
+-- Spell name -> icon and rank
 --
 -- SPELLCAST_START gives a name only, so the name is matched against the
 -- spellbook once per spell and cached. `false` is cached for a miss too, so a
 -- spell that is not in the book (an item or a trinket proc) is not re-scanned
 -- on every cast.
+--
+-- The rank is read on the same walk for core/auradata.lua's benefit rather
+-- than this module's: a duration table keyed by name alone reads a rank-1 Rend
+-- as its 21-second max-rank value. Reading it here costs nothing -- the book
+-- is already being walked and the answer is already being cached -- and keeps
+-- a second scan of the same book out of the data layer.
 -- ---------------------------------------------------------------------------
+--
+-- Cached per lowercased name: { texture = <path or false>, rank = <number or
+-- false> }, or `false` for a name the spellbook does not have at all.
 local iconCache = {}
 
+-- Icon and highest known rank, or nil for a name that is not in the book.
+--
+-- The walk no longer stops at the first match. Every rank of a spell is its own
+-- spellbook entry, and knowledge.json /
+-- spellbook.spell_ranks_not_always_ascending_in_slot_order
+-- (USER_CONFIRMED_INGAME) measured this client storing some of those runs
+-- highest-rank-first -- so neither the first match nor the last one is the
+-- highest, and the book has to be walked to the end with the rank numbers
+-- compared. U.SpellRankNumber (core/compat.lua) is the locale-free read of
+-- GetSpellName's rank subtext that modules/spellbook.lua uses for the same
+-- reason. The icon is still taken from the first match, since all ranks of a
+-- spell share one.
 local function ScanSpellbook(lowerName)
   local bookType = U.G("BOOKTYPE_SPELL") or "spell"
 
   local tabs = tonumber(Call("GetNumSpellTabs"))
   if not tabs then return nil end
+
+  local texture, rank, found = nil, nil, false
 
   local tab
   for tab = 1, tabs do
@@ -352,7 +385,7 @@ local function ScanSpellbook(lowerName)
     -- only the last two are used, and Call hands back the first two returns,
     -- so the tab info is read through a direct pcall instead.
     local fn = U.G("GetSpellTabInfo")
-    if type(fn) ~= "function" then return nil end
+    if type(fn) ~= "function" then break end
 
     local ok, _, _, offset, count = pcall(fn, tab)
     offset, count = tonumber(offset), tonumber(count)
@@ -360,23 +393,28 @@ local function ScanSpellbook(lowerName)
     if ok and offset and count then
       local id
       for id = offset + 1, offset + count do
-        local spellName = Call("GetSpellName", id, bookType)
+        local spellName, spellRank = Call("GetSpellName", id, bookType)
         if type(spellName) == "string" and
            string.lower(spellName) == lowerName then
-          local texture = Call("GetSpellTexture", id, bookType)
-          if type(texture) == "string" and texture ~= "" then
-            return texture
+          found = true
+
+          if not texture then
+            local art = Call("GetSpellTexture", id, bookType)
+            if type(art) == "string" and art ~= "" then texture = art end
           end
-          return nil
+
+          local number = U.SpellRankNumber(spellRank)
+          if number and (not rank or number > rank) then rank = number end
         end
       end
     end
   end
 
-  return nil
+  if not found then return nil end
+  return texture, rank
 end
 
-local function SpellIcon(name)
+local function SpellEntry(name)
   if type(name) ~= "string" or name == "" then return nil end
 
   local key = string.lower(name)
@@ -385,9 +423,46 @@ local function SpellIcon(name)
     return cached or nil
   end
 
-  local texture = ScanSpellbook(key)
-  iconCache[key] = texture or false
-  return texture
+  local texture, rank = ScanSpellbook(key)
+  if texture or rank then
+    cached = { texture = texture or false, rank = rank or false }
+  else
+    -- Not in the book, or in it with neither art nor a numbered rank: nothing
+    -- either caller can use, and cached as a miss so it is not re-scanned.
+    cached = false
+  end
+
+  iconCache[key] = cached
+  return cached or nil
+end
+
+local function SpellIcon(name)
+  local entry = SpellEntry(name)
+  if not entry then return nil end
+  return entry.texture or nil
+end
+
+-- The same lookup, shared. modules/hots.lua needs a spell's icon for exactly
+-- the reason this module does -- the client hands it a spell name and no art --
+-- and duplicating the spellbook walk there would mean a second cache warming
+-- itself on the same casts. Exported rather than moved: this module owns the
+-- cache, its invalidation and the pet book beside it.
+function U.SpellIconByName(name)
+  return SpellIcon(name)
+end
+
+-- The highest rank of this spell the player knows, or nil when the spellbook
+-- does not have it or does not number its ranks. core/auradata.lua uses it to
+-- pick a rank-dependent duration; see the note above that table.
+--
+-- Player book only. The pet book below has its own cache and its own lifetime,
+-- and the one rank-dependent pet spell in the duration table (Spell Lock) is
+-- not worth walking it for -- an unresolved rank keeps the max-rank value,
+-- which is what that spell already had.
+function U.SpellRankByName(name)
+  local entry = SpellEntry(name)
+  if not entry then return nil end
+  return entry.rank or nil
 end
 
 -- The pet book is a separate flat index -- documentation.json /
@@ -597,6 +672,23 @@ local function ApplyPushback(seconds)
   end
 end
 
+-- Every fill write on a unit bar goes through here: the Classic static widget
+-- carries a stock spark which has to travel with the fill edge. The Modern
+-- widget has no spark and leaves the hook nil.
+local function SetUnitBarValue(widget, value)
+  if not widget or not widget.bar then return end
+  pcall(widget.bar.SetValue, widget.bar, value)
+  if widget.uuiUpdateSpark then widget.uuiUpdateSpark(widget) end
+end
+
+-- The Modern widget is tinted with the addon's cast colour. The Classic widget
+-- uses the gold tint proven by the isolated addon-owned preview and keeps it;
+-- there is no GetVertexColor on this client from which to copy a live tint.
+local function ApplyUnitBarTint(widget)
+  if not widget or not widget.bar or widget.uuiKeepNativeTint then return end
+  U.SetStatusBarColor(widget.bar, M.Unpack(M.color.cast))
+end
+
 local function ApplyUnitTimer(tracker, remaining)
   local widget = tracker.bar
   if not widget or not widget.time then return end
@@ -628,6 +720,9 @@ local function SetWidgetCellsShown(widget, shown)
       if cell:IsShown() then cell:Hide() end
     end
   end
+  if widget.uuiSetDynamicShown then
+    widget.uuiSetDynamicShown(widget, shown)
+  end
 end
 
 local function SetCellsShown(shown)
@@ -650,9 +745,9 @@ local function ApplyUnitIdlePlaceholder(tracker)
   local widget = tracker.bar
   if not widget then return end
 
-  U.SetStatusBarColor(widget.bar, M.Unpack(M.color.cast))
+  ApplyUnitBarTint(widget)
   pcall(widget.bar.SetMinMaxValues, widget.bar, 0, 1)
-  pcall(widget.bar.SetValue, widget.bar, 0.4)
+  SetUnitBarValue(widget, 0.4)
   if widget.name then
     widget.name:SetText(U.L(tracker.labelKey))
   end
@@ -675,7 +770,10 @@ local function AnyCastActive()
 end
 
 UpdateTickRate = function()
-  if not bar or not Tick then return end
+  if not Tick then return end
+  -- Not `if not bar`: under a native-chrome theme the player bar does not
+  -- exist and the target tracker is the only thing on the tick.
+  if not bar and table.getn(trackerOrder) == 0 then return end
   -- Active fills keep the exact render-frame cadence they had before. While
   -- every bar is idle, a 0.1s visibility pass is enough to expose edit-mode
   -- placeholders without paying three IsShown/visibility walks every frame.
@@ -731,10 +829,10 @@ local function StartUnitCast(tracker, eventName, caster, spell)
   tracker.lastTimeText = nil
   tracker.starts = tracker.starts + 1
 
-  U.SetStatusBarColor(tracker.bar.bar, M.Unpack(M.color.cast))
+  ApplyUnitBarTint(tracker.bar)
   pcall(tracker.bar.bar.SetMinMaxValues, tracker.bar.bar, 0,
         tracker.duration)
-  pcall(tracker.bar.bar.SetValue, tracker.bar.bar, 0)
+  SetUnitBarValue(tracker.bar, 0)
   if tracker.bar.name then tracker.bar.name:SetText(spell) end
   ApplyUnitIcon(tracker, info, preferred)
   ApplyUnitTimer(tracker, tracker.duration)
@@ -775,6 +873,8 @@ local function ApplyIdlePlaceholder()
 end
 
 local function UpdateVisibility()
+  -- No player bar under a native-chrome theme; the client draws that one.
+  if not bar then return end
   local shown = casting or U.IsUnlocked()
   if shown then
     if not bar:IsShown() then bar:Show() end
@@ -861,7 +961,7 @@ Tick = function()
           StopUnitCast(tracker)
         else
           if unitElapsed < 0 then unitElapsed = 0 end
-          pcall(tracker.bar.bar.SetValue, tracker.bar.bar, unitElapsed)
+          SetUnitBarValue(tracker.bar, unitElapsed)
           ApplyUnitTimer(tracker, tracker.duration - unitElapsed)
         end
       end
@@ -871,7 +971,7 @@ Tick = function()
   end
 
   if not casting then
-    if bar:IsShown() then ApplyIdlePlaceholder() end
+    if bar and bar:IsShown() then ApplyIdlePlaceholder() end
     return
   end
 
@@ -1021,6 +1121,44 @@ local function BuildPetBar()
   pet.bar:Hide()
 end
 
+local nativeTargetStyle = nil
+
+-- Live target castbar. Modern uses the shared flat widget; Classic uses the
+-- static addon-owned native skin from castbarclassic.lua. Classic never falls
+-- back to Modern chrome: if that narrowly scoped builder is unavailable, the
+-- target castbar stays absent instead of mixing interface styles.
+-- While idle it is shown only in mover mode; recognized combat-log starts
+-- show it while locked until their known duration expires.
+local function BuildTargetBar()
+  local classic = type(U.GetActiveThemeStyle) == "function" and
+                  U.GetActiveThemeStyle() == "classic-wow"
+  local widget
+  if classic then
+    if type(U.CreateClassicTargetCastbar) == "function" then
+      widget = U.CreateClassicTargetCastbar("UnrealUICastBarTarget")
+    end
+    if not widget then
+      nativeTargetStyle = "unavailable (no Modern fallback)"
+      U.Debug("castbar: Classic target builder unavailable; target bar omitted")
+      return
+    end
+    nativeTargetStyle = "native static (verified border A)"
+  else
+    widget = BuildBarWidget("UnrealUICastBarTarget", TARGET_WIDTH)
+  end
+
+  local target = NewTracker("target", "target", "MOVER_LABEL_TARGET_CASTBAR")
+  target.bar = widget
+  ApplyUnitIdlePlaceholder(target)
+  target.bar:Hide()
+  SetWidgetCellsShown(target.bar, false)
+
+  U.RegisterMover("castbar.target", target.bar, {
+    label = U.L("MOVER_LABEL_TARGET_CASTBAR"),
+    default = { point = "CENTER", relativePoint = "CENTER", x = 0, y = -250 },
+  })
+end
+
 local function Build()
   -- The container carries no art of its own: it is the mover target and the
   -- anchor the two cells hang off, so each cell keeps its own outline the way
@@ -1034,19 +1172,7 @@ local function Build()
     default = { point = "CENTER", relativePoint = "CENTER", x = 0, y = -220 },
   })
 
-  -- Live target castbar, built from the same shared widget as the player bar.
-  -- While idle it is shown only in mover mode; recognized combat-log starts
-  -- show it while locked until their known duration expires.
-  local target = NewTracker("target", "target", "MOVER_LABEL_TARGET_CASTBAR")
-  target.bar = BuildBarWidget("UnrealUICastBarTarget", TARGET_WIDTH)
-  ApplyUnitIdlePlaceholder(target)
-  target.bar:Hide()
-
-  U.RegisterMover("castbar.target", target.bar, {
-    label = U.L("MOVER_LABEL_TARGET_CASTBAR"),
-    default = { point = "CENTER", relativePoint = "CENTER", x = 0, y = -250 },
-  })
-
+  BuildTargetBar()
   BuildPetBar()
 end
 
@@ -1296,6 +1422,388 @@ local function SetupNativeMover()
 end
 
 -- ---------------------------------------------------------------------------
+-- Quarantined native-styled target castbar experiment
+--
+-- CastingBarFrame, so the target's bar should look like that bar rather than
+-- introducing the modern one into an otherwise native interface. There is no
+-- native target castbar to reuse (see the header), so the look is rebuilt: the
+-- live CastingBarFrame is read back and whatever it is drawing is cloned onto
+-- an UnrealUI frame.
+-- This builder is intentionally not invoked. It is preserved only to make the
+-- failed experiment and the pending focused-probe comparison reviewable; see
+-- frames.native_widget_reference_crash_risk. The long-comment quarantine keeps
+-- the experiment out of Lua bytecode and prevents helper/table construction.
+--
+-- Nothing here hardcodes an asset path or a Vanilla layout. Every piece is what
+-- the live frame reports -- texture file, draw layer, size, anchors -- so a
+-- client that dresses its castbar differently gets a matching target bar, and a
+-- client that will not answer these reads gets nil and the modern widget. The
+-- native frame itself is only read: never hidden, re-parented, re-anchored or
+-- scripted by this code.
+--
+-- Three client facts shape it, all from compact evidence rather than from
+-- Vanilla habit:
+--
+--   * There is no GetStatusBarTexture on this client (documentation.json,
+--     widget-method:StatusBar:SetStatusBarTexture). The fill is therefore
+--     found among the bar's own regions instead of being asked for.
+--   * There is no GetVertexColor either (knowledge.json /
+--     textures.getvertexcolor_readback_missing), so no tint can be copied.
+--     None is imposed either: the clone draws in the colours its art was
+--     authored with, and ApplyUnitBarTint leaves this widget alone.
+--   * The fill is an UnrealUI status bar, not CreateFrame("StatusBar"):
+--     knowledge.json / statusbar.native_widget_fill_not_laid_out is a
+--     confirmed runtime failure of the real widget's fill here. That bar
+--     squashes its fill texture rather than clipping it, which is the one
+--     visible departure from how the client draws its own.
+--
+-- Anchors are read through U.GetFramePoint for the Y inversion recorded in
+-- knowledge.json / frames.getpoint_relative_name_y_inverted, so a captured
+-- point goes back through SetPoint unchanged.
+-- ---------------------------------------------------------------------------
+
+--[=[
+
+local NATIVE_STATUS_NAME = "CastingBarFrameStatusBar"
+
+-- Untinted art on an invisible backdrop: the client's own castbar art carries
+-- its own colours and its own bar bed.
+local NATIVE_STYLE_TINT = { 1, 1, 1, 1 }
+local NATIVE_STYLE_BACKDROP = { 0, 0, 0, 0 }
+
+local function NativeDimension(frame, method, fallback)
+  if not frame then return fallback end
+  local ok, value = pcall(frame[method], frame)
+  value = ok and tonumber(value) or nil
+  if not value or value <= 0 then return fallback end
+  return value
+end
+
+-- The client names its own castbar pieces -- in the region name, in the asset
+-- file name, or both -- so both are searched. Anything unrecognised is treated
+-- as static chrome, which is the safe default: a driven piece put in the wrong
+-- place would be visibly wrong, while an unclassified static texture simply
+-- travels with the rest of the art.
+local function RegionRole(region)
+  local label = ""
+  local okName, name = pcall(region.GetName, region)
+  if okName and type(name) == "string" then label = string.lower(name) end
+
+  local okTexture, path = pcall(region.GetTexture, region)
+  if not okTexture or type(path) ~= "string" or path == "" then
+    return nil, nil
+  end
+  label = label .. " " .. string.lower(path)
+
+  if string.find(label, "spark", 1, true) then return "spark", path end
+  if string.find(label, "flash", 1, true) then return "flash", path end
+  if string.find(label, "fill", 1, true) then return "fill", path end
+  return "chrome", path
+end
+
+-- Every texture and font string the frame will hand over, as a flat list.
+-- GetRegions returns them as multiple values, and a frame that refuses the
+-- call costs its own regions rather than the whole bar.
+local function NativeRegions(frame)
+  if not frame or type(frame.GetRegions) ~= "function" then return {} end
+  local ok, list = pcall(function() return { frame:GetRegions() } end)
+  if not ok or type(list) ~= "table" then return {} end
+  return list
+end
+
+-- Copies one native object's anchors onto ours, translating each relative
+-- frame through `map` (native frame -> ours). A point that hangs off something
+-- outside the castbar cannot be translated and is dropped; `owner` is what a
+-- point with no relative frame of its own means. Returns how many landed, so
+-- the caller can place a piece that got none.
+--
+-- U.GetFramePoint, not GetPoint: knowledge.json /
+-- frames.getpoint_relative_name_y_inverted.
+local function CopyPoints(source, target, map, owner)
+  local copied = 0
+  local okCount, count = pcall(source.GetNumPoints, source)
+  count = okCount and tonumber(count) or 0
+
+  local i
+  for i = 1, count do
+    local point, relative, relativePoint, x, y = U.GetFramePoint(source, i)
+    if not relative then relative = owner end
+    local anchor = point and relative and map[relative]
+    if anchor and pcall(target.SetPoint, target, point, anchor,
+                        relativePoint or point, x, y) then
+      copied = copied + 1
+    end
+  end
+
+  return copied
+end
+
+-- One native texture region copied onto one of our frames: same file, same
+-- draw layer, same blend, same size, and the same anchors wherever they
+-- pointed at a frame we have a counterpart for.
+local function CloneRegion(region, path, parent, map, owner)
+  local layer = "ARTWORK"
+  local okLayer, reported = pcall(region.GetDrawLayer, region)
+  if okLayer and type(reported) == "string" and reported ~= "" then
+    layer = reported
+  end
+
+  local okCreate, texture = pcall(parent.CreateTexture, parent, nil, layer)
+  if not okCreate or not texture then return nil end
+  if not pcall(texture.SetTexture, texture, path) then return nil end
+
+  local okBlend, blend = pcall(region.GetBlendMode, region)
+  if okBlend and type(blend) == "string" and blend ~= "" then
+    pcall(texture.SetBlendMode, texture, blend)
+  end
+
+  local width = NativeDimension(region, "GetWidth", nil)
+  local height = NativeDimension(region, "GetHeight", nil)
+  if width then pcall(texture.SetWidth, texture, width) end
+  if height then pcall(texture.SetHeight, texture, height) end
+
+  -- Anchored to something outside the castbar: it cannot be placed
+  -- meaningfully on a copy, so centre it rather than stack it at the origin.
+  if CopyPoints(region, texture, map, owner) == 0 then
+    pcall(texture.SetPoint, texture, "CENTER", parent, "CENTER", 0, 0)
+  end
+
+  return texture
+end
+
+-- The client's own castbar font object, so the spell name is set in the type
+-- the client sets it in. Its name is what CreateFontString wants; U.CreateLabel
+-- takes the same string through `inherits`.
+local function NativeFontName(regions)
+  local i
+  for i = 1, table.getn(regions) do
+    local region = regions[i]
+    local okType, objectType = pcall(region.GetObjectType, region)
+    if okType and objectType == "FontString" then
+      local okFont, font = pcall(region.GetFontObject, region)
+      if okFont and font then
+        local okName, name = pcall(font.GetName, font)
+        if okName and type(name) == "string" and name ~= "" then return name end
+      end
+    end
+  end
+  return nil
+end
+
+-- A font string in the client's own castbar font, falling back to the shared
+-- label the modern bar uses when this client will not inherit that object.
+local function NativeStyleLabel(parent, fontName, justify)
+  local label
+  if fontName then
+    local ok, created = pcall(parent.CreateFontString, parent, nil, "OVERLAY",
+                              fontName)
+    if ok then label = created end
+  end
+  if not label then
+    return U.CreateLabel(parent, {
+      size = M.fontSize.small,
+      color = M.color.text,
+      inherits = "GameFontNormalSmall",
+      justify = justify,
+    })
+  end
+  if justify then pcall(label.SetJustifyH, label, justify) end
+  return label
+end
+
+NativeStyleTargetWidget = function(frameName)
+  local native = U.G(NATIVE_NAME)
+  if not native then
+    nativeTargetStyle = "modern (no " .. NATIVE_NAME .. ")"
+    return nil
+  end
+
+  -- The fill may live on the frame itself or on a named status-bar child; both
+  -- shapes are searched.
+  local statusFrame = U.G(NATIVE_STATUS_NAME)
+  if statusFrame == native then statusFrame = nil end
+
+  local coreRegions = NativeRegions(native)
+  local statusRegions = NativeRegions(statusFrame)
+
+  local chrome, fillPath, sparkRegion, sparkPath = {}, nil, nil, nil
+
+  local Scan = function(regions, owner)
+    local i
+    for i = 1, table.getn(regions) do
+      local region = regions[i]
+      local role, path = RegionRole(region)
+      if role == "fill" then
+        if not fillPath then fillPath = path end
+      elseif role == "spark" then
+        if not sparkRegion then sparkRegion, sparkPath = region, path end
+      elseif role == "chrome" then
+        table.insert(chrome, { region = region, path = path, owner = owner })
+      end
+      -- "flash" is deliberately dropped: it is the client's cast-finished
+      -- animation, driven by scripts this module does not reproduce.
+    end
+  end
+
+  Scan(coreRegions, native)
+  Scan(statusRegions, statusFrame)
+
+  -- A single unclassified texture on the status child is the fill in any layout
+  -- where the bar texture is unnamed: a status bar's one region is what it
+  -- fills with.
+  if not fillPath and statusFrame and table.getn(statusRegions) == 1 then
+    local _, only = RegionRole(statusRegions[1])
+    fillPath = only
+  end
+
+  -- The two pieces that make this a castbar rather than a stray texture. Half a
+  -- clone is worse than the modern bar, so a miss falls back instead.
+  if not fillPath then
+    nativeTargetStyle = "modern (no fill texture)"
+    return nil
+  end
+  if table.getn(chrome) == 0 then
+    nativeTargetStyle = "modern (no border art)"
+    return nil
+  end
+
+  local coreWidth = NativeDimension(native, "GetWidth", NATIVE_FALLBACK_WIDTH)
+  local coreHeight = NativeDimension(native, "GetHeight", NATIVE_FALLBACK_HEIGHT)
+  local fillWidth = NativeDimension(statusFrame, "GetWidth", coreWidth)
+  local fillHeight = NativeDimension(statusFrame, "GetHeight", coreHeight)
+
+  -- Three frames: the container is the mover target and is given the same grab
+  -- floor the player handle uses, since a 13-unit bar is not a comfortable one;
+  -- the core stands in for the native frame, so cloned anchors carry over
+  -- unchanged; the fill is the bar itself.
+  --
+  -- Its own global name, not the modern widget's: the two checks below can
+  -- still fall back after the frames exist, and two frames answering to one
+  -- name would leave the dump reading the wrong one.
+  frameName = frameName .. "Native"
+
+  local container = CreateFrame("Frame", frameName, UIParent)
+  container:SetWidth(coreWidth)
+  container:SetHeight(math.max(coreHeight, HANDLE_MIN_HEIGHT))
+
+  local core = CreateFrame("Frame", nil, container)
+  core:SetWidth(coreWidth)
+  core:SetHeight(coreHeight)
+  core:SetPoint("CENTER", container, "CENTER", 0, 0)
+
+  local fill = U.CreateStatusBar(core, {
+    name = frameName .. "Fill",
+    width = fillWidth,
+    height = fillHeight,
+    texture = fillPath,
+    color = NATIVE_STYLE_TINT,
+    background = NATIVE_STYLE_BACKDROP,
+  })
+  if not fill then
+    container:Hide()
+    nativeTargetStyle = "modern (status bar not created)"
+    return nil
+  end
+  -- A region anchored to the native status child maps onto our fill, and one
+  -- anchored to the native frame maps onto the core.
+  local map = { [native] = core }
+  if statusFrame then map[statusFrame] = fill end
+
+  -- The fill sits where the client's own bar sits inside its frame. Centring is
+  -- only the fallback: a bar inset into its border art would otherwise be drawn
+  -- in the middle of it.
+  if not statusFrame or CopyPoints(statusFrame, fill, map, native) == 0 then
+    fill:SetPoint("CENTER", core, "CENTER", 0, 0)
+  end
+
+  local cloned = 0
+  local i
+  for i = 1, table.getn(chrome) do
+    local piece = chrome[i]
+    local parent = core
+    if piece.owner == statusFrame then parent = fill end
+    if CloneRegion(piece.region, piece.path, parent, map, piece.owner) then
+      cloned = cloned + 1
+    end
+  end
+
+  if cloned == 0 then
+    -- The frames exist by now, but an empty shell is worse than the modern
+    -- bar: hide it and let the caller build that one instead.
+    container:Hide()
+    nativeTargetStyle = "modern (border art would not clone)"
+    return nil
+  end
+
+  local fontName = NativeFontName(coreRegions)
+  if not fontName then fontName = NativeFontName(statusRegions) end
+
+  -- The client centres the spell name on its castbar. The countdown is an
+  -- UnrealUI addition the native bar reserves no room for, so the name is given
+  -- an explicit width and shifted left of it rather than left to run under it.
+  local name = NativeStyleLabel(core, fontName, "CENTER")
+  if name then
+    name:SetPoint("CENTER", fill, "CENTER", -14, 0)
+    pcall(name.SetWidth, name, math.max(20, fillWidth - 40))
+  end
+
+  local time = NativeStyleLabel(core, fontName, "RIGHT")
+  if time then time:SetPoint("RIGHT", fill, "RIGHT", -3, 0) end
+
+  local spark
+  if sparkRegion then
+    spark = CloneRegion(sparkRegion, sparkPath, core, map, native)
+    if spark then
+      -- Re-anchored on every fill write, so the cloned anchors are dropped.
+      pcall(spark.ClearAllPoints, spark)
+      pcall(spark.Hide, spark)
+    end
+  end
+
+  container.bar = fill
+  container.name = name
+  container.time = time
+  -- No icon: the client's castbar carries none, and the tracker code skips the
+  -- icon entirely when the widget has no texture for it.
+  container.icon = nil
+  container.showIcon = false
+  container.uuiCells = {}
+  container.uuiKeepNativeTint = true
+
+  if spark then
+    container.uuiUpdateSpark = function()
+      local size = tonumber(fill:GetWidth()) or 0
+      local minimum, maximum = fill:GetMinMaxValues()
+      minimum = tonumber(minimum) or 0
+      local range = (tonumber(maximum) or 0) - minimum
+      local extent = 0
+      if range > 0 and size > 0 then
+        extent = size / range * ((tonumber(fill:GetValue()) or 0) - minimum)
+      end
+      if extent < 0 then extent = 0 end
+      if extent > size then extent = size end
+
+      if extent <= 0 then
+        if spark:IsShown() then spark:Hide() end
+        return
+      end
+
+      spark:ClearAllPoints()
+      spark:SetPoint("CENTER", fill, "LEFT", extent, 0)
+      if not spark:IsShown() then spark:Show() end
+    end
+  end
+
+  nativeTargetStyle = "native (" .. cloned .. " chrome" ..
+                      (spark and " + spark" or "") ..
+                      (fontName and (", font " .. fontName) or ", addon font") ..
+                      ")"
+  return container
+end
+
+]=] -- quarantined native-style experiment
+
+-- ---------------------------------------------------------------------------
 -- /uui cb -- native castbar placement dump
 --
 -- Armed rather than immediate, the way /uui map arms its hover watch: the
@@ -1495,17 +2003,38 @@ function U.CastbarNativeDump()
   U.Print("castbar dump armed: cast something, or open a quest object")
 end
 
+-- The combat-log reconstruction's events. Registered in both castbar modes,
+-- because the target bar exists in both; the pet tracker, when it was built,
+-- rides the same messages.
+local function RegisterUnitCastEvents()
+  local i
+  for i = 1, table.getn(TARGET_COMBAT_EVENTS) do
+    U.RegisterEvent(TARGET_COMBAT_EVENTS[i], OnUnitCombatMessage)
+  end
+
+  U.RegisterEvent("PLAYER_TARGET_CHANGED", function()
+    StopUnitCast(trackers.target)
+  end)
+end
+
 function CB:OnEnable()
-  if bar then return end
+  -- The modern path creates all three addon bars. Native-chrome mode keeps the
+  -- player's client bar untouched and builds only the addon-owned Classic
+  -- target bar; no pet reconstruction is introduced in that mode.
+  if bar or trackers.target then return end
 
   -- Before Build() and before SuppressNativeCastbar(): under a native-chrome
-  -- theme the client's own castbar is the castbar, so this module creates
-  -- nothing, hides nothing and registers nothing at all.
+  -- theme the client's own player castbar stays the player castbar. The target
+  -- bar uses static verified paths and never inspects that native frame.
   nativeChrome = type(U.ThemeStyleUsesNativeChrome) == "function" and
                  U.ThemeStyleUsesNativeChrome() or false
   if nativeChrome then
     U.Debug("castbar: native chrome theme; leaving CastingBarFrame alone")
     SetupNativeMover()
+    BuildTargetBar()
+    BuildTargetPatterns()
+    RegisterUnitCastEvents()
+    UpdateTickRate()
     return
   end
 
@@ -1534,13 +2063,7 @@ function CB:OnEnable()
     U.RegisterEvent(STOP_EVENTS[i], StopCast)
   end
 
-  for i = 1, table.getn(TARGET_COMBAT_EVENTS) do
-    U.RegisterEvent(TARGET_COMBAT_EVENTS[i], OnUnitCombatMessage)
-  end
-
-  U.RegisterEvent("PLAYER_TARGET_CHANGED", function()
-    StopUnitCast(trackers.target)
-  end)
+  RegisterUnitCastEvents()
 
   -- A new pet has a different name and a different spellbook, so the running
   -- bar and the cached pet icons both belong to the old one. The tick's own
@@ -1551,7 +2074,13 @@ function CB:OnEnable()
   end)
 
   -- Same invalidation UnrealPfUI's libspell uses: a newly learned rank changes
-  -- which spellbook index a name resolves to.
+  -- which spellbook index a name resolves to -- and, since the walk now
+  -- records it, the cached rank itself, which is a duration on a target's
+  -- debuff timer and not just an icon.
+  -- SPELLS_CHANGED as well as LEARNED_SPELL_IN_TAB: a miss is cached as `false`
+  -- and never re-scanned, so a lookup that ran before the spellbook was
+  -- readable would otherwise keep a spell iconless for the whole session.
+  U.RegisterEvent("SPELLS_CHANGED", function() iconCache = {} end)
   U.RegisterEvent("LEARNED_SPELL_IN_TAB", function()
     iconCache = {}
   end)
@@ -1599,6 +2128,8 @@ function U.CastbarReport()
       driving = nativeDriving,
       driveFailures = driveFailures,
       nativeAnchorCaptured = capturedNativeAnchor and true or false,
+      target = TrackerReport(trackers.target),
+      targetStyle = nativeTargetStyle,
     }
   end
   if not bar then return nil end

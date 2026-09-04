@@ -40,13 +40,66 @@
 --     recoverable for another unit's aura, and pfUI's own display path passes
 --     rank as nil for the same reason (libdebuff:UnitDebuff, "no backport"),
 --     so a low-rank aura reads long.
---   * The table is debuff-weighted because that is what pfUI's extractor
---     produced. Many buffs are absent; an aura with no entry here simply gets
---     no timer and no wipe, which is the honest result rather than a guess.
+--   * The table was debuff-weighted because that is what pfUI's extractor
+--     produced. The 160 player buffs it left out -- the blessings, the armors,
+--     the shouts, the totems, Fortitude and the rest -- have since been added
+--     from the client's own DBCs (see the audit note below). An aura with no
+--     entry here still gets no timer and no wipe, which remains the honest
+--     result rather than a guess.
+--   * A buff on someone else is the case where the *other* unknown bites: the
+--     duration is known but the start time is not. modules/auras.lua only
+--     draws a timer for an aura it watched land, so these rows produce a
+--     countdown on a buff cast in front of the row and a plain icon on one
+--     that was already running. That gate is the reason adding them is safe.
 --   * Nothing here is verified against this server's own spell data. If
 --     Emberveil retuned a duration, this table is wrong for that spell and the
 --     timer restarts when the aura outlives it -- see RestampExpired in
 --     modules/auras.lua.
+--   * The extractor also mis-picked a few rows outright, and a buff is where
+--     that shows: pfUI's Battle Shout is 900 seconds, a creature spell's
+--     duration rather than the warrior's 120. libdebuff reads debuffs only, so
+--     pfUI never displayed it; this table is read for buffs too, so a wrong
+--     buff row is visible here in a way it was not there. A value corrected
+--     against the game carries a comment saying so.
+--
+-- ---------------------------------------------------------------------------
+-- The DBC audit
+-- ---------------------------------------------------------------------------
+--
+-- The rows that describe player spells have since been checked against the
+-- source pfUI's extractor read: Spell.dbc and SpellDuration.dbc out of a
+-- vanilla 1.12.1 client's MPQs, joined to SkillLineAbility.dbc + SkillLine.dbc
+-- so a spell can be told to be class-learnable rather than a creature ability.
+-- Comments marked DBC_VERIFIED come from that pass.
+--
+-- What it found, and what the failure mode actually is:
+--
+--   * Every one of the 933 rows here matches some real spell of that name.
+--     None is invented. The error is always the *wrong row of the same name* --
+--     Spell.dbc has 21 spells called "Battle Shout" and 25 called "Rend".
+--   * Three rows disagreed with the player-learnable spell: Battle Shout
+--     (900 -> 120, a creature row), Sacrifice (8 -> 30) and Touch of Weakness
+--     (120 -> 600, where the ported value was rank 1 instead of max rank).
+--   * 160 class-learnable spells with a real duration had no row at all and
+--     now do, at max rank, with the four rank-varying ones in RANKED. Rows
+--     that can never be an aura on a unit were left out: the "(DND)" internals
+--     and the city portals.
+--   * Auras whose duration scales with caster level would need level maths
+--     rather than a constant; the join found none among the added rows, so
+--     nothing here depends on that.
+--   * All 21 player entries in RANKED below reproduce the DBC per-rank
+--     durations exactly. The six NPC entries there keep pfUI's numbers, which
+--     the class-skill join cannot speak to either way.
+--
+-- What it does not prove: this is *vanilla* data. It settles what the spell was
+-- in 1.12.1, which is what the port should have carried; it says nothing about
+-- an Emberveil retune. A number contradicted in game beats it, and the comment
+-- on the row should say so when that happens.
+--   * Only RestampExpired self-corrects, and only in one direction: a duration
+--     that is too SHORT loops the timer. One that is too LONG -- the Battle
+--     Shout case -- has no tell at all; the icon simply vanishes with time
+--     still on the clock. That is worth remembering when a number here is
+--     changed.
 --
 -- ---------------------------------------------------------------------------
 -- Local budget
@@ -61,6 +114,8 @@ local U = UnrealUI
 -- Seconds, keyed by the aura name the tooltip scanner reads off line 1.
 local DURATION = {
   ["AE Charm"] = 300,
+  ["Abolish Disease"] = 20,
+  ["Abolish Poison"] = 8,
   ["Abomination Spit"] = 10,
   ["Acid Slime"] = 30,
   ["Acid Spit"] = 30,
@@ -68,22 +123,28 @@ local DURATION = {
   ["Acid Spray"] = 10,
   ["Acid Volley"] = 25,
   ["Acid of Hakkar"] = 60,
+  ["Adrenaline Rush"] = 15,
   ["Advanced Target Dummy Spawn Effect"] = 10,
   ["Aftermath"] = 5,
   ["Agility VIII"] = 3600,
   ["Agonizing Pain"] = 15,
   ["Air Bubbles"] = 10,
+  ["Amplify Curse"] = 30,
   ["Amplify Damage"] = 10,
   ["Amplify Flames"] = 30,
+  ["Amplify Magic"] = 600,
+  ["Ancestral Fortitude"] = 15,
   ["Ancient Despair"] = 5,
   ["Ancient Dread"] = 900,
   ["Ancient Hysteria"] = 900,
   ["Anub'Rekhan's Aura"] = 5,
   ["Aquatic Miasma"] = 3600,
   ["Arantir's Rage"] = 6,
+  ["Arcane Brilliance"] = 3600,
   ["Arcane Burst"] = 8,
   ["Arcane Intellect"] = 1800,
   ["Arcane Missiles"] = 5,
+  ["Arcane Power"] = 15,
   ["Arcane Weakness"] = 45,
   ["Armor IV"] = 3600,
   ["Armor Shatter"] = 45,
@@ -113,35 +174,58 @@ local DURATION = {
   ["Banshee Curse"] = 12,
   ["Banshee Shriek"] = 5,
   ["Barbed Sting"] = 300,
+  ["Barkskin"] = 15,
   ["Barrel Explode"] = 3,
   ["Bash"] = 4,
   ["Battle Command"] = 6,
   ["Battle Net"] = 10,
-  ["Battle Shout"] = 900,
+  -- 120, not the 900 pfUI's table carries. USER_CONFIRMED_INGAME: the warrior
+  -- shout lasts 2 minutes here and was timed at 15. DBC_VERIFIED: all seven
+  -- ranks learnable from the Fury skill line are 120 seconds, and the 900
+  -- belongs to spell 25101, a creature ability of the same name that nothing
+  -- can learn. pfUI never showed the error because libdebuff reads debuffs
+  -- only -- this table is also read for buffs, so it does.
+  ["Battle Shout"] = 120,
   ["Battle Standard"] = 3,
   ["Battlegear of Might"] = 6,
+  ["Beast Lore"] = 30,
   ["Befuddlement"] = 15,
   ["Bellowing Roar"] = 3,
   ["Berserk"] = 30,
+  ["Berserker Rage"] = 10,
+  ["Bestial Wrath"] = 15,
   ["Biletoad Infection"] = 180,
   ["Black Arrow"] = 30,
   ["Black March Blessing"] = 6,
   ["Black Rot"] = 1800,
   ["Black Sludge"] = 120,
   ["Blackout"] = 3,
+  ["Blade Flurry"] = 15,
   ["Blast Wave"] = 6,
   ["Blaze"] = 30,
   ["Bleakwood Curse"] = 60,
+  ["Blessed Recovery"] = 6,
+  ["Blessing of Freedom"] = 10,
+  ["Blessing of Kings"] = 300,
+  ["Blessing of Light"] = 300,
+  ["Blessing of Might"] = 300,
   ["Blessing of Nordrassil"] = 10,
+  ["Blessing of Protection"] = 10,
+  ["Blessing of Sacrifice"] = 30,
+  ["Blessing of Salvation"] = 300,
+  ["Blessing of Sanctuary"] = 300,
+  ["Blessing of Wisdom"] = 300,
   ["Blight"] = 60,
   ["Blind"] = 10,
   ["Blink"] = 1,
+  ["Blizzard"] = 8,
   ["Blood Howl"] = 15,
   ["Blood Siphon"] = 8,
   ["Bloodfang"] = 6,
   ["Bloodlord's Aura"] = 5,
   ["Bloodlust"] = 15,
   ["Bloodpetal Poison"] = 30,
+  ["Bloodthirst"] = 8,
   ["Boar Charge"] = 1,
   ["Bone Smelt"] = 20,
   ["Bottle of Poison"] = 30,
@@ -186,6 +270,7 @@ local DURATION = {
   ["Chromatic Mutation"] = 300,
   ["Claw Grasp"] = 4,
   ["Clear All Shackels"] = 1,
+  ["Clearcasting"] = 15,
   ["Cleave Armor"] = 15,
   ["Clenched Pinchers"] = 15,
   ["Cold Eye"] = 15,
@@ -193,7 +278,9 @@ local DURATION = {
   ["Concussive Shot"] = 4,
   ["Cone of Cold"] = 8,
   ["Conflagration"] = 10,
+  ["Consecration"] = 8,
   ["Consume"] = 15,
+  ["Consume Shadows"] = 10,
   ["Contagion of Rot"] = 240,
   ["Control Machine"] = 60,
   ["Corrosive Acid"] = 300,
@@ -236,6 +323,7 @@ local DURATION = {
   ["Curse of Agony"] = 24,
   ["Curse of Blood"] = 600,
   ["Curse of Doom"] = 60,
+  ["Curse of Doom Effect"] = 15,
   ["Curse of Exhaustion"] = 12,
   ["Curse of Hakkar"] = 120,
   ["Curse of Idiocy"] = 120,
@@ -267,11 +355,13 @@ local DURATION = {
   ["Cursed Blade"] = 20,
   ["Cursed Blood"] = 600,
   ["Damage Shield"] = 10,
+  ["Dampen Magic"] = 600,
   ["Dark Energy"] = 300,
   ["Dark Iron Taskmaster Death"] = 6,
   ["Dark Plague"] = 90,
   ["Dark Sludge"] = 300,
   ["Darken Vision"] = 12,
+  ["Dash"] = 15,
   ["Daunting Growl"] = 30,
   ["Dazed"] = 4,
   ["Deadly Leech Poison"] = 45,
@@ -287,6 +377,7 @@ local DURATION = {
   ["Deafening Screech"] = 8,
   ["Death Bed"] = 10,
   ["Death Coil"] = 3,
+  ["Death Wish"] = 30,
   ["Debilitate"] = 15,
   ["Debilitating Charge"] = 8,
   ["Debilitating Touch"] = 120,
@@ -300,12 +391,17 @@ local DURATION = {
   ["Defile"] = 10,
   ["Defiling Aura"] = 5,
   ["Delusions of Jin'do"] = 20,
+  ["Demon Armor"] = 1800,
+  ["Demon Skin"] = 1800,
   ["Demonfork"] = 25,
   ["Demoralize"] = 30,
   ["Demoralizing Roar"] = 30,
   ["Demoralizing Shout"] = 30,
   ["Detect Greater Invisibility"] = 600,
+  ["Detect Invisibility"] = 600,
+  ["Detect Lesser Invisibility"] = 600,
   ["Detect Magic"] = 120,
+  ["Deterrence"] = 10,
   ["Detonate Mana"] = 5,
   ["Devilsaur Barb"] = 10,
   ["Devouring Plague"] = 24,
@@ -314,6 +410,7 @@ local DURATION = {
   ["Disarm"] = 10,
   ["Discombobulate"] = 12,
   ["Disease Buffet"] = 20,
+  ["Disease Cleansing Totem"] = 120,
   ["Diseased Shot"] = 300,
   ["Diseased Slime"] = 120,
   ["Diseased Spit"] = 10,
@@ -324,6 +421,9 @@ local DURATION = {
   ["Distract Move"] = 7,
   ["Distracting Pain"] = 15,
   ["Distracting Spit"] = 15,
+  ["Dive"] = 15,
+  ["Divine Protection"] = 8,
+  ["Divine Shield"] = 12,
   ["Divine Spirit"] = 1800,
   ["Dominate Mind"] = 10,
   ["Domination"] = 15,
@@ -339,17 +439,21 @@ local DURATION = {
   ["Druid's Slumber"] = 15,
   ["Dust Cloud"] = 12,
   ["Eagle Claw"] = 15,
+  ["Eagle Eye"] = 60,
   ["Earth Shock"] = 2,
   ["Earthbind"] = 5,
+  ["Earthbind Totem"] = 45,
   ["Earthborer Acid"] = 30,
   ["Earthgrab"] = 4,
   ["Echoing Roar"] = 20,
   ["Ectoplasmic Distiller"] = 3,
   ["Egg Explosion"] = 3,
   ["Electrified Net"] = 10,
+  ["Elemental Devastation"] = 10,
   ["Elemental Fire"] = 8,
   ["Elemental Vulnerability"] = 30,
   ["Elixir of the Giants"] = 1200,
+  ["Elune's Grace"] = 15,
   ["Emeriss Aura"] = 10,
   ["Encage"] = 30,
   ["Encasing Webs"] = 6,
@@ -358,6 +462,7 @@ local DURATION = {
   ["Enervate"] = 10,
   ["Enfeeble"] = 120,
   ["Engulfing Flames"] = 6,
+  ["Enrage"] = 10,
   ["Enraging Bite"] = 6,
   ["Enslave"] = 15,
   ["Enslave Demon"] = 300,
@@ -369,23 +474,34 @@ local DURATION = {
   ["Enveloping Winds"] = 10,
   ["Eskhandar's Rake"] = 30,
   ["Essence of the Red"] = 180,
+  ["Evasion"] = 15,
+  ["Evocation"] = 8,
   ["Explode"] = 2.5,
   ["Explode Bug"] = 4,
+  ["Explosive Trap"] = 60,
   ["Explosive Trap Effect"] = 20,
   ["Expose Armor"] = 30,
   ["Expose Weakness"] = 5,
   ["Extract Essence"] = 12,
   ["Eye Peck"] = 12,
   ["Eye of Immol'thar"] = 4,
+  ["Eye of Kilrogg"] = 45,
+  ["Eyes of the Beast"] = 60,
+  ["Fade"] = 10,
   ["Faerie Fire"] = 40,
   ["Faerie Fire (Feral)"] = 40,
   ["Fang of the Crystal Spider"] = 10,
+  ["Far Sight"] = 60,
   ["Fatal Sting"] = 12,
   ["Fear"] = 20,
   ["Fear (NYI)"] = 15,
+  ["Fear Ward"] = 600,
   ["Feeblemind"] = 30,
   ["Feeblemind II"] = 30,
   ["Feeblemind III"] = 30,
+  ["Feedback"] = 15,
+  ["Feign Death"] = 360,
+  ["Fel Domination"] = 15,
   ["Fel Stomp"] = 3,
   ["Feral Charge Effect"] = 4,
   ["Festering Bites"] = 1800,
@@ -395,8 +511,12 @@ local DURATION = {
   ["Fevered Plague"] = 180,
   ["Fire Festival Fortitude"] = 3600,
   ["Fire Festival Fury"] = 3600,
+  ["Fire Nova Totem"] = 5,
   ["Fire Protection"] = 3600,
+  ["Fire Resistance Totem"] = 120,
+  ["Fire Shield"] = 180,
   ["Fire Vulnerability"] = 30,
+  ["Fire Ward"] = 30,
   ["Fire Weakness"] = 45,
   ["Fireball"] = 8,
   ["Fist of Ragnaros"] = 5,
@@ -407,8 +527,13 @@ local DURATION = {
   ["Flame Shock"] = 12,
   ["Flameshocker's Revenge"] = 2,
   ["Flameshocker's Touch"] = 3,
+  ["Flamestrike"] = 8,
+  ["Flametongue Totem"] = 120,
+  ["Flare"] = 30,
   ["Flash Freeze"] = 5,
   ["Flesh Rot"] = 10,
+  ["Flurry"] = 15,
+  ["Focused Casting"] = 6,
   ["Forsaken Skills"] = 300,
   ["Foul Chill"] = 120,
   ["Frailty"] = 60,
@@ -416,19 +541,25 @@ local DURATION = {
   ["Freeze III PROC"] = 5,
   ["Freeze Solid"] = 10,
   ["Freezing Claw"] = 5,
+  ["Freezing Trap"] = 60,
   ["Freezing Trap Effect"] = 20,
   ["Frenzied Command"] = 10,
   ["Frenzied Dive"] = 2,
+  ["Frenzied Regeneration"] = 10,
   ["Frightalon"] = 60,
   ["Frightening Shriek"] = 6,
   ["Frost"] = 10,
+  ["Frost Armor"] = 1800,
   ["Frost Aura"] = 5,
   ["Frost Burn"] = 15,
   ["Frost Hold"] = 10,
   ["Frost Nova"] = 8,
   ["Frost Protection "] = 3600,
+  ["Frost Resistance Totem"] = 120,
   ["Frost Shock"] = 8,
   ["Frost Shot"] = 10,
+  ["Frost Trap"] = 60,
+  ["Frost Ward"] = 30,
   ["Frost Weakness"] = 45,
   ["Frostbite"] = 5,
   ["Frostbolt"] = 9,
@@ -438,6 +569,7 @@ local DURATION = {
   ["Fumble II"] = 30,
   ["Fumble III"] = 30,
   ["Fungal Bloom"] = 90,
+  ["Furious Howl"] = 10,
   ["Garrote"] = 18,
   ["Gehennas' Curse"] = 300,
   ["Geyser"] = 5,
@@ -445,6 +577,7 @@ local DURATION = {
   ["Ghoul Plague"] = 1800,
   ["Ghoul Rot"] = 600,
   ["Gift of Arthas"] = 180,
+  ["Gift of the Wild"] = 3600,
   ["Gizlock's Dummy Taunt Effect"] = 5,
   ["Glacial Roar"] = 3,
   ["Glimpse of Madness"] = 3,
@@ -455,13 +588,21 @@ local DURATION = {
   ["Gore"] = 15,
   ["Gouge"] = 4,
   ["Grab Weapon"] = 15,
+  ["Grace of Air Totem"] = 120,
   ["Grasping Vines"] = 10,
   ["Greater Arcane Elixir"] = 1800,
+  ["Greater Blessing of Kings"] = 900,
+  ["Greater Blessing of Light"] = 900,
+  ["Greater Blessing of Might"] = 900,
+  ["Greater Blessing of Salvation"] = 900,
+  ["Greater Blessing of Sanctuary"] = 900,
+  ["Greater Blessing of Wisdom"] = 900,
   ["Greater Polymorph"] = 20,
   ["Grip of Command"] = 10,
   ["Ground Smash"] = 3,
   ["Ground Stomp"] = 5,
   ["Ground Tremor"] = 2,
+  ["Grounding Totem"] = 45,
   ["Growl"] = 3,
   ["Gust of Wind"] = 4,
   ["Gutgore Ripper"] = 30,
@@ -481,7 +622,11 @@ local DURATION = {
   ["Head Butt"] = 2,
   ["Head Crack"] = 20,
   ["Head Smash"] = 2,
+  ["Healing Stream Totem"] = 60,
+  ["Healing Way"] = 15,
+  ["Health Funnel"] = 10,
   ["Health II"] = 3600,
+  ["Hellfire"] = 15,
   ["Hemorrhage"] = 15,
   ["Hex"] = 10,
   ["Hex of Jammal'an"] = 10,
@@ -493,6 +638,7 @@ local DURATION = {
   ["Holy Blast"] = 4,
   ["Holy Fire"] = 10,
   ["Holy Protection "] = 3600,
+  ["Holy Shield"] = 10,
   ["Holy Sunder"] = 60,
   ["Holy Word: Fortitude"] = 1800,
   ["Hooked Net"] = 10,
@@ -501,7 +647,11 @@ local DURATION = {
   ["Howling Rage"] = 300,
   ["Hunter Epic Anti-Cheat DND"] = 60,
   ["Hunter's Mark"] = 120,
+  ["Hurricane"] = 10,
+  ["Ice Armor"] = 1800,
+  ["Ice Barrier"] = 60,
   ["Ice Blast"] = 10,
+  ["Ice Block"] = 10,
   ["Ice Bolt Prot"] = 5,
   ["Ice Claw"] = 6,
   ["Ice Nova"] = 2,
@@ -513,6 +663,7 @@ local DURATION = {
   ["Ignite Flesh"] = 60,
   ["Ignite Mana"] = 300,
   ["Immolate"] = 15,
+  ["Immolation Trap"] = 60,
   ["Immolation Trap Effect"] = 15,
   ["Immunity"] = 1800,
   ["Impact"] = 2,
@@ -529,9 +680,12 @@ local DURATION = {
   ["Infected Bite"] = 180,
   ["Infected Spine"] = 300,
   ["Infected Wound"] = 300,
+  ["Inferno"] = 15,
   ["Inferno Effect"] = 2,
   ["Inferno Shell"] = 10,
   ["Ink Spray"] = 15,
+  ["Inner Fire"] = 600,
+  ["Innervate"] = 20,
   ["Insect Swarm"] = 12,
   ["Intellect IX"] = 3600,
   ["Intercept Stun"] = 3,
@@ -563,10 +717,15 @@ local DURATION = {
   ["Lag"] = 10,
   ["Larva Goo"] = 6,
   ["Lash"] = 2,
+  ["Last Stand"] = 20,
   ["Leech Poison"] = 40,
+  ["Lesser Invisibility"] = 300,
   ["Lethal Toxin"] = 180,
+  ["Levitate"] = 120,
   ["Life Drain"] = 12,
+  ["Lightning Shield"] = 600,
   ["Lightwell"] = 180,
+  ["Lightwell Renew"] = 10,
   ["Living Bomb"] = 8,
   ["Localized Toxin"] = 60,
   ["Locust Swarm"] = 6,
@@ -576,6 +735,7 @@ local DURATION = {
   ["Lunaclaw Spirit"] = 120,
   ["Lunar Fortune"] = 1800,
   ["Mace Stun Effect"] = 3,
+  ["Mage Armor"] = 1800,
   ["Magenta Cap Sickness"] = 1200,
   ["Maggot Goo"] = 6,
   ["Maggot Slime"] = 1800,
@@ -583,8 +743,12 @@ local DURATION = {
   ["Magma Shackles"] = 15,
   ["Magma Spit"] = 30,
   ["Magma Splash"] = 30,
+  ["Magma Totem"] = 20,
   ["Malown's Slam"] = 2,
   ["Mana Burn"] = 8,
+  ["Mana Shield"] = 60,
+  ["Mana Spring Totem"] = 60,
+  ["Mana Tide Totem"] = 12,
   ["Mangle"] = 2,
   ["Marduk's Curse"] = 5,
   ["Mark of Arlokk"] = 120,
@@ -603,6 +767,7 @@ local DURATION = {
   ["Maul"] = 2,
   ["Melt Armor"] = 60,
   ["Melt Ore"] = 20,
+  ["Mend Pet"] = 5,
   ["Mental Domination"] = 120,
   ["Might of Shahram"] = 5,
   ["Mind Control"] = 60,
@@ -611,6 +776,7 @@ local DURATION = {
   ["Mind Shatter"] = 3,
   ["Mind Soothe"] = 15,
   ["Mind Tremor"] = 600,
+  ["Mind Vision"] = 60,
   ["Mind-numbing Poison"] = 10,
   ["Mind-numbing Poison II"] = 12,
   ["Mind-numbing Poison III"] = 14,
@@ -633,8 +799,11 @@ local DURATION = {
   ["Mutating Injection"] = 10,
   ["Naralex's Nightmare"] = 15,
   ["Naraxis Web"] = 30,
+  ["Natural Shapeshifter"] = 6,
   ["Nature Protection "] = 3600,
+  ["Nature Resistance Totem"] = 120,
   ["Nature Weakness"] = 45,
+  ["Nature's Grasp"] = 45,
   ["Necrotic Poison"] = 30,
   ["Net"] = 10,
   ["Net Guard"] = 20,
@@ -642,6 +811,7 @@ local DURATION = {
   ["Noxious Catalyst"] = 120,
   ["Nullify"] = 8,
   ["Numbing Pain"] = 10,
+  ["Omen of Clarity"] = 600,
   ["Oops!"] = 10,
   ["Open Wound Effect"] = 8,
   ["Overseer's Poison"] = 60,
@@ -671,6 +841,7 @@ local DURATION = {
   ["Poison Bolt"] = 10,
   ["Poison Bolt Volley"] = 10,
   ["Poison Charge"] = 9,
+  ["Poison Cleansing Totem"] = 120,
   ["Poison Cloud"] = 45,
   ["Poison Mind"] = 15,
   ["Poison Stinger"] = 10,
@@ -689,6 +860,12 @@ local DURATION = {
   ["Possess"] = 120,
   ["Pounce"] = 2,
   ["Pounce Bleed"] = 18,
+  ["Power Infusion"] = 15,
+  ["Power Word: Fortitude"] = 1800,
+  ["Power Word: Shield"] = 30,
+  ["Prayer of Fortitude"] = 3600,
+  ["Prayer of Shadow Protection"] = 1200,
+  ["Prayer of Spirit"] = 3600,
   ["Premeditation"] = 10,
   ["Psychic Scream"] = 8,
   ["Pummel"] = 4,
@@ -706,29 +883,42 @@ local DURATION = {
   ["Rabies"] = 600,
   ["Radiation Poisoning"] = 25,
   ["Rage of Thule"] = 120,
+  ["Rain of Fire"] = 8,
   ["Rake"] = 9,
   ["Rallying Cry of the Dragonslayer"] = 7200,
   ["Rampage"] = 2.5,
+  ["Rapid Fire"] = 15,
   ["Rat Nova"] = 10,
   ["Ravage"] = 2,
   ["Reckless Charge"] = 30,
+  ["Recklessness"] = 15,
   ["Reflection Field"] = 5,
   ["Regeneration IV"] = 3600,
+  ["Regrowth"] = 21,
+  ["Rejuvenation"] = 12,
   ["Rend"] = 21,
   ["Rend Flesh"] = 12,
+  ["Renew"] = 15,
   ["Repentance"] = 6,
   ["Repulsive Gaze"] = 8,
+  ["Retaliation"] = 15,
   ["Retching Plague"] = 300,
   ["Revenge Stun"] = 3,
   ["Rhahk'Zor Slam"] = 3,
   ["Rift Beacon"] = 60,
   ["Righteous Fire"] = 8,
+  ["Righteous Fury"] = 1800,
   ["Rip"] = 12,
   ["Riposte"] = 6,
   ["Riptide"] = 4,
   ["Ritual Candle Aura"] = 6,
+  ["Ritual of Doom"] = 60,
+  ["Ritual of Doom Effect"] = 15,
+  ["Ritual of Summoning"] = 600,
   ["Rupture"] = 6,
-  ["Sacrifice"] = 8,
+  -- 30, not 8. DBC_VERIFIED: the voidwalker shield is 30 seconds at all six
+  -- ranks; 8 belongs to a same-named row that is not the warlock spell.
+  ["Sacrifice"] = 30,
   ["Sap"] = 45,
   ["Sap Might"] = 300,
   ["Savage Assault"] = 30,
@@ -744,10 +934,18 @@ local DURATION = {
   ["Scorpid Sting"] = 20,
   ["Screams of the Past"] = 5,
   ["Screech"] = 4,
+  ["Seal of Command"] = 30,
+  ["Seal of Justice"] = 30,
+  ["Seal of Light"] = 30,
+  ["Seal of Righteousness"] = 30,
+  ["Seal of Wisdom"] = 30,
+  ["Seal of the Crusader"] = 30,
   ["Searing Blast"] = 30,
   ["Searing Flames"] = 9,
+  ["Searing Totem"] = 55,
   ["Seduction"] = 15,
   ["Seeping Willow"] = 30,
+  ["Sentry Totem"] = 300,
   ["Serious Wound"] = 10,
   ["Serpent Sting"] = 15,
   ["Serrated Bite"] = 30,
@@ -756,19 +954,25 @@ local DURATION = {
   ["Shadow Command"] = 15,
   ["Shadow Flame"] = 10,
   ["Shadow Mark"] = 15,
+  ["Shadow Protection"] = 600,
   ["Shadow Protection "] = 3600,
   ["Shadow Vulnerability"] = 15,
+  ["Shadow Ward"] = 30,
   ["Shadow Weakness"] = 45,
   ["Shadow Word: Pain"] = 18,
   ["Shadow of Ebonroc"] = 8,
   ["Shadowburn"] = 5,
+  ["Shadowguard"] = 600,
   ["Shadowstalker Slash"] = 5,
   ["Shadowstalker Stab"] = 5,
   ["Shared Bonds"] = 4,
   ["Shazzrah's Curse"] = 300,
+  ["Shell Shield"] = 12,
   ["Shield Bash"] = 6,
   ["Shield Bash - Silenced"] = 3,
+  ["Shield Block"] = 5,
   ["Shield Slam"] = 2,
+  ["Shield Wall"] = 10,
   ["Shockwave"] = 2,
   ["Shred"] = 12,
   ["Shrink"] = 120,
@@ -793,6 +997,7 @@ local DURATION = {
   ["Sling Mud"] = 15,
   ["Sloth Effect"] = 3,
   ["Slow"] = 15,
+  ["Slow Fall"] = 30,
   ["Slow Poison"] = 30,
   ["Slow Poison II"] = 30,
   ["Slowing Ooze"] = 10,
@@ -825,6 +1030,7 @@ local DURATION = {
   ["Spirit Decay"] = 1200,
   ["Spirit of Zandalar"] = 7200,
   ["Spitelash"] = 20,
+  ["Sprint"] = 15,
   ["Starfire Stun"] = 3,
   ["Starshards"] = 6,
   ["Stasis Effect"] = 15,
@@ -834,9 +1040,12 @@ local DURATION = {
   ["Sticky Tar"] = 4,
   ["Stink Trap"] = 120,
   ["Stomp"] = 10,
+  ["Stoneclaw Totem"] = 15,
+  ["Stoneskin Totem"] = 120,
   ["Storm Bolt"] = 8,
   ["Stormbolt"] = 5,
   ["Stormstrike"] = 12,
+  ["Strength of Earth Totem"] = 120,
   ["Strong Cleave"] = 10,
   ["Stun"] = 2,
   ["Stunning Blast"] = 5,
@@ -866,9 +1075,11 @@ local DURATION = {
   ["Super Shrink Ray"] = 20,
   ["Surprise Attack"] = 2.5,
   ["Survival Instinct"] = 2,
+  ["Sweeping Strikes"] = 20,
   ["TWEEP"] = 11,
   ["Taelan's Suffering Effect"] = 2,
   ["Tail Lash"] = 2,
+  ["Tainted Blood"] = 60,
   ["Tainted Blood Effect"] = 10,
   ["Tainted Mind"] = 600,
   ["Tame Adult Plainstrider"] = 900,
@@ -909,25 +1120,34 @@ local DURATION = {
   ["Thunderfury"] = 12,
   ["Thundershock"] = 5,
   ["Tidal Charm"] = 3,
+  ["Tiger's Fury"] = 6,
   ["Tight Pinch"] = 5,
   ["Time Lapse"] = 8,
   ["Torch Burst"] = 30,
   ["Torch Toss"] = 30,
   ["Tornado"] = 4,
   ["Touch of Ravenclaw"] = 5,
-  ["Touch of Weakness"] = 120,
+  -- 600, not 120. DBC_VERIFIED: rank 1 is 120 and ranks 2-6 are 600, so the
+  -- ported value was rank 1 rather than max rank -- the inverse of the Rend
+  -- error. RANKED below restores the rank-1 case.
+  ["Touch of Weakness"] = 600,
   ["Toxic Contagion"] = 60,
   ["Toxic Saliva"] = 120,
   ["Toxic Volley"] = 15,
+  ["Tranquil Air Totem"] = 120,
+  ["Tranquility"] = 10,
   ["Tranquilizing Poison"] = 8,
   ["Trap"] = 10,
   ["Trelane's Freezing Touch"] = 12,
+  ["Tremor Totem"] = 120,
   ["Trip"] = 3,
   ["True Fulfillment"] = 20,
+  ["Trueshot Aura"] = 1800,
   ["Tunneler Acid"] = 30,
   ["Turn Undead"] = 20,
   ["Twisted Reflection"] = 45,
   ["Unbalancing Strike"] = 6,
+  ["Unending Breath"] = 600,
   ["Unholy Curse"] = 12,
   ["Vampiric Embrace"] = 60,
   ["Vanish"] = 20,
@@ -945,6 +1165,7 @@ local DURATION = {
   ["Vital Wound"] = 8,
   ["Void Bolt"] = 10,
   ["Volatile Infection"] = 120,
+  ["Volley"] = 6,
   ["Voodoo Hex"] = 120,
   ["Vulnerable"] = 3,
   ["Wail of Nightlash"] = 15,
@@ -956,6 +1177,7 @@ local DURATION = {
   ["Ward of Laze effect"] = 3,
   ["Warlock Terror"] = 2,
   ["Water Breathing"] = 600,
+  ["Water Walking"] = 600,
   ["Wavering Will"] = 60,
   ["Weak Poison"] = 12,
   ["Weakening Disease"] = 30,
@@ -975,8 +1197,10 @@ local DURATION = {
   ["Wild Magic"] = 30,
   ["Wild Polymorph"] = 20,
   ["Will of Hakkar"] = 20,
+  ["Windfury Totem"] = 120,
   ["Windreaper"] = 20,
   ["Windsor Dismisses Horse DND"] = 55,
+  ["Windwall Totem"] = 120,
   ["Wing Clip"] = 10,
   ["Wings of Despair"] = 6,
   ["Winter's Chill"] = 15,
@@ -993,6 +1217,78 @@ local DURATION = {
   ["Wyvern Sting"] = 12,
   ["[PH] Crystal Corpse Timer"] = 7200,
   ["scaler test"] = 10,
+}
+
+-- ---------------------------------------------------------------------------
+-- Rank-dependent durations
+--
+-- pfUI's source table is keyed [name][rank] with [0] holding the max-rank
+-- value. The port above took [0] for every spell, which is exactly right for
+-- the ~900 that run the same length at every rank and wrong for the 28 below:
+-- a warrior whose only Rend is rank 1 casts a 9-second bleed and was shown the
+-- 21 seconds of rank 5.
+--
+-- The 25 player spells here are DBC_VERIFIED against SpellDuration.dbc rank by
+-- rank (see the audit note in the header); the six NPC ones are pfUI's numbers,
+-- which the class-skill join cannot check.
+--
+-- Index is rank, and the list stops where the value reaches the max-rank
+-- number in DURATION -- a rank past the end of the list, including one a
+-- server added, keeps that max. So { 9, 12, 15, 18 } for Rend is ranks 1-4,
+-- and ranks 5 and up stay at the table's 21.
+--
+-- Which rank is a guess about the caster, and it is the same guess the talent
+-- adjustments below already make: no caster is recoverable for a target aura
+-- on this client (auras.no_native_debuff_expiry_time), so the rank used is the
+-- highest one this character knows (U.SpellRankByName, modules/castbar.lua).
+--
+--   * Right for the player's own casts, which is what these timers exist for.
+--   * A spell this character does not know resolves no rank and keeps the
+--     max-rank value, so a mage watching a warrior's Rend still reads 21 --
+--     no worse than before.
+--   * Downranking is not detected. The aura scanner is handed a name and
+--     nothing else, so a deliberately downranked cast reads at the player's
+--     highest rank. RestampExpired in modules/auras.lua is what keeps that
+--     honest: the timer restarts rather than freezing at zero.
+--
+-- Kidney Shot is deliberately absent even though pfUI ranks it. Its rank-1
+-- entry is 0 -- the whole duration is combo points, added by Adjust below --
+-- and a 0 here would have to mean "no answer" to survive the guard in
+-- U.AuraDuration. One second at rank 1 is not worth that ambiguity.
+-- ---------------------------------------------------------------------------
+local RANKED = {
+  ["Arcane Missiles"] = { 3, 4 },
+  ["Banish"] = { 20 },
+  ["Bash"] = { 2, 3 },
+  ["Blessing of Protection"] = { 6, 8 },
+  ["Chains of Ice"] = { 15 },
+  ["Corruption"] = { 12, 15 },
+  ["Divine Protection"] = { 6 },
+  ["Divine Shield"] = { 10 },
+  ["Entangling Roots"] = { 12, 15, 18, 21, 24 },
+  ["Fear"] = { 10, 15 },
+  ["Fireball"] = { 4, 6, 6 },
+  ["Freezing Trap Effect"] = { 10, 15 },
+  ["Frostbolt"] = { 5, 6, 6, 7, 7, 8, 8 },
+  ["Hammer of Justice"] = { 3, 4, 5 },
+  ["Harass"] = { 10, 20 },
+  ["Hibernate"] = { 20, 30 },
+  ["Howl of Terror"] = { 10 },
+  ["Moonfire"] = { 9 },
+  ["Polymorph"] = { 20, 30, 40 },
+  ["Rend"] = { 9, 12, 15, 18 },
+  ["Sap"] = { 25, 35 },
+  ["Scare Beast"] = { 10, 15 },
+  ["Searing Totem"] = { 30, 35, 40, 45, 50 },
+  ["Shackle Undead"] = { 30, 40 },
+  ["Sleep"] = { 20 },
+  ["Slow"] = { 10 },
+  ["Spell Lock"] = { 6 },
+  ["Stunning Blast"] = { 3 },
+  ["Stunning Blow"] = { 5 },
+  ["Thunder Clap"] = { 10, 14, 18, 22, 26 },
+  ["Touch of Weakness"] = { 120 },
+  ["Turn Undead"] = { 10, 15 },
 }
 
 -- ---------------------------------------------------------------------------
@@ -1043,8 +1339,14 @@ local function Adjust(name, duration)
     return duration + ComboPoints()
   elseif name == "Gouge" and class == "ROGUE" then
     return duration + TalentRank(2, 1) * 0.5
-  elseif name == "Demoralizing Shout" and class == "WARRIOR" then
-    -- Booming Voice: +10% of the base per point.
+  elseif (name == "Demoralizing Shout" or name == "Battle Shout")
+         and class == "WARRIOR" then
+    -- Booming Voice: +10% of the base per point. pfUI applies this to the
+    -- demoralizing shout alone because libdebuff never sees a buff; the talent
+    -- lengthens both, DBC_VERIFIED from its own text -- "Increases the area of
+    -- effect and duration of your Battle Shout and Demoralizing Shout" -- and Battle Shout is read out of this table for
+    -- party members, so 5/5 Booming Voice is the difference between a 2-minute
+    -- and a 3-minute stamp on everyone the player shouted at.
     return duration + duration / 100 * (TalentRank(2, 1) * 10)
   elseif name == "Shadow Word: Pain" and class == "PRIEST" then
     return duration + TalentRank(3, 4) * 3
@@ -1056,6 +1358,26 @@ local function Adjust(name, duration)
   return duration
 end
 
+-- The rank-adjusted base for a spell whose duration depends on it, or nil to
+-- keep the max-rank value in DURATION. See the note on RANKED for why the
+-- player's own spellbook is what answers this.
+--
+-- modules/castbar.lua loads after this file, so the lookup is resolved at call
+-- time and its absence -- a castbar that failed to load, or a call made before
+-- it did -- degrades to the max-rank value rather than erroring.
+local function RankedDuration(name)
+  local ranks = RANKED[name]
+  if not ranks then return nil end
+  if type(U.SpellRankByName) ~= "function" then return nil end
+
+  local rank = tonumber(U.SpellRankByName(name))
+  if not rank then return nil end
+
+  local duration = ranks[rank]
+  if type(duration) ~= "number" or duration <= 0 then return nil end
+  return duration
+end
+
 -- Seconds this aura should run for, or nil when the table has no entry --
 -- which is the signal modules/auras.lua uses to draw no timer at all rather
 -- than to invent one.
@@ -1064,6 +1386,8 @@ function U.AuraDuration(name)
 
   local base = DURATION[name]
   if not base or base <= 0 then return nil end
+
+  base = RankedDuration(name) or base
 
   local adjusted = Adjust(name, base)
   if type(adjusted) ~= "number" or adjusted <= 0 then return base end

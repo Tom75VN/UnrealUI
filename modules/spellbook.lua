@@ -257,10 +257,12 @@ end
 -- client is known to expose, every locale unrealUI ships writes the rank with
 -- Arabic numerals, and string.match does not exist on this client's Lua, so
 -- string.find's capture is the portable read.
+--
+-- The read itself moved to U.SpellRankNumber (core/compat.lua) once
+-- modules/castbar.lua needed the same answer for the rank-dependent aura
+-- durations. This stays as the name the rest of the module calls.
 function rank.Number(sub)
-  if type(sub) ~= "string" or sub == "" then return nil end
-  local _, _, digits = string.find(sub, "(%d+)")
-  return tonumber(digits)
+  return U.SpellRankNumber(sub)
 end
 
 -- Slots to actually display for one book section, highest rank only.
@@ -848,6 +850,37 @@ function missing.ScanSlot(slot)
   local name = missing.LineText("TextLeft1", false)
   if not name then return nil end
   return name, missing.LineText("TextRight1", true)
+end
+
+-- The same read, shared. modules/hots.lua has to know which spell an action
+-- press just used: this client fires SPELLCAST_STOP with no arguments at all
+-- (events.json, 40 captures, lastArguments count 0) and SPELLCAST_START only
+-- for a spell with a cast time, so an instant heal-over-time is identifiable
+-- from the action slot or not at all.
+--
+-- knowledge.json / spellbook.action_slot_spell_identity_tooltip_unverified
+-- (BEHAVIOR_VERIFIED, USER_CONFIRMED_INGAME): there is no GetActionInfo on
+-- this client and the SetAction tooltip's first line is the localized spell
+-- name. GetActionText names a macro, whose body is not readable, so a macro
+-- slot is deliberately refused rather than credited to whatever its tooltip
+-- happens to show.
+function U.ActionSlotSpellName(slot)
+  slot = tonumber(slot)
+  if not slot then return nil end
+
+  local has = G("HasAction")
+  if type(has) == "function" then
+    local ok, present = pcall(has, slot)
+    if ok and not present then return nil end
+  end
+
+  local text = G("GetActionText")
+  if type(text) == "function" then
+    local ok, macro = pcall(text, slot)
+    if ok and type(macro) == "string" and macro ~= "" then return nil end
+  end
+
+  return missing.ScanSlot(slot)
 end
 
 -- ---------------------------------------------------------------------------

@@ -22,6 +22,12 @@
 -- verification either. /who sends only a single request per
 -- POP_REFRESH_INTERVAL, capping the addon at one SendWho call per interval.
 --
+-- The local clock uses the global date(), documented for this client as Lua
+-- 5.1 os.date exposed as a global that formats local OS time unless the
+-- pattern starts with '!' (OFFICIAL_CLIENT_DOCUMENTATION,
+-- DOCUMENTED_NOT_RUNTIME_VERIFIED). This is the computer's time, not the
+-- in-world server clock that GetGameTime reports.
+--
 -- RUNTIME_FAILURE_CONFIRMED (in-game, 2026-08-21): a per-zone reading taken
 -- with SendWho('z-"<GetRealZoneText()>"') came back higher than the
 -- unfiltered total-online reading taken a minute earlier (167 vs 165) --
@@ -41,6 +47,9 @@ local MODULE_GAP = 14
 local COIN_GAP = 1
 local HORIZONTAL_PADDING = 6
 local INVENTORY_SLOTS = { 1, 3, 5, 6, 7, 8, 9, 10, 16, 17, 18 }
+-- Zero-padded 24h, so the rendered clock keeps a constant width and the strip
+-- does not reflow every time the hour rolls over into a single digit.
+local TIME_FORMAT = "%H:%M"
 
 local POP_WIDTH = 120
 -- One /who request per interval, so the addon never sends more than one
@@ -138,6 +147,7 @@ local function UpdateOverlayWidth()
   width = width + LabelWidth(display.fpsCaption) + 2 + LabelWidth(display.fpsValue)
   width = width + MODULE_GAP + LabelWidth(display.latencyCaption) + 2 + LabelWidth(display.latencyValue)
   width = width + MODULE_GAP + LabelWidth(display.durabilityCaption) + 2 + LabelWidth(display.durabilityValue)
+  width = width + MODULE_GAP + LabelWidth(display.timeCaption) + 2 + LabelWidth(display.timeValue)
   width = width + MODULE_GAP
   width = width + (display.gold.contentWidth or 26) + COIN_GAP
   width = width + (display.silver.contentWidth or 26) + COIN_GAP
@@ -188,12 +198,23 @@ local function Build()
   })
   display.durabilityValue:SetPoint("LEFT", display.durabilityCaption, "RIGHT", 2, 0)
 
-  -- Chain the denominations directly after durability. Their widths follow
+  display.timeCaption = U.CreateLabel(anchor, {
+    size = M.fontSize.normal, inherits = "GameFontNormal", color = M.color.text,
+  })
+  display.timeCaption:SetPoint("LEFT", display.durabilityValue, "RIGHT", MODULE_GAP, 0)
+  display.timeCaption:SetText(U.L("STATUS_TIME"))
+
+  display.timeValue = U.CreateLabel(anchor, {
+    size = M.fontSize.normal, inherits = "GameFontNormal", color = M.color.text,
+  })
+  display.timeValue:SetPoint("LEFT", display.timeCaption, "RIGHT", 2, 0)
+
+  -- Chain the denominations directly after the clock. Their widths follow
   -- the rendered values, so short values do not leave empty columns.
   display.gold = BuildCoin(anchor, COIN_GOLD, COLOR_GOLD, 26)
   display.silver = BuildCoin(anchor, COIN_SILVER, COLOR_SILVER, 26)
   display.copper = BuildCoin(anchor, COIN_COPPER, COLOR_COPPER, 26)
-  display.gold:SetPoint("LEFT", display.durabilityValue, "RIGHT", MODULE_GAP, 0)
+  display.gold:SetPoint("LEFT", display.timeValue, "RIGHT", MODULE_GAP, 0)
   display.silver:SetPoint("LEFT", display.gold, "RIGHT", COIN_GAP, 0)
   display.copper:SetPoint("LEFT", display.silver, "RIGHT", COIN_GAP, 0)
 
@@ -323,6 +344,20 @@ local function RefreshPerformance()
   UpdateOverlayWidth()
 end
 
+-- Local computer time. date() is the client's os.date global and formats the
+-- OS clock for a pattern without a leading '!'.
+local function RefreshTime()
+  if not display then return end
+
+  local dateFn = U.G("date")
+  local ok, stamp = false, nil
+  if type(dateFn) == "function" then ok, stamp = pcall(dateFn, TIME_FORMAT) end
+  if not ok or type(stamp) ~= "string" then stamp = nil end
+
+  SetLabel(display.timeValue, stamp or "--", M.color.text)
+  UpdateOverlayWidth()
+end
+
 local function RefreshMoney()
   if not display then return end
   local getMoney = U.G("GetMoney")
@@ -425,6 +460,7 @@ function S:OnEnable()
   end)
   U.RegisterEvent("PLAYER_ENTERING_WORLD", function()
     RefreshPerformance()
+    RefreshTime()
     RefreshMoney()
     RefreshDurability()
   end)
@@ -435,6 +471,7 @@ function S:OnEnable()
   U.RegisterUpdate("status.refresh", 1, function()
     if U.PerfDisabled and U.PerfDisabled("status") then return end
     RefreshPerformance()
+    RefreshTime()
     RefreshMoney()
     durabilityAge = durabilityAge + 1
     if durabilityAge >= 5 then
@@ -444,6 +481,7 @@ function S:OnEnable()
   end)
 
   RefreshPerformance()
+  RefreshTime()
   RefreshMoney()
   RefreshDurability()
 end

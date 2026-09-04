@@ -201,7 +201,97 @@ end
 --
 -- knowledge.json / statusbar.native_widget_fill_not_laid_out.
 -- ---------------------------------------------------------------------------
+-- ---------------------------------------------------------------------------
+-- Prediction segments
+--
+-- Extra fills chained onto the end of the real one, in ElvUI's arrangement:
+--
+--   horizontal   [ CURRENT HEALTH ][ YOUR HEAL ][ OTHER HEALS ]
+--   vertical     the same stack, built upward from the bottom
+--
+-- Each segment is measured against the bar's own 0 -> max range, exactly as
+-- ElvUI's prediction StatusBars are, so a heal worth 20% of maximum health
+-- occupies 20% of the bar. The first starts precisely at the right edge of the
+-- health fill and the second precisely at the right edge of the first: no gap,
+-- no overlap, and no overflow past the bar's end (ElvUI's maxOverflow default
+-- of 0, which is also all this bar could draw).
+--
+-- This is a shared status-bar capability rather than a unit-frame texture
+-- because it is pure bar arithmetic -- the same code answers "incoming heal"
+-- for a health bar and would answer any other pending-value question -- and
+-- because it has to be recomputed by exactly the same paths that move the fill
+-- (SetValue, SetMinMaxValues, SetOrientation).
+--
+-- Nothing is created until a caller asks for a non-zero prediction, so a bar
+-- that never predicts costs one nil check per fill update.
+-- ---------------------------------------------------------------------------
+
+-- Lays one segment between two extents along the bar, or hides it. Sub-pixel
+-- segments are dropped rather than drawn: a heal worth less than a pixel would
+-- otherwise flicker a hairline on and off with every tick.
+local function PlaceStatusBarSegment(bar, segment, size, from, to)
+  if not segment then return end
+
+  if to - from < 1 then
+    segment:Hide()
+    return
+  end
+
+  segment:ClearAllPoints()
+  if bar.uuiVertical then
+    segment:SetPoint("TOPLEFT", bar, "TOPLEFT", 0, -(size - to))
+    segment:SetPoint("BOTTOMRIGHT", bar, "BOTTOMRIGHT", 0, from)
+  else
+    segment:SetPoint("TOPLEFT", bar, "TOPLEFT", from, 0)
+    segment:SetPoint("BOTTOMRIGHT", bar, "BOTTOMRIGHT", -(size - to), 0)
+  end
+  segment:Show()
+end
+
+local function UpdateStatusBarPrediction(bar)
+  local mineSegment = bar.uuiPredictTexture
+  local otherSegment = bar.uuiPredictOtherTexture
+  if not mineSegment and not otherSegment then return end
+
+  local size
+  if bar.uuiVertical then
+    size = tonumber(bar:GetHeight())
+  else
+    size = tonumber(bar:GetWidth())
+  end
+  size = size or 0
+
+  local range = (bar.uuiMax or 0) - (bar.uuiMin or 0)
+  local mine = bar.uuiPredict or 0
+  local others = bar.uuiPredictOther or 0
+
+  if range <= 0 or size <= 0 or (mine <= 0 and others <= 0) then
+    if mineSegment then mineSegment:Hide() end
+    if otherSegment then otherSegment:Hide() end
+    return
+  end
+
+  local scale = size / range
+  local from = scale * ((bar.uuiValue or 0) - (bar.uuiMin or 0))
+  if from < 0 then from = 0 end
+  if from > size then from = size end
+
+  -- Chained, and both clamped at the bar's end: your heal is drawn first
+  -- because it is the one you can still decide not to cast, so an overheal
+  -- that is yours is the one that gets squeezed out at the boundary.
+  local mineEnd = from + scale * mine
+  if mineEnd > size then mineEnd = size end
+
+  local otherEnd = mineEnd + scale * others
+  if otherEnd > size then otherEnd = size end
+
+  PlaceStatusBarSegment(bar, mineSegment, size, from, mineEnd)
+  PlaceStatusBarSegment(bar, otherSegment, size, mineEnd, otherEnd)
+end
+
 local function UpdateStatusBarFill(bar)
+  UpdateStatusBarPrediction(bar)
+
   local fill = bar.uuiFillTexture
   if not fill then return end
 
@@ -290,6 +380,11 @@ function U.CreateStatusBar(parent, options)
   U.SetColor(fill, M.Unpack(options.color or M.color.health))
   bar.uuiFillTexture = fill
 
+  -- Remembered rather than read back off the texture when a prediction segment
+  -- needs it: GetTexture is not verified to return the path that was set on
+  -- this client, and a segment must never guess its own material.
+  bar.uuiTexturePath = options.texture or M.texture.plain
+
   bar.uuiMin, bar.uuiMax, bar.uuiValue = 0, 1, 1
   bar.uuiVertical = (options.orientation == "VERTICAL")
 
@@ -308,9 +403,77 @@ function U.SetStatusBarColor(bar, r, g, b, a)
   U.SetColor(bar.uuiFillTexture, r, g, b, a)
 end
 
+-- The prediction segments follow the fill. A health bar switches material at
+-- runtime -- normTex2 for target, party and class colouring, flat otherwise
+-- (modules/unitframes.lua, ApplyHealthColor) -- and an incoming-heal band left
+-- on the old one would sit flat beside a shaded fill.
 function U.SetStatusBarTexture(bar, texture)
   if not bar or not bar.uuiFillTexture then return end
-  bar.uuiFillTexture:SetTexture(texture or M.texture.plain)
+
+  texture = texture or M.texture.plain
+  if bar.uuiTexturePath == texture then return end
+  bar.uuiTexturePath = texture
+
+  bar.uuiFillTexture:SetTexture(texture)
+  if bar.uuiPredictTexture then
+    bar.uuiPredictTexture:SetTexture(texture)
+  end
+  if bar.uuiPredictOtherTexture then
+    bar.uuiPredictOtherTexture:SetTexture(texture)
+  end
+end
+
+-- OVERLAY, not ARTWORK: the segments never overlap the fill, but a bar whose
+-- fill carries a gradient texture must not be able to draw over it if a future
+-- caller ever does overlap them.
+--
+-- The segment is built on the bar's own texture rather than a flat one, which
+-- is how ElvUI does it -- its prediction StatusBars take the health bar's
+-- statusbar texture, so the incoming band is the same material as the health
+-- beside it at a different tint, and the seam between them is a colour change
+-- and nothing else. U.SetStatusBarTexture keeps existing segments in step when
+-- the bar changes material later.
+local function CreateStatusBarSegment(bar, color)
+  local segment = bar:CreateTexture(nil, "OVERLAY")
+  segment:SetTexture(bar.uuiTexturePath or M.texture.plain)
+  U.SetColor(segment, M.Unpack(color))
+  segment:Hide()
+  return segment
+end
+
+-- How far past the current value the bar should show pending change, in the
+-- bar's own units: `mine` is drawn first, `others` chained onto its end. Zero
+-- (or nil) clears either one. Each segment is created on the first non-zero
+-- call and reused after that, so a bar that is asked for zero before it ever
+-- predicts stays exactly as cheap as one that has no prediction at all -- and a
+-- client that can only ever answer for the player never builds the second
+-- texture at all.
+function U.SetStatusBarPrediction(bar, mine, others)
+  if not bar then return end
+
+  mine = tonumber(mine) or 0
+  others = tonumber(others) or 0
+  if mine < 0 then mine = 0 end
+  if others < 0 then others = 0 end
+
+  local wanted = (mine > 0 or bar.uuiPredictTexture) and true or false
+  local wantedOther = (others > 0 or bar.uuiPredictOtherTexture) and true or false
+  if not wanted and not wantedOther then return end
+  if bar.uuiPredict == mine and bar.uuiPredictOther == others then return end
+
+  bar.uuiPredict = mine
+  bar.uuiPredictOther = others
+
+  if mine > 0 and not bar.uuiPredictTexture then
+    bar.uuiPredictTexture =
+      CreateStatusBarSegment(bar, M.color.healPredictionMine)
+  end
+  if others > 0 and not bar.uuiPredictOtherTexture then
+    bar.uuiPredictOtherTexture =
+      CreateStatusBarSegment(bar, M.color.healPredictionOthers)
+  end
+
+  UpdateStatusBarPrediction(bar)
 end
 
 -- ---------------------------------------------------------------------------

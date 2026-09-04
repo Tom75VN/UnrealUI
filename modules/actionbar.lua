@@ -1291,7 +1291,26 @@ OnButtonClick = function(button)
     Call("PickupAction", ButtonSlot(button))
     return
   end
-  Call("UseAction", ButtonSlot(button))
+  local slot = ButtonSlot(button)
+
+  -- Every route into a press -- a click, a declared binding and the legacy
+  -- ActionButtonUp path -- lands here, so this is the one place that knows a
+  -- slot was used. core/init.lua fans it out to whoever is reconstructing the
+  -- player's own cast from it (modules/hots.lua for a heal over time,
+  -- modules/healpredict.lua for the rank behind an incoming heal), because this
+  -- client fires SPELLCAST_STOP with no arguments and SPELLCAST_START only for
+  -- a spell with a cast time, leaving the slot as the only other identity.
+  --
+  -- Before UseAction, not after: whether this client raises SPELLCAST_STOP
+  -- synchronously from inside UseAction for an instant cast has never been
+  -- measured, and a listener that only learns the spell afterwards would miss
+  -- every one of them if it does. Still guarded -- nothing here depends on any
+  -- listener, or on core having been loaded with this fan-out.
+  if type(U.NotifyActionUsed) == "function" then
+    pcall(U.NotifyActionUsed, slot)
+  end
+
+  Call("UseAction", slot)
 end
 
 local function OnButtonDragStart(button)

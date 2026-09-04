@@ -59,15 +59,20 @@
 -- mistaken for a client value:
 --
 --   * An aura already running when it is first seen -- anything on a mob you
---     have just targeted -- is stamped from that moment, so it reads as freshly
---     applied. pfUI has the same behaviour for the same reason.
---   * An aura with no entry in the duration table gets no wipe and no number.
---     The table is debuff-weighted, so a fair number of buffs land here. This
---     is why the native path matters: your own buffs are exactly the ones the
---     table tends to miss, and they no longer depend on it.
---   * Rank is not recoverable for another unit's aura, so the table's max-rank
---     duration is used. pfUI's display path passes rank as nil for the same
---     reason.
+--     have just targeted, or a buff a party member walked into range wearing --
+--     gets no timer at all. Its start time is genuinely unknown, and stamping
+--     it from the moment it was noticed would read as freshly applied: wrong
+--     by up to a full duration, and wrong in the direction with no tell, since
+--     a too-long timer just makes the icon vanish with time on the clock. pfUI
+--     does stamp it; this does not. See `witnessed` in TrackAura and the slot
+--     bookkeeping in RefreshRow for how "seen to land" is decided.
+--   * An aura with no entry in the duration table gets no wipe and no number
+--     either. The two silences are distinguishable in `/uui aura`, which
+--     prints "not seen land" for the first and "none" for the second.
+--   * Rank: the caster of another unit's aura is not recoverable, so the
+--     duration is read at the highest rank the *player* knows (core/auradata.lua
+--     / RANKED). pfUI passes rank as nil and always takes max rank; this is
+--     right for the player's own casts and no worse than pfUI otherwise.
 --
 -- "/uui aura" prints which path each row took and, per aura, whether the name,
 -- the table entry or the client time is the thing that came back empty.
@@ -434,11 +439,11 @@ local function UnitStore(unit)
     units[key] = store
     unitCount = unitCount + 1
     PruneUnits()
-    return units[key]
+    return units[key], key
   end
 
   store.touched = Now()
-  return store
+  return store, key
 end
 
 -- One aura, seen this pass. Returns the tracked entry, or nil when nothing is
@@ -450,7 +455,26 @@ end
 -- `timeLeft`, when present, is that client-reported remaining time and takes
 -- over completely: the entry is rewritten from it on every scan, so the number
 -- cannot drift.
-local function TrackAura(bucket, key, count, pass, timeLeft)
+--
+-- `witnessed` is the difference between a timer and a guess.
+--
+-- The reconstruction has two unknowns: how long the aura runs, and when it
+-- started. core/auradata.lua answers the first. Nothing answers the second --
+-- this client reports no application time and no caster for another unit's
+-- aura -- so the stamp is the first tick that saw it, and for an aura that was
+-- already running when the row first looked, that stamp is simply wrong. A
+-- party member buffed before they walked into range would read a full 30
+-- minutes of Fortitude, and it would be wrong in the direction that has no
+-- tell: too long, so the icon disappears with time still on the clock.
+--
+-- So an entry created for an aura that was already there gets no duration at
+-- all, which is what RefreshTimer already treats as "draw no timer". It keeps
+-- its icon and its stack count; it just does not claim to know an expiry. The
+-- caller decides what witnessed means -- see the slot bookkeeping in
+-- RefreshRow -- and the two ways an entry can earn a duration later are a
+-- stack going up (a reapplication, seen happening) and the aura falling off
+-- and coming back.
+local function TrackAura(bucket, key, count, pass, timeLeft, witnessed)
   if not bucket or not key then return nil end
 
   local entry = bucket[key]
@@ -479,14 +503,29 @@ local function TrackAura(bucket, key, count, pass, timeLeft)
   end
 
   if not entry then
-    entry = { start = now, duration = U.AuraDuration(key), count = count }
+    -- blind: seen, tracked, drawn -- but with no honest start time, so no
+    -- duration and therefore no radial and no countdown.
+    entry = { start = now, count = count }
+    if witnessed then
+      entry.duration = U.AuraDuration(key)
+    else
+      entry.blind = true
+    end
     bucket[key] = entry
   elseif count > entry.count then
     -- A stack going up is a reapplication. It is the only refresh signal this
     -- client gives, since neither the aura call nor the tooltip changes when a
     -- DoT is recast at the same stack size.
+    --
+    -- It is also the one thing that can rescue a blind entry: the stack went up
+    -- while the row was watching, so this application's start time is known
+    -- even though the first one never was.
     entry.count = count
     entry.start = now
+    if entry.blind then
+      entry.blind = nil
+      entry.duration = U.AuraDuration(key)
+    end
   elseif entry.duration and entry.start + entry.duration <= now then
     -- Still here after its duration ran out. Either it was recast (the common
     -- case, and invisible to us) or core/auradata.lua's number is wrong for
@@ -559,6 +598,10 @@ local PARTY_MAX = 6
 
 -- Gap between a row and whatever it sits against, on either side.
 local ROW_GAP = 4
+
+-- Final requested Classic position after the 34 -> 24 -> 20 -> 17 tuning
+-- sequence. Applied only to the direct player/target native-health-bar anchor.
+local CLASSIC_TOP_OFFSET = 17
 
 -- The countdown re-reads the clock this often. Matches modules/actionbar.lua's
 -- CD_TICK so the tenths shown in the last five seconds actually count down;
@@ -747,6 +790,37 @@ end
 -- on the pass where the buff row is empty and hidden.
 local function PositionRow(row, below, offset)
   offset = offset or 0
+
+  -- Controlled Classic bisect: attach only the above-frame player/target rows
+  -- to the named native health bar. The previous version cleared and rewrote
+  -- this point on every aura refresh and also polled the native child for its
+  -- width. This version resolves no native object until the point actually
+  -- changes, writes it once per stacking offset, and retains only its name.
+  if not row.beside and not below then
+    local nativeName = row.anchor and row.anchor.uuiAuraTopAnchorName
+    local y = ROW_GAP + CLASSIC_TOP_OFFSET + offset
+    if type(nativeName) == "string" then
+      if row.uuiClassicAnchorName == nativeName and
+         row.uuiClassicAnchorY == y then
+        return
+      end
+
+      local native = U.G(nativeName)
+      if native and type(row.SetPoint) == "function" then
+        row:ClearAllPoints()
+        local ok = pcall(row.SetPoint, row, "BOTTOMLEFT", native,
+                         "TOPLEFT", 0, y)
+        if ok then
+          row.uuiClassicAnchorName = nativeName
+          row.uuiClassicAnchorY = y
+          return
+        end
+      end
+    end
+  end
+
+  row.uuiClassicAnchorName = nil
+  row.uuiClassicAnchorY = nil
   row:ClearAllPoints()
   if row.beside then
     local rightOffset = tonumber(row.anchor.uuiAuraRightOffset) or 0
@@ -767,8 +841,14 @@ local function PositionRow(row, below, offset)
                  -(ROW_GAP + offset + bottomOffset))
   else
     local topOffset = tonumber(row.anchor.uuiAuraTopOffset) or 0
+    -- Rogue and Cat Form druid frames carry the combo strip on the very edge
+    -- this row anchors to. modules/unitframes.lua publishes the strip's height
+    -- on whichever frame currently holds it, and clears it again when the
+    -- strip is hidden, so the row lifts clear of the pips only while they are
+    -- actually there.
+    local comboOffset = tonumber(row.anchor.uuiAuraComboOffset) or 0
     row:SetPoint("BOTTOMLEFT", row.anchor, "TOPLEFT", 0,
-                 ROW_GAP + offset + topOffset)
+                 ROW_GAP + offset + topOffset + comboOffset)
   end
 end
 
@@ -923,20 +1003,9 @@ local function UnitExists(unit)
 end
 
 -- A party token continues to exist when its character is too far away for the
--- client to provide live unit-object data. Scanning party auras in that state
--- was user-observed to render duplicated icons; the exact raw return tuple was
--- not captured. UnitIsVisible is the documented object-availability check and
--- is also the guard used by UnrealPfUI's same-client unit paths. If the API
--- itself is unavailable or errors, do not hide valid rows on an unverified
--- fallback assumption.
-local function UnitVisible(unit)
-  local fn = Fn("UnitIsVisible")
-  if not fn then return true end
-
-  local ok, value = pcall(fn, unit)
-  if not ok then return true end
-  return (value and value ~= 0) and true or false
-end
+-- client to provide live unit-object data. The shared U.UnitObjectVisible
+-- guard now serves both these aura rows and party-frame colours. Unknown
+-- visibility still leaves rows available, matching the previous local guard.
 
 -- The name behind one index, cached against the texture that was in that slot
 -- when it was last scanned. Without the cache this would arm and read a tooltip
@@ -954,16 +1023,44 @@ end
 
 -- Draws one row and returns the height it used, which is what the row stacked
 -- outside it is offset by. A hidden row returns 0.
+-- Party buff rows sit beside the frame; modules/hots.lua draws the player's own
+-- HoTs and Power Word: Shield inside it. Requested: never both.
+--
+-- Only the party buff rows defer. The player and target rows have no indicator
+-- to duplicate, so suppressing there would hide an aura outright instead of
+-- relocating it -- and a shield the player put on themselves is only ever
+-- visible on the player row.
+local function HotIndicatorOwns(row, texture)
+  if row.harmful or not row.beside then return false end
+  if type(U.HotIndicatorOwnsTexture) ~= "function" then return false end
+  local ok, owned = pcall(U.HotIndicatorOwnsTexture, texture)
+  return ok and owned and true or false
+end
+
+-- A row that stops scanning stops being able to tell a new aura from an old
+-- one, so every path that skips a pass drops the row's continuity and the next
+-- successful pass treats what it finds as already-running. Cheaper than it
+-- looks: it costs a timer only on auras that were up across the gap.
+local function BreakContinuity(row)
+  if not row then return end
+  row.primedKey = nil
+  row.scanDepth = nil
+end
+
 local function RefreshRow(row, offset)
   statRows = statRows + 1
   if not row then return 0 end
-  if U.PerfDisabled and U.PerfDisabled("auras") then return 0 end
+  if U.PerfDisabled and U.PerfDisabled("auras") then
+    BreakContinuity(row)
+    return 0
+  end
 
   local i
   if not RowEnabled(row) or not UnitExists(row.unit) or
-     (row.beside and not UnitVisible(row.unit)) then
+     (row.beside and U.UnitObjectVisible(row.unit) == false) then
     for i = 1, table.getn(row.icons) do HideIcon(row.icons[i]) end
     row:Hide()
+    BreakContinuity(row)
     return 0
   end
 
@@ -977,9 +1074,39 @@ local function RefreshRow(row, offset)
 
   PositionRow(row, below, offset)
 
-  local store = UnitStore(row.unit)
+  local store, storeKey = UnitStore(row.unit)
   local bucket = store and (row.harmful and store.harmful or store.helpful)
   local now = Now()
+
+  -- ---------------------------------------------------------------------
+  -- What lets this row claim it saw an aura land
+  --
+  -- Three things have to hold, and all three are about the previous pass:
+  --
+  --   * it looked at the same unit (storeKey). A row that just changed target
+  --     has never watched this one.
+  --   * it looked at this slot. Party rows stop scanning once their six
+  --     visible slots are full (stopAtCap), so anything past that point was
+  --     not being watched at all, and an aura that later slides down into view
+  --     was not "just applied" -- the row simply had not been looking there.
+  --   * this slot held something else. The aura lists here are slot-indexed
+  --     rather than compacted, so a slot whose texture changed is a slot
+  --     something landed in. Comparing textures rather than trusting "the
+  --     bucket had no entry" also covers the pass where the tooltip scan
+  --     failed to produce a name and the aura went untracked for a tick.
+  --
+  -- An aura moving between slots does not create an entry -- the bucket is
+  -- keyed by name -- so it neither gains nor loses a timer by moving.
+  -- ---------------------------------------------------------------------
+  local continuous = (storeKey ~= nil and row.primedKey == storeKey)
+  local prevDepth = continuous and row.scanDepth or 0
+  local slotTex = row.slotTex
+  if not slotTex then
+    slotTex = {}
+    row.slotTex = slotTex
+  end
+  row.primedKey = storeKey
+  local depth = 0
 
   -- Resolved once per pass, not per index: which unit this row is pointed at
   -- cannot change halfway through its own scan.
@@ -999,6 +1126,12 @@ local function RefreshRow(row, offset)
       texture, count, debuffType = ReadAura(row.unit, i, row.harmful)
     end
 
+    -- Read before the slot memory is overwritten below: this is the question
+    -- "was this slot holding something else last time the row looked".
+    local witnessed = continuous and i <= prevDepth and slotTex[i] ~= texture
+    depth = i
+    slotTex[i] = texture
+
     -- An empty slot is skipped, not an end of list. The drawn row stays
     -- gapless because icons are placed by `shown`, which only advances for an
     -- aura that was actually found.
@@ -1011,10 +1144,14 @@ local function RefreshRow(row, offset)
       -- path the client already gave a remaining time, so the aura is keyed by
       -- its texture and no tooltip is armed at all.
       local key = native and texture or AuraName(row, i, texture)
-      local entry = TrackAura(bucket, key, count, pass, timeLeft)
+      local entry = TrackAura(bucket, key, count, pass, timeLeft, witnessed)
 
       if row.harmful and not PassesFilter(debuffType) then
         -- Tracked, not drawn.
+      elseif HotIndicatorOwns(row, texture) then
+        -- Tracked, not drawn: this one is already on the frame as a HoT
+        -- indicator. Tracking still runs, so switching the indicator off gives
+        -- the icon back with its timer intact rather than restarting it.
       elseif shown < maxIcons then
         shown = shown + 1
         local icon = row.icons[shown] or CreateIcon(row, shown)
@@ -1034,6 +1171,11 @@ local function RefreshRow(row, offset)
       end
     end
   end
+
+  -- How far the row actually looked, for the next pass to compare against. A
+  -- pass cut short by stopAtCap records the shallower depth, which is what
+  -- keeps a seventh buff sliding into view from being read as a new one.
+  row.scanDepth = depth
 
   if bucket then PruneAuras(bucket, pass) end
 
@@ -1213,6 +1355,15 @@ function U.AuraDebugDump()
     local layer = LayerLine(row)
     if layer then U.Print(layer) end
 
+    -- The row's own tracked entries, so the dump reports what is actually
+    -- drawn rather than only what the duration table would answer. An aura the
+    -- row never saw land carries no duration at all, and that is the
+    -- difference between "no entry in the table" and "no honest start time" --
+    -- the two reasons a timer can be missing, which used to look identical.
+    local dumpStore = exists and UnitStore(row.unit) or nil
+    local dumpBucket = dumpStore and
+                       (row.harmful and dumpStore.harmful or dumpStore.helpful)
+
     if exists then
       local i
       -- Walks every slot the display path walks, so a hole in the list reads
@@ -1229,15 +1380,31 @@ function U.AuraDebugDump()
           local name = nil
           if not native then name = ScanName(row.unit, i, row.harmful) end
 
+          local tracked = dumpBucket and
+                          dumpBucket[native and texture or name] or nil
+
           local seconds = timeLeft
           if not seconds and name then seconds = U.AuraDuration(name) end
 
-          U.Print(string.format("  %d %s name=%s stacks=%s type=%s %s=%s",
+          -- The rank the reconstructed duration was picked at, when the name is
+          -- one the player's own spellbook has. This is what answers "why does
+          -- this Rend read 21 seconds when mine lasts 9" -- see RANKED in
+          -- core/auradata.lua. No rank= at all means none was resolved, and
+          -- the spell's max-rank duration is what the row is showing.
+          local rank = nil
+          if name and not native and type(U.SpellRankByName) == "function" then
+            rank = U.SpellRankByName(name)
+          end
+
+          U.Print(string.format("  %d %s name=%s stacks=%s type=%s %s=%s%s",
                                 i, ShortTexture(texture), tostring(name or "-"),
                                 tostring(count or 0), tostring(debuffType or "-"),
                                 native and "timeLeft" or "duration",
-                                seconds and string.format("%.1f", seconds)
-                                        or "|cffff4040none|r"))
+                                (tracked and tracked.blind)
+                                  and "|cffff4040not seen land|r"
+                                  or (seconds and string.format("%.1f", seconds)
+                                              or "|cffff4040none|r"),
+                                rank and (" rank=" .. rank) or ""))
         end
       end
     end
@@ -1319,23 +1486,19 @@ end
 -- ---------------------------------------------------------------------------
 -- Settings page
 --
--- One top-level "Unit Frames" page, per request. It is not a config framework:
--- the checkboxes read and write the module's own settings table directly, the
--- same way modules/actionbarconfig.lua does.
+-- The "Auras" sub-page of the Unit Frames group, which modules/unitframes.lua
+-- registers. It is not a config framework: the checkboxes read and write the
+-- module's own settings table directly, the same way
+-- modules/actionbarconfig.lua does.
 --
 -- Icon size/per-row/max-icons/spacing are deliberately not exposed here --
 -- there is no user-facing control for them, only the fixed defaults above.
+--
+-- The page owns its whole content frame now, so every offset below is measured
+-- from its own top rather than from a block another module stacked above it.
 -- ---------------------------------------------------------------------------
 local PAGE_WIDTH = 484
 local FILTER_COLUMN_X = 160
-
--- The Unit Frames page opens with the party-frame and power-tick sections,
--- which are owned by modules/unitframes.lua because that module owns the state
--- they change. Every offset below is measured from the bottom of that block plus
--- the 8-unit gap the other section headings use, so the aura controls keep their
--- own spacing whatever is stacked above them.
-local SECTION_TOP = (U.UnitFramePartySettingsHeight or 0)
-if SECTION_TOP > 0 then SECTION_TOP = SECTION_TOP + 8 end
 
 -- Two columns keep the toggles to five compact rows and leave the colour
 -- controls inside the fixed-height settings panel.
@@ -1410,7 +1573,7 @@ local function BuildSettingsPage(parent)
   local header = U.CreateSectionHeader(parent, {
     text = U.L("AURAS_HEADER"),
     width = PAGE_WIDTH,
-    y = -4 - SECTION_TOP,
+    y = -4,
   })
   table.insert(widgets, header)
 
@@ -1426,7 +1589,7 @@ local function BuildSettingsPage(parent)
     })
     check.SetPoint("TOPLEFT", parent, "TOPLEFT",
                    spec.column * TOGGLE_COLUMN_X,
-                   -34 - SECTION_TOP - spec.row * 26)
+                   -34 - spec.row * 26)
     controls[spec.key] = check
     table.insert(widgets, check)
   end
@@ -1434,7 +1597,7 @@ local function BuildSettingsPage(parent)
   local filterHeader = U.CreateSectionHeader(parent, {
     text = U.L("AURAS_DISPEL_HEADER"),
     width = PAGE_WIDTH,
-    y = -160 - SECTION_TOP,
+    y = -160,
   })
   table.insert(widgets, filterHeader)
 
@@ -1452,7 +1615,7 @@ local function BuildSettingsPage(parent)
     })
     check.SetPoint("TOPLEFT", parent, "TOPLEFT",
                    spec.column * FILTER_COLUMN_X,
-                   -190 - SECTION_TOP - spec.row * 26)
+                   -190 - spec.row * 26)
     controls[spec.key] = check
     table.insert(widgets, check)
   end
@@ -1497,44 +1660,22 @@ local function BuildSettingsPage(parent)
     end
   end
 
-  local refreshParty
-  if type(U.BuildUnitFramePartySettings) == "function" then
-    local partyWidgets
-    partyWidgets, refreshParty =
-      U.BuildUnitFramePartySettings(parent, -4, PAGE_WIDTH)
-    local n
-    for n = 1, table.getn(partyWidgets) do
-      table.insert(widgets, partyWidgets[n])
-    end
-  end
-
-  local refreshColors
-  if type(U.BuildUnitFrameColorSettings) == "function" then
-    local colorWidgets
-    colorWidgets, refreshColors =
-      U.BuildUnitFrameColorSettings(parent, -302 - SECTION_TOP, PAGE_WIDTH)
-    local n
-    for n = 1, table.getn(colorWidgets) do
-      table.insert(widgets, colorWidgets[n])
-    end
-  end
-
-  local function Refresh()
-    RefreshAuraControls()
-    if refreshParty then refreshParty() end
-    if refreshColors then refreshColors() end
-  end
-
-  return widgets, Refresh
+  return widgets, RefreshAuraControls
 end
 
 -- ---------------------------------------------------------------------------
 -- Module
 -- ---------------------------------------------------------------------------
 function A:OnInit()
-  if type(U.RegisterSettingsTab) == "function" then
-    U.RegisterSettingsTab("unitframes", U.L("UF_PAGE"), BuildSettingsPage)
-  end
+  if type(U.RegisterSettingsTab) ~= "function" then return end
+
+  -- Registered into the group modules/unitframes.lua created, and explicitly
+  -- after its Party Frames page so the order reads General, Party Frames,
+  -- Auras, Colors whatever order the modules initialise in.
+  local group = U.UnitFrameSettingsGroup or "unitframes"
+  U.RegisterSettingsTab(group .. ".auras", U.L("UF_TAB_AURAS"),
+                        BuildSettingsPage,
+                        { parent = group, after = group .. ".party" })
 end
 
 function A:OnEnable()

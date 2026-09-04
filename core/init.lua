@@ -9,7 +9,7 @@ UnrealUI = {}
 local U = UnrealUI
 
 U.name      = "unrealUI"
-U.version   = "0.4.0"
+U.version   = "0.5.0"
 U.modules   = {}       -- name -> module table
 U.moduleOrder = {}     -- load/enable order, registration order
 U.ready     = false    -- set once PLAYER_LOGIN work has run
@@ -220,6 +220,39 @@ function U.UnregisterEvent(event, callback)
   if table.getn(list) == 0 then
     listeners[event] = nil
     pcall(dispatcher.UnregisterEvent, dispatcher, event)
+  end
+end
+
+-- ---------------------------------------------------------------------------
+-- Action-press notification
+--
+-- Not a client event: this client fires SPELLCAST_STOP with no arguments at all
+-- and SPELLCAST_START only for a spell that has a cast time, so an instant
+-- spell's identity exists nowhere except in the action slot that was pressed.
+-- modules/actionbar.lua calls U.NotifyActionUsed with that slot just before it
+-- hands the press to UseAction, and every listener registered here is told.
+--
+-- It lives in the event layer rather than in one module because more than one
+-- feature reconstructs the player's own cast from it -- modules/hots.lua stamps
+-- a heal over time, modules/healpredict.lua opens an incoming-heal prediction --
+-- and neither may own a global the other one needs.
+-- ---------------------------------------------------------------------------
+local actionListeners = {}
+
+function U.RegisterActionUsed(callback)
+  if type(callback) ~= "function" then return end
+  table.insert(actionListeners, callback)
+end
+
+-- Every listener is called even when an earlier one errors: one module's bad
+-- state must not silence another's cast tracking.
+function U.NotifyActionUsed(slot)
+  local n
+  for n = 1, table.getn(actionListeners) do
+    local ok, err = pcall(actionListeners[n], slot)
+    if not ok then
+      U.Error("action-used handler: " .. tostring(err))
+    end
   end
 end
 

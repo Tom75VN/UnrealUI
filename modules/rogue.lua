@@ -65,34 +65,19 @@ end
 
 U.IsRogue = rogue.IsPlayer
 
+-- Both of these were this module's own; they moved to core/compat.lua when
+-- modules/bagfavorites.lua needed the same two answers for its own bag-slot
+-- click chord. The resolution order is unchanged.
 function rogue.ChatIsEditing()
-  local edit = U.G("ChatFrameEditBox")
-  if not edit or type(edit.IsVisible) ~= "function" then return false end
-  local ok, visible = pcall(edit.IsVisible, edit)
-  return ok and visible and true or false
+  return U.ChatEditBoxActive()
 end
 
 function rogue.MouseButton(a, b)
-  if type(a) == "string" then return a end
-  if type(b) == "string" then return b end
-  local legacy = U.G("arg1")
-  if type(legacy) == "string" then return legacy end
-  return nil
+  return U.ClickButtonName(a, b)
 end
 
 function rogue.CursorBusy()
-  local hasItem = U.G("CursorHasItem")
-  if type(hasItem) == "function" then
-    local ok, value = pcall(hasItem)
-    if ok and value then return true end
-  end
-
-  local hasSpell = U.G("CursorHasSpell")
-  if type(hasSpell) == "function" then
-    local ok, value = pcall(hasSpell)
-    if ok and value then return true end
-  end
-  return false
+  return U.CursorBusy()
 end
 
 function rogue.IsPoisonItem(bag, slot)
