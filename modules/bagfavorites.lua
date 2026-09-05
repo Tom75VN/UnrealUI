@@ -267,15 +267,10 @@ end
 -- container handler. Returning true claims the click and the stock handler is
 -- not run.
 --
--- Shift + Left Click toggles the mark. It yields in the two cases where the
--- client's own meaning for that chord must win: an open chat edit box, where
--- Shift-click is how an item is linked into chat, and a loaded cursor, where
--- the click is about to place what is being carried.
---
--- LIMIT, stated rather than left to be found: on a stack of more than one this
--- chord is also the client's stack-split gesture, and the mark takes it over.
--- Splitting a stack by Shift-clicking a bag slot is therefore not available
--- while this is installed.
+-- Alt + Left Click toggles the mark. It yields on a loaded cursor, where the
+-- click is about to place what is being carried. Nothing else in the client
+-- claims this chord on a bag slot: item linking into an open chat edit box and
+-- the stack-split gesture are both Shift + Left Click, so both keep working.
 --
 -- Right Click at an open vendor is the sale this whole feature exists to
 -- catch, so a marked item routes through the confirmation instead. Away from a
@@ -288,9 +283,9 @@ function U.TryBagFavoriteClick(bag, slot, a, b)
   if not click then return false end
 
   if click == "LeftButton" then
-    local shiftOk, shift = pcall(IsShiftKeyDown)
-    if not shiftOk or not shift then return false end
-    if U.ChatEditBoxActive() or U.CursorBusy() then return false end
+    local altOk, alt = pcall(IsAltKeyDown)
+    if not altOk or not alt then return false end
+    if U.CursorBusy() then return false end
     return U.ToggleBagSlotFavorite(bag, slot)
   end
 

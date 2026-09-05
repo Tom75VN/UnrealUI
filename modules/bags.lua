@@ -651,9 +651,10 @@ local function EnsureSlot(bag, slot, parent)
   -- chords claims the click. Passing the original argument shape through
   -- unchanged keeps both direct and legacy template handlers working.
   --
-  -- Order matters: the Rogue poison helper is opt-in and only fires on a
-  -- poison, so it is asked first and the favourite mark takes whatever
-  -- Shift-click it did not want. Neither claims a click the other handled.
+  -- The two chords are distinct -- the Rogue poison helper is Shift-click and
+  -- opt-in, the favourite mark is Alt-click -- so neither can claim a click
+  -- the other wanted. The poison helper is still asked first, as the narrower
+  -- of the two: it only fires on a poison.
   local rogueClick = bag >= 0 and type(U.IsRogue) == "function" and U.IsRogue() and
                      type(U.TryRoguePoisonClick) == "function"
   local favoriteClick = type(U.TryBagFavoriteClick) == "function" and
