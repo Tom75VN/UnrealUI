@@ -71,6 +71,13 @@ local DEFAULTS = {
   size = 24,
   spacing = 2,
   showAutocast = true,
+  -- Native-mode button geometry. buttonLayout false leaves the client's own
+  -- button size and gap completely untouched, which is the default; the two
+  -- values below are only read once it is on, and 0 / -1 there mean "whatever
+  -- the client's own row measured".
+  buttonLayout = false,
+  buttonSize = 0,
+  buttonSpacing = -1,
 }
 local cfg
 local activeMode = "native"
@@ -85,6 +92,11 @@ local function ModeLabel(mode)
   return U.L(mode == "custom" and "PETBAR_MODE_CUSTOM" or "PETBAR_MODE_NATIVE")
 end
 
+-- Handles /uui petbar size|spacing|reset|status. Defined further down, next to
+-- the layout code it drives, so nothing up here has to know how the native
+-- buttons are placed.
+local ButtonCommand
+
 -- Native suppression is not reversible in-session. Save the preference only;
 -- the next reload builds exactly one bar and registers exactly one pet mover.
 function U.PetBarCommand(choice)
@@ -92,12 +104,34 @@ function U.PetBarCommand(choice)
   local config = Config()
   choice = type(choice) == "string" and string.lower(choice) or ""
   choice = string.gsub(string.gsub(choice, "^%s+", ""), "%s+$", "")
+
+  -- string.match does not exist on this client's Lua (see modules/spellbook.lua),
+  -- so the verb is split off with string.find/string.sub.
+  local verb, argument = choice, ""
+  local space = string.find(choice, " ")
+  if space then
+    verb = string.sub(choice, 1, space - 1)
+    argument = string.gsub(string.sub(choice, space + 1), "^%s+", "")
+  end
+
+  -- Geometry only: applied live, no reload, and it never touches the mode.
+  if verb == "size" or verb == "spacing" or verb == "reset" then
+    if ButtonCommand then
+      ButtonCommand(verb, argument)
+    else
+      U.Print(U.L("PETBAR_UNAVAILABLE"))
+    end
+    return
+  end
+
   if choice == "native" or choice == "custom" then
     config.mode = choice
     U.Print(U.L("PETBAR_MODE_SELECTED", ModeLabel(choice)))
   else
     U.Print(U.L("PETBAR_MODE_STATUS", ModeLabel(activeMode), ModeLabel(config.mode)))
+    if ButtonCommand then ButtonCommand("status", "") end
     U.Print(U.L("CMD_PETBAR"))
+    U.Print(U.L("CMD_PETBAR_BUTTONS"))
   end
   if config.mode == "custom" then U.Print(U.L("PETBAR_CUSTOM_WARNING")) end
 end
@@ -117,6 +151,26 @@ local nativeParent = nil
 local driving = false
 local reparented = false
 local driveFailures = 0
+
+-- Native button geometry (native mode only).
+--
+-- knowledge.json / petbar.native_outer_art_separate: the 2026-08-30 interface
+-- capture measured PetActionButton1-10 as ten 30x30 CheckButtons on a 509x43
+-- root, so the row is narrower than the frame that carries it. The live values
+-- are read from the buttons themselves; these are only the fallbacks.
+local BUTTON_COUNT = 10
+local BUTTON_PREFIX = "PetActionButton"
+local NATIVE_BUTTON_SIZE = 30
+local NATIVE_BUTTON_GAP = 7
+local MIN_BUTTON_SIZE = 12
+local MAX_BUTTON_SIZE = 64
+local MAX_BUTTON_GAP = 32
+
+local slots = {}          -- index -> unrealUI-owned holder frame
+local petButtons = {}     -- index -> native button + its captured stock anchor
+local captured = false
+local nativeGeometry = nil
+local appliedLayout = nil
 
 -- ---------------------------------------------------------------------------
 -- Client calls
@@ -241,17 +295,11 @@ local function StoredPosition()
   return position
 end
 
-local function MirrorNativeSize()
-  if not anchor or not native then return end
-
-  local okW, w = pcall(native.GetWidth, native)
-  local okH, h = pcall(native.GetHeight, native)
-  local width = (okW and Number(w)) or FALLBACK_WIDTH
-  local height = (okH and Number(h)) or FALLBACK_HEIGHT
-
-  -- Only written when it actually changes: this runs on the shared tick, and
-  -- the handle is SetAllPoints to this frame, so a size write is a handle
-  -- relayout every second for nothing.
+-- Only written when it actually changes: this runs on the shared tick, and the
+-- handle is SetAllPoints to this frame, so a size write is a handle relayout
+-- every second for nothing.
+local function SetAnchorSize(width, height)
+  if not anchor then return end
   if anchor.uuiWidth ~= width then
     anchor:SetWidth(width)
     anchor.uuiWidth = width
@@ -260,6 +308,276 @@ local function MirrorNativeSize()
     anchor:SetHeight(height)
     anchor.uuiHeight = height
   end
+end
+
+-- Used while the client owns the button geometry. Once unrealUI lays the row
+-- out, the handle takes the row's own footprint instead, which is narrower
+-- than the 509-wide native root.
+local function MirrorNativeSize()
+  if not anchor or not native then return end
+
+  local okW, w = pcall(native.GetWidth, native)
+  local okH, h = pcall(native.GetHeight, native)
+
+  SetAnchorSize((okW and Number(w)) or FALLBACK_WIDTH,
+                (okH and Number(h)) or FALLBACK_HEIGHT)
+end
+
+-- ---------------------------------------------------------------------------
+-- Native button size and spacing
+--
+-- Two things change on the client's own buttons, and only once the player has
+-- asked for it with /uui petbar size|spacing:
+--
+--   * SetScale, never SetWidth/SetHeight. A pet button's icon, flash, border,
+--     autocast overlay and cooldown are separately sized regions of the
+--     button; resizing the button alone would leave them at their stock size
+--     around a smaller face. Scale carries the whole face with it, which is
+--     what modules/microbar.lua already does to the stock micro buttons.
+--   * The anchor, onto one unrealUI-owned slot frame per button. The slots are
+--     unscaled children of our anchor frame and each button sits at
+--     CENTER/CENTER 0,0 on its own slot, so the row arithmetic never has to
+--     assume how this client scales SetPoint offsets on a scaled frame
+--     (core/mover.lua records that scaled-frame coordinates are mixed here).
+--
+-- Nothing else about the buttons changes: same parent, so the client still
+-- shows and hides them with its bar, same handlers, same art, and the
+-- protected CastPetAction path they own is untouched (see the top of the file).
+-- ---------------------------------------------------------------------------
+local function Edge(frame, method)
+  local fn = frame and frame[method]
+  if type(fn) ~= "function" then return nil end
+  local ok, value = pcall(fn, frame)
+  if not ok then return nil end
+  return tonumber(value)
+end
+
+-- Captured once, before any layout write, so restoring is exact rather than
+-- reconstructed. Same shape as modules/microbar.lua's CaptureOriginal:
+-- U.GetFramePoint already normalises this client's inverted GetPoint Y, and
+-- feeding that tuple straight back into SetPoint is the round-trip
+-- knowledge.json / frames.getpoint_relative_name_y_inverted confirms.
+local function CaptureButtons()
+  if captured or not native then return end
+
+  local i
+  for i = 1, BUTTON_COUNT do
+    local button = U.G(BUTTON_PREFIX .. i)
+    if button then
+      local point, relative, relativePoint, x, y = U.GetFramePoint(button, 1)
+      local okScale, scale = pcall(button.GetScale, button)
+      petButtons[i] = {
+        button = button,
+        point = point,
+        relative = relative or native,
+        relativePoint = relativePoint or point,
+        x = x,
+        y = y,
+        scale = (okScale and Number(scale)) or 1,
+      }
+    end
+  end
+
+  -- Only latched once a button actually resolved: a bar whose buttons the
+  -- client has not created yet must be captured on a later tick, not written
+  -- off with an empty table.
+  if petButtons[1] then captured = true end
+end
+
+-- The client can replace a native object outside Lua's lifetime model, so one
+-- name lookup per tick decides whether the capture still describes the frames
+-- on screen. If the global no longer points at the button we captured, the
+-- whole capture is dropped and taken again rather than written to a frame the
+-- client has thrown away.
+local function RefreshCapture()
+  local live = U.G(BUTTON_PREFIX .. 1)
+  if captured and live and petButtons[1] and petButtons[1].button ~= live then
+    captured = false
+    petButtons = {}
+    appliedLayout = nil
+    nativeGeometry = nil
+  end
+  CaptureButtons()
+end
+
+local function FirstButton()
+  return petButtons[1] and petButtons[1].button
+end
+
+local function LastButton()
+  local i
+  for i = BUTTON_COUNT, 1, -1 do
+    if petButtons[i] and petButtons[i].button then return petButtons[i].button end
+  end
+  return nil
+end
+
+local function FallbackGeometry()
+  return { size = NATIVE_BUTTON_SIZE, gap = NATIVE_BUTTON_GAP, offsetX = 0, offsetY = 0 }
+end
+
+-- The client's own row: button size, the gap between two buttons, and where
+-- the visible row sits inside the wider native root. Measured once, only while
+-- the client still owns the geometry, and only once the buttons have a
+-- resolved rect -- during load they have none, and caching a fallback then
+-- would make that fallback permanent.
+--
+-- The offsets keep switching the layout on from shifting an untouched bar: our
+-- row is centred on the anchor frame, the native row is not centred on its own
+-- root, and the anchor carries the difference while the mover is unplaced.
+local function NativeGeometry()
+  if nativeGeometry then return nativeGeometry end
+
+  local first = FirstButton()
+  if appliedLayout or not first or not native then return FallbackGeometry() end
+
+  local left = Edge(first, "GetLeft")
+  local right = Edge(first, "GetRight")
+  if not left or not right then return FallbackGeometry() end
+
+  local geometry = FallbackGeometry()
+  geometry.size = Number(Edge(first, "GetWidth")) or NATIVE_BUTTON_SIZE
+
+  local second = petButtons[2] and petButtons[2].button
+  local secondLeft = second and Edge(second, "GetLeft")
+  if secondLeft then
+    local gap = (secondLeft - left) - geometry.size
+    if gap >= 0 and gap <= MAX_BUTTON_GAP then geometry.gap = gap end
+  end
+
+  -- Both frames are unscaled here and the button is a child of the root, so
+  -- the two rects share one coordinate space and their difference is
+  -- meaningful. Anything wider than the root itself is treated as a bad read.
+  local last = LastButton()
+  local rowRight = last and Edge(last, "GetRight")
+  local nativeLeft, nativeRight = Edge(native, "GetLeft"), Edge(native, "GetRight")
+  if rowRight and nativeLeft and nativeRight then
+    local dx = (left + rowRight) / 2 - (nativeLeft + nativeRight) / 2
+    if math.abs(dx) <= math.abs(nativeRight - nativeLeft) then geometry.offsetX = dx end
+  end
+
+  local rowTop, rowBottom = Edge(first, "GetTop"), Edge(first, "GetBottom")
+  local nativeTop, nativeBottom = Edge(native, "GetTop"), Edge(native, "GetBottom")
+  if rowTop and rowBottom and nativeTop and nativeBottom then
+    local dy = (rowTop + rowBottom) / 2 - (nativeTop + nativeBottom) / 2
+    if math.abs(dy) <= math.abs(nativeTop - nativeBottom) then geometry.offsetY = dy end
+  end
+
+  nativeGeometry = geometry
+  return geometry
+end
+
+-- The layout the current configuration asks for, or nil while the client still
+-- owns the geometry.
+local function DesiredLayout()
+  local config = cfg or Config()
+  if not config.buttonLayout then return nil end
+  if not FirstButton() then return nil end
+
+  local geometry = NativeGeometry()
+
+  local size = Number(config.buttonSize) or geometry.size
+  if size < MIN_BUTTON_SIZE then size = MIN_BUTTON_SIZE end
+  if size > MAX_BUTTON_SIZE then size = MAX_BUTTON_SIZE end
+
+  local spacing = tonumber(config.buttonSpacing)
+  if not spacing or spacing < 0 then spacing = geometry.gap end
+  if spacing > MAX_BUTTON_GAP then spacing = MAX_BUTTON_GAP end
+
+  return { size = size, spacing = spacing, scale = size / geometry.size }
+end
+
+-- Named on purpose: the drift check compares the button's relative frame with
+-- its slot, and U.GetFramePoint can only resolve a relative handed back as a
+-- string through a global name.
+local function Slot(index)
+  if slots[index] then return slots[index] end
+  local slot = CreateFrame("Frame", "UnrealUIPetBarSlot" .. index, anchor)
+  slots[index] = slot
+  return slot
+end
+
+local function LayoutButtons(want)
+  local i
+  local width, count = 0, 0
+
+  for i = 1, BUTTON_COUNT do
+    local entry = petButtons[i]
+    if entry and entry.button then
+      local slot = Slot(i)
+      slot:SetWidth(want.size)
+      slot:SetHeight(want.size)
+      slot:ClearAllPoints()
+      slot:SetPoint("LEFT", anchor, "LEFT", (i - 1) * (want.size + want.spacing), 0)
+      slot:Show()
+
+      pcall(function()
+        entry.button:ClearAllPoints()
+        entry.button:SetPoint("CENTER", slot, "CENTER", 0, 0)
+        entry.button:SetScale(want.scale)
+      end)
+
+      count = count + 1
+      width = i * want.size + (i - 1) * want.spacing
+    end
+  end
+
+  if count == 0 then return end
+
+  appliedLayout = {
+    size = want.size,
+    spacing = want.spacing,
+    scale = want.scale,
+    width = width,
+    height = want.size,
+  }
+  SetAnchorSize(width, want.size)
+end
+
+-- Has the client re-anchored or rescaled the row behind us (a pet summon, a
+-- bar page change, a zone-in)? One button answers for the row: they are all
+-- written in the same pass.
+local function ButtonsDrifted()
+  if not appliedLayout then return true end
+
+  local button = FirstButton()
+  if not button or not slots[1] then return true end
+
+  local okCount, count = pcall(button.GetNumPoints, button)
+  if okCount and tonumber(count) and tonumber(count) ~= 1 then return true end
+
+  local point, relative, relativePoint = U.GetFramePoint(button, 1)
+  if relative ~= slots[1] then return true end
+  if point ~= "CENTER" or relativePoint ~= "CENTER" then return true end
+
+  local okScale, scale = pcall(button.GetScale, button)
+  if okScale and Number(scale) and math.abs(scale - appliedLayout.scale) > 0.01 then
+    return true
+  end
+  return false
+end
+
+-- Hands every button back to the anchor and scale it had before unrealUI
+-- touched it. Order does not matter: each entry restores against its own
+-- captured relative frame, not against the previous button.
+local function RestoreButtons()
+  local i
+  for i = 1, BUTTON_COUNT do
+    local entry = petButtons[i]
+    if entry and entry.button then
+      pcall(function()
+        entry.button:ClearAllPoints()
+        if entry.point then
+          entry.button:SetPoint(entry.point, entry.relative or native,
+                                entry.relativePoint or entry.point,
+                                entry.x or 0, entry.y or 0)
+        end
+        entry.button:SetScale(entry.scale or 1)
+      end)
+    end
+    if slots[i] then slots[i]:Hide() end
+  end
+  appliedLayout = nil
 end
 
 local function AnchorDrifted(frame, position)
@@ -309,10 +627,20 @@ local function DriveNative()
   end
 end
 
+-- While the mover is unplaced the handle shadows the native bar. With our own
+-- row layout active it shadows the *row* instead, by carrying the measured
+-- offset between the native row and the root that holds it -- otherwise
+-- turning the layout on would slide an untouched bar sideways.
 local function FollowNative()
+  local x, y = 0, 0
+  if appliedLayout then
+    local geometry = NativeGeometry()
+    x, y = geometry.offsetX, geometry.offsetY
+  end
+
   pcall(function()
     anchor:ClearAllPoints()
-    anchor:SetPoint("CENTER", native, "CENTER", 0, 0)
+    anchor:SetPoint("CENTER", native, "CENTER", x, y)
   end)
 end
 
@@ -406,7 +734,27 @@ local function Apply()
 
   -- First: a bar hidden by an ancestor cannot be fixed by anything below.
   EnsureParent()
-  MirrorNativeSize()
+
+  -- Native button capture belongs to the opt-in layout, not the default
+  -- mover. Zoxi's default profile must not retain/read ten native children
+  -- for a feature it never enabled. Keep capture ahead of layout writes,
+  -- including the restore of a layout that was enabled earlier this session.
+  -- See petbar.disabled_layout_captures_native_children.
+  if (cfg and cfg.buttonLayout) or appliedLayout then RefreshCapture() end
+
+  local want = DesiredLayout()
+  if want then
+    if not appliedLayout or appliedLayout.size ~= want.size
+       or appliedLayout.spacing ~= want.spacing or ButtonsDrifted() then
+      LayoutButtons(want)
+    end
+  elseif appliedLayout then
+    RestoreButtons()
+  end
+
+  -- The handle takes the row's footprint while unrealUI owns the layout, and
+  -- the native root's while the client does.
+  if not appliedLayout then MirrorNativeSize() end
   HideNativeBorder()
 
   local position = StoredPosition()
@@ -431,6 +779,173 @@ local function Apply()
   end
 
   if NativeDrifted() then DriveNative() end
+end
+
+-- ---------------------------------------------------------------------------
+-- Geometry sub-commands
+--
+-- Dispatched from U.PetBarCommand at the top of the file through the forward
+-- declaration there. These apply live: none of them changes the pet bar mode,
+-- so unlike native/custom there is no reload involved.
+--
+-- Setting one of the two values leaves the other on the client's own
+-- measurement rather than inventing a number for it.
+-- ---------------------------------------------------------------------------
+ButtonCommand = function(verb, argument)
+  if not U.db then U.Print(U.L("PETBAR_UNAVAILABLE")); return end
+
+  -- Native mode only: these place the client's own buttons. The opt-in custom
+  -- bar builds its own from cfg.size / cfg.spacing, and its status line has
+  -- already been printed by the caller.
+  if activeMode ~= "native" or not native then
+    if verb ~= "status" then U.Print(U.L("PETBAR_UNAVAILABLE")) end
+    return
+  end
+
+  local config = Config()
+  local geometry = NativeGeometry()
+
+  if verb == "status" then
+    if appliedLayout then
+      U.Print(U.L("PETBAR_BUTTONS_APPLIED", appliedLayout.size, appliedLayout.spacing))
+    else
+      U.Print(U.L("PETBAR_BUTTONS_NATIVE", U.Round(geometry.size), U.Round(geometry.gap)))
+    end
+    return
+  end
+
+  if verb == "reset" then
+    config.buttonLayout = false
+    config.buttonSize = 0
+    config.buttonSpacing = -1
+    Apply()
+    U.Print(U.L("PETBAR_BUTTONS_RESTORED"))
+    return
+  end
+
+  local value = tonumber(argument)
+  if value then value = U.Round(value) end
+
+  if verb == "size" then
+    if not value or value < MIN_BUTTON_SIZE or value > MAX_BUTTON_SIZE then
+      U.Print(U.L("PETBAR_BUTTONS_RANGE", MIN_BUTTON_SIZE, MAX_BUTTON_SIZE, 0, MAX_BUTTON_GAP))
+      return
+    end
+    config.buttonSize = value
+  else
+    if not value or value < 0 or value > MAX_BUTTON_GAP then
+      U.Print(U.L("PETBAR_BUTTONS_RANGE", MIN_BUTTON_SIZE, MAX_BUTTON_SIZE, 0, MAX_BUTTON_GAP))
+      return
+    end
+    config.buttonSpacing = value
+  end
+
+  if not Number(config.buttonSize) then config.buttonSize = U.Round(geometry.size) end
+  if not tonumber(config.buttonSpacing) or config.buttonSpacing < 0 then
+    config.buttonSpacing = U.Round(geometry.gap)
+  end
+
+  config.buttonLayout = true
+  Apply()
+
+  if appliedLayout then
+    U.Print(U.L("PETBAR_BUTTONS_APPLIED", appliedLayout.size, appliedLayout.spacing))
+  else
+    -- No button resolved, so nothing was written: say so rather than report a
+    -- size the bar does not have.
+    U.Print(U.L("PETBAR_UNAVAILABLE"))
+  end
+end
+
+-- ---------------------------------------------------------------------------
+-- Settings-window API
+--
+-- The Pet Bar page in the ActionBars group (modules/actionbarconfig.lua) drives
+-- exactly the same two values as /uui petbar size|spacing, in the same shape as
+-- U.GetActionBarSetting / U.SetActionBarSetting / U.ActionBarLimits so the page
+-- can be built beside the real bar pages without a second convention.
+--
+-- Native mode only. The opt-in custom bar builds its own buttons from
+-- cfg.size / cfg.spacing and is not placed by any of this.
+-- ---------------------------------------------------------------------------
+function U.PetBarButtonsAvailable()
+  return (activeMode == "native" and native and U.db) and true or false
+end
+
+function U.PetBarButtonLimits(name)
+  if name == "Size" then return MIN_BUTTON_SIZE, MAX_BUTTON_SIZE, 1 end
+  if name == "Spacing" then return 0, MAX_BUTTON_GAP, 1 end
+  return nil
+end
+
+-- "Custom" is the same flag the chat commands set: false means the sliders are
+-- showing the client's own measured row rather than a stored choice.
+function U.GetPetBarSetting(name)
+  if not U.PetBarButtonsAvailable() then return nil end
+  local config = Config()
+
+  if name == "Custom" then return config.buttonLayout and true or false end
+
+  local geometry = NativeGeometry()
+  if name == "Size" then
+    if appliedLayout then return appliedLayout.size end
+    if config.buttonLayout and Number(config.buttonSize) then
+      return U.Round(config.buttonSize)
+    end
+    return U.Round(geometry.size)
+  end
+  if name == "Spacing" then
+    if appliedLayout then return appliedLayout.spacing end
+    local spacing = tonumber(config.buttonSpacing)
+    if config.buttonLayout and spacing and spacing >= 0 then return U.Round(spacing) end
+    return U.Round(geometry.gap)
+  end
+  return nil
+end
+
+-- Writes one value and re-applies immediately, returning what was stored.
+-- Touching either slider turns the layout on, and the value that was not
+-- touched is seeded from the client's own row rather than invented -- the
+-- same rule ButtonCommand follows.
+function U.SetPetBarSetting(name, value)
+  if not U.PetBarButtonsAvailable() then return nil end
+  local min, max = U.PetBarButtonLimits(name)
+  if not min then return nil end
+
+  value = tonumber(value)
+  if not value then return nil end
+  value = U.Round(value)
+  if value < min then value = min end
+  if value > max then value = max end
+
+  local config = Config()
+  local geometry = NativeGeometry()
+
+  if name == "Size" then
+    config.buttonSize = value
+  else
+    config.buttonSpacing = value
+  end
+
+  if not Number(config.buttonSize) then config.buttonSize = U.Round(geometry.size) end
+  if not tonumber(config.buttonSpacing) or config.buttonSpacing < 0 then
+    config.buttonSpacing = U.Round(geometry.gap)
+  end
+
+  config.buttonLayout = true
+  Apply()
+  return U.GetPetBarSetting(name)
+end
+
+-- Hands the row back to the client, exactly as /uui petbar reset does.
+function U.ResetPetBarButtons()
+  if not U.PetBarButtonsAvailable() then return nil end
+  local config = Config()
+  config.buttonLayout = false
+  config.buttonSize = 0
+  config.buttonSpacing = -1
+  Apply()
+  return true
 end
 
 -- ---------------------------------------------------------------------------
@@ -551,6 +1066,9 @@ function U.PetBarReport()
     placed = StoredPosition() and true or false,
     driving = driving,
     driveFailures = driveFailures,
+    buttonLayout = appliedLayout and true or false,
+    buttonSize = appliedLayout and appliedLayout.size or nil,
+    buttonSpacing = appliedLayout and appliedLayout.spacing or nil,
     nativePoints = okCount and tonumber(count) or nil,
     nativeAnchorCaptured = nativeAnchor and true or false,
     reparented = reparented,

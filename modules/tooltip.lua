@@ -1324,11 +1324,238 @@ local function RewriteLines(guildName, rankName, localizedRace, localizedClass, 
   end
 end
 
--- Placement is left entirely to the client. A mover was attempted and reverted:
--- repositioning GameTooltip needs ClearAllPoints/SetPoint on a native frame,
--- which no probe on this client covers -- it rests only on UnrealPfUI doing the
--- same thing. The tooltip keeps its native anchor (measured at BOTTOMRIGHT of
--- UIParent, -103, -97 by tooltip.native_read.v1) until that call is verified.
+-- Move an owned, empty frame rather than the transient native tooltip. The
+-- shared mover supplies its handle, persistence, nudging and reset behavior.
+-- tooltip.anchor_reset_trace.v1 measured native corner resets between frames;
+-- tooltipanchor phase B plus the user's visual confirmation verified this
+-- placement sequence on every shared-driver frame. No native methods replaced.
+local placement = {
+  offset = 16,
+  margin = 4,
+  fadeDuration = 0.30,
+}
+
+function placement.Register()
+  if placement.frame then return end
+  local frame = CreateFrame("Frame", "UnrealUITooltipAnchor", UIParent)
+  frame:SetWidth(180)
+  frame:SetHeight(64)
+  frame:EnableMouse(false)
+  placement.frame = frame
+  U.RegisterMover("tooltip", frame, {
+    label = U.L("MOVER_LABEL_TOOLTIP"),
+    -- The native readback was (-103, -97); GetPoint inverts the requested Y.
+    default = { point = "BOTTOMRIGHT", relativePoint = "BOTTOMRIGHT",
+                x = -103, y = 97 },
+  })
+  -- A separate guide keeps cursor motion out of the saved mover position.
+  placement.cursor = CreateFrame("Frame", "UnrealUITooltipCursor", UIParent)
+  placement.cursor:SetWidth(1)
+  placement.cursor:SetHeight(1)
+  placement.cursor:EnableMouse(false)
+end
+
+-- All inputs are in UIParent units. Prefer above/right of the pointer, flip
+-- each axis when needed, then clamp the whole box, including the health bar
+-- below the body. Content size is read again while shown, so native rebuilds
+-- and screen-size changes cannot leave stale bounds in use.
+function placement.CursorBox(cx, cy, width, height, foot, screenWidth, screenHeight)
+  local margin, offset = placement.margin, placement.offset
+  local x = cx + offset
+  if x + width > screenWidth - margin then x = cx - offset - width end
+  local y = cy + offset + foot
+  if y + height > screenHeight - margin then y = cy - offset - height end
+  x = math.max(margin, math.min(x, screenWidth - margin - width))
+  y = math.max(margin + foot, math.min(y, screenHeight - margin - height))
+  return x, y
+end
+
+function placement.CursorTarget(tooltip)
+  -- api.getcursorposition_usable_for_hit_testing verifies cursor / effective
+  -- scale conversion. Use dimensions, not scaled native edge differences
+  -- (frames.scaled_frame_edge_coordinates_mixed_space).
+  local cx, cy = Call("GetCursorPosition")
+  local ok, uiScale, left, bottom, width, height = pcall(function()
+    return UIParent:GetEffectiveScale(), UIParent:GetLeft(), UIParent:GetBottom(),
+           tooltip:GetWidth(), tooltip:GetHeight()
+  end)
+  if not ok or type(cx) ~= "number" or type(cy) ~= "number" or
+     type(uiScale) ~= "number" or uiScale <= 0 or
+     type(left) ~= "number" or type(bottom) ~= "number" or
+     type(width) ~= "number" or width <= 0 or
+     type(height) ~= "number" or height <= 0 then return nil end
+
+  local ratio = CompareScaleRatio(tooltip)
+  -- Reserve the styled bar even before its native OnShow has arrived.
+  local x, y = placement.CursorBox(cx / uiScale - left, cy / uiScale - bottom,
+    width * ratio, height * ratio, BAR_HEIGHT * ratio, U.UIWidth(), U.UIHeight())
+  if x ~= placement.cursorX or y ~= placement.cursorY then
+    if not U.ApplyFramePoint(placement.cursor, {
+      point = "BOTTOMLEFT", relativePoint = "BOTTOMLEFT", x = x, y = y,
+    }) then return nil end
+    placement.cursorX, placement.cursorY = x, y
+  end
+  return placement.cursor
+end
+
+function placement.Apply(tooltip)
+  if not placement.frame or placement.applying then return end
+  local ok, anchorType = pcall(tooltip.GetAnchorType, tooltip)
+  if not ok or anchorType ~= "ANCHOR_NONE" then return end
+
+  local point, relative, relativePoint, x, y = U.GetFramePoint(tooltip)
+  if relative ~= placement.frame and relative ~= placement.cursor and
+     (relative ~= UIParent or point ~= "BOTTOMRIGHT" or
+      relativePoint ~= "BOTTOMRIGHT") then
+    -- Only take over the default screen-corner anchor. Item/button tooltips
+    -- with an explicit owner-relative or cursor position keep that placement.
+    return
+  end
+
+  placement.applying = true
+  local target, targetPoint = placement.frame, "BOTTOMRIGHT"
+  if placement.config and placement.config.followCursor then
+    local cursor = placement.CursorTarget(tooltip)
+    if cursor then target, targetPoint = cursor, "BOTTOMLEFT" end
+  end
+  if relative == target and point == targetPoint and relativePoint == targetPoint and
+     x == 0 and y == 0 then
+    placement.applying = false
+    return
+  end
+  local placed, err = pcall(function()
+    tooltip:ClearAllPoints()
+    tooltip:SetPoint(targetPoint, target, targetPoint, 0, 0)
+  end)
+  placement.applying = false
+  if not placed then U.Debug("tooltip anchor: " .. tostring(err)) end
+end
+
+function placement.SetCursorFadeAlpha(tooltip, alpha)
+  -- Parent alpha does not reliably reach native children on this client, so
+  -- fade the known world-tooltip pieces directly as well as the root.
+  pcall(tooltip.SetAlpha, tooltip, alpha)
+
+  local countOk, lineCount = pcall(tooltip.NumLines, tooltip)
+  if not countOk or type(lineCount) ~= "number" then lineCount = 0 end
+  local i
+  for i = 1, lineCount do
+    local left = U.G("GameTooltipTextLeft" .. i)
+    local right = U.G("GameTooltipTextRight" .. i)
+    if left then pcall(left.SetAlpha, left, alpha) end
+    if right then pcall(right.SetAlpha, right, alpha) end
+  end
+
+  U.SetBackgroundColor(tooltip, M.color.background[1], M.color.background[2],
+    M.color.background[3], (M.color.background[4] or 1) * alpha)
+  for i = 1, table.getn(tooltip.uuiEdges or {}) do
+    pcall(tooltip.uuiEdges[i].SetAlpha, tooltip.uuiEdges[i], alpha)
+  end
+
+  local bar = U.G("GameTooltipStatusBar")
+  if bar then
+    pcall(bar.SetAlpha, bar, alpha)
+    -- StatusBar alpha does not reliably fade its native fill on this client.
+    -- Collapse that last visible piece with the same smooth progress instead.
+    pcall(bar.SetHeight, bar, math.max(0.1, BAR_HEIGHT * alpha))
+    U.SetBackgroundColor(bar, M.color.healthBg[1], M.color.healthBg[2],
+      M.color.healthBg[3], (M.color.healthBg[4] or 1) * alpha)
+    for i = 1, table.getn(bar.uuiEdges or {}) do
+      pcall(bar.uuiEdges[i].SetAlpha, bar.uuiEdges[i], alpha)
+    end
+
+    if not placement.fadeBarR and type(bar.GetStatusBarColor) == "function" then
+      local colorOk, r, g, b = pcall(bar.GetStatusBarColor, bar)
+      if colorOk and type(r) == "number" then
+        placement.fadeBarR, placement.fadeBarG, placement.fadeBarB = r, g, b
+      end
+    end
+    if placement.fadeBarR then
+      pcall(bar.SetStatusBarColor, bar, placement.fadeBarR,
+        placement.fadeBarG, placement.fadeBarB, alpha)
+    end
+  end
+
+  if healthLabel then pcall(healthLabel.SetAlpha, healthLabel, alpha) end
+end
+
+function placement.ResetCursorFade(tooltip)
+  placement.fadeStartedAt = nil
+  placement.fadeHidePending = nil
+  if tooltip then placement.SetCursorFadeAlpha(tooltip, 1) end
+  placement.fadeBarR, placement.fadeBarG, placement.fadeBarB = nil, nil, nil
+end
+
+function placement.AccelerateCursorFade(tooltip)
+  if not placement.config or not placement.config.followCursor then
+    if placement.fadeStartedAt then placement.ResetCursorFade(tooltip) end
+    return
+  end
+
+  -- Only the default world tooltip is moved onto this guide. Explicitly
+  -- owner-anchored item and button tooltips keep the native fade unchanged.
+  local _, relative = U.GetFramePoint(tooltip)
+  if relative ~= placement.cursor then
+    if placement.fadeStartedAt then placement.ResetCursorFade(tooltip) end
+    return
+  end
+
+  local ok, alpha = pcall(tooltip.GetAlpha, tooltip)
+  if not ok or type(alpha) ~= "number" then return end
+  if alpha >= 0.999 then
+    if placement.fadeStartedAt then placement.ResetCursorFade(tooltip) end
+    return
+  end
+
+  -- The prior frame was rendered fully transparent. Hiding now cannot cut
+  -- short a still-visible portion of the animation.
+  if placement.fadeHidePending then
+    pcall(tooltip.Hide, tooltip)
+    placement.fadeStartedAt = nil
+    placement.fadeHidePending = nil
+    return
+  end
+
+  local now = Call("GetTime")
+  if type(now) ~= "number" then return end
+  if not placement.fadeStartedAt then
+    -- Account for the small part of the native one-second fade that elapsed
+    -- before this per-frame updater first observed it.
+    placement.fadeStartedAt = now - math.max(0, 1 - alpha)
+  end
+
+  local fadeAlpha = 1 -
+    ((now - placement.fadeStartedAt) / placement.fadeDuration)
+  if fadeAlpha <= 0 then
+    placement.SetCursorFadeAlpha(tooltip, 0)
+    placement.fadeHidePending = true
+    return
+  end
+  placement.SetCursorFadeAlpha(tooltip, fadeAlpha)
+end
+
+function placement.Tick()
+  if U.PerfDisabled and U.PerfDisabled("tooltip") then return end
+  local tooltip = U.G("GameTooltip")
+  if CompareVisible(tooltip) then
+    placement.Apply(tooltip)
+    placement.AccelerateCursorFade(tooltip)
+  end
+end
+
+-- Focused tooltipanchor probe calls the exact production placement sequence.
+-- Exposing it does not change scheduling or save a different mover position.
+U.ProbeTooltipAnchorApply = placement.Tick
+
+function U.ApplyTooltipPosition()
+  placement.config = U.ModuleConfig("tooltip", { followCursor = false })
+  -- Native hover restores the screen-corner anchor between frames even for a
+  -- stationary subject. The 0.10s styling backstop left that position visible;
+  -- tooltipanchor phase B corrected 1041 resets with no visible blinking.
+  -- Keep placement on every frame in BOTH modes, without repeating styling.
+  U.RegisterUpdate("tooltip.position", 0, placement.Tick)
+  placement.Tick()
+end
 
 local styledFor
 
@@ -1351,6 +1578,8 @@ local function RefreshTooltip(force)
     U.ClearTooltipItemName()
     return
   end
+
+  placement.Apply(tooltip)
 
   local nameLabel, tooltipName = LineText(1)
 
@@ -1457,6 +1686,11 @@ local function Restyle()
   RefreshTooltip(true)
 end
 
+local function ShowRestyle()
+  placement.ResetCursorFade(U.G("GameTooltip"))
+  RefreshTooltip(true)
+end
+
 local function InstallTriggers()
   local tooltip = U.G("GameTooltip")
   if not tooltip then return false end
@@ -1467,7 +1701,7 @@ local function InstallTriggers()
     local ok, frame = pcall(CreateFrame, "Frame", nil, tooltip)
     if ok and frame then
       pcall(frame.SetAllPoints, frame, tooltip)
-      if pcall(frame.SetScript, frame, "OnShow", Restyle) then
+      if pcall(frame.SetScript, frame, "OnShow", ShowRestyle) then
         installed = true
       end
       pcall(frame.SetScript, frame, "OnSizeChanged", Restyle)
@@ -1475,7 +1709,7 @@ local function InstallTriggers()
     end
   end
 
-  if U.PostHookScript(tooltip, "OnShow", Restyle) then
+  if U.PostHookScript(tooltip, "OnShow", ShowRestyle) then
     installed = true
   end
 
@@ -1484,6 +1718,9 @@ local function InstallTriggers()
   -- window before the 0.10s backstop pass notices the frame went away.
   U.PostHookScript(tooltip, "OnHide", function()
     U.ClearTooltipItemName()
+    placement.fadeStartedAt = nil
+    placement.fadeHidePending = nil
+    placement.fadeBarR, placement.fadeBarG, placement.fadeBarB = nil, nil, nil
   end)
 
   return installed
@@ -1530,6 +1767,8 @@ local function InstallCompareTrigger(index)
 end
 
 function TT.OnEnable()
+  placement.Register()
+  U.ApplyTooltipPosition()
   -- No theme gate: see the note at the head of this file. The tooltip carries
   -- UnrealUI's item comparison, so it is the addon's own frame in Classic WoW
   -- as well as Modern.

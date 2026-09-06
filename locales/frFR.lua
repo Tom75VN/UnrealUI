@@ -19,6 +19,11 @@ PETBAR_MODE_SELECTED      = "Barre du familier choisie : %s. Tapez /reload pour 
 PETBAR_CUSTOM_WARNING     = "Barre du familier personnalisee experimentale : ce client bloque le lancement des sorts par clic. Retrouvez les sorts natifs avec /uui petbar native, puis /reload.",
 PETBAR_ACTION_UNAVAILABLE = "Cette action du familier est indisponible sur ce client.",
 PETBAR_UNAVAILABLE        = "Le choix de la barre du familier est indisponible dans cette session.",
+CMD_PETBAR_BUTTONS        = "  |cffffff00/uui petbar size <12-64> / spacing <0-32> / reset|r - taille et ecart des boutons natifs du familier",
+PETBAR_BUTTONS_APPLIED    = "Boutons du familier : taille %d, ecart %d.",
+PETBAR_BUTTONS_NATIVE     = "Boutons du familier : valeurs du client (taille %d, ecart %d).",
+PETBAR_BUTTONS_RESTORED   = "Boutons du familier : taille et ecart d'origine du client restaures.",
+PETBAR_BUTTONS_RANGE      = "La taille des boutons du familier doit etre entre %d et %d, et l'ecart entre %d et %d.",
 
 -- ---------------------------------------------------------------------------
 -- Shared controls
@@ -72,12 +77,12 @@ MOVER_LABEL_SWING_BAR     = "Attaque auto : barre d'attaque",
 MOVER_LABEL_MICRO_BAR     = "Micro-barre",
 MOVER_LABEL_BUFFS         = "Ameliorations et affaiblissements",
 MOVER_LABEL_MINIMAP       = "Minicarte",
+MOVER_LABEL_TOOLTIP       = "Infobulle",
 MOVER_LABEL_PET_BAR       = "Barre du familier",
 MOVER_LABEL_STANCE_BAR    = "Barre de posture",
 MOVER_LABEL_STATUS        = "Surcouche d'etat",
 MOVER_LABEL_ONLINE_COUNT  = "Surcouche des connectes",
 MOVER_LABEL_QUEST_TRACKER = "Suivi de quetes",
-MOVER_LABEL_BANK          = "Banque",
 MOVER_LABEL_ACTION_BAR    = "Barre %d",
 MOVER_LABEL_MOVER_TEST    = "Test de deplacement",
 
@@ -112,6 +117,11 @@ SETTINGS_REPUTATION_BAR   = "Afficher la barre de reputation",
 SETTINGS_MINIMAP_BUTTON   = "Afficher le bouton des reglages sur la minicarte",
 SETTINGS_ZONE_LEVELS      = "Afficher les niveaux des zones sur la carte du monde",
 SETTINGS_ZONE_LEVELS_HINT = "Survoler une zone sur une carte de continent affiche sa plage de niveaux a cote du nom : vert en dessous de votre niveau, orange a votre niveau, rouge au-dessus.",
+SETTINGS_TOOLTIP_CURSOR  = "Les infobulles du monde suivent le curseur",
+SETTINGS_TOOLTIP_CURSOR_HINT = "Garde les infobulles du monde pres du curseur, dans les limites de l'ecran. Desactivez pour utiliser la position enregistree.",
+SETTINGS_CHAT_SHADOW      = "Supprimer l'ombre du texte de la discussion",
+SETTINGS_CHAT_SHADOW_RELOAD = "Tapez /reload pour retablir l'ombre du texte de la discussion.",
+SETTINGS_CHAT_SHADOW_HINT = "Affiche les messages de discussion a plat, sans ombre portee derriere les lettres. Les libelles des onglets ne sont pas touches.",
 
 SWING_BAR_MAIN            = "MD",
 SWING_BAR_OFF             = "MG",
@@ -177,6 +187,10 @@ ABC_SHOW_COOLDOWN         = "Afficher les temps de recharge",
 ABC_SHOW_GCD              = "Afficher le temps de recharge global",
 ABC_GENERAL_HINT          = "%d barres independantes sont disponibles. Les pages utilisees par les formes de cette classe s'affichent uniquement sur la barre 1.",
 ABC_BIND_HINT             = "Survolez un emplacement et appuyez sur une touche pour l'assigner. Echap sur un emplacement l'efface. Les barres 1 a 5 sont assignables ; les barres 6 a 10 n'ont aucune commande de touche dans ce client, elles sont donc affichees mais ne peuvent rien recevoir.",
+ABC_PET_BAR              = "Barre du familier",
+ABC_PET_RESET            = "Restaurer la taille du client",
+ABC_PET_HINT             = "Ces reglages placent les boutons de familier du client : il n'y a donc ni activation ni nombre de boutons ici. Deplacer un curseur prend la rangee en charge ; Restaurer la taille du client la rend au jeu. Equivalent a /uui petbar size, spacing et reset.",
+ABC_PET_UNAVAILABLE      = "La barre de familier native n'est pas active dans cette session, ses boutons ne peuvent donc pas etre places.",
 
 -- ---------------------------------------------------------------------------
 -- Quick binding
@@ -211,6 +225,13 @@ UF_TAB_GENERAL            = "Options generales",
 UF_TAB_PARTY              = "Cadres de groupe",
 UF_TAB_AURAS              = "Auras",
 UF_TAB_COLORS             = "Couleurs",
+
+-- Unit frame style (core/unitframestyle.lua). See enUS.lua: the style names
+-- stay untranslated, the same as the theme names. Display strings stay ASCII.
+UF_STYLE_HEADER           = "Style des cadres d'unite",
+UF_STYLE_HINT             = "Minimal est le style de cadre que unrealUI dessine aujourd'hui. Enhanced est encore en developpement et n'est pas encore selectionnable.",
+UF_STYLE_CHANGED          = "Style des cadres modifie",
+UF_STYLE_RELOAD           = "Tapez /reload pour appliquer le style de cadre %s.",
 UF_COLORS_HEADER          = "Couleurs des cadres d'unite",
 UF_CUSTOM_BAR_COLORS      = "Utiliser des couleurs de barre personnalisees",
 UF_HEALTH_BAR_COLOR       = "Couleur de la barre de vie",
@@ -222,6 +243,10 @@ UF_POWER_FOCUS            = "Focalisation",
 UF_POWER_ENERGY           = "Energie",
 
 UF_OFFLINE                = "HORS LIGNE",
+
+UF_EXACT_VITALS_HEADER    = "Sante des creatures",
+UF_EXACT_VITALS           = "Afficher la sante et le mana exacts",
+UF_EXACT_VITALS_HINT      = "Le client ne communique la sante d'une creature qu'en pourcentage. Quand cette option est active, le cadre de cible affiche les valeurs reelles issues de la table de creatures fournie et affine la valeur courante avec les degats observes. Desactivez-la pour revenir au pourcentage.",
 
 UF_PARTY_HEADER           = "Cadres de groupe",
 UF_PARTY_PETS             = "Afficher les familiers des membres du groupe",
@@ -305,6 +330,7 @@ BAGS_SORT_CURSOR          = "Reposez d'abord l'objet tenu par le curseur.",
 BAGS_SORT_DONE            = "Sacs tries.",
 BAGS_SORT_NOTHING         = "Les sacs sont deja tries.",
 BAGS_SORT_FAILED          = "Tri interrompu : un objet n'a pas bouge. Rien n'a ete perdu.",
+BAGS_SORT_NOSTAGE         = "Le tri a besoin d'un emplacement libre dans un sac. Liberez-en un et reessayez.",
 BAGS_TOGGLE_KEYRING       = "Afficher/masquer le porte-cles",
 BAGS_KEYRING_HINT         = "Afficher le porte-cles.",
 BAGS_TOGGLE_BAGS          = "Afficher/masquer les sacs",
@@ -340,6 +366,7 @@ BANK_SORT_CURSOR          = "Reposez d'abord l'objet tenu par le curseur.",
 BANK_SORT_DONE            = "Banque triee.",
 BANK_SORT_NOTHING         = "La banque est deja triee.",
 BANK_SORT_FAILED          = "Tri de la banque interrompu : un objet n'a pas bouge.",
+BANK_SORT_NOSTAGE         = "Le tri de la banque a besoin d'un emplacement libre dans un sac de banque. Liberez-en un et reessayez.",
 BANK_BAG_LABEL            = "Sac de banque",
 BANK_BUY_SLOT             = "Acheter un emplacement de sac de banque supplementaire ?",
 BANK_PURCHASE             = "Acheter",
@@ -371,6 +398,24 @@ SPELLBOOK_HIGHEST_RANK_TOOLTIP = "Affiche seulement le dernier rang de chaque so
 SPELLBOOK_BAR_HINT        = "Absent des barres",
 SPELLBOOK_BAR_HINT_TOOLTIP = "Surligne les sorts absents des barres.",
 GAMEMENU_OPTIONS          = "Options",
+
+-- ---------------------------------------------------------------------------
+-- Experience bar tooltip (modules/xpbar.lua)
+-- ---------------------------------------------------------------------------
+XPTIP_TITLE               = "Experience",
+XPTIP_XP                  = "XP",
+XPTIP_REMAINING           = "Restant",
+XPTIP_STATUS              = "Statut",
+XPTIP_RESTING             = "Repos",
+XPTIP_RESTED              = "Repose",
+XPTIP_SESSION             = "Cette session",
+XPTIP_PER_HOUR            = "Moyenne par heure",
+XPTIP_TIME_LEFT           = "Temps restant",
+-- Single-letter duration suffixes for the Time Remaining readout, e.g. "2h 15m".
+XPTIP_UNIT_DAY            = "j",
+XPTIP_UNIT_HOUR           = "h",
+XPTIP_UNIT_MINUTE         = "m",
+XPTIP_UNIT_SECOND         = "s",
 
 -- ---------------------------------------------------------------------------
 -- Slash commands

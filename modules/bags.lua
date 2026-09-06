@@ -1662,7 +1662,10 @@ local function Build()
   frame = U.CreatePanel(anchor, { name = "UnrealUIBagFrame" })
   frame:SetAllPoints(anchor)
   classicBag.StylePanel(frame, true)
-  pcall(frame.SetFrameStrata, frame, "MEDIUM")
+  -- Above the client tooltip rather than MEDIUM: this client draws a world
+  -- object's tooltip over the window regardless of the UI covering the
+  -- cursor (core/style.lua carries the measurement and the trade-off).
+  U.RaiseWindowAboveTooltips(frame)
   pcall(frame.EnableMouse, frame, true)
   frame:Hide()
 

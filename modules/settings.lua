@@ -1190,6 +1190,68 @@ local function BuildGeneralPage(parent)
     table.insert(widgets, zoneLevelsHint)
   end
 
+  -- The chat module (modules/chat.lua) otherwise leaves the native windows
+  -- alone, so its one appearance switch lives here beside the other
+  -- single-setting toggles rather than on a chat tab of its own.
+  local chatShadow = U.CreateCheckbox(parent, {
+    name = "UnrealUISettingsChatTextShadow",
+    text = U.L("SETTINGS_CHAT_SHADOW"),
+    value = U.ModuleConfig("chat", { noTextShadow = false }).noTextShadow,
+    onChange = function(value)
+      U.ModuleConfig("chat", { noTextShadow = false }).noTextShadow = value
+      if type(U.ApplyChatTextShadow) == "function" then
+        if U.ApplyChatTextShadow() then
+          U.ShowConfirm({
+            owner = "settings.chat-shadow-reload",
+            centered = true,
+            text = U.L("SETTINGS_CHAT_SHADOW"),
+            detail = U.L("SETTINGS_CHAT_SHADOW_RELOAD"),
+            acceptText = U.L("COMMON_OK_SHORT"),
+            cancelText = U.L("COMMON_CLOSE"),
+          })
+        end
+      end
+    end,
+  })
+  chatShadow.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -452)
+  table.insert(widgets, chatShadow)
+
+  local chatShadowHint = U.CreateSettingsLabel(parent, {
+    size = M.fontSize.small,
+    color = M.color.textDim,
+    inherits = "GameFontNormalSmall",
+    justify = "LEFT",
+  })
+  if chatShadowHint then
+    U.AnchorSettingsDescription(chatShadowHint, chatShadow.box)
+    chatShadowHint:SetText(U.L("SETTINGS_CHAT_SHADOW_HINT"))
+    table.insert(widgets, chatShadowHint)
+  end
+
+  local tooltipCursor = U.CreateCheckbox(parent, {
+    name = "UnrealUISettingsTooltipCursor",
+    text = U.L("SETTINGS_TOOLTIP_CURSOR"),
+    value = U.ModuleConfig("tooltip", { followCursor = false }).followCursor,
+    onChange = function(value)
+      U.ModuleConfig("tooltip", { followCursor = false }).followCursor = value
+      if type(U.ApplyTooltipPosition) == "function" then U.ApplyTooltipPosition() end
+    end,
+  })
+  tooltipCursor.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -508)
+  table.insert(widgets, tooltipCursor)
+
+  local tooltipCursorHint = U.CreateSettingsLabel(parent, {
+    size = M.fontSize.small,
+    color = M.color.textDim,
+    inherits = "GameFontNormalSmall",
+    justify = "LEFT",
+  })
+  if tooltipCursorHint then
+    U.AnchorSettingsDescription(tooltipCursorHint, tooltipCursor.box)
+    tooltipCursorHint:SetText(U.L("SETTINGS_TOOLTIP_CURSOR_HINT"))
+    table.insert(widgets, tooltipCursorHint)
+  end
+
   local function Refresh()
     themes.SetValue(U.GetThemeStyle(), false)
     autoAttack.SetValue(U.ModuleConfig("autoattack", { enabled = false }).enabled)
@@ -1198,6 +1260,8 @@ local function BuildGeneralPage(parent)
     reputation.SetValue(U.ModuleConfig("xpbar", { repEnabled = true }).repEnabled)
     minimapButton.SetValue(U.ModuleConfig("minimap", { enabled = true }).enabled)
     zoneLevels.SetValue(U.ModuleConfig("worldmap", { zoneLevels = true }).zoneLevels)
+    chatShadow.SetValue(U.ModuleConfig("chat", { noTextShadow = false }).noTextShadow)
+    tooltipCursor.SetValue(U.ModuleConfig("tooltip", { followCursor = false }).followCursor)
   end
 
   return widgets, Refresh

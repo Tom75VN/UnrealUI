@@ -7,6 +7,13 @@
 -- and modules/bank.lua passes the main bank pane plus its purchased bank bags.
 -- Nothing below is written against either window.
 --
+-- The containers are sorted as ONE bag, not one at a time. Every slot of every
+-- sortable container is laid end to end and the sorted items are packed into
+-- that run from its first slot, so an item moves between bags freely and the
+-- free space collects at the end of the last bag. Which containers make up
+-- that pool is the one thing this file has to get right -- see the fail-open
+-- reasoning under "Which bags may be sorted".
+--
 -- EVIDENCE -- read this before changing anything here.
 --
 -- PickupContainerItem is OFFICIAL_CLIENT_DOCUMENTATION but
@@ -36,13 +43,14 @@
 -- cannot scatter an inventory, because it stops the moment reality stops
 -- matching the plan. Feed anything measured in game back into knowledge.json.
 --
--- THE BANK is the one container set that is not addressed like the rest. The
--- main pane (-1) reads through the container API but must be written through
--- the inventory API, and it under-reports its own size. Neither quirk is
--- handled here: core/compat.lua's U.PickupContainerSlot and U.ContainerSlotCount
--- absorb both, because the bank *window* needs the identical correction for
--- its drag and drop. That file carries the measured bankmove evidence; this
--- one just uses the two calls everywhere and stays container-shaped.
+-- Bank addressing is centralized in core/compat.lua, and the bank half of this
+-- engine is now measured rather than assumed. Probe
+-- banksort.actual_sequence.v1 (2026-09-06) wrapped U.PickupContainerSlot and
+-- watched a real run: the reads were right all along (the main pane answers
+-- GetContainerItemLink correctly, and it was the inventory reader added to
+-- "fix" this that was blind), while every drop into the main pane was refused
+-- with "The item was not found." A swap this engine cannot make is a swap it
+-- must not plan -- see IS.Swap.
 
 local U = UnrealUI
 
@@ -51,8 +59,42 @@ local U = UnrealUI
 local IS = {}
 
 IS.UPDATE_ID = "bags.sort"
-IS.INTERVAL = 0.15   -- matches the grey-vendor queue in modules/bags.lua
-IS.MAX_RETRIES = 3   -- ticks a single swap may fail to land before giving up
+
+-- PACE
+--
+-- The tick rate does not decide how hard this hits the server. The run holds
+-- at most one move in flight -- IS.Step will not issue a swap while run.pending
+-- is set, and pending only clears when the destination is read back holding the
+-- item -- so moves are issued no faster than the server confirms the previous
+-- one, whatever the interval is. The interval decides one thing only: how long
+-- an already-finished move sits unnoticed before the next is issued.
+--
+-- At 0.15s that dead time was the whole cost of a sort. Every move took two
+-- ticks, one to issue and one to notice, so a bag set needing sixty moves spent
+-- eighteen seconds almost entirely waiting on this timer rather than on the
+-- client. The interval is therefore short, and the self-throttling above is
+-- what makes that safe rather than a guess about how fast the client will
+-- accept moves. It is not the grey-vendor queue in modules/bags.lua, which
+-- paces an unverified *server action* with nothing to confirm it against.
+IS.INTERVAL = 0.03
+
+-- Budgets are seconds, converted to ticks below. Counting ticks directly ties
+-- how patient the run is to how often it looks, so shortening the interval
+-- would silently shorten every timeout with it -- at 0.03s the old three-tick
+-- allowance for a swap to land would be 0.09s, well inside normal latency, and
+-- the run would start dropping bags from the pool over nothing.
+IS.SWAP_TIMEOUT = 1.0  -- seconds a swap may take to appear in its destination
+IS.LOCK_TIMEOUT = 3.0  -- seconds a slot may stay locked by the server
+IS.MAX_REPLANS = 4     -- times the plan may be rebuilt against changed bags
+
+-- Ticks in `seconds`, at least one. A slow frame makes a tick longer than the
+-- interval, never shorter, so the real budget can only come out longer than
+-- asked for -- the forgiving direction for a client that is already struggling.
+function IS.TickBudget(seconds)
+  local ticks = math.floor(seconds / IS.INTERVAL)
+  if ticks < 1 then ticks = 1 end
+  return ticks
+end
 IS.PREFIX = "BAGS_SORT"   -- default locale key prefix; see U.SortBags
 IS.BANK_CONTAINER = -1
 
@@ -67,42 +109,104 @@ end
 -- ---------------------------------------------------------------------------
 -- Which bags may be sorted
 -- ---------------------------------------------------------------------------
--- Only a plain Bag accepts any item. Soul bags, herb bags, enchanting and
--- engineering bags, quivers and ammo pouches refuse anything outside their
--- speciality, so an item moved into one would be silently declined and the run
--- would stall with it on the cursor. Those bags are left exactly as they are,
--- and so is any bag whose own item is not in the client's local cache -- an
--- unreadable bag is treated as special, because guessing the other way is the
--- only guess that can lose an item's place.
+-- The sort pools every container it is given and packs the whole set from the
+-- first slot of the first container onwards, so the bags behave as one large
+-- bag. A container dropped here is a container the player's items never leave
+-- and never enter, so this test decides how much of that pool actually exists.
+--
+-- It is deliberately fail-OPEN: a bag is sorted into unless it is positively
+-- identified as a specialty container. That is the opposite of the first
+-- version, which required GetItemInfo to answer "Container"/"Bag" and dropped
+-- the bag on anything else -- an unresolved inventory id, an item not in the
+-- local cache, or class names this client words differently. Every one of
+-- those silently reduced a five-bag sort to the backpack alone, because the
+-- backpack is the one container that never goes through this test. Nothing in
+-- the compact DB verifies any of the three calls below on this client:
+-- ContainerIDToInventoryID, GetInventoryItemLink and GetItemInfo are all
+-- OFFICIAL_CLIENT_DOCUMENTATION / DOCUMENTED_NOT_RUNTIME_VERIFIED, so a test
+-- that needs all three to agree before it will sort a bag is a test that
+-- fails closed on unverified ground.
+--
+-- Fail-open is only safe because the run below verifies every swap against the
+-- containers and can drop a container mid-run: a bag that refuses a drop is
+-- taken out of the pool by IS.Replan and the sort carries on without it. The
+-- cost of guessing wrong is therefore a few items rearranged in a bag that
+-- turned out to be special, not a stalled run.
+--
+-- Two positive tests still exclude the specialty bags that can be recognised:
+--
+--   * equipLoc is an INVTYPE_* token (documentation.json /
+--     global:Item:GetItemInfo), so it does not change with client language. A
+--     quiver or ammo pouch equips into its own inventory type, and anything
+--     that is not the bag token is left alone whatever it is called here.
+--   * subType names the container subclass, which does read as client text.
+--     The known specialty names are excluded when they match; when they do
+--     not, the run's own verification is what covers it.
 --
 -- The backpack (0) is always general-purpose and has no inventory item at all,
--- and the main bank pane (-1) is the same case: it accepts anything and has no
--- bag item to read. Every other bank container is a purchased bank bag, which
--- is an ordinary equipped bag and goes through the check below like bags 1..4.
+-- and the main bank pane (-1) is the same case.
+IS.SPECIAL_SUBTYPE = {
+  ["Soul Bag"] = true,
+  ["Herb Bag"] = true,
+  ["Enchanting Bag"] = true,
+  ["Engineering Bag"] = true,
+  ["Quiver"] = true,
+  ["Ammo Pouch"] = true,
+}
+
+-- Inventory slot of an equipped bag's own equipment button.
 --
--- ContainerIDToInventoryID is documented for bank bags 5..10 as well as the
--- worn 1..4 (documentation.json / global:Container:ContainerIDToInventoryID)
--- but is DOCUMENTED_NOT_RUNTIME_VERIFIED, and the one measured data point
--- nearby -- probe bankbagicon.mapping.v1, which found the equipped bank bag at
--- inventory slot 64 rather than Vanilla's 68 -- shows this client does not use
--- Vanilla's inventory numbering. If the call does not resolve for 5..10 here,
--- the conservative branch below excludes those bags and a bank sort quietly
--- rearranges only the main pane. That is the safe failure, not a silent one to
--- ignore: if purchased bank bags visibly do not reorder in game, this is why,
--- and it wants a focused probe rather than a guessed inventory id.
+-- ContainerIDToInventoryID is the documented converter, but the client
+-- documents the answer it should give independently: PutItemInBag's parameter
+-- note names the bag buttons as inventory slots "20-23 or 64-69"
+-- (documentation.json / global:Container:PutItemInBag), i.e. 19 + bag for the
+-- worn 1..4 and 59 + bag for bank bags 5..10. That contiguous bank range is
+-- the numbering probe bankbagicon.inventory_scan.v1 actually measured when it
+-- found the equipped bank bag at inventory slot 64 rather than Vanilla's 68,
+-- so the documented arithmetic is used as the fallback when the converter
+-- does not answer rather than treating the bag as unreadable.
+function IS.BagInventoryId(bag)
+  local ok, id = pcall(ContainerIDToInventoryID, bag)
+  id = ok and tonumber(id) or nil
+  if id then return id end
+
+  if bag >= 1 and bag <= 4 then return 19 + bag end
+  if bag >= 5 and bag <= 10 then return 59 + bag end
+  return nil
+end
+
 function IS.IsGeneralBag(bag)
   if bag == 0 or bag == IS.BANK_CONTAINER then return true end
 
-  local idOk, inventoryId = pcall(ContainerIDToInventoryID, bag)
-  if not idOk or not tonumber(inventoryId) then return false end
+  local inventoryId = IS.BagInventoryId(bag)
+  if not inventoryId then return true end
 
   local linkOk, link = pcall(GetInventoryItemLink, "player", inventoryId)
-  if not linkOk or type(link) ~= "string" or link == "" then return false end
+  if not linkOk or type(link) ~= "string" or link == "" then return true end
 
-  local infoOk, _, _, _, _, itemType, subType = pcall(GetItemInfo, link)
-  if not infoOk then return false end
+  -- GetItemInfo returns nine values on this client -- name, link, quality,
+  -- minLevel, type, subType, stackCount, equipLoc, texture -- and no values at
+  -- all for an item outside the local cache.
+  local infoOk, _, _, _, _, itemType, subType, _, equipLoc =
+    pcall(GetItemInfo, link)
+  if not infoOk then return true end
 
-  return itemType == "Container" and subType == "Bag"
+  if type(equipLoc) == "string" and equipLoc ~= "" and
+     equipLoc ~= "INVTYPE_BAG" then
+    return false
+  end
+
+  if type(subType) == "string" then
+    if IS.SPECIAL_SUBTYPE[subType] then return false end
+    -- A container class whose subclass is not the plain bag one: the enUS
+    -- reading of the same specialty case, kept for subclass names not listed
+    -- above.
+    if itemType == "Container" and subType ~= "" and subType ~= "Bag" then
+      return false
+    end
+  end
+
+  return true
 end
 
 -- ---------------------------------------------------------------------------
@@ -143,18 +247,27 @@ end
 -- ---------------------------------------------------------------------------
 -- Plan
 -- ---------------------------------------------------------------------------
--- positions is every sortable slot in bag order; desired[i] is the item link
--- that belongs at positions[i]. Both are a snapshot: if the bags change while
--- the run drains, the desired item stops being findable and the run aborts
--- rather than shuffling against a stale plan.
-function IS.Plan(bagIds)
+-- positions is every sortable slot of every sortable container, in the order
+-- the containers were given; desired[i] is the item link that belongs at
+-- positions[i]. Because positions runs straight through the containers and
+-- desired is packed from index 1, the whole set is filled as though it were
+-- one bag: the first category lands in the backpack's first slots and the
+-- items spill on into the next container.
+--
+-- Both are a snapshot. If the bags change while the run drains, the plan stops
+-- matching what is there; the run rebuilds it through IS.Replan rather than
+-- shuffling against a stale one.
+--
+-- excluded: optional set of container ids to leave out, which is how a
+-- container that refused a drop is taken back out of the pool mid-run.
+function IS.Plan(bagIds, excluded)
   local order = IS.CategoryOrder()
   local positions, items = {}, {}
   local i
 
   for i = 1, table.getn(bagIds) do
     local bag = bagIds[i]
-    if IS.IsGeneralBag(bag) then
+    if not (excluded and excluded[bag]) and IS.IsGeneralBag(bag) then
       -- Not GetContainerNumSlots directly: the main bank pane reports zero for
       -- itself, and U.ContainerSlotCount is where that is corrected.
       local n = U.ContainerSlotCount(bag)
@@ -163,9 +276,10 @@ function IS.Plan(bagIds)
       for slot = 1, n do
         table.insert(positions, { bag = bag, slot = slot })
 
-        local linkOk, link = pcall(GetContainerItemLink, bag, slot)
-        if linkOk and type(link) == "string" and link ~= "" then
-          table.insert(items, { link = link, sort = IS.SortKey(order, link) })
+        local link = U.ContainerSlotLink(bag, slot)
+        local key = IS.ItemKey(link)
+        if key then
+          table.insert(items, { key = key, sort = IS.SortKey(order, link) })
         end
       end
     end
@@ -174,7 +288,7 @@ function IS.Plan(bagIds)
   table.sort(items, function(a, b) return a.sort < b.sort end)
 
   local desired = {}
-  for i = 1, table.getn(items) do desired[i] = items[i].link end
+  for i = 1, table.getn(items) do desired[i] = items[i].key end
 
   return positions, desired
 end
@@ -182,10 +296,30 @@ end
 -- ---------------------------------------------------------------------------
 -- Reading the world back
 -- ---------------------------------------------------------------------------
-function IS.LinkAt(position)
-  local ok, link = pcall(GetContainerItemLink, position.bag, position.slot)
-  if not ok or type(link) ~= "string" or link == "" then return nil end
+-- Slots are read through core/compat.lua's readers, which are one container
+-- call for every container this engine is given, main bank pane included --
+-- banksort.actual_sequence.v1 measured that pane answering GetContainerItemLink
+-- correctly for every occupied slot.
+--
+-- Identity is the item string, not the hyperlink. The client's own GetItemInfo
+-- documentation notes it returns the raw item:id:enchant:rand:suffix form
+-- rather than a coloured link, so more than one shape is in circulation, and
+-- comparing item strings means a colour prefix or a display name cannot make a
+-- landed swap look like it never happened.
+function IS.ItemKey(link)
+  if type(link) ~= "string" or link == "" then return nil end
+
+  local _, _, itemString = string.find(link, "(item:%d+:%d*:%d*:%d*)")
+  if itemString then return itemString end
+
+  local _, _, itemId = string.find(link, "item:(%d+)")
+  if itemId then return "item:" .. itemId end
+
   return link
+end
+
+function IS.KeyAt(position)
+  return IS.ItemKey(U.ContainerSlotLink(position.bag, position.slot))
 end
 
 function IS.Locked(position)
@@ -215,6 +349,64 @@ function IS.Finish(suffix)
   if run and type(run.onFinish) == "function" then pcall(run.onFinish) end
 end
 
+-- Put back whatever a failed step left on the cursor, into the slot it came
+-- out of. This is the recovery IS.Finish performs, needed separately because a
+-- run that recovers and carries on must not reach the next swap holding
+-- something. Answers whether the cursor is actually empty afterwards; a run
+-- that cannot put an item down has to end rather than continue.
+function IS.ReleaseCursor(run)
+  if U.CursorHasItem() and run.holding then
+    U.PickupContainerSlot(run.holding.bag, run.holding.slot)
+  end
+  if U.CursorHasItem() then pcall(ClearCursor) end
+
+  run.holding = nil
+  return not U.CursorHasItem()
+end
+
+-- Rebuild the plan against the containers as they are now, optionally dropping
+-- one container from the pool.
+--
+-- This is the self-correcting half of the fail-open bag test above. A bag whose
+-- kind could not be read is sorted into; if a drop into it does not land, the
+-- bag is dropped here and the run finishes with the remaining containers
+-- instead of stopping on the refusal. The same path absorbs an ordinary plan
+-- going stale -- a looted item, or two partial stacks merging on a drop
+-- instead of swapping -- which used to end a run outright.
+--
+-- Bounded, because a run that cannot make progress must stop rather than
+-- rearrange the bags indefinitely. The backpack and the main bank pane are
+-- never dropped: they are the containers that take anything, and a pool with
+-- neither is not worth continuing.
+function IS.Replan(run, dropBag)
+  if run.replans >= IS.MAX_REPLANS then
+    IS.Finish("FAILED")
+    return false
+  end
+  run.replans = run.replans + 1
+
+  if dropBag and dropBag ~= 0 and dropBag ~= IS.BANK_CONTAINER then
+    run.excluded[dropBag] = true
+  end
+
+  local positions, desired = IS.Plan(run.bagIds, run.excluded)
+  if table.getn(positions) == 0 then
+    IS.Finish(run.moves > 0 and "DONE" or "NOTHING")
+    return false
+  end
+
+  run.positions = positions
+  run.desired = desired
+  run.index = 1
+  run.pending = nil
+  -- A staged swap's legs are addressed against the plan that started it; a new
+  -- plan means the sequence is abandoned and re-derived from what is there now.
+  run.staged = nil
+  run.retries = 0
+  run.waits = 0
+  return true
+end
+
 -- ---------------------------------------------------------------------------
 -- One swap
 --
@@ -222,16 +414,24 @@ end
 -- occupied slot drops what is held and lifts what was there. So a full swap is
 -- lift source, drop into destination, drop the displaced item back into source.
 -- Each stage is checked against the cursor rather than assumed.
+--
+-- The second return is the container to suspect when a stage did not work, so
+-- the caller can take that container out of the pool. A refused *drop* is the
+-- case worth naming: it is what a specialty bag the fail-open test let through
+-- looks like from here. The last branch cannot tell a destination that refused
+-- the drop from a source that refused the displaced item back, and names the
+-- destination, because the first is by far the likelier of the two -- source
+-- had an item taken out of it a moment earlier.
 -- ---------------------------------------------------------------------------
 function IS.Swap(run, src, dst)
   if U.CursorHasItem() then return false end
 
   run.holding = src
-  if not U.PickupContainerSlot(src.bag, src.slot) then return false end
+  if not U.PickupContainerSlot(src.bag, src.slot) then return false, src.bag end
 
   -- The lift itself did nothing: stop here rather than dropping a nil cursor
   -- onto an occupied slot.
-  if not U.CursorHasItem() then return false end
+  if not U.CursorHasItem() then return false, src.bag end
 
   U.PickupContainerSlot(dst.bag, dst.slot)
 
@@ -240,12 +440,119 @@ function IS.Swap(run, src, dst)
     U.PickupContainerSlot(src.bag, src.slot)
   end
 
-  -- Still holding something: leave run.holding set so IS.Finish knows which
-  -- slot to put it back into. Clearing it here would strand the item.
-  if U.CursorHasItem() then return false end
+  -- Still holding something: leave run.holding set so the recovery above knows
+  -- which slot to put it back into. Clearing it here would strand the item.
+  if U.CursorHasItem() then return false, dst.bag end
 
   run.holding = nil
   return true
+end
+
+-- ---------------------------------------------------------------------------
+-- A swap the client will not make directly
+--
+-- The main bank pane cannot exchange with itself: every lift/drop pair was
+-- measured and all four are refused (U.ContainerSlotsCanExchange carries the
+-- routes). Since almost every bank item starts in that pane, that is most of a
+-- bank sort, so the engine performs those swaps in three legal legs through
+-- one borrowed empty slot -- a purchased bank bag's, in practice:
+--
+--   1  source -> stage       source is emptied
+--   2  stage  -> position    lands the item; position's old item is displaced
+--                            onto the cursor and IS.Swap puts it back in stage
+--   3  stage  -> source      returns the displaced item, freeing stage again
+--
+-- Leg 3 does not exist when position was empty, which IS.StagedSwap detects by
+-- finding nothing to carry rather than by remembering what it saw earlier.
+--
+-- Each leg is an ordinary IS.Swap between containers the client accepts, so
+-- each is verified against the destination through run.pending exactly like a
+-- direct swap. The sequence is therefore as safe as the rest of the engine:
+-- if a leg does not land, the run recovers the cursor and replans instead of
+-- issuing the next one.
+--
+-- The stage is borrowed, not consumed -- it is empty again by the end of the
+-- sequence -- but it must be free at the start, so a bank with no free slot
+-- outside the main pane cannot be sorted at all. That is reported rather than
+-- retried, because no amount of replanning creates the slot.
+-- ---------------------------------------------------------------------------
+function IS.CanExchange(from, to)
+  return U.ContainerSlotsCanExchange(from.bag, to.bag) and true or false
+end
+
+-- The two ends of the leg the sequence is currently on, or nil when it is done.
+function IS.StagedLeg(staged)
+  if staged.phase == 1 then return staged.source, staged.stage end
+  if staged.phase == 2 then return staged.stage, staged.position end
+  if staged.phase == 3 then return staged.stage, staged.source end
+  return nil
+end
+
+-- An empty slot to borrow: in the pool, not one of the two ends, and one the
+-- client will exchange with both of them. Searched fresh for each sequence
+-- because the free slots move as the run progresses.
+function IS.StagingSlot(run, source, position)
+  local total = table.getn(run.positions)
+  local i
+
+  for i = 1, total do
+    local slot = run.positions[i]
+    local isEnd = (slot.bag == source.bag and slot.slot == source.slot)
+      or (slot.bag == position.bag and slot.slot == position.slot)
+
+    if not isEnd and IS.CanExchange(source, slot) and
+       IS.CanExchange(slot, position) and not IS.KeyAt(slot) and
+       not IS.Locked(slot) then
+      return slot
+    end
+  end
+
+  return nil
+end
+
+-- Drive the sequence one leg forward. True means the sequence is finished and
+-- the caller may carry on with the plan this tick; false means a move is in
+-- flight, or the run has ended, and the tick must stop.
+function IS.StagedSwap(run)
+  local staged = run.staged
+  local from, to = IS.StagedLeg(staged)
+
+  if not from then
+    run.staged = nil
+    return true
+  end
+
+  local key = IS.KeyAt(from)
+  if not key then
+    -- Nothing to carry. On the last leg that is the expected end of a move
+    -- into an empty slot; earlier it means the containers changed underneath.
+    run.staged = nil
+    if staged.phase >= 3 then return true end
+    IS.Replan(run)
+    return false
+  end
+
+  if IS.Locked(from) or IS.Locked(to) then
+    run.waits = run.waits + 1
+    if run.waits > IS.TickBudget(IS.LOCK_TIMEOUT) then IS.Finish("FAILED") end
+    return false
+  end
+  run.waits = 0
+
+  local swapped, suspect = IS.Swap(run, from, to)
+  if not swapped then
+    run.staged = nil
+    if IS.ReleaseCursor(run) then
+      IS.Replan(run, suspect)
+    else
+      IS.Finish("FAILED")
+    end
+    return false
+  end
+
+  run.pending = { dst = to, key = key }
+  staged.phase = staged.phase + 1
+  return false
 end
 
 -- ---------------------------------------------------------------------------
@@ -262,17 +569,33 @@ function IS.Step()
   -- else. This is the whole safety story: an API that quietly does nothing
   -- stops the run here instead of being issued another hundred times.
   if run.pending then
-    if IS.LinkAt(run.pending.dst) == run.pending.link then
+    if IS.KeyAt(run.pending.dst) == run.pending.key then
       run.pending = nil
       run.retries = 0
       run.moves = run.moves + 1
     else
       run.retries = run.retries + 1
-      if run.retries > IS.MAX_RETRIES then
-        IS.Finish("FAILED")
+      if run.retries > IS.TickBudget(IS.SWAP_TIMEOUT) then
+        -- The destination never took the item. Suspect that container, drop it
+        -- from the pool and sort the rest rather than ending the run here.
+        local dst = run.pending.dst
+        run.pending = nil
+        run.staged = nil
+        if IS.ReleaseCursor(run) then
+          IS.Replan(run, dst.bag)
+        else
+          IS.Finish("FAILED")
+        end
       end
       return
     end
+  end
+
+  -- A staged swap owns the run until its legs are done: its middle legs leave
+  -- the containers in a state the plan below would misread as an unrelated
+  -- item needing to be moved.
+  if run.staged then
+    if not IS.StagedSwap(run) then return end
   end
 
   local total = table.getn(run.positions)
@@ -280,13 +603,15 @@ function IS.Step()
   while run.index <= total do
     local position = run.positions[run.index]
     local want = run.desired[run.index]
-    local have = IS.LinkAt(position)
+    local have = IS.KeyAt(position)
 
     -- Past the last item: everything from here on should be empty, and an
     -- occupied slot means the plan no longer matches the bags.
     if not want then
       if have then
-        IS.Finish("FAILED")
+        -- More items than the plan knew about: the containers changed under
+        -- the run, so plan against what is there now.
+        IS.Replan(run)
         return
       end
       run.index = run.index + 1
@@ -298,7 +623,7 @@ function IS.Step()
       local source
       local j
       for j = run.index + 1, total do
-        if IS.LinkAt(run.positions[j]) == want then
+        if IS.KeyAt(run.positions[j]) == want then
           source = run.positions[j]
           break
         end
@@ -307,24 +632,54 @@ function IS.Step()
       if not source then
         -- The plan asked for something that is no longer in the bags: the
         -- contents changed under the run.
-        IS.Finish("FAILED")
+        IS.Replan(run)
         return
       end
 
       -- A slot the server is still settling cannot be moved. Wait for it
-      -- rather than issuing a swap that is certain to be refused.
+      -- rather than issuing a swap that is certain to be refused. Waiting has
+      -- its own budget, and a longer one than a swap gets: a lock clears when
+      -- the server answers, so waiting costs nothing but time, while the swap
+      -- budget decides when to suspect a container and drop it from the pool.
       if IS.Locked(source) or IS.Locked(position) then
-        run.retries = run.retries + 1
-        if run.retries > IS.MAX_RETRIES then IS.Finish("FAILED") end
+        run.waits = run.waits + 1
+        if run.waits > IS.TickBudget(IS.LOCK_TIMEOUT) then
+          IS.Finish("FAILED")
+        end
+        return
+      end
+      run.waits = 0
+
+      -- Two main-bank slots cannot exchange on this client, and that is most
+      -- of a bank sort. Borrow a free slot and do it in three legal legs.
+      if not IS.CanExchange(source, position) then
+        local stage = IS.StagingSlot(run, source, position)
+        if not stage then
+          IS.Finish("NOSTAGE")
+          return
+        end
+
+        run.staged = {
+          source = source,
+          position = position,
+          stage = stage,
+          phase = 1,
+        }
+        IS.StagedSwap(run)
         return
       end
 
-      if not IS.Swap(run, source, position) then
-        IS.Finish("FAILED")
+      local swapped, suspect = IS.Swap(run, source, position)
+      if not swapped then
+        if IS.ReleaseCursor(run) then
+          IS.Replan(run, suspect)
+        else
+          IS.Finish("FAILED")
+        end
         return
       end
 
-      run.pending = { dst = position, link = want }
+      run.pending = { dst = position, key = want }
       return
     end
   end
@@ -346,7 +701,9 @@ function U.BagSortActive()
   return IS.run and true or false
 end
 
--- bagIds: the containers to sort, in the order they should be filled.
+-- bagIds: the containers to sort, pooled and filled as one bag in this order.
+--         Retained by the run, because a container that turns out to refuse a
+--         drop is dropped from the pool and the plan rebuilt from this list.
 -- options, all optional:
 --   onFinish  called however the run ends, so a caller can restore a button's
 --             normal state without polling.
@@ -373,17 +730,22 @@ function U.SortBags(bagIds, options)
     return false
   end
 
-  local positions, desired = IS.Plan(bagIds)
+  local excluded = {}
+  local positions, desired = IS.Plan(bagIds, excluded)
   if table.getn(positions) == 0 then
     U.Print(IS.Message(prefix, "NOTHING"))
     return false
   end
 
   IS.run = {
+    bagIds = bagIds,
+    excluded = excluded,
     positions = positions,
     desired = desired,
     index = 1,
     retries = 0,
+    waits = 0,
+    replans = 0,
     moves = 0,
     onFinish = options.onFinish,
     prefix = prefix,

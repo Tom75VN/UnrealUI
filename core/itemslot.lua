@@ -84,11 +84,21 @@ end
 -- The count region this component drives.
 --
 -- The player-bag template's stock Count region draws correctly, so retain it.
--- The bank template's region does not produce a visible count on this client
--- (confirmed visually in-game). Bank counts are therefore placed on a raised
--- child frame, using the same proven text-layer pattern as action-bar cooldown
--- text and unit-frame labels. Keeping the bank button template itself preserves
--- its native click, drag and tooltip logic.
+-- The bank template's region produced no visible count, so main-pane counts are
+-- placed on a raised child frame instead, using the same proven text-layer
+-- pattern as action-bar cooldown text and unit-frame labels. Keeping the bank
+-- button template itself preserves its native click, drag and tooltip logic.
+--
+-- That layer is measured correct -- shown, opaque, anchored -- but the main
+-- pane still shows no quantity, because this client supplies none: probe
+-- bankslotcount found GetContainerItemInfo(-1, slot) returning count 0 for
+-- every occupied slot, including single items that answer 1 in a carried bag,
+-- and GetInventoryItemCount answering 0 for the bank inventory slots. The
+-- native bank window has the same gap with no addon loaded. Purchased bank
+-- bags 5..10 are ordinary containers and report counts normally. See
+-- knowledge.json / bank.stack_count_region_not_visible. The value the layer is
+-- given for the main pane is derived in modules/bankcount.lua, which answers
+-- nil rather than a quantity it cannot stand behind.
 local function EnsureSlotCount(button, name, restyle, raised)
   local region = U.G(name .. "Count")
 
@@ -104,12 +114,48 @@ local function EnsureSlotCount(button, name, restyle, raised)
     end
 
     button.uuiCountLayer = layer
-    button.uuiCount = U.CreateLabel(layer, {
-      size = M.fontSize.small,
-      color = M.color.text,
-      inherits = "GameFontNormalSmall",
-    })
+
+    -- Matched to the stock region rather than styled independently, so the
+    -- main pane's quantity is the same glyph in the same place as the one a
+    -- carried bag and a purchased bank bag draw. Those keep the client's own
+    -- NumberFontNormal at its native height: the restyle below asks for
+    -- M.fontSize.small and this client does not apply it to a stock region,
+    -- so a label built from the shared token would be visibly smaller than
+    -- every neighbouring slot.
+    --
+    -- The font is therefore copied from this button's own stock region -- three
+    -- scalars read once at binding, never a retained native object -- and
+    -- applied directly instead of through U.SetFont, which would enrol the
+    -- label in the addon font system that the stock regions sit outside of and
+    -- let the two drift apart on the next font change.
+    local countFont, countSize, countFlags
+    if region then
+      local fontOk, path, height, flags = pcall(region.GetFont, region)
+      if fontOk and type(path) == "string" and path ~= "" then
+        countFont, countSize, countFlags = path, tonumber(height), flags
+      end
+    end
+
+    local created, label = pcall(layer.CreateFontString, layer, nil, "OVERLAY",
+                                 "NumberFontNormal")
+    if not created or not label then
+      created, label = pcall(layer.CreateFontString, layer, nil, "OVERLAY")
+    end
+    button.uuiCount = (created and label) or nil
+
     if button.uuiCount then
+      if countFont and countSize then
+        -- Flags round-trip from GetFont, so a value this client reports but
+        -- will not accept back falls through to the plain two-argument form
+        -- and finally to whatever NumberFontNormal already gave the label.
+        local ok = pcall(button.uuiCount.SetFont, button.uuiCount,
+                         countFont, countSize, countFlags)
+        if not ok then
+          pcall(button.uuiCount.SetFont, button.uuiCount, countFont, countSize)
+        end
+      end
+      pcall(button.uuiCount.SetTextColor, button.uuiCount,
+            M.Unpack(M.color.text))
       pcall(function()
         button.uuiCount:SetPoint("BOTTOMRIGHT", layer, "BOTTOMRIGHT", -3, 3)
       end)
@@ -559,6 +605,15 @@ function U.UpdateItemSlot(button, bag, slot)
   -- bare.
   if button.uuiCount then
     local n = tonumber(count)
+
+    -- The main bank pane is the one surface this client reports no quantity
+    -- for, so its number is derived instead -- see modules/bankcount.lua. It
+    -- answers nil whenever the value is unknown, which leaves the slot bare
+    -- rather than showing a number that could be wrong.
+    if (not n or n < 2) and type(U.BankSlotStackCount) == "function" then
+      n = U.BankSlotStackCount(bag, slot) or n
+    end
+
     local text = (n and n > 1) and tostring(n) or ""
     pcall(button.uuiCount.SetText, button.uuiCount, text)
     if text == "" then

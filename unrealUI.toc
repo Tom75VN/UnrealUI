@@ -5,7 +5,7 @@
 ## Version: 0.5.0
 ## X-License: MIT
 ## SavedVariables: UnrealUIDB, UnrealUIProfiles, UnrealUIDiagDB, UnrealUIPriceDB
-## SavedVariablesPerCharacter: UnrealUIProfileDB, UnrealUIFavoriteDB
+## SavedVariablesPerCharacter: UnrealUIProfileDB, UnrealUIFavoriteDB, UnrealUIBankCountDB
 
 core\init.lua
 
@@ -25,9 +25,23 @@ core\theme.lua
 themes\modern.lua
 themes\classic-wow.lua
 themes\modern-wow.lua
+
+# Unit-frame styles. A theme decides which interface is drawn; a unit-frame
+# style decides how UnrealUI's own frames look once it draws them. Registered
+# after the themes because the selector only applies under the Modern theme.
+core\unitframestyle.lua
 core\auradata.lua
 core\hotdata.lua
 core\pricedata.lua
+
+# Bundled VMaNGOS world data, packaged in the shape unrealQuest already uses
+# so a table only has to be generated and shipped once. Database\init.lua owns
+# the shared global both addons write to; core\unitvitals.lua is the code that
+# reads it, and needs U.Round from core\compat.lua only at call time.
+Database\init.lua
+Database\unit_vitals.lua
+core\unitvitals.lua
+
 core\compat.lua
 core\weapons.lua
 core\config.lua
@@ -73,6 +87,7 @@ modules\stancebar.lua
 modules\rogue.lua
 modules\bagfavorites.lua
 modules\bags.lua
+modules\bankcount.lua
 modules\bank.lua
 modules\status.lua
 modules\questlog.lua

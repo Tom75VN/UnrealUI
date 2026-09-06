@@ -49,15 +49,18 @@
 --     settled from a real fight. See knowledge.json /
 --     castbar.pushback_delay_event_unconfirmed.
 --
--- Themes with native chrome (themes/classic-wow.lua) keep the client's own
--- CastingBarFrame instead of this one: every cast the client draws a bar for --
--- a spell, a channel, a quest-object loot channel -- stays in the client's own
--- style rather than mixing one modern bar into an otherwise native interface.
--- None of the unrealUI player bar is built and, more importantly,
--- SuppressNativeCastbar is not called, so the stock frame keeps the events and
--- scripts the client gave it and needs no API assumption from us.
+-- Themes with native chrome (themes/classic-wow.lua) do not get the modern
+-- widget: the player bar is built from the Classic static skin in
+-- modules/castbarclassic.lua instead, so it stays in the client's own style
+-- rather than mixing one modern bar into an otherwise native interface. It is
+-- an unrealUI frame either way, driven by this module's per-frame tick --
+-- the client's own CastingBarFrame advanced its fill in visible steps, and
+-- that step was the reason the player bar moved to addon ownership here.
+-- SuppressNativeCastbar then runs in that mode as well.
 --
--- It still gets a mover. The native bar is placed the way modules/petbar.lua
+-- Only when that narrowly scoped Classic builder is unavailable does the client
+-- keep drawing the player bar, and only then is the native mover below used at
+-- all. In that fallback the native bar is placed the way modules/petbar.lua
 -- places the native pet bar, for the same reasons and with the same two modes:
 -- an unrealUI-owned anchor frame carries the handle, and until the player has
 -- actually dropped that handle the anchor follows the native bar and nothing is
@@ -857,9 +860,9 @@ end
 -- same reasoning as the unit frames' empty-unit shell: a frame that only
 -- exists while it has something to show could never be dragged into place.
 local function ApplyIdlePlaceholder()
-  U.SetStatusBarColor(bar.bar, M.Unpack(M.color.cast))
+  ApplyUnitBarTint(bar)
   pcall(bar.bar.SetMinMaxValues, bar.bar, 0, 1)
-  pcall(bar.bar.SetValue, bar.bar, 0.4)
+  SetUnitBarValue(bar, 0.4)
   if bar.name then bar.name:SetText(U.L("MOVER_LABEL_CASTBAR")) end
   if bar.icon then pcall(bar.icon.SetTexture, bar.icon, FALLBACK_ICON) end
   bar.showIcon = true
@@ -895,9 +898,9 @@ local function StartCast(name, castTimeMs)
   delayCount, delaySeconds = 0, 0
   ApplyPushback(0)
 
-  U.SetStatusBarColor(bar.bar, M.Unpack(M.color.cast))
+  ApplyUnitBarTint(bar)
   pcall(bar.bar.SetMinMaxValues, bar.bar, 0, duration)
-  pcall(bar.bar.SetValue, bar.bar, 0)
+  SetUnitBarValue(bar, 0)
   if bar.name then bar.name:SetText(tostring(name or "")) end
   ApplyIcon(name)
   lastTimeText = nil
@@ -927,7 +930,7 @@ local function DelayCast(delayMs)
   -- showed on the next 0.1s tick would read as a stutter, not a rollback.
   local elapsed = GetTime() - startTime
   if elapsed < 0 then elapsed = 0 end
-  pcall(bar.bar.SetValue, bar.bar, elapsed)
+  SetUnitBarValue(bar, elapsed)
   ApplyTimer(duration - elapsed)
 end
 
@@ -987,7 +990,7 @@ Tick = function()
   -- hand the fill a negative value.
   if elapsed < 0 then elapsed = 0 end
 
-  pcall(bar.bar.SetValue, bar.bar, elapsed)
+  SetUnitBarValue(bar, elapsed)
   ApplyTimer(duration - elapsed)
 end
 
@@ -1134,8 +1137,8 @@ local function BuildTargetBar()
                   U.GetActiveThemeStyle() == "classic-wow"
   local widget
   if classic then
-    if type(U.CreateClassicTargetCastbar) == "function" then
-      widget = U.CreateClassicTargetCastbar("UnrealUICastBarTarget")
+    if type(U.CreateClassicCastbar) == "function" then
+      widget = U.CreateClassicCastbar("UnrealUICastBarTarget")
     end
     if not widget then
       nativeTargetStyle = "unavailable (no Modern fallback)"
@@ -1157,6 +1160,61 @@ local function BuildTargetBar()
     label = U.L("MOVER_LABEL_TARGET_CASTBAR"),
     default = { point = "CENTER", relativePoint = "CENTER", x = 0, y = -250 },
   })
+end
+
+-- Classic player castbar.
+--
+-- The client's own CastingBarFrame advanced its fill in visible steps, so under
+-- the Classic theme the player bar is rebuilt from the same addon-owned static
+-- skin the Classic target bar uses and driven by this module's per-frame tick --
+-- the same fill path that already reads smoothly on the target bar. The stock
+-- frame is then suppressed through the established SuppressNativeCastbar path
+-- rather than left drawing a second bar.
+--
+-- Returns false when the narrowly scoped Classic builder is unavailable, in
+-- which case the caller keeps the previous behaviour: native bar untouched,
+-- placed by its own mover handle.
+local function BuildClassicPlayerBar()
+  if type(U.CreateClassicCastbar) ~= "function" then return false end
+
+  local widget = U.CreateClassicCastbar("UnrealUICastBar")
+  if not widget then return false end
+
+  bar = widget
+  bar:Hide()
+  SetCellsShown(false)
+
+  U.RegisterMover("castbar.player", bar, {
+    label = U.L("MOVER_LABEL_CASTBAR"),
+    default = { point = "CENTER", relativePoint = "CENTER", x = 0, y = -220 },
+  })
+
+  return true
+end
+
+-- Player cast events. Shared by both themes: the Classic bar is the same
+-- widget contract and the same timing state, only a different skin.
+local function RegisterPlayerCastEvents()
+  U.RegisterEvent("SPELLCAST_START", function(event, name, castTimeMs)
+    StartCast(name, castTimeMs)
+    RememberTargetSpell(name, castTimeMs)
+  end)
+
+  -- Reversed argument order from SPELLCAST_START -- see the header note on
+  -- the channelled-cast evidence gap (castTimeMs first, name second, per
+  -- UnrealPfUI's libcast.lua:219).
+  U.RegisterEvent("SPELLCAST_CHANNEL_START", function(event, castTimeMs, name)
+    StartCast(name, castTimeMs)
+  end)
+
+  U.RegisterEvent("SPELLCAST_DELAYED", function(event, delayMs)
+    DelayCast(delayMs)
+  end)
+
+  local i
+  for i = 1, table.getn(STOP_EVENTS) do
+    U.RegisterEvent(STOP_EVENTS[i], StopCast)
+  end
 end
 
 local function Build()
@@ -2018,19 +2076,27 @@ local function RegisterUnitCastEvents()
 end
 
 function CB:OnEnable()
-  -- The modern path creates all three addon bars. Native-chrome mode keeps the
-  -- player's client bar untouched and builds only the addon-owned Classic
-  -- target bar; no pet reconstruction is introduced in that mode.
+  -- The modern path creates all three addon bars. Native-chrome mode builds
+  -- the addon-owned Classic player and target bars; no pet reconstruction is
+  -- introduced in that mode.
   if bar or trackers.target then return end
 
-  -- Before Build() and before SuppressNativeCastbar(): under a native-chrome
-  -- theme the client's own player castbar stays the player castbar. The target
-  -- bar uses static verified paths and never inspects that native frame.
+  -- Before any bar is built: the theme decides which player widget is made.
+  -- Both Classic bars use static verified paths and never inspect the native
+  -- frame; the only native call in that mode is SuppressNativeCastbar.
   nativeChrome = type(U.ThemeStyleUsesNativeChrome) == "function" and
                  U.ThemeStyleUsesNativeChrome() or false
   if nativeChrome then
-    U.Debug("castbar: native chrome theme; leaving CastingBarFrame alone")
-    SetupNativeMover()
+    -- The Classic skin can carry the player bar itself, which is the only way
+    -- to give it the per-frame fill the target bar already has. Only if that
+    -- builder is unavailable does the client keep drawing its own bar.
+    if BuildClassicPlayerBar() then
+      SuppressNativeCastbar()
+      RegisterPlayerCastEvents()
+    else
+      U.Debug("castbar: no Classic player bar; leaving CastingBarFrame alone")
+      SetupNativeMover()
+    end
     BuildTargetBar()
     BuildTargetPatterns()
     RegisterUnitCastEvents()
@@ -2041,28 +2107,7 @@ function CB:OnEnable()
   Build()
   SuppressNativeCastbar()
   BuildTargetPatterns()
-
-  U.RegisterEvent("SPELLCAST_START", function(event, name, castTimeMs)
-    StartCast(name, castTimeMs)
-    RememberTargetSpell(name, castTimeMs)
-  end)
-
-  -- Reversed argument order from SPELLCAST_START -- see the header note on
-  -- the channelled-cast evidence gap (castTimeMs first, name second, per
-  -- UnrealPfUI's libcast.lua:219).
-  U.RegisterEvent("SPELLCAST_CHANNEL_START", function(event, castTimeMs, name)
-    StartCast(name, castTimeMs)
-  end)
-
-  U.RegisterEvent("SPELLCAST_DELAYED", function(event, delayMs)
-    DelayCast(delayMs)
-  end)
-
-  local i
-  for i = 1, table.getn(STOP_EVENTS) do
-    U.RegisterEvent(STOP_EVENTS[i], StopCast)
-  end
-
+  RegisterPlayerCastEvents()
   RegisterUnitCastEvents()
 
   -- A new pet has a different name and a different spellbook, so the running
@@ -2118,7 +2163,10 @@ end
 -- whether the spellbook lookup resolves a real texture, and whether this
 -- client emits SPELLCAST_DELAYED at all.
 function U.CastbarReport()
-  if nativeChrome then
+  -- `not bar` as well as nativeChrome: with the Classic player bar built, the
+  -- native mover is never set up and this branch would report a stored
+  -- castbar.player position as if the client's frame were being driven by it.
+  if nativeChrome and not bar then
     return {
       native = true,
       nativeSuppressed = false,
@@ -2145,6 +2193,7 @@ function U.CastbarReport()
     delaySeconds = delaySeconds,
     nativeSuppressed = nativeCastbarSuppressed,
     target = TrackerReport(trackers.target),
+    targetStyle = nativeTargetStyle,
     pet = TrackerReport(trackers.pet),
   }
 end

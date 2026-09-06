@@ -31,6 +31,12 @@ local config
 local xpAnchor, xpBar, xpRestedBar
 local repAnchor, repBar
 
+-- Session experience tracking for the tooltip's rate lines. Held on one table
+-- rather than as separate top-level locals (see the Lua local budget note in
+-- .claude/rules/unreal-ui.md), and never persisted: "this session" means since
+-- login or reload, not since the last zone change.
+local session = { startedAt = nil, xp = 0, lastXP = nil, lastXPMax = nil }
+
 -- ---------------------------------------------------------------------------
 -- Config
 -- ---------------------------------------------------------------------------
@@ -62,6 +68,78 @@ local function BuildBar(name, fillColor)
 end
 
 -- ---------------------------------------------------------------------------
+-- Session experience
+--
+-- UnrealPfUI derives its session total from a PLAYER_ENTERING_WORLD baseline
+-- and corrects it on PLAYER_LEVEL_UP by subtracting UnitXPMax. Neither event is
+-- confirmed on this client (see the module header), so the total is instead
+-- accumulated from the values RefreshXP already reads on its 2s poll: a level
+-- boundary shows up as a changed UnitXPMax and is credited with the remainder
+-- of the old level plus the carry into the new one. Two levels gained inside a
+-- single poll interval undercount by one level, which is the accepted cost of
+-- not depending on an unverified event. GetTime itself is documented
+-- (documentation.json / global:System:GetTime) but not runtime verified, so it
+-- is resolved and called defensively like the rest of this module's API use.
+-- ---------------------------------------------------------------------------
+local function Now()
+  local getTime = U.G("GetTime")
+  if type(getTime) ~= "function" then return nil end
+  local ok, value = pcall(getTime)
+  if not ok then return nil end
+  return tonumber(value)
+end
+
+local function TrackSession(xp, xpmax)
+  if not session.startedAt then session.startedAt = Now() end
+
+  local last, lastMax = session.lastXP, session.lastXPMax
+  if last then
+    if lastMax and xpmax ~= lastMax then
+      -- Level boundary: finish the old level, then add the new level's total.
+      session.xp = session.xp + math.max(lastMax - last, 0) + xp
+    elseif xp >= last then
+      session.xp = session.xp + (xp - last)
+    end
+  end
+
+  session.lastXP, session.lastXPMax = xp, xpmax
+end
+
+-- Seconds elapsed in this session, or nil while the clock is unusable or the
+-- sample is too short for a meaningful rate.
+local function SessionElapsed()
+  if not session.startedAt then return nil end
+  local now = Now()
+  if not now then return nil end
+  local elapsed = now - session.startedAt
+  -- GetTime restarts across a reload, so a backwards reading means the baseline
+  -- is stale rather than that time ran backwards.
+  if elapsed < 0 then
+    session.startedAt = now
+    return nil
+  end
+  if elapsed < 60 then return nil end
+  return elapsed
+end
+
+local function FormatDuration(seconds)
+  seconds = tonumber(seconds) or 0
+  if seconds <= 0 then return nil end
+
+  if seconds >= 86400 then
+    return math.floor(seconds / 86400) .. U.L("XPTIP_UNIT_DAY") .. " " ..
+           math.floor(math.mod(seconds, 86400) / 3600) .. U.L("XPTIP_UNIT_HOUR")
+  elseif seconds >= 3600 then
+    return math.floor(seconds / 3600) .. U.L("XPTIP_UNIT_HOUR") .. " " ..
+           math.floor(math.mod(seconds, 3600) / 60) .. U.L("XPTIP_UNIT_MINUTE")
+  elseif seconds >= 60 then
+    return math.floor(seconds / 60) .. U.L("XPTIP_UNIT_MINUTE") .. " " ..
+           math.floor(math.mod(seconds, 60)) .. U.L("XPTIP_UNIT_SECOND")
+  end
+  return math.floor(seconds) .. U.L("XPTIP_UNIT_SECOND")
+end
+
+-- ---------------------------------------------------------------------------
 -- Rest XP tooltip (WORKING_SOURCE fallback: UnrealPfUI modules/xpbar.lua
 -- OnEnter, since query_compat.py has no runtime record for GetXPExhaustion
 -- or IsResting on this client).
@@ -87,21 +165,34 @@ local function XPTooltipShow()
 
   GameTooltip:SetOwner(xpAnchor, "ANCHOR_CURSOR")
   GameTooltip:ClearLines()
-  GameTooltip:AddLine("Experience")
-  GameTooltip:AddDoubleLine("XP", xp .. " / " .. xpmax .. " (" .. math.floor(xp / xpmax * 100 + 0.5) .. "%)", 1, 1, 1, 1, 1, 1)
-  GameTooltip:AddDoubleLine("Remaining", remaining .. " (" .. math.floor(remaining / xpmax * 100 + 0.5) .. "%)", 1, 1, 1, 1, 1, 1)
+  GameTooltip:AddLine(U.L("XPTIP_TITLE"))
+  GameTooltip:AddDoubleLine(U.L("XPTIP_XP"), xp .. " / " .. xpmax .. " (" .. math.floor(xp / xpmax * 100 + 0.5) .. "%)", 1, 1, 1, 1, 1, 1)
+  GameTooltip:AddDoubleLine(U.L("XPTIP_REMAINING"), remaining .. " (" .. math.floor(remaining / xpmax * 100 + 0.5) .. "%)", 1, 1, 1, 1, 1, 1)
 
   local isResting = U.G("IsResting")
   if type(isResting) == "function" then
     local restingOk, resting = pcall(isResting)
     if restingOk and resting and resting ~= 0 then
-      GameTooltip:AddDoubleLine("Status", "Resting", 1, 1, 1, 0.3, 0.7, 1)
+      GameTooltip:AddDoubleLine(U.L("XPTIP_STATUS"), U.L("XPTIP_RESTING"), 1, 1, 1, 0.3, 0.7, 1)
     end
   end
 
   if rested > 0 then
-    GameTooltip:AddDoubleLine("Rested", "+" .. rested .. " (" .. math.floor(rested / xpmax * 100 + 0.5) .. "%)", 1, 1, 1, 0.3, 0.3, 1)
+    GameTooltip:AddDoubleLine(U.L("XPTIP_RESTED"), "+" .. rested .. " (" .. math.floor(rested / xpmax * 100 + 0.5) .. "%)", 1, 1, 1, 0.3, 0.3, 1)
   end
+
+  -- Session, rate and estimate, as UnrealPfUI's xpbar tooltip shows them. The
+  -- two derived lines read "--" until the session is long enough to mean
+  -- anything, rather than printing a wild extrapolation from a few seconds.
+  local elapsed = SessionElapsed()
+  local perSecond = (elapsed and session.xp > 0) and (session.xp / elapsed) or 0
+
+  GameTooltip:AddLine(" ")
+  GameTooltip:AddDoubleLine(U.L("XPTIP_SESSION"), tostring(session.xp), 1, 1, 1, 1, 1, 1)
+  GameTooltip:AddDoubleLine(U.L("XPTIP_PER_HOUR"),
+    perSecond > 0 and tostring(math.floor(perSecond * 3600)) or "--", 1, 1, 1, 1, 1, 1)
+  GameTooltip:AddDoubleLine(U.L("XPTIP_TIME_LEFT"),
+    (perSecond > 0 and FormatDuration(remaining / perSecond)) or "--", 1, 1, 1, 1, 1, 1)
 
   GameTooltip:Show()
 end
@@ -185,6 +276,7 @@ local function RefreshXP()
   end
   xpAnchor:Show()
 
+  TrackSession(xp, xpmax)
   SetBar(xpBar, xp, xpmax)
 
   local exhaustion = U.G("GetXPExhaustion")

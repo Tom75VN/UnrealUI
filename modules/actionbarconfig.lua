@@ -178,6 +178,117 @@ local function BuildReservedBarPage(parent, bar, reason)
 end
 
 -- ---------------------------------------------------------------------------
+-- Pet bar page
+--
+-- The pet bar is the client's own bar with a mover on it, not an unrealUI bar,
+-- so it has no Enable / Buttons / Per Row of its own. The two things unrealUI
+-- does place -- the size of the native pet buttons and the gap between them --
+-- get the same two sliders as every other bar, driven through
+-- U.GetPetBarSetting / U.SetPetBarSetting in modules/petbar.lua.
+--
+-- Moving either slider takes ownership of the row; the reset button hands it
+-- back to the client. Both are exactly what /uui petbar size|spacing|reset do.
+-- ---------------------------------------------------------------------------
+local PET_SLIDERS = {
+  { key = "Size",    textKey = "ABC_BUTTON_SIZE",    column = 0 },
+  { key = "Spacing", textKey = "ABC_BUTTON_SPACING", column = 1 },
+}
+
+local function BuildPetBarPage(parent)
+  local widgets = {}
+  local controls = {}
+
+  local header = U.CreateSectionHeader(parent, {
+    text = U.L("ABC_PET_BAR"),
+    width = PAGE_WIDTH,
+    y = -4,
+  })
+  table.insert(widgets, header)
+
+  -- Custom pet bar mode, or no native bar at this point: say so on the page
+  -- rather than offer sliders that write nothing.
+  if type(U.PetBarButtonsAvailable) ~= "function" or
+     not U.PetBarButtonsAvailable() then
+    local status = U.CreateSettingsLabel(parent, {
+      size = M.fontSize.normal,
+      color = M.color.textDim,
+      inherits = "GameFontNormal",
+      justify = "LEFT",
+      height = 22,
+    })
+    if status then
+      status:SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -38)
+      status:SetText(U.L("ABC_PET_UNAVAILABLE"))
+      table.insert(widgets, status)
+    end
+    return widgets
+  end
+
+  local i
+  for i = 1, table.getn(PET_SLIDERS) do
+    local spec = PET_SLIDERS[i]
+    local min, max, step = U.PetBarButtonLimits(spec.key)
+
+    local slider = U.CreateSlider(parent, {
+      name = "UnrealUIActionBarConfigPet" .. spec.key,
+      text = U.L(spec.textKey),
+      width = SLIDER_WIDTH,
+      min = min,
+      max = max,
+      step = step,
+      value = U.GetPetBarSetting(spec.key),
+      onChange = function(value)
+        U.SetPetBarSetting(spec.key, value)
+      end,
+    })
+    slider.SetPoint("TOPLEFT", parent, "TOPLEFT", spec.column * COLUMN_X, ROW_Y[1])
+
+    controls[spec.key] = slider
+    table.insert(widgets, slider)
+  end
+
+  local reset = U.CreateButton(parent, {
+    name = "UnrealUIActionBarConfigPetReset",
+    text = U.L("ABC_PET_RESET"),
+    width = 220,
+    height = 26,
+    onClick = function()
+      U.ResetPetBarButtons()
+      local j
+      for j = 1, table.getn(PET_SLIDERS) do
+        local key = PET_SLIDERS[j].key
+        if controls[key] then controls[key].SetValue(U.GetPetBarSetting(key)) end
+      end
+    end,
+  })
+  reset:SetPoint("TOPLEFT", parent, "TOPLEFT", 0, ROW_Y[2])
+  table.insert(widgets, reset)
+
+  local hint = U.CreateSettingsLabel(parent, {
+    size = M.fontSize.small,
+    color = M.color.textDim,
+    inherits = "GameFontNormalSmall",
+    justify = "LEFT",
+    width = PAGE_WIDTH,
+  })
+  if hint then
+    U.AnchorSettingsDescription(hint, reset)
+    hint:SetText(U.L("ABC_PET_HINT"))
+    table.insert(widgets, hint)
+  end
+
+  local function Refresh()
+    local j
+    for j = 1, table.getn(PET_SLIDERS) do
+      local key = PET_SLIDERS[j].key
+      if controls[key] then controls[key].SetValue(U.GetPetBarSetting(key)) end
+    end
+  end
+
+  return widgets, Refresh
+end
+
+-- ---------------------------------------------------------------------------
 -- General options
 --
 -- The label toggles apply to every bar at once, which is what makes them
@@ -315,4 +426,9 @@ function ABC:OnInit()
         { parent = GROUP })
     end
   end
+
+  -- Last in the group: it is the client's own bar with unrealUI geometry on
+  -- it, not one of unrealUI's bars.
+  U.RegisterSettingsTab(GROUP .. ".petbar", U.L("ABC_PET_BAR"), BuildPetBarPage,
+                        { parent = GROUP })
 end

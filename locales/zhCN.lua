@@ -20,6 +20,11 @@ PETBAR_MODE_SELECTED      = "已选择宠物动作条：%s。输入 /reload 应�
 PETBAR_CUSTOM_WARNING     = "实验性自定义宠物动作条：此客户端禁止通过自定义按钮点击施放宠物法术。输入 /uui petbar native，再输入 /reload 可恢复原生施法。",
 PETBAR_ACTION_UNAVAILABLE = "此客户端不支持该宠物动作。",
 PETBAR_UNAVAILABLE        = "当前会话无法切换宠物动作条模式。",
+CMD_PETBAR_BUTTONS        = "  |cffffff00/uui petbar size <12-64> / spacing <0-32> / reset|r - 原生宠物按钮的大小与间距",
+PETBAR_BUTTONS_APPLIED    = "宠物按钮：大小 %d，间距 %d。",
+PETBAR_BUTTONS_NATIVE     = "宠物按钮：客户端默认值（大小 %d，间距 %d）。",
+PETBAR_BUTTONS_RESTORED   = "宠物按钮：已恢复客户端自身的大小与间距。",
+PETBAR_BUTTONS_RANGE      = "宠物按钮大小需为 %d-%d，间距需为 %d-%d。",
 
 -- ---------------------------------------------------------------------------
 -- Shared controls
@@ -73,12 +78,12 @@ MOVER_LABEL_SWING_BAR     = "自动攻击：攻击计时条",
 MOVER_LABEL_MICRO_BAR     = "微型菜单条",
 MOVER_LABEL_BUFFS         = "增益与减益",
 MOVER_LABEL_MINIMAP       = "小地图",
+MOVER_LABEL_TOOLTIP       = "鼠标提示",
 MOVER_LABEL_PET_BAR       = "宠物动作条",
 MOVER_LABEL_STANCE_BAR    = "姿态条",
 MOVER_LABEL_STATUS        = "状态信息层",
 MOVER_LABEL_ONLINE_COUNT  = "在线人数信息层",
 MOVER_LABEL_QUEST_TRACKER = "任务追踪",
-MOVER_LABEL_BANK          = "银行",
 MOVER_LABEL_ACTION_BAR    = "动作条 %d",
 MOVER_LABEL_MOVER_TEST    = "移动测试",
 
@@ -113,6 +118,11 @@ SETTINGS_REPUTATION_BAR   = "显示声望条",
 SETTINGS_MINIMAP_BUTTON   = "在小地图旁显示设置按钮",
 SETTINGS_ZONE_LEVELS      = "在世界地图上显示区域等级范围",
 SETTINGS_ZONE_LEVELS_HINT = "在大陆地图上悬停某个区域时，会在名称旁显示其等级范围：绿色表示低于你的等级，橙色表示与你同级，红色表示高于你的等级。",
+SETTINGS_TOOLTIP_CURSOR  = "世界提示跟随鼠标",
+SETTINGS_TOOLTIP_CURSOR_HINT = "将世界提示保持在鼠标旁并自动避开屏幕边缘。关闭后使用已保存的提示锚点位置。",
+SETTINGS_CHAT_SHADOW      = "移除聊天文字阴影",
+SETTINGS_CHAT_SHADOW_RELOAD = "输入 /reload 恢复聊天文字阴影。",
+SETTINGS_CHAT_SHADOW_HINT = "聊天消息以扁平方式绘制，文字后面没有阴影。聊天标签页的文字不受影响。",
 
 SWING_BAR_MAIN            = "主手",
 SWING_BAR_OFF             = "副手",
@@ -178,6 +188,10 @@ ABC_SHOW_COOLDOWN         = "显示冷却计时",
 ABC_SHOW_GCD              = "显示公共冷却",
 ABC_GENERAL_HINT          = "共有 %d 条独立动作条可用。此职业形态使用的页面仅显示在动作条 1 上。",
 ABC_BIND_HINT             = "将鼠标悬停在按钮上并按下按键即可绑定，按 Esc 可清除绑定。动作条 1-5 可以绑定；动作条 6-10 在此客户端中没有按键命令，因此会显示但无法绑定。",
+ABC_PET_BAR              = "宠物动作条",
+ABC_PET_RESET            = "恢复客户端尺寸",
+ABC_PET_HINT             = "这些选项调整客户端自带的宠物按钮，因此没有启用开关和按钮数量。拖动任一滑块即由插件接管该行；恢复客户端尺寸会将其交还游戏。等同于 /uui petbar size、spacing 和 reset。",
+ABC_PET_UNAVAILABLE      = "本次会话中原生宠物动作条未启用，无法调整其按钮。",
 
 -- ---------------------------------------------------------------------------
 -- Quick binding
@@ -212,6 +226,13 @@ UF_TAB_GENERAL            = "常规选项",
 UF_TAB_PARTY              = "队伍框体",
 UF_TAB_AURAS              = "光环",
 UF_TAB_COLORS             = "颜色",
+
+-- Unit frame style (core/unitframestyle.lua). See enUS.lua: the style names
+-- stay untranslated, the same as the theme names.
+UF_STYLE_HEADER           = "单位框体风格",
+UF_STYLE_HINT             = "“Minimal”是 unrealUI 目前绘制的单位框体风格。“Enhanced”仍在开发中，暂时无法选择。",
+UF_STYLE_CHANGED          = "单位框体风格已更改",
+UF_STYLE_RELOAD           = "输入 /reload 以应用“%s”单位框体风格。",
 UF_COLORS_HEADER          = "单位框体颜色",
 UF_CUSTOM_BAR_COLORS      = "使用自定义状态条颜色",
 UF_HEALTH_BAR_COLOR       = "生命条颜色",
@@ -223,6 +244,10 @@ UF_POWER_FOCUS            = "集中值",
 UF_POWER_ENERGY           = "能量",
 
 UF_OFFLINE                = "离线",
+
+UF_EXACT_VITALS_HEADER    = "生物生命值",
+UF_EXACT_VITALS           = "显示精确生命值和法力值",
+UF_EXACT_VITALS_HINT      = "客户端只以百分比报告生物的生命值。开启后，目标框体会显示内置生物数据表中的真实数值，并根据观察到的伤害修正当前值。关闭则显示百分比。",
 
 UF_PARTY_HEADER           = "小队框体",
 UF_PARTY_PETS             = "显示队友嬠物",
@@ -305,6 +330,7 @@ BAGS_SORT_CURSOR          = "请先放下鼠标上的物品。",
 BAGS_SORT_DONE            = "背包已整理。",
 BAGS_SORT_NOTHING         = "背包已经是整理好的。",
 BAGS_SORT_FAILED          = "整理已停止：有物品未能移动。没有丢失任何东西。",
+BAGS_SORT_NOSTAGE         = "整理需要一个空的背包格。请空出一格后再试。",
 BAGS_TOGGLE_KEYRING       = "开关钥匙链",
 BAGS_KEYRING_HINT         = "显示钥匙链。",
 BAGS_TOGGLE_BAGS          = "开关背包",
@@ -340,6 +366,7 @@ BANK_SORT_CURSOR          = "请先放下鼠标上的物品。",
 BANK_SORT_DONE            = "银行已整理。",
 BANK_SORT_NOTHING         = "银行已经是整理好的。",
 BANK_SORT_FAILED          = "银行整理已停止：有物品未能移动。",
+BANK_SORT_NOSTAGE         = "银行整理需要银行袋中有一个空格。请空出一格后再试。",
 BANK_BAG_LABEL            = "银行背包",
 BANK_BUY_SLOT             = "是否再购买一个银行背包栏位？",
 BANK_PURCHASE             = "购买",
@@ -371,6 +398,24 @@ SPELLBOOK_HIGHEST_RANK_TOOLTIP = "只显示每个法术的最高等级。",
 SPELLBOOK_BAR_HINT        = "不在动作条上",
 SPELLBOOK_BAR_HINT_TOOLTIP = "高亮未放入动作条的法术。",
 GAMEMENU_OPTIONS          = "设置",
+
+-- ---------------------------------------------------------------------------
+-- Experience bar tooltip (modules/xpbar.lua)
+-- ---------------------------------------------------------------------------
+XPTIP_TITLE               = "经验",
+XPTIP_XP                  = "经验值",
+XPTIP_REMAINING           = "还需",
+XPTIP_STATUS              = "状态",
+XPTIP_RESTING             = "休息中",
+XPTIP_RESTED              = "已休息",
+XPTIP_SESSION             = "本次登录",
+XPTIP_PER_HOUR            = "每小时平均",
+XPTIP_TIME_LEFT           = "剩余时间",
+-- Single-letter duration suffixes for the Time Remaining readout, e.g. "2h 15m".
+XPTIP_UNIT_DAY            = "天",
+XPTIP_UNIT_HOUR           = "时",
+XPTIP_UNIT_MINUTE         = "分",
+XPTIP_UNIT_SECOND         = "秒",
 
 -- ---------------------------------------------------------------------------
 -- Slash commands

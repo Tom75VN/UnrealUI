@@ -502,6 +502,9 @@ local function Initialise()
   -- label is translated once when it is built and never re-read afterwards.
   U.LoadLanguage()
   U.LoadThemeStyle()   -- core/theme.lua; must precede module-owned UI creation
+  -- core/unitframestyle.lua; resolves which unit-frame style this session
+  -- draws, so a module that branches on it does so before it builds a frame.
+  U.LoadUnitFrameStyle()
   RunModulePhase("OnInit")
   U.Debug("config loaded, modules initialised")
 end

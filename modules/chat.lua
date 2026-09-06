@@ -1,6 +1,7 @@
 -- unrealUI :: modules/chat.lua
 --
--- Adds one explicit resize grip to the primary native chat window. Chat tabs,
+-- Adds one explicit resize grip to the primary native chat window, and an
+-- opt-in switch that takes the drop shadow off the chat text. Chat tabs,
 -- channels, message handling and drawing remain owned by the client.
 
 local U = UnrealUI
@@ -26,6 +27,10 @@ local lastGripShown
 local lastSavedWidth, lastSavedHeight, lastSavedLeft, lastSavedBottom
 local restorePasses = 0
 local positionWasUnlocked = false
+local shadowFonts = {}
+local shadowTouched = false
+local shadowReport = { bound = false, applied = false }
+local chatBackground = { alpha = 0.15, update = "chat.background", records = {} }
 
 local function ReadNumber(object, method)
   if not object or type(object[method]) ~= "function" then return nil end
@@ -322,6 +327,152 @@ local function CreateGrip()
   AnchorGrip()
 end
 
+-- ---------------------------------------------------------------------------
+-- Chat text shadow
+--
+-- chat.native_private_font_removes_shadow: native probe v2 + user screenshot
+-- verified SetFont(stock path, measured size), an owned FontString bound to
+-- that private Font, SetTextColor(1,1,1), then ChatFrame1:SetFontObject(font).
+-- White initialization is essential: a fresh Font otherwise makes new
+-- default-color messages dark. Explicit message colors remain intact.
+-- The same class/sequence is used on ChatFrame2; its visual result is pending.
+-- No shadow setters, native region walks, message hooks or font polling.
+-- Native chat has no GetFontObject, so disabling defers restoration to reload.
+-- ---------------------------------------------------------------------------
+
+local function BoundFontName(region)
+  if not region or type(region.GetFontObject) ~= "function" then return nil end
+
+  local ok, object = pcall(region.GetFontObject, region)
+  if not ok or not object or type(object.GetName) ~= "function" then
+    return nil
+  end
+
+  local nameOk, name = pcall(object.GetName, object)
+  if not nameOk or type(name) ~= "string" then return nil end
+  return name
+end
+
+local function ChatShadowFont(chat, index)
+  local cached = shadowFonts[index]
+  if cached then return cached.ready and cached.font or nil end
+  local ok, _, size = pcall(function() return chat:GetFont() end)
+  if not ok or type(size) ~= "number" or size <= 0 then return nil end
+  -- Retain only owned objects, never a client-owned message region.
+  local record = {}
+  shadowFonts[index] = record
+  local created = pcall(function()
+    local name = "UnrealUIChatNoShadowFont" .. index
+    record.font = CreateFont(name)
+    record.font:SetFont("Fonts\\FRIZQT__.TTF", size)
+    record.holder = CreateFrame("Frame", nil, UIParent)
+    record.holder:Hide()
+    record.proxy = record.holder:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    record.proxy:SetFontObject(record.font)
+    if BoundFontName(record.proxy) ~= name then return end
+    record.proxy:SetTextColor(1, 1, 1)
+    record.proxy:SetText("AaBb 123")
+    local width = record.proxy:GetStringWidth()
+    record.ready = type(width) == "number" and width > 0
+  end)
+  if not created or not record.ready then return nil end
+  return record.font
+end
+
+-- WORKING_SOURCE: UnrealPfUI/modules/chat.lua addresses ChatFrameNBackground
+-- directly. No native region discovery or cached native texture references.
+-- Native opacity has a 15% floor, not a ceiling: its normal hover fade can
+-- still brighten the background. Chat text and frame alpha stay intact.
+function chatBackground.Tick()
+  if not config or not config.noTextShadow then return end
+  local i
+  for i = 1, 2 do
+    local chat = U.G("ChatFrame" .. i)
+    if chat then
+      pcall(function()
+        local record = chatBackground.records[i] or {}
+        chatBackground.records[i] = record
+        local texture = U.G("ChatFrame" .. i .. "Background")
+        if texture and type(texture.SetAlpha) == "function" and type(texture.Show) == "function" then
+          if not record.native then
+            record.alpha = ReadNumber(texture, "GetAlpha")
+            local ok, shown = pcall(texture.IsShown, texture)
+            if ok then record.shown = shown and shown ~= 0 and true or false end
+            record.native = true
+          end
+          if record.owned then record.owned:Hide() end
+        else
+          if not record.owned then
+            record.owned = chat:CreateTexture(nil, "BACKGROUND")
+            record.owned:SetTexture(M.texture.plain)
+            record.owned:SetVertexColor(0, 0, 0, 1)
+            record.owned:SetAllPoints(chat)
+          end
+          texture = record.owned
+        end
+        local alpha = ReadNumber(texture, "GetAlpha")
+        if (texture == record.owned and alpha ~= chatBackground.alpha)
+            or (texture ~= record.owned and (not alpha or alpha < chatBackground.alpha)) then
+          texture:SetAlpha(chatBackground.alpha)
+        end
+        local ok, shown = pcall(texture.IsShown, texture)
+        if not ok or not shown or shown == 0 then texture:Show() end
+      end)
+    end
+  end
+end
+
+function chatBackground.Apply(enabled)
+  if enabled then
+    chatBackground.Tick()
+    U.RegisterUpdate(chatBackground.update, 0, chatBackground.Tick)
+    return
+  end
+  U.UnregisterUpdate(chatBackground.update)
+  local index, record
+  for index, record in pairs(chatBackground.records) do
+    if record.owned then pcall(record.owned.Hide, record.owned) end
+    if record.native then
+      local texture = U.G("ChatFrame" .. index .. "Background")
+      if texture then
+        if record.alpha then pcall(texture.SetAlpha, texture, record.alpha) end
+        if record.shown == false then pcall(texture.Hide, texture) end
+        if record.shown == true then pcall(texture.Show, texture) end
+      end
+      record.native = nil
+    end
+  end
+end
+
+function U.ApplyChatTextShadow()
+  local remove = config and config.noTextShadow and true or false
+  chatBackground.Apply(remove)
+  if not remove then
+    shadowReport.applied = false
+    -- Return whether settings must display the reload notice. No guessed
+    -- ChatFontNormal restore: the original native font cannot be read back.
+    return shadowTouched
+  end
+  local applied, bound, found = true, true, false
+  local index
+  for index = 1, 2 do
+    local chat = U.G("ChatFrame" .. index)
+    if chat then
+      found = true
+      local font = ChatShadowFont(chat, index)
+      if not font then
+        bound, applied = false, false
+      else
+        local ok = pcall(chat.SetFontObject, chat, font)
+        if ok then shadowTouched = true else applied = false end
+      end
+    end
+  end
+  shadowReport.bound = found and bound
+  shadowReport.applied = found and applied
+  return false
+end
+
 function Chat:OnInit()
   config = U.ModuleConfig("chat", {
     resized = false,
@@ -329,6 +480,7 @@ function Chat:OnInit()
     height = 0,
     left = 0,
     bottom = 0,
+    noTextShadow = false,
   })
   if config and config.resized then
     lastSavedWidth = tonumber(config.width)
@@ -346,6 +498,7 @@ function Chat:OnEnable()
   end
 
   CreateGrip()
+  U.ApplyChatTextShadow()
   RestoreSavedGeometry()
   restorePasses = config and config.resized and RESTORE_PASSES or 0
   positionWasUnlocked = not ChatIsLocked()
@@ -373,6 +526,9 @@ function U.ChatResizeReport()
     bottom = frame and ReadNumber(frame, "GetBottom") or nil,
     savedLeft = config and config.left or nil,
     savedBottom = config and config.bottom or nil,
+    noTextShadow = config and config.noTextShadow and true or false,
+    shadowBound = shadowReport.bound,
+    shadowApplied = shadowReport.applied,
     width = frame and ReadNumber(frame, "GetWidth") or nil,
     height = frame and ReadNumber(frame, "GetHeight") or nil,
   }

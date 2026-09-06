@@ -1,6 +1,6 @@
 -- unrealUI :: modules/castbarclassic.lua
 --
--- Classic-only target castbar skin. Candidate A was confirmed visible in game
+-- Classic-only castbar skin, used for both the player and the target bar. Candidate A was confirmed visible in game
 -- on 2026-09-05: Interface\CastingBar\UI-CastingBar-Border. The measured
 -- CastingBarFrame geometry is reproduced with addon-owned regions only. This
 -- file deliberately never resolves, walks, retains, anchors to, or mutates the
@@ -52,7 +52,7 @@ function classicCastbar.SetDynamicShown(widget, shown)
   classicCastbar.UpdateSpark(widget)
 end
 
-function U.CreateClassicTargetCastbar(frameName)
+function U.CreateClassicCastbar(frameName)
   -- Exact-theme gate: no other native-chrome or Modern theme inherits this
   -- ornamental stock art merely because it shares module infrastructure.
   if type(U.GetActiveThemeStyle) ~= "function" or
@@ -106,9 +106,10 @@ function U.CreateClassicTargetCastbar(frameName)
   })
   if name then name:SetPoint("CENTER", widget, "CENTER", 0, 0) end
 
-  -- The castbar tracker consumes the same compact widget contract as Modern.
-  -- This Classic version intentionally has no icon or countdown: the measured
-  -- native bar has one centered text region and no separate icon/time cell.
+  -- Both the player and the target tracker consume the same compact widget
+  -- contract as Modern. This Classic version intentionally has no icon or
+  -- countdown: the measured native bar has one centered text region and no
+  -- separate icon/time cell.
   widget.bar = widget
   widget.name = name
   widget.time = nil
@@ -127,3 +128,7 @@ function U.CreateClassicTargetCastbar(frameName)
   widget:SetValue(0)
   return widget
 end
+
+-- The builder was target-only when it was written; the player bar now uses the
+-- same skin. Kept so an older call site is not a nil call.
+U.CreateClassicTargetCastbar = U.CreateClassicCastbar

@@ -224,15 +224,22 @@ end
 -- them in, which is what makes the result read top-left to bottom-right the
 -- way it looks.
 --
--- The engine addresses the main pane through core/compat.lua's
--- U.PickupContainerSlot, which is the one measured route into it
--- (behavior.json / bankmove.route_B, BEHAVIOR_VERIFIED). Purchased bank bags
--- are ordinary containers to it. What is *not* measured is whether
--- ContainerIDToInventoryID resolves for containers 5..10 on this client; if it
--- does not, those bags fail the engine's "is this a plain Bag" test and are
--- left alone, so a bank sort would visibly rearrange only the main pane. That
--- is the safe failure and it is documented in core/itemsort.lua's
--- IS.IsGeneralBag, where a probe would fix it.
+-- The engine addresses the main pane through core/compat.lua: reads go to the
+-- container API, writes to the inventory API. Purchased bank bags are ordinary
+-- containers to it either way.
+--
+-- What broke the first version of this button was neither of those. Probe
+-- bankinv (2026-09-06) measured every lift/drop pair across both bank
+-- surfaces: this client will not move an item from one main-bank slot to
+-- another by any route, and refuses each attempt with "The item was not
+-- found." Since the main pane holds most of a bank, the engine performs those
+-- swaps in three legs through one borrowed empty bank-bag slot -- so a bank
+-- with no free slot outside the main pane cannot be sorted, and says so.
+--
+-- Whether ContainerIDToInventoryID resolves for containers 5..10 here is still
+-- not measured, but it no longer decides anything: IS.IsGeneralBag falls back to
+-- the inventory ids the client documents for bank bag buttons (64..69) and, past
+-- that, sorts a bag it cannot classify rather than skipping it.
 --
 -- One run exists at a time for the whole addon, because there is one cursor,
 -- so the desaturated look here reports the engine being busy rather than this
@@ -633,6 +640,15 @@ local function ProcessDirty()
 
   NeutraliseNativeBank()
 
+  -- Before anything is redrawn: this client reports no quantity for the main
+  -- pane, so modules/bankcount.lua works one out by watching what the
+  -- countable containers gained and lost since the previous tick. It has to
+  -- run on every tick, not only on a dirty one, because the tick it misses is
+  -- the before-state the next attribution needs.
+  if type(U.ReconcileBankStacks) == "function" then
+    U.ReconcileBankStacks(false)
+  end
+
   if headerDirty then
     headerDirty = false
     LayoutHeader()
@@ -690,6 +706,14 @@ local function ShowBank()
   headerDirty = true
   layoutDirty = true
   frame:Show()
+
+  -- Seed the derived main-pane quantities before the first refresh tick: with
+  -- no before-state there is nothing to attribute, and a stored quantity whose
+  -- slot no longer holds the same item has to be dropped rather than drawn.
+  if type(U.ReconcileBankStacks) == "function" then
+    U.ReconcileBankStacks(true)
+  end
+
   U.RegisterUpdate("bank.refresh", 0.2, ProcessDirty)
   ProcessDirty()
 end
@@ -754,19 +778,43 @@ end
 -- ---------------------------------------------------------------------------
 -- Direct drag
 --
--- The header's empty strip (left of the bag row) moves the window without
--- entering edit mode first. It drags the anchor -- the same frame
--- core/mover.lua's edit-mode handle moves -- and saves to the identical
--- "bank.main" position (U.SavePosition/U.GetPosition), so a plain drag and an
--- edit-mode drag never disagree about where the window is.
+-- The header's empty strip (left of the bag row) moves the window. The bank is
+-- not registered with core/mover.lua at all -- it can be placed at any time
+-- without unlocking the interface first, so an edit-mode handle would only add
+-- a second way to do the same thing.
+--
+-- The drag moves the anchor, the frame that owns the window rect, and saves to
+-- "bank.main": the id the retired mover used, so a placement made before this
+-- change is still the position the bank opens on.
 --
 -- Reuses the throwaway StartMoving/StopMovingOrSizing pair before the real
 -- StartMoving that core/mover.lua and core/windowdrag.lua both use
 -- (knowledge.json / frames.movable_drag_requires_button_handle).
 -- ---------------------------------------------------------------------------
-local BANK_MOVER_ID = "bank.main"
+local BANK_POSITION_ID = "bank.main"
+local BANK_DEFAULT_POSITION = {
+  point = "BOTTOMLEFT", relativePoint = "BOTTOMLEFT", x = 20, y = 20,
+}
+
+-- No mover: the bank is dragged directly by its header strip, so the stored
+-- position -- or the default -- is applied at build time rather than by
+-- U.RegisterMover, and re-applied through the reset hook once /uui reset has
+-- cleared the store. Same arrangement as modules/bags.lua.
+local function ApplyBankPosition()
+  if not U.ApplyFramePoint(anchor, U.GetPosition(BANK_POSITION_ID) or
+                           BANK_DEFAULT_POSITION) then
+    U.Debug("bank: failed to apply position")
+    return false
+  end
+  return true
+end
 
 local function StartBankDrag()
+  if not pcall(anchor.SetMovable, anchor, true) then
+    U.Error("bank: SetMovable failed; the bank cannot be moved")
+    return
+  end
+
   if pcall(anchor.StartMoving, anchor) then
     pcall(anchor.StopMovingOrSizing, anchor)
   end
@@ -777,7 +825,7 @@ local function StopBankDrag()
   pcall(anchor.StopMovingOrSizing, anchor)
 
   local point, _, relativePoint, x, y = U.GetFramePoint(anchor, 1)
-  if point then U.SavePosition(BANK_MOVER_ID, point, relativePoint, x, y) end
+  if point then U.SavePosition(BANK_POSITION_ID, point, relativePoint, x, y) end
 end
 
 -- Anchored to frame.bags's live left edge rather than a captured width, so it
@@ -812,7 +860,10 @@ local function Build()
 
   frame = U.CreatePanel(anchor, { name = "UnrealUIBankFrame" })
   frame:SetAllPoints(anchor)
-  pcall(frame.SetFrameStrata, frame, "MEDIUM")
+  -- Above the client tooltip rather than MEDIUM: this client draws a world
+  -- object's tooltip over the window regardless of the UI covering the
+  -- cursor (core/style.lua carries the measurement and the trade-off).
+  U.RaiseWindowAboveTooltips(frame)
   pcall(frame.EnableMouse, frame, true)
   frame:Hide()
 
@@ -841,17 +892,19 @@ local function Build()
     -- failed swap later. Silent by design: the window closing is the reason.
     -- A bag sort is another owner's run and is untouched.
     U.StopSort("bank")
+    -- The pane stops being readable with the session, so the derived
+    -- main-pane quantities drop their before-state: the next open seeds
+    -- again instead of diffing against a stale one.
+    if type(U.ReleaseBankStacks) == "function" then U.ReleaseBankStacks() end
     if closing then return end
     closing = true
     pcall(CloseBankFrame)
     closing = false
   end)
 
-  U.RegisterMover("bank.main", anchor, {
-    label = U.L("MOVER_LABEL_BANK"),
-    default = { point = "BOTTOMLEFT", relativePoint = "BOTTOMLEFT",
-                x = 20, y = 20 },
-  })
+  pcall(anchor.SetMovable, anchor, true)
+  ApplyBankPosition()
+  U.OnPositionReset(ApplyBankPosition)
 end
 
 -- Second layer under the parking above: the stock bank's own parts, by name,

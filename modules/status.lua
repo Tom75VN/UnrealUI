@@ -114,6 +114,7 @@ local function BuildCoin(parent, texCoords, color, width)
         texCoords[1], texCoords[2], texCoords[3], texCoords[4])
 
   holder.label = U.CreateLabel(holder, {
+    shadow = false, privateFont = true,
     size = M.fontSize.small,
     color = color,
     inherits = "GameFontNormalSmall",
@@ -166,45 +167,53 @@ local function Build()
 
   display = {}
   display.fpsCaption = U.CreateLabel(anchor, {
+    shadow = false, privateFont = true,
     size = M.fontSize.normal, inherits = "GameFontNormal", color = M.color.text,
   })
   display.fpsCaption:SetPoint("LEFT", anchor, "LEFT", HORIZONTAL_PADDING, 0)
   display.fpsCaption:SetText(U.L("STATUS_FPS"))
 
   display.fpsValue = U.CreateLabel(anchor, {
+    shadow = false, privateFont = true,
     size = M.fontSize.normal, inherits = "GameFontNormal", color = COLOR_GOOD,
   })
   display.fpsValue:SetPoint("LEFT", display.fpsCaption, "RIGHT", 2, 0)
 
   display.latencyCaption = U.CreateLabel(anchor, {
+    shadow = false, privateFont = true,
     size = M.fontSize.normal, inherits = "GameFontNormal", color = M.color.text,
   })
   display.latencyCaption:SetPoint("LEFT", display.fpsValue, "RIGHT", MODULE_GAP, 0)
   display.latencyCaption:SetText(U.L("STATUS_LATENCY"))
 
   display.latencyValue = U.CreateLabel(anchor, {
+    shadow = false, privateFont = true,
     size = M.fontSize.normal, inherits = "GameFontNormal", color = COLOR_GOOD,
   })
   display.latencyValue:SetPoint("LEFT", display.latencyCaption, "RIGHT", 2, 0)
 
   display.durabilityCaption = U.CreateLabel(anchor, {
+    shadow = false, privateFont = true,
     size = M.fontSize.normal, inherits = "GameFontNormal", color = M.color.text,
   })
   display.durabilityCaption:SetPoint("LEFT", display.latencyValue, "RIGHT", MODULE_GAP, 0)
   display.durabilityCaption:SetText(U.L("STATUS_DURABILITY"))
 
   display.durabilityValue = U.CreateLabel(anchor, {
+    shadow = false, privateFont = true,
     size = M.fontSize.normal, inherits = "GameFontNormal", color = COLOR_GOOD,
   })
   display.durabilityValue:SetPoint("LEFT", display.durabilityCaption, "RIGHT", 2, 0)
 
   display.timeCaption = U.CreateLabel(anchor, {
+    shadow = false, privateFont = true,
     size = M.fontSize.normal, inherits = "GameFontNormal", color = M.color.text,
   })
   display.timeCaption:SetPoint("LEFT", display.durabilityValue, "RIGHT", MODULE_GAP, 0)
   display.timeCaption:SetText(U.L("STATUS_TIME"))
 
   display.timeValue = U.CreateLabel(anchor, {
+    shadow = false, privateFont = true,
     size = M.fontSize.normal, inherits = "GameFontNormal", color = M.color.text,
   })
   display.timeValue:SetPoint("LEFT", display.timeCaption, "RIGHT", 2, 0)
@@ -245,12 +254,14 @@ local function BuildPopulation()
 
   popDisplay = {}
   popDisplay.serverValue = U.CreateLabel(popAnchor, {
+    shadow = false, privateFont = true,
     size = M.fontSize.normal, inherits = "GameFontNormal", color = M.color.text,
   })
   popDisplay.serverValue:SetPoint("LEFT", popAnchor, "LEFT", HORIZONTAL_PADDING, 0)
   popDisplay.serverValue:SetText("--")
 
   popDisplay.serverSuffix = U.CreateLabel(popAnchor, {
+    shadow = false, privateFont = true,
     size = M.fontSize.normal, inherits = "GameFontNormal", color = M.color.text,
   })
   popDisplay.serverSuffix:SetPoint("LEFT", popDisplay.serverValue, "RIGHT", 2, 0)

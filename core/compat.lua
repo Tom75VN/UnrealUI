@@ -193,6 +193,37 @@ local function ApplyFontRecord(record)
   local choice = U.GetFontChoice(record.role)
   local applied = false
 
+  -- Explicitly opted-in overlay labels use the verified shadow-free named
+  -- Font route. Never clear a shared inherited font's shadow. Keep this flag
+  -- on the record so changing the global font choice cannot restore shadows.
+  if record.shadowFree then
+    local media = M.fontById[choice]
+    local path = media and media.path or M.fontCandidates[1]
+    local size = choice == "original" and record.originalSize or record.size
+    local colorOk, r, g, b, a = pcall(function() return fontstring:GetTextColor() end)
+    local font = EnsureCustomFont(record)
+    if font then
+      local ok = pcall(function()
+        font:SetFont(path, size or record.size)
+        fontstring:SetFontObject(font)
+        local bound = fontstring:GetFontObject()
+        if not bound or bound:GetName() ~= font:GetName() then return end
+        -- A newly created Font has no reliable white default. Preserve the
+        -- label's own color on font-choice refresh; CreateLabel sets it first
+        -- time after this function returns.
+        if colorOk and type(r) == "number" and type(g) == "number" and type(b) == "number" then
+          fontstring:SetTextColor(r, g, b, a or 1)
+        else
+          fontstring:SetTextColor(1, 1, 1)
+        end
+        applied = true
+      end)
+      if not ok then applied = false end
+    end
+    if not applied then RestoreOriginalFont(record) end
+    return applied
+  end
+
   if choice == "original" then
     applied = RestoreOriginalFont(record)
   else
@@ -364,7 +395,7 @@ end
 -- own Font object so later text-colour changes cannot leak into another label.
 -- The original inherited object is retained for the "Original" option and as
 -- a safe fallback if the documented custom-font route is unavailable.
-function U.SetFont(fontstring, size, flags, role)
+function U.SetFont(fontstring, size, flags, role, shadowFree)
   if not fontstring then return false end
 
   local record = styledFonts[fontstring]
@@ -374,14 +405,19 @@ function U.SetFont(fontstring, size, flags, role)
       local ok, original = pcall(fontstring.GetFontObject, fontstring)
       if ok then record.original = original end
     end
+    if shadowFree then
+      local ok, _, height = pcall(function() return fontstring:GetFont() end)
+      if ok and type(height) == "number" and height > 0 then record.originalSize = height end
+    end
     styledFonts[fontstring] = record
   end
 
   record.size = tonumber(size) or M.fontSize.normal
   record.flags = flags
   record.role = NormaliseFontRole(role)
+  if shadowFree ~= nil then record.shadowFree = shadowFree and true or false end
   local applied = ApplyFontRecord(record)
-  U.SetTextShadow(fontstring)
+  if not record.shadowFree then U.SetTextShadow(fontstring) end
   return applied
 end
 
@@ -728,6 +764,34 @@ end
 -- texture normalised to nil when the slot is empty, so callers can use the
 -- Vanilla-shaped test they already read as correct.
 -- ---------------------------------------------------------------------------
+-- The main bank pane READS as container -1, on the container API, and only on
+-- it. Probe banksort.actual_sequence.v1 (2026-09-06) measured both addressings
+-- of the same occupied main-bank slots side by side at a live banker:
+--
+--   GetContainerItemLink(-1, 1)                 -> [Chunk of Boar Meat]
+--   GetInventoryItemLink("player", 40)          -> nil
+--   GetContainerItemInfo(-1, 17)                -> texture, 0, locked, quality
+--   GetInventoryItemTexture("player", 56)       -> the item's texture
+--   GetInventoryItemCount("player", 56)         -> 0
+--
+-- So the inventory addressing answers for the texture and for nothing else,
+-- and an earlier inventory-first reader here was strictly worse than the
+-- container read it displaced: it reported `locked` false for a slot the
+-- container API showed locked mid-pickup, and quality nil for every main-bank
+-- item, which is the lock the sort waits on and the quality border the bank
+-- window draws. It also did not fix the bank sort, because the sort was never
+-- reading the pane wrong -- see the write routing further down.
+--
+-- Both readers below are therefore plain container reads for every bag. The
+-- one place the main pane still differs is the WRITE route and its size.
+local BANK_CONTAINER     = -1
+local BANK_GENERIC_SLOTS = 24   -- NUM_BANKGENERIC_SLOTS in Vanilla FrameXML
+
+local function BankInventorySlot(slot)
+  local ok, inventorySlot = pcall(BankButtonIDToInvSlotID, slot)
+  return (ok and tonumber(inventorySlot)) or nil
+end
+
 function U.ContainerSlotInfo(bag, slot)
   local ok, texture, count, locked, quality, readable =
     pcall(GetContainerItemInfo, bag, slot)
@@ -737,15 +801,23 @@ function U.ContainerSlotInfo(bag, slot)
   return texture, count, locked, quality, readable
 end
 
--- True only when the slot holds an item. The texture reading above is the
--- primary test; GetContainerItemLink is the fallback the same documentation
--- recommends, used when the info call itself failed.
-function U.ContainerSlotHasItem(bag, slot)
-  local ok, texture = pcall(GetContainerItemInfo, bag, slot)
-  if ok then return (texture and texture ~= "" and texture ~= 0) and true or false end
+-- An item hyperlink for one slot. Returns nil for an empty or unreadable slot
+-- rather than an empty string, so callers can use it as the "is there an item
+-- here" test as well.
+function U.ContainerSlotLink(bag, slot)
+  local ok, link = pcall(GetContainerItemLink, bag, slot)
+  if not ok or type(link) ~= "string" or link == "" then return nil end
+  return link
+end
 
-  local linkOk, link = pcall(GetContainerItemLink, bag, slot)
-  return (linkOk and link and link ~= "") and true or false
+-- True only when the slot holds an item. The texture reading above is the
+-- primary test; the link is the fallback the same documentation recommends,
+-- used when the info call itself failed.
+function U.ContainerSlotHasItem(bag, slot)
+  local texture = U.ContainerSlotInfo(bag, slot)
+  if texture then return true end
+
+  return U.ContainerSlotLink(bag, slot) ~= nil
 end
 
 -- ---------------------------------------------------------------------------
@@ -766,22 +838,42 @@ end
 --     PickupInventoryItem(BankButtonIDToInvSlotID(slot)) does. That route's
 --     restore steps then lifted the item back out of the main pane with
 --     PickupInventoryItem and dropped it into a purchased bank bag with
---     PickupContainerItem, so all four directions a swap needs are covered by
---     the one measured route.
+--     PickupContainerItem.
 --   * participants.v1 recorded bankContainerReportedSize = 0 while the pane
 --     held 24 usable slots, which is why the count below falls back to the
 --     stock constant instead of trusting a zero.
 --
+-- That is a CROSS-SURFACE result, and it was read here as though it covered
+-- every direction a swap needs. It does not. Probe
+-- banksort.actual_sequence.v1 (2026-09-06) watched the sort engine drive this
+-- very function and caught the transition bankmove never ran: main pane to
+-- main pane, inventory route on both ends. The lift worked -- cursor filled,
+-- source slot locked -- and the drop was refused with "The item was not
+-- found.", the cursor emptied and the item went back where it came from. Ten
+-- calls, five refusals, no item ever moved.
+--
+-- Probe bankinv v1 and v2 then measured the whole matrix at a live banker, and
+-- the answer is not a routing detail: NO call pair moves an item from one
+-- main-bank slot to another on this client. See U.ContainerSlotsCanExchange
+-- below for the four refused routes and the four working ones.
+--
 -- BankButtonIDToInvSlotID's own mapping is separately confirmed: probe
 -- bankbagicon.mapping.v1 (1.41.0) measured inputs 1..10 landing on inventory
--- slots 40..49 on this client.
+-- slots 40..49 on this client, and banksort.actual_sequence.v1 measured main
+-- slots 1 and 17 landing on 40 and 56.
 -- ---------------------------------------------------------------------------
-local BANK_CONTAINER     = -1
-local BANK_GENERIC_SLOTS = 24   -- NUM_BANKGENERIC_SLOTS in Vanilla FrameXML
-
 -- Usable slots in a container. Identical to GetContainerNumSlots except for
 -- the main bank pane, which reports nothing while it is plainly usable. A
 -- bank *bag* reporting nothing really is absent, so only -1 gets a fallback.
+-- The item id inside an item link, or nil for anything that is not one. The
+-- id is the only stable identity an item has across bags, slots and sessions,
+-- so several features key on it; this is the one parser.
+function U.ItemLinkId(link)
+  if type(link) ~= "string" then return nil end
+  local _, _, id = string.find(link, "item:(%d+)")
+  return tonumber(id)
+end
+
 function U.ContainerSlotCount(bag)
   local ok, count = pcall(GetContainerNumSlots, bag)
   count = (ok and tonumber(count)) or 0
@@ -805,13 +897,59 @@ end
 -- verify the outcome against the container rather than trust a true here.
 function U.PickupContainerSlot(bag, slot)
   if bag == BANK_CONTAINER then
-    local idOk, inventorySlot = pcall(BankButtonIDToInvSlotID, slot)
-    inventorySlot = idOk and tonumber(inventorySlot) or nil
+    local inventorySlot = BankInventorySlot(slot)
     if not inventorySlot then return false end
     return pcall(PickupInventoryItem, inventorySlot) and true or false
   end
 
   return pcall(PickupContainerItem, bag, slot) and true or false
+end
+
+-- Will this client carry an item directly from one of these containers to the
+-- other? Everything answers true except one pair: the main bank pane cannot
+-- exchange with itself.
+--
+-- Probe bankinv (v1 and v2, 2026-09-06, at a live banker) measured every
+-- combination of lift and drop call across both bank surfaces. Each route was
+-- read twice, half a second apart, and scored on the late read, because v1
+-- scored a route BROKEN off a single early read that a later snapshot showed
+-- had in fact landed.
+--
+-- Working, all BEHAVIOR_VERIFIED:
+--
+--   bank bag  -> main pane   PickupContainerItem then PickupInventoryItem
+--                            (v2 R4/S5; v1 R4 swapped an OCCUPIED main slot
+--                            two ways, so occupancy is not a limit)
+--   main pane -> bank bag    PickupInventoryItem then PickupContainerItem
+--                            (v1 R5), and PickupContainerItem on BOTH ends
+--                            (v2 S3 -- the main pane lifts as container -1
+--                            even though it refuses to be dropped into)
+--   bank bag  -> bank bag    PickupContainerItem both ends (v2 R6)
+--
+-- Refused, all RUNTIME_FAILURE_CONFIRMED, main pane to main pane:
+--
+--   inventory lift -> inventory drop, empty destination      (v2 R1, v1 R1)
+--   inventory lift -> inventory drop, occupied destination    (v2 R2, v1 R2)
+--   container lift -> inventory drop, occupied destination    (v2 S1)
+--   container lift -> inventory drop, empty destination       (v2 S2)
+--
+-- all four with "The item was not found.", and a container drop into the pane
+-- is separately refused with "You can only do that with empty bags."
+-- (v2 S3's restore step, confirming bankmove route_A). The lift always
+-- succeeds -- the cursor fills and the source slot locks -- so a caller that
+-- checks only the lift sees a move that never happened. That is exactly how
+-- the bank sort came to issue the same refused swap five times in a row.
+--
+-- Neither occupancy nor same-frame issuing is involved: v1 R4 swapped an
+-- occupied slot cleanly, and v1 R6 moved in a single frame.
+--
+-- Callers that need such a move must route it through a free slot in a
+-- container that can exchange with both ends -- core/itemsort.lua does.
+function U.ContainerSlotsCanExchange(fromBag, toBag)
+  if fromBag == BANK_CONTAINER and toBag == BANK_CONTAINER then
+    return false
+  end
+  return true
 end
 
 -- ---------------------------------------------------------------------------
@@ -1574,6 +1712,21 @@ function U.SuppressNativeFrame(names, group)
   local i
   for i = 1, table.getn(names) do
     local name = names[i]
+    -- Classic's stock-aura removal left Modern registering the same native
+    -- children through SuppressStockFrames. Reject them before ANY registry
+    -- (including the volatile aura list) can retain or resolve them. The
+    -- deferred Classic attempt also crashed on build 2329, so neither a
+    -- theme check nor a longer settle delay makes these calls safe.
+    -- See unitframes.classic_stock_aura_suppression_login_crash and
+    -- compat.stock_aura_suppression_all_theme_guard. Zoxi's Modern crash is
+    -- still pending repeated in-game validation; this closes the known path,
+    -- not every possible source of the native access violation.
+    if type(name) == "string" and
+       (string.find(name, "^TargetFrameBuff%d") or
+        string.find(name, "^TargetFrameDebuff%d") or
+        string.find(name, "^PartyMemberFrame%d+Debuff%d")) then
+      name = nil
+    end
     if group == "target" and type(name) == "string" then
       visualOnlyNames[name] = true
       if string.find(name, "HealthBar$") or

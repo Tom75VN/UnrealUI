@@ -121,6 +121,18 @@ M.texture = {
   -- U.CreateIconButton's fallback letter cannot catch it -- swapping this one
   -- line is the whole fix, and doing it here fixes both windows at once.
   sortIcon = "Interface\\Icons\\INV_Misc_Note_01",
+  -- Ornamental target-frame classification artwork (modules/unitframes.lua).
+  -- One 350x117 32-bit RLE type-10 TGA per tier, drawn as an eight-slice
+  -- border around the target frame 182x47 opening. Extensionless addon
+  -- paths, and freshly named rather than reusing an existing one, per
+  -- knowledge.json / textures.rle_512_tga_atlas_four_arg_supported -- the
+  -- same combination (RLE type-10 TGA at a fresh extensionless path, cells
+  -- picked with four-argument SetTexCoord) that is USER_CONFIRMED_INGAME
+  -- there. The non-power-of-two size follows media/rest-icon (36x39), which
+  -- this client does draw.
+  targetSkinRare  = "Interface\\AddOns\\unrealUI\\media\\frame-rare-350",
+  targetSkinElite = "Interface\\AddOns\\unrealUI\\media\\frame-elite-350",
+  targetSkinBoss  = "Interface\\AddOns\\unrealUI\\media\\frame-boss-350",
 }
 
 -- Flag artwork for the settings language selector, keyed by the locale codes

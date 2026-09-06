@@ -1,0 +1,13 @@
+-- unrealUI :: Database/init.lua
+--
+-- Owns the shared world-data global before any bundled data file writes to it.
+--
+-- The data files under Database/ are plain VMaNGOS-derived tables, packaged in
+-- the same shape unrealQuest uses so a table only ever has to be generated and
+-- shipped once. They therefore populate unrealQuest's UnrealQuestData global
+-- rather than a second one of unrealUI's own. Either addon may load first and
+-- both create it the same defensive way, so whichever runs first wins and the
+-- other adds its keys to the existing table.
+--
+-- Nothing here describes the client API. These tables describe the game world.
+UnrealQuestData = UnrealQuestData or {}

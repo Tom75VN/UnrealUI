@@ -178,6 +178,36 @@ function U.CreatePanel(parent, options)
   return U.CreateBackdrop(frame, options)
 end
 
+-- Draw a window above the client's tooltip.
+--
+-- This client shows a world object's tooltip whenever the cursor is over that
+-- object in 3D, without regard for the UI covering the cursor. Probe
+-- worldhover.suppression.v1 measured five ways to stop it and none worked:
+-- raising the window to HIGH left 56 of 58 samples showing the object's name,
+-- DIALOG 58 of 58, a dedicated mouse-enabled cover frame 58 of 58, and
+-- WorldFrame:EnableMouse(false) 58 of 58, with both controls leaking as they
+-- should. The window was never actually on top in any of those: GameTooltip
+-- sits at the TOOLTIP strata, above HIGH and DIALOG alike, so this is the one
+-- rung that puts a window over it.
+--
+-- Understand what it does and does not do. It changes DRAW ORDER, not what the
+-- tooltip says, and the world tooltip and the item tooltip are the same frame
+-- -- so where the window covers GameTooltip, nothing shows: the wrong tooltip
+-- is hidden and so is the right one. It also lifts the window above dropdowns,
+-- dialogs and the game menu, which share the strata order it is jumping.
+--
+-- Removing the call restores the window to its normal MEDIUM strata; nothing
+-- else depends on it.
+function U.RaiseWindowAboveTooltips(frame)
+  if not frame then return false end
+
+  local ok = pcall(frame.SetFrameStrata, frame, "TOOLTIP")
+  -- Above GameTooltip within the shared strata as well, since strata alone
+  -- only ties them.
+  pcall(frame.SetFrameLevel, frame, 100)
+  return ok and true or false
+end
+
 -- ---------------------------------------------------------------------------
 -- Status bars
 --
@@ -1013,8 +1043,8 @@ function U.CreateLabel(parent, options)
   if not ok or not label then return nil end
 
   U.SetFont(label, options.size or M.fontSize.normal, options.flags,
-            options.fontRole)
-  if options.shadow == false then
+            options.fontRole, options.privateFont and options.shadow == false)
+  if options.shadow == false and not options.privateFont then
     U.ClearTextShadow(label)
   elseif options.shadowOffset or options.shadowColor then
     U.SetTextShadow(label, options.shadowOffset, options.shadowColor)

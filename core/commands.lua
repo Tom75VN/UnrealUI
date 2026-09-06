@@ -133,6 +133,7 @@ local function ShowHelp(rest)
   U.Print(U.L("CMD_CHECK"))
   U.Print(U.L("CMD_THEME"))
   U.Print(U.L("CMD_PETBAR"))
+  U.Print(U.L("CMD_PETBAR_BUTTONS"))
   U.Print(U.L("CMD_LANGUAGE"))
   U.Print(U.L("CMD_PROFILE"))
   U.Print(U.L("CMD_DEBUG"))
@@ -181,6 +182,24 @@ local function ShowUnitFrameCheck()
             tostring(line.fillHeight) ..
             ", shown " .. tostring(line.fillShown) ..
             ", tint " .. tostring(line.fillColor))
+  end
+
+  -- knowledge.json / unitframes.target_current_health_from_unit_combat: this
+  -- client has no compat record for UNIT_COMBAT in either direction, so the
+  -- refinement it drives is carried over from UnrealPfUI. "combat seen" is the
+  -- answer to that open question from live play rather than another probe:
+  -- false after a fight means the event does not fire here, and the readout
+  -- has been running on the percentage estimate alone.
+  if type(U.UnitVitalsReport) == "function" then
+    local v = U.UnitVitalsReport()
+    U.Print("  exact vitals: enabled " .. tostring(v.enabled) ..
+            ", creature table " .. tostring(v.data) ..
+            ", names " .. tostring(v.names) ..
+            ", indexed " .. tostring(v.indexed))
+    U.Print("    target " .. tostring(v.trackKey) ..
+            "  tracked " .. tostring(v.trackCurrent) ..
+            " of " .. tostring(v.trackMax) ..
+            ", combat seen " .. tostring(v.sawCombat))
   end
 
   -- knowledge.json / castbar.player_events_partial: SPELLCAST_START's argument
@@ -294,6 +313,11 @@ local function ShowUnitFrameCheck()
               ", placed " .. tostring(pb.placed) ..
               ", driving " .. tostring(pb.driving) ..
               ", native anchor " .. tostring(pb.nativeAnchorCaptured))
+      -- "buttons native" means the client still owns the row's size and gap;
+      -- a pair of numbers means /uui petbar size|spacing is placing it.
+      U.Print("  buttons " .. (pb.buttonLayout
+              and (tostring(pb.buttonSize) .. "/" .. tostring(pb.buttonSpacing))
+              or "native"))
       U.Print("  shown " .. tostring(pb.shown) ..
               ", visible " .. tostring(pb.visible) ..
               ", button visible " .. tostring(pb.buttonVisible) ..
@@ -460,6 +484,14 @@ local function ShowEliteReport()
             (u.tint and (", tint " .. u.tint) or ""))
     if u.path and u.path ~= report.texture then
       U.Print("    readback " .. tostring(u.path))
+    end
+    -- Only the target frame builds an ornamental classification skin, so this
+    -- line is absent for every other row rather than reading "none" on frames
+    -- that were never meant to have one.
+    if u.skin ~= nil then
+      U.Print("    skin " .. tostring(u.skin) .. ", shown " ..
+              tostring(u.skinShown) ..
+              (u.skinPath and (", " .. u.skinPath) or ""))
     end
   end
 
@@ -630,6 +662,13 @@ local function ShowSelfCheck()
             tostring(chat.bottom) .. "  saved " ..
             tostring(chat.savedLeft) .. "," ..
             tostring(chat.savedBottom))
+    -- The chat shadow route is documented but not runtime-verified: the shadow
+    -- setters live on FontString and write through to the font object, and no
+    -- record says which of those the client's chat windows expose. Print what
+    -- the last apply actually reached instead of assuming it landed.
+    U.Print("    text shadow removed " .. tostring(chat.noTextShadow) ..
+            ", ChatFontNormal bound " .. tostring(chat.shadowBound) ..
+            ", written " .. tostring(chat.shadowApplied))
   end
 
   -- Quest header collapsing has no compact-DB record and the stock row click
@@ -1057,6 +1096,29 @@ handlers["help"]   = function(rest) ShowHelp(rest) end
 handlers["movertest"] = function() ShowMoverTest() end
 handlers["np"] = function() ShowNameplateDump() end
 handlers["bagcat"] = function() ShowItemCategoryDump() end
+
+-- Why a derived main-bank stack quantity vanished. modules/bankcount.lua works
+-- the number out by watching containers between ticks, so a disappearance is a
+-- decision some earlier pass made and nothing visible afterwards explains it.
+-- Off by default: the trace writes a row on every pass.
+handlers["bankcount"] = function(rest)
+  if type(U.SetBankCountTrace) ~= "function" then
+    U.Print("bankcount: modules/bankcount.lua is not loaded")
+    return
+  end
+
+  local mode = Trim(rest or "")
+  local on = not (mode == "off" or mode == "stop")
+  U.SetBankCountTrace(on)
+
+  if on then
+    U.Print("bankcount: trace |cff00ff00on|r - open the bank, reproduce the "
+            .. "disappearance, then |cffffff00/uui bankcount off|r")
+  else
+    U.Print("bankcount: trace off - saved to UnrealUIDiagDB.bankCount")
+    U.Print("  " .. U.SavedVariablesHint() .. " after |cffffff00/reload|r")
+  end
+end
 -- Why a spellbook entry is, or is not, marked as absent from the action bars.
 -- The command being unavailable is itself an answer: modules/spellbook.lua did
 -- not load, or the hint never installed.

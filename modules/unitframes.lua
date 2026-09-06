@@ -153,6 +153,8 @@ local SPECS = {
   },
   {
     id = "target", unit = "target", name = "Target",
+    -- Ornamental classification artwork around this frame only (classSkin).
+    classSkin = true,
     labelKey = "MOVER_LABEL_TARGET",
     width = PRIMARY_WIDTH, health = 34, power = 10, gap = 0,
     healthTexture = true,
@@ -542,6 +544,19 @@ local function ReadHealth(frame)
     data.health = 0
     data.healthPercent = 0
   end
+
+  -- Absolute hit points for a creature the client only reports as a
+  -- percentage. core/unitvitals.lua derives the maximum from the realm's own
+  -- creature table and refines the current value from UNIT_COMBAT amounts; it
+  -- answers nil for a player, a pet, or a creature that is not in the table,
+  -- and the readout stays the plain percentage in that case.
+  data.exactHealth, data.exactHealthMax = nil, nil
+  if data.healthIsPercent and data.connected ~= false and
+     type(U.UnitVitalsHealth) == "function" then
+    data.exactHealth, data.exactHealthMax =
+      U.UnitVitalsHealth(unit, data.name, data.level,
+                         data.health, data.healthMax)
+  end
 end
 
 local function ReadPower(frame)
@@ -555,6 +570,17 @@ local function ReadPower(frame)
   -- Same stale reading as health above, so the second bar drains with it
   -- rather than leaving the frame half alive.
   if data.connected == false then data.power = 0 end
+
+  -- Mana on the same terms as health above. This runs its own lookup rather
+  -- than reading what ReadHealth left behind, because a "power" refresh
+  -- reaches ReadPower without ReadHealth having run.
+  data.exactPower, data.exactPowerMax = nil, nil
+  if data.healthIsPercent and data.connected ~= false and
+     type(U.UnitVitalsPower) == "function" then
+    data.exactPower, data.exactPowerMax =
+      U.UnitVitalsPower(data.name, data.level, data.powerType,
+                        data.power, data.powerMax)
+  end
 end
 
 local function ReadUnit(frame)
@@ -682,14 +708,26 @@ local function StatusText(frame, token)
     if data.isDead then return prefix .. (U.G("DEAD") or "Dead") end
     if data.health ~= data.healthMax and data.healthMax > 0 then
       if data.healthIsPercent then
+        -- With the creature table behind it the frame can print the real
+        -- numbers instead: "1121 / 1536" says both how much is left and how
+        -- much there was, which the bar's own fill already shows as a
+        -- fraction. Without it there is only the percentage.
+        if data.exactHealthMax then
+          return prefix .. Abbreviate(data.exactHealth) .. " / " ..
+                 Abbreviate(data.exactHealthMax)
+        end
         return prefix .. math.ceil(data.healthPercent * 100) .. "%"
       end
       return prefix .. Abbreviate(data.health) .. " - " ..
              math.ceil(data.healthPercent * 100) .. "%"
     end
     -- Full health on a percent-scaled unit still reads as a percentage, so it
-    -- keeps the "%" rather than printing a bare 100.
-    if data.healthIsPercent then return prefix .. "100%" end
+    -- keeps the "%" rather than printing a bare 100 -- unless the exact
+    -- maximum is known, in which case that number is the useful one.
+    if data.healthIsPercent then
+      if data.exactHealthMax then return prefix .. Abbreviate(data.exactHealthMax) end
+      return prefix .. "100%"
+    end
     return prefix .. Abbreviate(data.health)
   end
 
@@ -701,6 +739,18 @@ local function StatusText(frame, token)
     local pr, pg, pb = PastelText(M.Unpack(M.power[data.powerType] or M.power.fallback))
     if data.muted then pr, pg, pb = M.Unpack(M.color.textDim) end
     local prefix = Hex(pr, pg, pb)
+
+    -- Absolute mana from the creature table, matching the health readout
+    -- above. Only mana gets this: VMaNGOS gives a non-caster rage on an
+    -- internal 1000 scale that displays as 100, or energy capped at 100, and
+    -- both already are the number the client hands over.
+    if data.exactPowerMax then
+      if data.power ~= data.powerMax then
+        return prefix .. Abbreviate(data.exactPower) .. " / " ..
+               Abbreviate(data.exactPowerMax)
+      end
+      return prefix .. Abbreviate(data.exactPowerMax)
+    end
 
     -- Only mana is worth a percentage; rage and energy are already a 0-100
     -- scale, which is exactly what pfUI does here.
@@ -732,6 +782,7 @@ local unitMouse = {}
 -- Theme changes require /reload, so a frame family that was destructively
 -- suppressed by the Modern theme is never expected to be restored in place.
 -- On a Classic load SuppressStockFrames is skipped entirely.
+
 local classicNative = {
   active = false,
   roots = {
@@ -739,7 +790,11 @@ local classicNative = {
       auraAnchorName = "PlayerFrameHealthBar" },
     { id = "target",       names = { "TargetFrame" },
       auraAnchorName = "TargetFrameHealthBar" },
-    { id = "targettarget", names = { "TargetofTargetFrame", "TargetofTarget" } },
+    -- The stock target-of-target is optional client UI. Keep its native art
+    -- when the client actually shows it, but fall back to UnrealUI's existing
+    -- compact bar when that option is off so the theme never loses the unit.
+    { id = "targettarget", names = { "TargetofTargetFrame", "TargetofTarget" },
+      customFallback = true },
     { id = "pet",          names = { "PetFrame" } },
     { id = "party1",       names = { "PartyMemberFrame1" } },
     { id = "party2",       names = { "PartyMemberFrame2" } },
@@ -775,6 +830,11 @@ end
 
 function classicNative.Anchor(anchor, native)
   if not anchor or not native then return end
+
+  -- Repositioning the client-owned root is what makes the native art follow
+  -- UnrealUI's mover. The 2026-09-06 login-crash bisect cleared it: with this
+  -- write active and only the stock aura suppression removed, the Classic
+  -- theme logs in. See unitframes.classic_stock_aura_suppression_login_crash.
   if not pcall(native.ClearAllPoints, native) then return end
   if not pcall(native.SetPoint, native, "CENTER", anchor, "CENTER", 0, 0) then
     return
@@ -794,45 +854,140 @@ function classicNative.Anchor(anchor, native)
   local catcher = anchor.uuiClassicClickCatcher
   if catcher then
     pcall(catcher.ClearAllPoints, catcher)
+    -- Level 2+ keeps the catcher off the native root entirely, so no addon
+    -- widget holds a relative reference to a client-owned object either.
     pcall(catcher.SetPoint, catcher, "CENTER", native, "CENTER", 0, 0)
     pcall(catcher.SetWidth, catcher, nativeWidth)
     pcall(catcher.SetHeight, catcher, nativeHeight)
   end
 end
 
-function classicNative.HideCustomVisuals(frame)
-  frame.classicNative = true
-  pcall(frame.EnableMouse, frame, false)
-  pcall(frame.SetAlpha, frame, 1)
+function classicNative.SetCustomVisuals(frame, shown)
+  shown = shown and true or false
+  if frame.uuiClassicCustomVisible == shown then return end
+  frame.uuiClassicCustomVisible = shown
 
   local parts = {
     frame.health, frame.power, frame.values, frame.portrait,
-    frame.classIcon, frame.restIcon, frame.happiness, frame.leaderIcon,
   }
   local i
   for i = 1, table.getn(parts) do
     local part = parts[i]
-    if part and type(part.Hide) == "function" then pcall(part.Hide, part) end
+    if part then
+      if shown and type(part.Show) == "function" then pcall(part.Show, part)
+      elseif not shown and type(part.Hide) == "function" then pcall(part.Hide, part) end
+    end
+  end
+
+  -- These state icons have their own refresh functions, all of which defer to
+  -- the native client while Classic is active. They are hidden with the base
+  -- visuals but are never blindly shown by the fallback.
+  if not shown then
+    local extras = {
+      frame.classIcon, frame.restIcon, frame.happiness, frame.leaderIcon,
+    }
+    for i = 1, table.getn(extras) do
+      local extra = extras[i]
+      if extra and type(extra.Hide) == "function" then pcall(extra.Hide, extra) end
+    end
+  end
+
+  -- The native click catcher follows the native root. The fallback is the
+  -- addon-owned Button itself, using the same already-established unit mouse
+  -- path as Modern rather than trying to wake a hidden client frame.
+  if shown then
+    if not frame.uuiClassicCustomMouse then
+      unitMouse.Enable(frame)
+      frame.uuiClassicCustomMouse = true
+    else
+      pcall(frame.EnableMouse, frame, true)
+    end
+  else
+    pcall(frame.EnableMouse, frame, false)
+  end
+end
+
+function classicNative.HideCustomVisuals(frame)
+  frame.classicNative = true
+  pcall(frame.SetAlpha, frame, 1)
+  classicNative.SetCustomVisuals(frame, false)
+end
+
+-- Keep target-of-target below the visible edge of the larger native target
+-- artwork. The addon-owned mover remains the only persistent relative object;
+-- the native dimensions were already copied into bounded numeric offsets by
+-- Anchor. A user-saved free position always wins over this default docking.
+function classicNative.DockTargetTarget(useNativeChild)
+  if not classicNative.active then return end
+  local frame = frames.targettarget
+  local parent = frames.target
+  if not frame or not parent then return end
+  if type(U.GetPosition) == "function" and
+     U.GetPosition("unitframes.targettarget") then
+    frame.uuiClassicDockY = nil
+    return
+  end
+
+  local y = tonumber(frame.spec.anchorOffsetY) or 0
+  y = y - (tonumber(parent.uuiAuraBottomOffset) or 0)
+  if useNativeChild then
+    y = y - (tonumber(frame.uuiAuraTopOffset) or 0)
+  end
+  if frame.uuiClassicDockY == y then return end
+  frame.uuiClassicDockY = y
+  pcall(frame.ClearAllPoints, frame)
+  pcall(frame.SetPoint, frame, frame.spec.anchorPoint or "TOP", parent,
+        frame.spec.anchorRelativePoint or "BOTTOM",
+        frame.spec.anchorOffsetX or 0, y)
+end
+
+function classicNative.NativeShown(frame)
+  local native = frame and frame.classicNativeFrame
+  if not native or type(native.IsShown) ~= "function" then return false end
+  local ok, shown = pcall(native.IsShown, native)
+  return ok and shown and true or false
+end
+
+function classicNative.RefreshCustomFallback(frame, exists)
+  local entry = frame and frame.uuiClassicEntry
+  if not classicNative.active or not entry or not entry.customFallback then return end
+
+  local nativeShown = classicNative.NativeShown(frame)
+  local fallbackShown = exists and not nativeShown
+  classicNative.SetCustomVisuals(frame, fallbackShown)
+  classicNative.DockTargetTarget(nativeShown)
+
+  -- A stale/native root must not leave an active click surface when there is
+  -- no target-of-target; the client root itself remains completely untouched.
+  local catcher = frame.uuiClassicClickCatcher
+  if catcher then
+    if exists and nativeShown then pcall(catcher.Show, catcher)
+    else pcall(catcher.Hide, catcher) end
   end
 end
 
 function classicNative.Bind(entry, order)
   local anchor = frames[entry.id]
+  if not anchor then return end
+
+  anchor.uuiClassicEntry = entry
+  entry.anchor = anchor
+  entry.order = order
+
   local native = classicNative.Resolve(entry.names)
-  if not anchor or not native then
+  if not native then
+    anchor.classicNativeFrame = nil
+    entry.native = nil
     U.Debug("no native Classic unit frame found for: " .. entry.id)
     return
   end
 
   anchor.classicNativeFrame = native
-  anchor.uuiClassicEntry = entry
   -- Publish only the global name. The aura module resolves the native child
   -- solely when it must write a changed point; it does not retain or poll the
   -- health-bar object for width or other geometry.
   anchor.uuiAuraTopAnchorName = entry.auraAnchorName
-  entry.anchor = anchor
   entry.native = native
-  entry.order = order
 
   -- unitframes.player_click_hit_route.v1 first confirmed that neither the
   -- native Button nor its mouse-enabled StatusBar children deliver Lua mouse
@@ -860,29 +1015,76 @@ function classicNative.Bind(entry, order)
 
   classicNative.Anchor(anchor, native)
 
+  -- Defined further down the file, next to the text helpers it uses. Only the
+  -- target carries the exact-vitals readout.
+  if entry.id == "target" then
+    classicNative.BindVitals(entry, anchor, native)
+  end
+
   local shownOk, shown = pcall(native.IsShown, native)
+  shown = (shownOk and shown) and true or false
+  anchor.uuiClassicCatcherShown = shown
   if catcher then
-    if shownOk and shown then pcall(catcher.Show, catcher)
+    if shown then pcall(catcher.Show, catcher)
     else pcall(catcher.Hide, catcher) end
   end
 
-  if not native.uuiClassicAnchorHooked then
-    native.uuiClassicAnchorHooked = true
-    U.PostHookScript(native, "OnShow", function()
-      if anchor.classicNativeFrame ~= native then return end
-      classicNative.Anchor(anchor, native)
-      if anchor.uuiClassicClickCatcher then
-        pcall(anchor.uuiClassicClickCatcher.Show,
-              anchor.uuiClassicClickCatcher)
+  -- No script hook is installed on the native root here, deliberately.
+  --
+  -- This used to be U.PostHookScript(native, "OnShow"/"OnHide", ...), which is
+  -- frame:SetScript on a client-owned widget: the wrapper *replaces* the
+  -- native root's OnShow, and its body then called ClearAllPoints/SetPoint on
+  -- that same root from inside the client's own show transition. Both halves
+  -- are what .claude/rules/unreal-ui.md's protected native target lifecycle
+  -- forbids ("Never replace Show/OnShow ... on TargetFrame"), and the hook was
+  -- installed on TargetFrame, PlayerFrame, PetFrame, TargetofTargetFrame and
+  -- PartyMemberFrame1-4 -- every root of that family -- but only under the
+  -- Classic theme. See knowledge.json /
+  -- unitframes.classic_native_crash_signature_1450d5c: that record's
+  -- "script hooks are ruled out" note was about the Modern theme's hooks on
+  -- unrelated stock windows, which never touch this family, so it never
+  -- covered these two calls.
+  --
+  -- Everything the hooks did is now done by reading the native root instead of
+  -- writing to it -- classicNative.SyncNative below, on the module's existing
+  -- one-second sweep. Nothing else in the Classic path replaces a native
+  -- script; keep it that way.
+end
+
+-- Read-only replacement for the removed OnShow/OnHide hooks.
+--
+-- Strictly read-only on the native side: it samples native:IsShown() and moves
+-- an ADDON-owned widget to match. It deliberately does not re-anchor a drifted
+-- root, even though the removed OnShow hook did. Anchor repair is already owned
+-- by classicNative.Reanchor (PLAYER_TARGET_CHANGED, the party events,
+-- PLAYER_ENTERING_WORLD) and by ReconcileTarget on the target's own refresh;
+-- adding a drift check here put a second ClearAllPoints/SetPoint path on eight
+-- client-owned roots on a one-second timer, which is more native writing than
+-- the hooks it replaced, not less. The whole point of this function is to stop
+-- writing to that family.
+--
+-- customFallback roots are skipped: RefreshCustomFallback already owns the
+-- catcher decision for them and adds the "unit actually exists" half this poll
+-- cannot see.
+function classicNative.SyncNative()
+  if not classicNative.active then return end
+
+  local i
+  for i = 1, table.getn(classicNative.roots) do
+    local entry = classicNative.roots[i]
+    local anchor = entry.anchor
+
+    if anchor and anchor.classicNativeFrame and not entry.customFallback then
+      local shown = classicNative.NativeShown(anchor)
+      if anchor.uuiClassicCatcherShown ~= shown then
+        anchor.uuiClassicCatcherShown = shown
+        local catcher = anchor.uuiClassicClickCatcher
+        if catcher then
+          if shown then pcall(catcher.Show, catcher)
+          else pcall(catcher.Hide, catcher) end
+        end
       end
-    end)
-    U.PostHookScript(native, "OnHide", function()
-      if anchor.classicNativeFrame ~= native then return end
-      if anchor.uuiClassicClickCatcher then
-        pcall(anchor.uuiClassicClickCatcher.Hide,
-              anchor.uuiClassicClickCatcher)
-      end
-    end)
+    end
   end
 end
 
@@ -897,6 +1099,10 @@ function classicNative.Reanchor()
     elseif entry.anchor and entry.native then
       classicNative.Anchor(entry.anchor, entry.native)
     end
+  end
+  local targettarget = frames.targettarget
+  if targettarget then
+    classicNative.DockTargetTarget(classicNative.NativeShown(targettarget))
   end
 end
 
@@ -952,43 +1158,40 @@ function classicNative.ReconcileTarget(frame, exists)
   end
 end
 
-function classicNative.AuraNames(root, series)
-  local names = {}
-  local i, j
-  for i = 1, table.getn(series) do
-    local suffix, count = series[i][1], series[i][2]
-    for j = 1, count do
-      local base = root .. suffix .. j
-      table.insert(names, base)
-      table.insert(names, base .. "Icon")
-      table.insert(names, base .. "Border")
-      table.insert(names, base .. "Count")
-    end
-  end
-  return names
-end
-
-function classicNative.SuppressStockAuras()
-  -- UnrealUI still owns aura filtering, timers and settings in Classic. Hide
-  -- only the stock icon families so the native frames do not duplicate them.
-  U.SuppressNativeFrame(classicNative.AuraNames("TargetFrame",
-    { { "Buff", 5 }, { "Debuff", 16 } }), "target")
-
-  -- UnrealUI has no pet or target-of-target aura rows, so their native debuffs
-  -- stay visible. Suppressing them would be a feature loss, not a style change.
-
-  local i
-  for i = 1, PARTY_COUNT do
-    U.SuppressNativeFrame(classicNative.AuraNames("PartyMemberFrame" .. i,
-      { { "Debuff", 4 } }), "party")
-  end
-end
+-- Stock aura suppression is GONE, at load time and deferred alike. Do not
+-- reintroduce it in any form without new client-build evidence.
+--
+-- Load-time suppression of the stock TargetFrame/PartyMemberFrame aura
+-- children crashed this client at login on build AzerothMain-2329 (Classic
+-- only), isolated by a cumulative single-variable bisect on 2026-09-06.
+-- Deferring the identical recipe to 10s after the world is up fixed it on one
+-- character (Malgus) and was confirmed in game -- and then crashed on another
+-- Classic character (Warkys) at 15s, 25s and 26s into the process, two of the
+-- three dumps sharing callstack hash 5402C126BF26CFEF and faulting at 0x1c /
+-- 0x1d: a null pointer plus a small field offset, i.e. a native widget being
+-- read after it was no longer valid.
+--
+-- So the start-up window was never the real boundary. Some Classic characters
+-- reach a state where these stock aura children cannot be safely touched at
+-- all, and no delay fixes that. See
+-- unitframes.classic_stock_aura_suppression_login_crash.
+--
+-- Consequence, accepted deliberately: under Classic the client's own target
+-- and party frames draw their aura icons alongside UnrealUI's rows, so a
+-- debuff appears twice. The only remaining way to remove the duplication is to
+-- hide UnrealUI's OWN rows, which touches no client-owned object -- that is a
+-- product decision, not a safety one, and it costs UnrealUI's timers and
+-- filtering on those units.
 
 function classicNative.BindAll()
   classicNative.active = true
   local i
   for i = 1, table.getn(classicNative.roots) do
     classicNative.Bind(classicNative.roots[i], i)
+  end
+  local targettarget = frames.targettarget
+  if targettarget then
+    classicNative.DockTargetTarget(classicNative.NativeShown(targettarget))
   end
 end
 
@@ -1418,6 +1621,226 @@ local function BuildLeaderIcon(frame, health)
   frame.leaderIconState = false
 end
 
+-- ---------------------------------------------------------------------------
+-- Target classification skin
+--
+-- User-supplied ornamental artwork drawn around the target frame, one texture
+-- per classification tier. It replaces the visual job of the classification
+-- icon built above (BuildClassificationIcon), so while a skin is on screen
+-- that icon stays hidden and comes back on its own for a unit whose tier has
+-- no artwork.
+--
+-- One table rather than a dozen top-level locals on purpose: this file already
+-- carries ~157 of the 200 top-level locals a Lua 5.0/5.1 chunk may declare, and
+-- overrunning that limit makes the whole file fail to load with no error at all
+-- (knowledge.json / lua.top_level_local_limit_silent_file_failure).
+--
+-- Eight slices, no centre: the middle of the artwork is the *opening* the unit
+-- frame shows through, so drawing it would cover the bars. Only four-argument
+-- SetTexCoord is used -- knowledge.json /
+-- textures.rle_512_tga_atlas_four_arg_supported records the eight-argument form
+-- as unreliable here and the four-argument form on an RLE type-10 TGA as
+-- USER_CONFIRMED_INGAME.
+--
+-- The source opening (278x54 of a 350x117 file) does NOT share the runtime
+-- opening's aspect ratio, and does not need to: the corners keep their authored
+-- pixel size and only the four edge pieces stretch, so the same three textures
+-- resolve to exactly 182x47 without distorting any ornament.
+-- ---------------------------------------------------------------------------
+local classSkin = {
+  -- Slice geometry, identical for all three textures: a 350x117 file cut at
+  -- x 0|36|314|350 and y 0|34|88|117, leaving a 278x54 source opening.
+  uL = 36 / 350,   -- 0.1028571429
+  uR = 314 / 350,  -- 0.8971428571
+  vT = 34 / 117,   -- 0.2905982906
+  vB = 88 / 117,   -- 0.7521367521
+  -- Fixed ornamental insets around the opening. The skin is therefore
+  -- 182 + 15 + 15 = 212 wide and 47 + 14 + 12 = 73 high, and the frame it
+  -- surrounds keeps its own 182x47 exactly.
+  left = 15, right = 15, top = 14, bottom = 12,
+}
+
+classSkin.texture = {
+  rare      = M.texture.targetSkinRare,
+  rareelite = M.texture.targetSkinRare,
+  elite     = M.texture.targetSkinElite,
+  worldboss = M.texture.targetSkinBoss,
+}
+
+-- The outer flat outline the bar boxes already carry would read as a second
+-- line just inside the ornament's inner rim. These are the edge indices to
+-- take out of each box while a skin is up, in U.CreateBorder's fixed EDGES
+-- order (1 top, 2 bottom, 3 left, 4 right).
+--
+-- Deliberately NOT U.SetBackdropShown: that also clears the box fill, which is
+-- the bar's own dark background. Health keeps its bottom edge and power keeps
+-- its top edge -- those two overlap into the single separator between the two
+-- bars, which the ornament does not replace.
+classSkin.healthEdges = { 1, 3, 4 }
+classSkin.powerEdges = { 2, 3, 4 }
+
+function classSkin.Dimension(frame, method)
+  local ok, value = pcall(frame[method], frame)
+  return (ok and tonumber(value)) or 0
+end
+
+function classSkin.Slice(skin, layer, u1, u2, v1, v2)
+  local slice = skin:CreateTexture(nil, layer or "ARTWORK")
+  pcall(slice.SetTexCoord, slice, u1, u2, v1, v2)
+  return slice
+end
+
+-- Builds the eight slices once. Nothing here is rebuilt on a classification
+-- change; only the texture path is swapped.
+function classSkin.Build(frame)
+  if not frame or frame.uuiClassSkin then return nil end
+  -- Modern only, gated on the theme id rather than on "not native chrome".
+  -- Both spellings exclude Classic today -- it hands the target over to the
+  -- client's own artwork at native geometry, so this skin has nothing to frame
+  -- -- but the registry also carries an unavailable work-in-progress
+  -- "modern-wow" style (themes/modern-wow.lua), and the loose spelling would
+  -- hand it this skin the day it is switched on, without anyone deciding that.
+  -- GetActiveThemeStyle, not GetThemeStyle: a theme change takes effect only
+  -- after a reload, and this is built once during that reload.
+  if U.GetActiveThemeStyle() ~= "modern" then return nil end
+
+  local skin = CreateFrame("Frame", "UnrealUIUnitTargetSkin", frame)
+  -- No SetFrameStrata: it inherits the unit frame's "LOW". Parented straight
+  -- to the frame, so it follows the mover with no position storage of its own.
+  --
+  -- Explicit size as well as the two-corner anchoring, the way every other box
+  -- in this module is built: the frame it wraps is a fixed 182x47 that nothing
+  -- resizes, so 212x73 is not an approximation, and the slices then have a real
+  -- size to lay out against whether or not two-corner sizing carries here.
+  skin:SetWidth(classSkin.Dimension(frame, "GetWidth") +
+                classSkin.left + classSkin.right)
+  skin:SetHeight(classSkin.Dimension(frame, "GetHeight") +
+                 classSkin.top + classSkin.bottom)
+  skin:SetPoint("TOPLEFT", frame, "TOPLEFT", -classSkin.left, classSkin.top)
+  skin:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT",
+                classSkin.right, -classSkin.bottom)
+
+  -- +20 is the same clearance the classification icon, the leader star and the
+  -- combo pips use to get above this frame's raised text/icon child layers.
+  local ok, level = pcall(frame.GetFrameLevel, frame)
+  if ok and tonumber(level) then
+    pcall(skin.SetFrameLevel, skin, level + 20)
+  end
+
+  local uL, uR, vT, vB = classSkin.uL, classSkin.uR, classSkin.vT, classSkin.vB
+  local l, r, t, b = classSkin.left, classSkin.right, classSkin.top,
+                     classSkin.bottom
+
+  -- Corners: authored size, single anchor, never stretched.
+  local tl = classSkin.Slice(skin, "ARTWORK", 0, uL, 0, vT)
+  tl:SetWidth(l)
+  tl:SetHeight(t)
+  tl:SetPoint("TOPLEFT", skin, "TOPLEFT", 0, 0)
+
+  local tr = classSkin.Slice(skin, "ARTWORK", uR, 1, 0, vT)
+  tr:SetWidth(r)
+  tr:SetHeight(t)
+  tr:SetPoint("TOPRIGHT", skin, "TOPRIGHT", 0, 0)
+
+  local bl = classSkin.Slice(skin, "ARTWORK", 0, uL, vB, 1)
+  bl:SetWidth(l)
+  bl:SetHeight(b)
+  bl:SetPoint("BOTTOMLEFT", skin, "BOTTOMLEFT", 0, 0)
+
+  local br = classSkin.Slice(skin, "ARTWORK", uR, 1, vB, 1)
+  br:SetWidth(r)
+  br:SetHeight(b)
+  br:SetPoint("BOTTOMRIGHT", skin, "BOTTOMRIGHT", 0, 0)
+
+  -- Edges: fixed thickness plus two-corner anchoring on the stretch axis. That
+  -- is exactly how U.CreateBorder draws its own outline on this client
+  -- (core/style.lua), so it is a proven layout here rather than a guess.
+  local top = classSkin.Slice(skin, "ARTWORK", uL, uR, 0, vT)
+  top:SetHeight(t)
+  top:SetPoint("TOPLEFT", skin, "TOPLEFT", l, 0)
+  top:SetPoint("TOPRIGHT", skin, "TOPRIGHT", -r, 0)
+
+  local bottom = classSkin.Slice(skin, "ARTWORK", uL, uR, vB, 1)
+  bottom:SetHeight(b)
+  bottom:SetPoint("BOTTOMLEFT", skin, "BOTTOMLEFT", l, 0)
+  bottom:SetPoint("BOTTOMRIGHT", skin, "BOTTOMRIGHT", -r, 0)
+
+  local left = classSkin.Slice(skin, "ARTWORK", 0, uL, vT, vB)
+  left:SetWidth(l)
+  left:SetPoint("TOPLEFT", skin, "TOPLEFT", 0, -t)
+  left:SetPoint("BOTTOMLEFT", skin, "BOTTOMLEFT", 0, b)
+
+  local right = classSkin.Slice(skin, "ARTWORK", uR, 1, vT, vB)
+  right:SetWidth(r)
+  right:SetPoint("TOPRIGHT", skin, "TOPRIGHT", 0, -t)
+  right:SetPoint("BOTTOMRIGHT", skin, "BOTTOMRIGHT", 0, b)
+
+  skin.slices = { tl, top, tr, left, right, bl, bottom, br }
+
+  pcall(skin.Hide, skin)
+  frame.uuiClassSkin = skin
+  frame.uuiClassSkinState = false
+  return skin
+end
+
+-- Shows or restores the flat outer outline the ornament stands in for. The
+-- separator between health and power is never touched.
+function classSkin.SetOuterBordersShown(frame, shown)
+  if frame.uuiClassSkinBorders == shown then return end
+  frame.uuiClassSkinBorders = shown
+
+  local boxes = { { frame.health, classSkin.healthEdges },
+                  { frame.power, classSkin.powerEdges } }
+  local i
+  for i = 1, table.getn(boxes) do
+    local box, list = boxes[i][1], boxes[i][2]
+    local edges = box and box.uuiEdges
+    if edges then
+      local n
+      for n = 1, table.getn(list) do
+        local edge = edges[list[n]]
+        if edge then
+          if shown then pcall(edge.Show, edge) else pcall(edge.Hide, edge) end
+        end
+      end
+    end
+  end
+end
+
+-- Cheap and idempotent: a classification that has not changed costs one table
+-- lookup and one comparison, and nothing below runs again.
+function classSkin.Apply(frame)
+  local skin = frame.uuiClassSkin
+  if not skin then return end
+
+  local class = frame.data.classification or ""
+  local path = classSkin.texture[class]
+  local state = path and class or false
+  if frame.uuiClassSkinState == state then return end
+  frame.uuiClassSkinState = state
+
+  if not path then
+    pcall(skin.Hide, skin)
+    classSkin.SetOuterBordersShown(frame, true)
+    return
+  end
+
+  local i
+  for i = 1, table.getn(skin.slices) do
+    pcall(skin.slices[i].SetTexture, skin.slices[i], path)
+  end
+  classSkin.SetOuterBordersShown(frame, false)
+  pcall(skin.Show, skin)
+end
+
+function classSkin.Hide(frame)
+  local skin = frame.uuiClassSkin
+  if not skin or frame.uuiClassSkinState == false then return end
+  frame.uuiClassSkinState = false
+  pcall(skin.Hide, skin)
+  classSkin.SetOuterBordersShown(frame, true)
+end
+
 local function BuildFrame(spec, parent)
   local border = U.BorderSize()
 
@@ -1507,6 +1930,10 @@ local function BuildFrame(spec, parent)
   frame.health = health
   frame.power = power
   frame.values = values
+
+  -- After the bar boxes exist: the skin has to be able to reach their outline
+  -- edges to take the outer perimeter down while the ornament stands in for it.
+  if spec.classSkin then classSkin.Build(frame) end
 
   frame:Hide()
   frame.uuiShown = false
@@ -2225,6 +2652,15 @@ local function ApplyBarLabels(frame, box, labels, mode)
 end
 
 local function ApplyTexts(frame, mode)
+  -- Under the Classic theme the client draws the frame and every UnrealUI
+  -- label on it is hidden (classicNative.HideCustomVisuals), so there is
+  -- nothing here to write to. The exact-vitals readout is the one piece of
+  -- text UnrealUI still owns there, and it lives on its own overlay.
+  if frame.classicNative and not frame.uuiClassicCustomVisible then
+    classicNative.ApplyVitals(frame)
+    return
+  end
+
   if frame.health.label and TokenNeedsRefresh(frame.spec.healthText, mode) then
     SetLabelText(frame.health.label, StatusText(frame, frame.spec.healthText))
   end
@@ -2246,6 +2682,12 @@ local function ApplyTexts(frame, mode)
 end
 
 local function ClearTexts(frame)
+  if frame.classicNative and not frame.uuiClassicCustomVisible then
+    SetLabelText(frame.uuiClassicVitalsHealth, "")
+    SetLabelText(frame.uuiClassicVitalsPower, "")
+    return
+  end
+
   SetLabelText(frame.health.label, "")
   SetLabelText(frame.health.leftLabel, "")
   SetLabelText(frame.health.rightLabel, "")
@@ -2262,6 +2704,109 @@ local function ClearTexts(frame)
   SetLabelText(v.right, "")
 end
 
+-- ---------------------------------------------------------------------------
+-- Classic theme: exact-vitals readout
+--
+-- The Classic theme hands the unit frames back to the client, so the numbers
+-- core/unitvitals.lua derives have nowhere to go: every UnrealUI label on the
+-- frame is hidden and the client's own frame has no readout of its own for a
+-- creature it only knows a percentage for. Two addon-owned font strings put
+-- them back, one over the native health bar and one over the native mana bar.
+--
+-- Ownership: nothing native is retained. The strings hang off UnrealUI's own
+-- click catcher, which classicNative already keeps exactly sized to and
+-- centred on the native root and re-anchors whenever the root moves or is
+-- replaced. The only thing taken from the client is the pair of offsets
+-- measured once per bind -- bounded numeric geometry, which is what the
+-- native-widget ownership rule allows to be carried over.
+-- ---------------------------------------------------------------------------
+function classicNative.MeasureChild(native, name)
+  local child = classicNative.Resolve({ name })
+  if not child or type(child.GetCenter) ~= "function" or
+     not native or type(native.GetCenter) ~= "function" then
+    return nil
+  end
+
+  local okChild, childX, childY = pcall(child.GetCenter, child)
+  local okRoot, rootX, rootY = pcall(native.GetCenter, native)
+  if not okChild or not okRoot then return nil end
+  if not tonumber(childX) or not tonumber(rootX) then return nil end
+  if not tonumber(childY) or not tonumber(rootY) then return nil end
+
+  return childX - rootX, childY - rootY
+end
+
+function classicNative.CreateVitalsLabel(catcher)
+  return U.CreateLabel(catcher, {
+    size = M.fontSize.small,
+    color = M.color.text,
+    inherits = "GameFontNormalSmall",
+    fontRole = "unitframe",
+    shadowOffset = M.compactTextShadowOffset,
+    shadowColor = M.color.shadowStrong,
+  })
+end
+
+-- Called from classicNative.Bind for the target root only: it is the one unit
+-- whose health this client reports as a percentage *and* whose damage it
+-- reports, so it is the only frame the readout has anything to add to.
+function classicNative.BindVitals(entry, anchor, native)
+  local catcher = anchor.uuiClassicClickCatcher
+  if not catcher then return end
+
+  if not anchor.uuiClassicVitalsHealth then
+    anchor.uuiClassicVitalsHealth = classicNative.CreateVitalsLabel(catcher)
+    anchor.uuiClassicVitalsPower = classicNative.CreateVitalsLabel(catcher)
+  end
+
+  -- Re-measured on every bind, never cached across one: a rebind means the
+  -- client handed out a different native root, and the stored offsets
+  -- described the old one.
+  local healthX, healthY =
+    classicNative.MeasureChild(native, "TargetFrameHealthBar")
+  local powerX, powerY =
+    classicNative.MeasureChild(native, "TargetFrameManaBar")
+
+  local health = anchor.uuiClassicVitalsHealth
+  if health then
+    pcall(health.ClearAllPoints, health)
+    -- Centre of the frame is the safe fallback: it is inside the artwork
+    -- either way, and an unreadable child is not a reason to drop the number.
+    pcall(health.SetPoint, health, "CENTER", catcher, "CENTER",
+          healthX or 0, healthY or 0)
+  end
+
+  local power = anchor.uuiClassicVitalsPower
+  if power then
+    pcall(power.ClearAllPoints, power)
+    pcall(power.SetPoint, power, "CENTER", catcher, "CENTER",
+          powerX or 0, powerY or 0)
+  end
+end
+
+-- Classic never showed a number here, so the readout appears only when there
+-- is a real one to show. Without a creature-table match the frame is left
+-- exactly as the client drew it rather than gaining a percentage it never had.
+function classicNative.ApplyVitals(frame)
+  local health = frame.uuiClassicVitalsHealth
+  if not health then return end
+
+  local data = frame.data
+  if data.exactHealthMax and data.connected ~= false then
+    SetLabelText(health, StatusText(frame, "healthdyn"))
+  else
+    SetLabelText(health, "")
+  end
+
+  local power = frame.uuiClassicVitalsPower
+  if not power then return end
+  if data.exactPowerMax and data.connected ~= false then
+    SetLabelText(power, StatusText(frame, "powerdyn"))
+  else
+    SetLabelText(power, "")
+  end
+end
+
 -- SetColor caches the tint it applied (core/compat.lua) because this client has
 -- no GetVertexColor to read one back with, so /uui elite status can still
 -- report what the icon was actually told to be.
@@ -2276,6 +2821,12 @@ local function ApplyClassificationIcon(frame)
 
   local class = frame.data.classification or ""
   local tint = ELITE_TINTS[class]
+  -- The ornamental classification skin (classSkin, above) replaces this icon
+  -- entirely on the frame that carries one, so the icon stands down for any
+  -- tier the artwork covers and returns by itself for one it does not. Nothing
+  -- here is theme-specific: outside Modern no skin is ever built, so the state
+  -- is always false and the icon behaves exactly as it did before.
+  if frame.uuiClassSkinState then tint = nil end
   local state = tint and class or false
 
   -- Nothing below needs to run again while the classification has not changed.
@@ -2465,9 +3016,11 @@ local function RefreshFrame(frame, mode)
 
   local exists = FrameUnitExists(frame)
   classicNative.ReconcileTarget(frame, exists)
+  classicNative.RefreshCustomFallback(frame, exists)
 
   if not exists then
     frame.data.initialised = false
+    classSkin.Hide(frame)
     HideClassificationIcon(frame)
     HideHappinessIndicator(frame)
     HideRestIcon(frame)
@@ -2518,19 +3071,27 @@ local function RefreshFrame(frame, mode)
     if mode == "health" or mode == "vitals" then
       local health, maximum, dead = frame.data.health,
                                     frame.data.healthMax, frame.data.isDead
+      -- The tracked absolute value (core/unitvitals.lua) moves with every
+      -- damage event, while the client percentage it sits inside only changes
+      -- once per percent. Without it in this comparison the exact readout
+      -- would freeze between percentage steps.
+      local exact = frame.data.exactHealth
       ReadHealth(frame)
       healthChanged = health ~= frame.data.health or
                       maximum ~= frame.data.healthMax or
-                      dead ~= frame.data.isDead
+                      dead ~= frame.data.isDead or
+                      exact ~= frame.data.exactHealth
     end
     if mode == "power" or mode == "vitals" then
       local power, maximum, powerType = frame.data.power,
                                         frame.data.powerMax,
                                         frame.data.powerType
+      local exact = frame.data.exactPower
       ReadPower(frame)
       powerChanged = power ~= frame.data.power or
                      maximum ~= frame.data.powerMax or
-                     powerType ~= frame.data.powerType
+                     powerType ~= frame.data.powerType or
+                     exact ~= frame.data.exactPower
     end
   end
 
@@ -2558,6 +3119,9 @@ local function RefreshFrame(frame, mode)
     textMode = "power"
   end
   if textMode then ApplyTexts(frame, textMode) end
+  -- Before the icon, not after: ApplyClassificationIcon reads the skin state
+  -- this sets to decide whether the icon is still the thing showing the tier.
+  if mode == "full" then classSkin.Apply(frame) end
   if mode == "full" then ApplyClassificationIcon(frame) end
   if mode == "full" then RefreshPortrait(frame) end
   if mode == "full" then ApplyHappinessIndicator(frame) end
@@ -2872,6 +3436,12 @@ local function RefreshScheduledUnits()
 
   if refreshCycle >= 5 then
     refreshCycle = 0
+
+    -- Classic only, and a no-op under every other theme. This is what replaced
+    -- the OnShow/OnHide script hooks that used to sit on the native unit-frame
+    -- roots; see classicNative.SyncNative for why they are gone.
+    classicNative.SyncNative()
+
     local i
     for i = 1, table.getn(frameOrder) do
       dirtyUnits[frameOrder[i]] = nil
@@ -3261,6 +3831,91 @@ end
 local SETTINGS_GROUP = "unitframes"
 local PAGE_WIDTH = 484
 
+-- Unit frame style (core/unitframestyle.lua). Kept as its own section because
+-- it does not configure a detail of the frames, it selects which
+-- implementation draws them; the sections below it configure whichever one is
+-- active. The section is built only under a theme that draws UnrealUI's own
+-- frames, so the page has no dead control under a theme that hands them to the
+-- client.
+--
+-- STYLE_SECTION_HEIGHT is what the section occupies from its own heading down
+-- to the next one: heading, the selector 26 below it, and the description five
+-- below that. The description has no fixed height -- this client centres a
+-- font string's glyphs inside one and breaks the gap -- so the reserve carries
+-- three wrapped lines, which is more than the longest translation needs.
+local STYLE_SECTION_HEIGHT = 112
+
+local function BuildUnitFrameStyleSettings(parent, y, width)
+  y = y or -4
+  local widgets = {}
+
+  local header = U.CreateSectionHeader(parent, {
+    text = U.L("UF_STYLE_HEADER"),
+    width = width or 496,
+    y = y,
+  })
+  table.insert(widgets, header)
+
+  -- An unfinished style stays in the list, disabled and marked, for the same
+  -- reason the WIP theme does: it says the choice is coming rather than
+  -- leaving the selector looking like it has one entry by mistake. It reuses
+  -- the theme selector's suffix so both read the same way.
+  local items = {}
+  local styles = U.GetUnitFrameStyles()
+  local i
+  for i = 1, table.getn(styles) do
+    local style = styles[i]
+    table.insert(items, {
+      value = style.id,
+      text = style.label .. (style.wip and U.L("SETTINGS_THEME_WIP") or ""),
+      disabled = not style.available,
+    })
+  end
+
+  local selector = U.CreateDropdown(parent, {
+    name = "UnrealUISettingsUnitFrameStyle",
+    width = 240,
+    height = 24,
+    rowHeight = 20,
+    value = U.GetUnitFrameStyle(),
+    items = items,
+    onChange = function(value)
+      if U.SetUnitFrameStyle(value) and U.UnitFrameStyleRequiresReload() then
+        U.ShowConfirm({
+          owner = "unitframes.style-reload",
+          centered = true,
+          text = U.L("UF_STYLE_CHANGED"),
+          detail = U.L("UF_STYLE_RELOAD",
+                       tostring(U.GetUnitFrameStyleLabel(value))),
+          acceptText = U.L("COMMON_OK_SHORT"),
+          cancelText = U.L("COMMON_CLOSE"),
+        })
+      end
+    end,
+  })
+  selector.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, y - 26)
+  table.insert(widgets, selector)
+
+  local hint = U.CreateSettingsLabel(parent, {
+    size = M.fontSize.small,
+    color = M.color.textDim,
+    inherits = "GameFontNormalSmall",
+    justify = "LEFT",
+    width = width or 496,
+  })
+  if hint then
+    U.AnchorSettingsDescription(hint, selector.button)
+    hint:SetText(U.L("UF_STYLE_HINT"))
+    table.insert(widgets, hint)
+  end
+
+  local function Refresh()
+    selector.SetValue(U.GetUnitFrameStyle(), false)
+  end
+
+  return widgets, Refresh
+end
+
 local function BuildUnitFramePartySettings(parent, y, width)
   y = y or -4
   local widgets = {}
@@ -3291,9 +3946,60 @@ local function BuildUnitFramePartySettings(parent, y, width)
   return widgets, Refresh
 end
 
+-- What the exact-vitals section occupies from its own heading down to the next
+-- one: heading, the checkbox 26 below it, and the description five below that.
+-- The description has no fixed height -- this client centres a font string's
+-- glyphs inside one and breaks the gap -- so the reserve carries three wrapped
+-- lines, which is more than the longest translation needs.
+local EXACT_VITALS_SECTION_HEIGHT = 96
+
 local function BuildUnitFrameGeneralSettings(parent, y, width)
   y = y or -4
   local widgets = {}
+
+  local vitalsHeader = U.CreateSectionHeader(parent, {
+    text = U.L("UF_EXACT_VITALS_HEADER"),
+    width = width or 496,
+    y = y,
+  })
+  table.insert(widgets, vitalsHeader)
+
+  local vitalsConfig = U.unitvitals and U.unitvitals.Config()
+  local exactVitals = U.CreateCheckbox(parent, {
+    name = "UnrealUISettingsExactVitals",
+    text = U.L("UF_EXACT_VITALS"),
+    value = vitalsConfig and vitalsConfig.exactVitals,
+    onChange = function(value)
+      if not vitalsConfig then return end
+      vitalsConfig.exactVitals = value and true or false
+      -- The index and the event handlers are installed once at load, so a
+      -- change that switches the feature back on inside the same session has
+      -- to build what OnEnable would have.
+      if vitalsConfig.exactVitals and U.unitvitals then
+        U.unitvitals.StartIndex()
+      end
+      RefreshAll()
+    end,
+  })
+  exactVitals.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, y - 26)
+  table.insert(widgets, exactVitals)
+
+  local vitalsHint = U.CreateSettingsLabel(parent, {
+    size = M.fontSize.small,
+    color = M.color.textDim,
+    inherits = "GameFontNormalSmall",
+    justify = "LEFT",
+    width = width or 496,
+  })
+  if vitalsHint then
+    U.AnchorSettingsDescription(vitalsHint, exactVitals.box)
+    vitalsHint:SetText(U.L("UF_EXACT_VITALS_HINT"))
+    table.insert(widgets, vitalsHint)
+  end
+
+  -- Everything below keeps its own relative layout; the section above simply
+  -- pushes it down as a block.
+  y = y - EXACT_VITALS_SECTION_HEIGHT
 
   local tickHeader = U.CreateSectionHeader(parent, {
     text = U.L("UF_POWER_TICK_HEADER"),
@@ -3382,6 +4088,7 @@ local function BuildUnitFrameGeneralSettings(parent, y, width)
   end
 
   local function Refresh()
+    if vitalsConfig then exactVitals.SetValue(vitalsConfig.exactVitals) end
     manaTick.SetValue(powerTick.Config().manaTick)
     energyTick.SetValue(powerTick.Config().energyTick)
     local class = UnitClassToken("player")
@@ -3522,7 +4229,32 @@ end
 -- array and the refresh the settings window expects.
 -- ---------------------------------------------------------------------------
 local function BuildGeneralPage(parent)
-  return BuildUnitFrameGeneralSettings(parent, -4, PAGE_WIDTH)
+  -- Left out entirely -- rather than shown disabled -- while there is nothing
+  -- to choose: under a theme that does not draw UnrealUI's own frames, and
+  -- while Enhanced is still the only other entry and is not selectable yet.
+  -- U.UnitFrameStyleSelectable owns that rule (core/unitframestyle.lua) and
+  -- turns the section back on by itself once a second style is available.
+  -- The rest of the page then keeps the top of the content area rather than
+  -- sitting below a gap.
+  if not U.UnitFrameStyleSelectable() then
+    return BuildUnitFrameGeneralSettings(parent, -4, PAGE_WIDTH)
+  end
+
+  local widgets, refreshStyle = BuildUnitFrameStyleSettings(parent, -4,
+                                                            PAGE_WIDTH)
+  local generalWidgets, refreshGeneral =
+    BuildUnitFrameGeneralSettings(parent, -4 - STYLE_SECTION_HEIGHT, PAGE_WIDTH)
+  local i
+  for i = 1, table.getn(generalWidgets) do
+    table.insert(widgets, generalWidgets[i])
+  end
+
+  local function Refresh()
+    if refreshStyle then refreshStyle() end
+    if refreshGeneral then refreshGeneral() end
+  end
+
+  return widgets, Refresh
 end
 
 -- Party frames and the HoT indicators that sit on them. modules/hots.lua owns
@@ -3639,14 +4371,17 @@ function UF:OnEnable()
     for n = 1, table.getn(SPECS) do
       local spec = SPECS[n]
       if spec.mover and spec.anchorTo then
-        return DockToParent(frames[spec.id], spec, frames[spec.anchorTo])
+        local restored = DockToParent(frames[spec.id], spec,
+                                      frames[spec.anchorTo])
+        classicNative.DockTargetTarget(
+          classicNative.NativeShown(frames.targettarget))
+        return restored
       end
     end
     return false
   end)
 
   if nativeChrome then
-    classicNative.SuppressStockAuras()
     classicNative.BindAll()
   end
 
@@ -3659,6 +4394,17 @@ function UF:OnEnable()
     -- unitframes.player_click_hit_route.v1 confirms PlayerFrameManaBar exists,
     -- is visible and is a native StatusBar in the Classic path. The overlay is
     -- an addon-owned child, so the stock bar remains responsible for its fill.
+    --
+    -- This is the heaviest addon-into-native binding the Classic path has, and
+    -- it remains a standing violation of the native widget ownership rule in
+    -- .claude/rules/unreal-ui.md: powerTick.Build does
+    -- CreateFrame("Frame", nil, bar) with bar = the client-owned
+    -- PlayerFrameManaBar, then SetAllPoints(bar) and SetFrameLevel on it -- an
+    -- addon frame parented into the native widget hierarchy and held there for
+    -- the session. The 2026-09-06 login-crash bisect cleared it of causing
+    -- that crash (it was active on the passing run), so it is not being
+    -- removed blind; it goes away with the rest of the native binding when the
+    -- Classic frames become addon-owned.
     tickBar = classicNative.Resolve({ "PlayerFrameManaBar" })
     tickHeight = classicNative.Dimension(tickBar, "GetHeight")
   elseif frames.player and frames.player.power then
@@ -3886,6 +4632,19 @@ function U.EliteIconReport()
 
         local r, g, b = U.GetColor(icon)
         if r then line.tint = string.format("%.2f,%.2f,%.2f", r, g, b) end
+      end
+
+      -- The ornamental skin on the same lifecycle, so one /uui elite status
+      -- says both which tier the frame settled on and whether the artwork or
+      -- the icon is the thing drawing it.
+      if frame.uuiClassSkin then
+        line.skin = frame.uuiClassSkinState or "off"
+        local okSkin, skinShown = pcall(frame.uuiClassSkin.IsShown,
+                                        frame.uuiClassSkin)
+        if okSkin then line.skinShown = skinShown and true or false end
+        local okTex, texPath = pcall(frame.uuiClassSkin.slices[1].GetTexture,
+                                     frame.uuiClassSkin.slices[1])
+        if okTex and type(texPath) == "string" then line.skinPath = texPath end
       end
 
       table.insert(report.units, line)

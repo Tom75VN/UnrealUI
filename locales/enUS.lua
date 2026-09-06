@@ -27,6 +27,11 @@ PETBAR_MODE_SELECTED      = "Pet bar selected: %s. Type /reload to apply.",
 PETBAR_CUSTOM_WARNING     = "Experimental custom pet bar: this client blocks pet spell clicks. Restore native casting with /uui petbar native, then /reload.",
 PETBAR_ACTION_UNAVAILABLE = "This pet action is unavailable on this client.",
 PETBAR_UNAVAILABLE        = "Pet bar mode controls are unavailable in this session.",
+CMD_PETBAR_BUTTONS        = "  |cffffff00/uui petbar size <12-64> / spacing <0-32> / reset|r - native pet button size and gap",
+PETBAR_BUTTONS_APPLIED    = "Pet buttons: size %d, spacing %d.",
+PETBAR_BUTTONS_NATIVE     = "Pet buttons: client default (size %d, spacing %d).",
+PETBAR_BUTTONS_RESTORED   = "Pet buttons: the client's own size and spacing restored.",
+PETBAR_BUTTONS_RANGE      = "Pet button size must be %d-%d and spacing %d-%d.",
 
 -- ---------------------------------------------------------------------------
 -- Shared controls (core/widgets.lua, core/style.lua)
@@ -81,12 +86,12 @@ MOVER_LABEL_SWING_BAR     = "Auto attack : Swing bar",
 MOVER_LABEL_MICRO_BAR     = "Micro Bar",
 MOVER_LABEL_BUFFS         = "Buffs & Debuffs",
 MOVER_LABEL_MINIMAP       = "Minimap",
+MOVER_LABEL_TOOLTIP       = "Tooltip",
 MOVER_LABEL_PET_BAR       = "Pet Bar",
 MOVER_LABEL_STANCE_BAR    = "Stance Bar",
 MOVER_LABEL_STATUS        = "Status Overlay",
 MOVER_LABEL_ONLINE_COUNT  = "Online Count Overlay",
 MOVER_LABEL_QUEST_TRACKER = "Quest Tracker",
-MOVER_LABEL_BANK          = "Bank",
 MOVER_LABEL_ACTION_BAR    = "Bar %d",
 MOVER_LABEL_MOVER_TEST    = "Mover test",
 
@@ -121,6 +126,11 @@ SETTINGS_REPUTATION_BAR   = "Show reputation bar",
 SETTINGS_MINIMAP_BUTTON   = "Show minimap settings button",
 SETTINGS_ZONE_LEVELS      = "Show zone level ranges on the world map",
 SETTINGS_ZONE_LEVELS_HINT = "Hovering a zone on a continent map shows its level range beside the name: green below your level, orange at your level, red above your level.",
+SETTINGS_TOOLTIP_CURSOR  = "World tooltips follow the cursor",
+SETTINGS_TOOLTIP_CURSOR_HINT = "Keeps world tooltips beside the cursor and inside the screen. Disable to use the saved Tooltip anchor.",
+SETTINGS_CHAT_SHADOW      = "Remove the chat text shadow",
+SETTINGS_CHAT_SHADOW_RELOAD = "Type /reload to restore the chat text shadow.",
+SETTINGS_CHAT_SHADOW_HINT = "Draws the chat messages flat, with no drop shadow behind the letters. Chat tab labels are left alone.",
 
 SWING_BAR_MAIN            = "MH",
 SWING_BAR_OFF             = "OH",
@@ -187,6 +197,10 @@ ABC_SHOW_COOLDOWN         = "Show cooldown timers",
 ABC_SHOW_GCD              = "Show global cooldown",
 ABC_GENERAL_HINT          = "%d independent bars are available. Pages used by this class's forms are shown only on Bar 1.",
 ABC_BIND_HINT             = "Hover a slot and press a key to bind it. Escape over a slot clears it. Bars 1-5 are bindable; bars 6-10 have no key command in this client, so they are shown but cannot take one.",
+ABC_PET_BAR              = "Pet Bar",
+ABC_PET_RESET            = "Restore Client Size",
+ABC_PET_HINT             = "These place the client's own pet buttons, so there is no enable or button count here. Moving either slider takes the row over; Restore Client Size hands it back. Same as /uui petbar size, spacing and reset.",
+ABC_PET_UNAVAILABLE      = "The native pet bar is not active in this session, so its buttons cannot be placed.",
 
 -- ---------------------------------------------------------------------------
 -- Quick binding (modules/quickbind.lua)
@@ -221,6 +235,14 @@ UF_TAB_GENERAL            = "General Options",
 UF_TAB_PARTY              = "Party Frames",
 UF_TAB_AURAS              = "Auras",
 UF_TAB_COLORS             = "Colors",
+
+-- Unit frame style (core/unitframestyle.lua). The style names themselves are
+-- not translated, for the same reason the theme names are not: they identify a
+-- style, they do not describe it. The WIP marker reuses SETTINGS_THEME_WIP.
+UF_STYLE_HEADER           = "Unit Frame Style",
+UF_STYLE_HINT             = "Minimal is the unit frame style unrealUI draws today. Enhanced is still in development and cannot be selected yet.",
+UF_STYLE_CHANGED          = "Unit frame style changed",
+UF_STYLE_RELOAD           = "Type /reload to apply the %s unit frame style.",
 UF_COLORS_HEADER          = "Unit Frame Colors",
 UF_CUSTOM_BAR_COLORS      = "Use custom bar colors",
 UF_HEALTH_BAR_COLOR       = "Health bar color",
@@ -235,6 +257,13 @@ UF_POWER_ENERGY           = "Energy",
 -- on a frame the module also fades. Keep it short: it shares the party health
 -- bar with the member's level and name.
 UF_OFFLINE                = "OFFLINE",
+
+-- Absolute creature health and mana on the target frame
+-- (core/unitvitals.lua). This client reports a non-group unit as a whole
+-- percentage, so the real numbers come from the realm's own creature table.
+UF_EXACT_VITALS_HEADER    = "Creature Health",
+UF_EXACT_VITALS           = "Show exact health and mana",
+UF_EXACT_VITALS_HINT      = "The client only reports a creature's health as a percentage. When this is on, the target frame prints the real values from the bundled creature table and refines the current one from the damage it sees. Turn it off to show the percentage instead.",
 
 UF_PARTY_HEADER           = "Party Frames",
 UF_PARTY_PETS             = "Show party member pets",
@@ -320,6 +349,7 @@ BAGS_SORT_CURSOR          = "Put down the item on your cursor first.",
 BAGS_SORT_DONE            = "Bags sorted.",
 BAGS_SORT_NOTHING         = "Bags are already sorted.",
 BAGS_SORT_FAILED          = "Sorting stopped: an item did not move. Nothing was lost.",
+BAGS_SORT_NOSTAGE         = "Sorting needs one empty bag slot to work with. Free a slot and try again.",
 BAGS_TOGGLE_KEYRING       = "Toggle Keyring",
 BAGS_KEYRING_HINT         = "Show the keyring.",
 BAGS_TOGGLE_BAGS          = "Toggle Bags",
@@ -355,6 +385,7 @@ BANK_SORT_CURSOR          = "Put down the item on your cursor first.",
 BANK_SORT_DONE            = "Bank sorted.",
 BANK_SORT_NOTHING         = "Bank is already sorted.",
 BANK_SORT_FAILED          = "Bank sorting stopped: an item did not move.",
+BANK_SORT_NOSTAGE         = "Bank sorting needs one empty slot in a bank bag. Free a slot and try again.",
 BANK_BAG_LABEL            = "Bank Bag",
 BANK_BUY_SLOT             = "Purchase another bank bag slot?",
 BANK_PURCHASE             = "Purchase",
@@ -386,6 +417,24 @@ SPELLBOOK_HIGHEST_RANK_TOOLTIP = "Shows only the last rank of each spell.",
 SPELLBOOK_BAR_HINT        = "Not on action bars",
 SPELLBOOK_BAR_HINT_TOOLTIP = "Highlights spells not on action bars.",
 GAMEMENU_OPTIONS          = "Options",
+
+-- ---------------------------------------------------------------------------
+-- Experience bar tooltip (modules/xpbar.lua)
+-- ---------------------------------------------------------------------------
+XPTIP_TITLE               = "Experience",
+XPTIP_XP                  = "XP",
+XPTIP_REMAINING           = "Remaining",
+XPTIP_STATUS              = "Status",
+XPTIP_RESTING             = "Resting",
+XPTIP_RESTED              = "Rested",
+XPTIP_SESSION             = "This Session",
+XPTIP_PER_HOUR            = "Average Per Hour",
+XPTIP_TIME_LEFT           = "Time Remaining",
+-- Single-letter duration suffixes for the Time Remaining readout, e.g. "2h 15m".
+XPTIP_UNIT_DAY            = "d",
+XPTIP_UNIT_HOUR           = "h",
+XPTIP_UNIT_MINUTE         = "m",
+XPTIP_UNIT_SECOND         = "s",
 
 -- ---------------------------------------------------------------------------
 -- Slash commands (core/commands.lua)
