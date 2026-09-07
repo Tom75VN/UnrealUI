@@ -96,6 +96,7 @@ local DIAGNOSTIC_HELP = {
   "  |cffffff00/uui np|r - dump WorldFrame children (nameplates)",
   "  |cffffff00/uui bagcat|r - dump what the client calls each bag item and " ..
     "which category it lands in",
+  "  |cffffff00/uui tabs|r - dump what the character-sheet tab strip measured and wrote",
   "  |cffffff00/uui sb|r - dump why a spellbook entry is marked off the action bars",
   "  |cffffff00/uui sb trace|r - record what the mark does as a spell goes on/off a bar",
   "  |cffffff00/uui sb ranks|r - dump the spell list layout the highest-rank filter reads",
@@ -195,6 +196,7 @@ local function ShowUnitFrameCheck()
     U.Print("  exact vitals: enabled " .. tostring(v.enabled) ..
             ", creature table " .. tostring(v.data) ..
             ", names " .. tostring(v.names) ..
+            " (" .. tostring(v.namesLocale) .. ")" ..
             ", indexed " .. tostring(v.indexed))
     U.Print("    target " .. tostring(v.trackKey) ..
             "  tracked " .. tostring(v.trackCurrent) ..
@@ -1119,6 +1121,44 @@ handlers["bankcount"] = function(rest)
     U.Print("  " .. U.SavedVariablesHint() .. " after |cffffff00/reload|r")
   end
 end
+-- What the character sheet's tab strip measured and wrote on its last layout
+-- pass. `target` is what unrealUI asked for, `after` is the width read back
+-- immediately, `live` is the width one call later: target == after == live
+-- means the fit applied and something else is drawing the tabs wide, after ~=
+-- target means SetWidth was refused, and live ~= after means the client resized
+-- the tab back afterwards.
+handlers["tabs"] = function()
+  if type(U.CharacterTabReport) ~= "function" then
+    U.Print("tab report unavailable - modules/character.lua did not load, " ..
+            "or the native-chrome theme is active")
+    return
+  end
+
+  local report = U.CharacterTabReport()
+  if report.reason then
+    U.Print("character tabs: not sized - " .. report.reason)
+    return
+  end
+
+  U.Print("character tabs: shown=" .. tostring(report.count) ..
+          " fits=" .. tostring(report.fits) ..
+          " window=" .. tostring(report.frameWidth) ..
+          " available=" .. tostring(report.available) ..
+          " labels=" .. tostring(report.labelTotal) ..
+          " padding=" .. tostring(report.padding))
+
+  local i
+  for i = 1, table.getn(report.rows) do
+    local row = report.rows[i]
+    U.Print("  " .. row.name ..
+            " label=" .. tostring(row.label) ..
+            " before=" .. tostring(row.before) ..
+            " target=" .. tostring(row.target) ..
+            " after=" .. tostring(row.after) ..
+            " live=" .. tostring(row.live))
+  end
+end
+
 -- Why a spellbook entry is, or is not, marked as absent from the action bars.
 -- The command being unavailable is itself an answer: modules/spellbook.lua did
 -- not load, or the hint never installed.

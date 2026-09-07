@@ -194,6 +194,11 @@ local PET_SLIDERS = {
   { key = "Spacing", textKey = "ABC_BUTTON_SPACING", column = 1 },
 }
 
+-- This page has no checkbox row above its sliders, so it does not reuse the
+-- per-bar ROW_Y grid: the content starts directly under the header and keeps
+-- the same 76 row pitch from there.
+local PET_ROW_Y = { -38, -114 }
+
 local function BuildPetBarPage(parent)
   local widgets = {}
   local controls = {}
@@ -241,7 +246,7 @@ local function BuildPetBarPage(parent)
         U.SetPetBarSetting(spec.key, value)
       end,
     })
-    slider.SetPoint("TOPLEFT", parent, "TOPLEFT", spec.column * COLUMN_X, ROW_Y[1])
+    slider.SetPoint("TOPLEFT", parent, "TOPLEFT", spec.column * COLUMN_X, PET_ROW_Y[1])
 
     controls[spec.key] = slider
     table.insert(widgets, slider)
@@ -261,7 +266,7 @@ local function BuildPetBarPage(parent)
       end
     end,
   })
-  reset:SetPoint("TOPLEFT", parent, "TOPLEFT", 0, ROW_Y[2])
+  reset:SetPoint("TOPLEFT", parent, "TOPLEFT", 0, PET_ROW_Y[2])
   table.insert(widgets, reset)
 
   local hint = U.CreateSettingsLabel(parent, {

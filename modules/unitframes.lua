@@ -2792,7 +2792,15 @@ function classicNative.ApplyVitals(frame)
   if not health then return end
 
   local data = frame.data
-  if data.exactHealthMax and data.connected ~= false then
+  -- A dead target is the one case the client already has a word for: it draws
+  -- its own "Dead" over the health bar (TargetFrame_CheckDead, kept under this
+  -- theme because Classic hands the frame back to the client), and the
+  -- healthdyn readout's own "Dead" landed on top of it -- two red strings at
+  -- the same anchor, reported in game as overlapping text. The client's is
+  -- left to say it alone; the exact numbers have nothing to add to a corpse.
+  if data.isDead then
+    SetLabelText(health, "")
+  elseif data.exactHealthMax and data.connected ~= false then
     SetLabelText(health, StatusText(frame, "healthdyn"))
   else
     SetLabelText(health, "")

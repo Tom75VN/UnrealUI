@@ -1,4 +1,4 @@
--- UnrealQuest / UnrealUI creature vitals data for Vanilla 1.12.1.
+-- unrealUI creature vitals data for Vanilla 1.12.1.
 -- Source DB: db-sqlite-6958f26.zip / mangos.sqlite.
 -- VMaNGOS core revision: 6958f2666be3feb7b5584f3a49cb36e5acf74172.
 -- Database snapshot timestamp: 2026-08-22 06:58:00; latest migration: 20260822042038.
@@ -23,7 +23,13 @@
 -- The standard VMaNGOS rank HP rates are all 1.0. They are stored separately
 -- because a realm can override them in mangosd.conf; the world DB itself does not store that config.
 
-UnrealQuestData["unit_vitals"] = {
+-- Names for these ids live in Database/unit_names.lua, with unit_names_ruRU.lua
+-- and unit_names_zhCN.lua as the per-locale alternatives. The tables hang off
+-- the addon table the way core/pricedata.lua does, so nothing here depends
+-- on a sibling addon being installed.
+local U = UnrealUI
+
+U.unitVitals = {
   ["revision"] = "6958f2666be3feb7b5584f3a49cb36e5acf74172",
   ["migration"] = "20260822042038",
   ["patch"] = 10,

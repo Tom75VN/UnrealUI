@@ -34,6 +34,12 @@
 -- templates produce 15,284 distinct (name, level) keys and *zero* of them
 -- carry two different maximum-health values. Any candidate id whose level
 -- range covers the unit therefore answers for every id sharing its name.
+--
+-- That property is not free in the localized name files: translation merges a
+-- few pairs of ids that enUS keeps apart (Bile Spewer and Bile Slime are one
+-- Russian name, Roach and Cockroach one Chinese name). The six ruRU and four
+-- zhCN names that would answer a level with two different maximum healths are
+-- left out of those files entirely, so this holds for whichever one loaded.
 
 local U = UnrealUI
 
@@ -45,14 +51,7 @@ U.unitvitals = V
 -- would make them wrong rather than absent.
 V.DEFAULTS = { exactVitals = true }
 
--- Entries walked per scheduler tick while the creature-name index is built.
--- The whole table is ~10k entries; at this size the build costs a handful of
--- ticks and never a visible frame.
-V.INDEX_CHUNK = 1200
-
 V.index = nil          -- creature name -> id, or a list of ids sharing it
-V.indexNames = nil     -- source table, held only while the build runs
-V.indexCursor = nil    -- next() traversal state between chunks
 V.indexDone = false
 
 -- name..":"..level -> { health = n, mana = n } or { miss = true }
@@ -86,10 +85,7 @@ end
 -- Bundled data
 -- ---------------------------------------------------------------------------
 function V.Data()
-  local root = U.G("UnrealQuestData")
-  if type(root) ~= "table" then return nil end
-
-  local db = root["unit_vitals"]
+  local db = U.unitVitals
   if type(db) ~= "table" then return nil end
   if type(db.units) ~= "table" or type(db.classLevel) ~= "table" then
     return nil
@@ -97,104 +93,56 @@ function V.Data()
   return db
 end
 
--- Creature names are not part of the vitals table -- storing ten thousand
--- names per language beside it would multiply a 426 KB file by every locale
--- the client ships. They come from unrealQuest's bundled name tables instead,
--- which already exist in nine languages on the same shared global.
+-- Creature names are kept out of the vitals table itself: that one is keyed by
+-- creature id, and a name index is a different shape with its own file.
 --
--- The client locale, not unrealUI's language setting: this is matched against
--- the name UnitName returns, which the client picks, while the addon language
--- is a display preference the player sets independently (core/locale.lua).
+-- There is one such file per bundled locale -- Database/unit_names.lua,
+-- unit_names_ruRU.lua and unit_names_zhCN.lua -- and they are alternatives:
+-- each returns at its first line unless GetLocale names it, so exactly one of
+-- them ever assigns U.unitNames and nothing here has to choose between them.
+-- The one that ran records itself in U.unitNamesLocale for /uui check.
+--
+-- The client's locale is what decides, not unrealUI's language setting: these
+-- names are matched against what UnitName returns, and that is a property of
+-- the client build, while the addon's language is a display preference the
+-- player sets independently (core/locale.lua). A client running a locale with
+-- no file of its own gets the enUS table, resolves nothing against it, and the
+-- frames keep their percentage readout -- the same degradation this path had
+-- for every non-enUS client before the two localized files existed.
 function V.NameTable()
-  local root = U.G("UnrealQuestData")
-  if type(root) ~= "table" then return nil end
-
-  local getLocale = U.G("GetLocale")
-  if type(getLocale) == "function" then
-    local ok, code = pcall(getLocale)
-    if ok and type(code) == "string" and
-       type(root["units_" .. code]) == "table" then
-      return root["units_" .. code]
-    end
-  end
-
-  if type(root["units_enUS"]) == "table" then return root["units_enUS"] end
-  return nil
+  local names = U.unitNames
+  if type(names) ~= "table" then return nil end
+  return names
 end
 
 -- ---------------------------------------------------------------------------
 -- Creature-name index
 --
--- Built once, in chunks, off the shared scheduler. A name that is shared by
--- several creature ids keeps a list; the measurement above says every id in
--- such a list agrees on maximum health at any given level, so the list only
--- exists to find one whose level range covers the unit.
+-- Database/unit_names.lua ships the index already built, keyed by name, so
+-- there is nothing to construct here: binding it is one assignment. It used to
+-- be walked out of unrealQuest's id-keyed name table in 1200-entry chunks off
+-- the shared scheduler on every login; bundling the index instead removes that
+-- startup pass along with the sibling-addon dependency.
+--
+-- A name shared by several creature ids holds a list. The measurement in the
+-- file header says every id in such a list agrees on maximum health at any
+-- given level, so the list only exists to find one whose level range covers
+-- the unit.
 -- ---------------------------------------------------------------------------
-function V.AddIndexEntry(name, id)
-  local existing = V.index[name]
-  if existing == nil then
-    V.index[name] = id
-  elseif type(existing) == "table" then
-    table.insert(existing, id)
-  else
-    V.index[name] = { existing, id }
-  end
-end
-
-function V.BuildIndexChunk()
-  if V.indexDone then return true end
-
-  local db = V.Data()
-  local names = V.indexNames
-  if not db or not names then
-    V.indexDone = true
-    V.index = nil
-    return true
-  end
-
-  -- next() resumes the traversal where the previous chunk stopped. The name
-  -- table is bundled data that nothing writes to, so the iteration state stays
-  -- valid across ticks.
-  local walked, id, name = 0, V.indexCursor, nil
-  while walked < V.INDEX_CHUNK do
-    id, name = next(names, id)
-    if id == nil then
-      V.indexDone = true
-      V.indexCursor = nil
-      V.indexNames = nil
-      U.Debug("unit vitals: creature name index built")
-      return true
-    end
-    if type(name) == "string" and db.units[id] then
-      V.AddIndexEntry(name, id)
-    end
-    walked = walked + 1
-  end
-
-  V.indexCursor = id
-  return false
-end
-
 function V.StartIndex()
   if V.index or V.indexDone then return end
 
   local names = V.NameTable()
   if not names or not V.Data() then
-    -- Either the vitals table or the name table is absent -- an unrealQuest
-    -- install that predates the name tables, or a broken unrealUI install.
-    -- The frames keep their percentage readout; nothing else changes.
+    -- A broken unrealUI install: both tables ship with the addon. The frames
+    -- keep their percentage readout; nothing else changes.
     V.indexDone = true
     U.Debug("unit vitals: no creature data; exact vitals unavailable")
     return
   end
 
-  V.index = {}
-  V.indexNames = names
-  V.indexCursor = nil
-
-  U.RegisterUpdate("unitvitals.index", 0, function()
-    if V.BuildIndexChunk() then U.UnregisterUpdate("unitvitals.index") end
-  end)
+  V.index = names
+  V.indexDone = true
 end
 
 -- ---------------------------------------------------------------------------
@@ -463,6 +411,7 @@ function U.UnitVitalsReport()
     enabled = V.Enabled(),
     data = V.Data() ~= nil,
     names = V.NameTable() ~= nil,
+    namesLocale = U.unitNamesLocale,
     indexed = V.indexDone and V.index ~= nil,
     cached = V.cacheCount,
     trackKey = V.track.key,

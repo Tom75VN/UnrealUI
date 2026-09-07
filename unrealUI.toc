@@ -2,7 +2,7 @@
 ## Title: |cffffffffUnreal |cfff5ae0aUI
 ## Notes: Unreal Azeroth native UI addon.
 ## Author: unrealUI
-## Version: 0.5.0
+## Version: 0.5.1
 ## X-License: MIT
 ## SavedVariables: UnrealUIDB, UnrealUIProfiles, UnrealUIDiagDB, UnrealUIPriceDB
 ## SavedVariablesPerCharacter: UnrealUIProfileDB, UnrealUIFavoriteDB, UnrealUIBankCountDB
@@ -34,12 +34,19 @@ core\auradata.lua
 core\hotdata.lua
 core\pricedata.lua
 
-# Bundled VMaNGOS world data, packaged in the shape unrealQuest already uses
-# so a table only has to be generated and shipped once. Database\init.lua owns
-# the shared global both addons write to; core\unitvitals.lua is the code that
-# reads it, and needs U.Round from core\compat.lua only at call time.
-Database\init.lua
+# Bundled VMaNGOS world data. Both tables hang off the addon table the way
+# core\pricedata.lua does, so unrealUI owns them outright and exact vitals work
+# with no sibling addon installed. core\unitvitals.lua is the code that reads
+# them, and needs U.Round from core\compat.lua only at call time.
+#
+# The three name files are alternatives, not additions: each one returns at its
+# first line unless GetLocale names it, so exactly one builds a table and the
+# order they are listed in here does not decide which. The creature names have
+# to follow the client's locale because they are matched against UnitName.
 Database\unit_vitals.lua
+Database\unit_names.lua
+Database\unit_names_ruRU.lua
+Database\unit_names_zhCN.lua
 core\unitvitals.lua
 
 core\compat.lua

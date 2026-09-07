@@ -187,6 +187,13 @@ M.color = {
   health     = { 0.25, 0.75, 0.30, 1.00 },
   healthBg   = { 0.10, 0.10, 0.10, 0.90 },
 
+  -- Experience fill, and the dimmer rested band behind it. Central because two
+  -- surfaces draw an XP bar -- the player's own bar (modules/xpbar.lua) and the
+  -- pet page's native one (modules/character.lua) -- and they have to read as
+  -- the same bar.
+  xp         = { 0.55, 0.32, 0.87, 1.00 },
+  xpRested   = { 0.30, 0.20, 0.55, 1.00 },
+
   -- What a full-health bar fades to, and the single most recognisable part of
   -- the modern unit frame look. pfUI modern puts near-black here (profiles.lua,
   -- Modern profile: customcolor "0.1,0.1,0.1,1"), but the fade in

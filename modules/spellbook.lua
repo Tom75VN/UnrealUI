@@ -96,6 +96,39 @@ local function SkillTabCount()
   return tonumber(G("MAX_SKILLLINE_TABS")) or 8
 end
 
+-- Repaints every spell button in place.
+--
+-- The one entry point this client has for that. knowledge.json /
+-- spellbook.rank_filter_redraw_requires_spellbutton_updatebutton
+-- (BEHAVIOR_VERIFIED): there is no frame-level repaint here --
+-- SpellBookFrame_Update refreshes tabs and page chrome only, and Vanilla's
+-- other spell-refresh globals do not exist -- so anything that changes what a
+-- slot resolves to, or which book the page is reading, has to drive
+-- SpellButton_UpdateButton itself. It takes its button from the global `this`,
+-- the Vanilla convention, so `this` is set per button and restored afterwards.
+--
+-- Shared by the highest-rank filter and the book tabs rather than duplicated:
+-- both change what the page should show without the client noticing.
+local function RepaintSpellButtons()
+  local updater = G("SpellButton_UpdateButton")
+  if type(updater) ~= "function" then
+    U.Debug("spellbook: SpellButton_UpdateButton unavailable, no repaint")
+    return false
+  end
+
+  local previous = G("this")
+  local i
+  for i = 1, SpellCount() do
+    local button = G("SpellButton" .. i)
+    if button then
+      U.SetG("this", button)
+      pcall(updater)
+    end
+  end
+  U.SetG("this", previous)
+  return true
+end
+
 local function StyleSpellButton(index, refreshOnly)
   local button = G("SpellButton" .. index)
   local icon = G("SpellButton" .. index .. "IconTexture")
@@ -171,20 +204,19 @@ local function StyleBookTabs()
     end)
   end
 
-  local previous, i = nil, nil
+  -- The shared tab group rather than U.StyleStockTab: these two tabs are a
+  -- real selection now that clicking them switches books (see booktab below),
+  -- and the group is what owns an active state. U.ChainStockTabs skips past a
+  -- hidden tab instead of chaining off it, which the Pet tab is whenever the
+  -- player has no pet.
+  local tabs, i = {}, nil
   for i = 1, 3 do
     local tab = G("SpellBookFrameTabButton" .. i)
-    if tab then
-      if previous then
-        pcall(function()
-          tab:ClearAllPoints()
-          tab:SetPoint("LEFT", previous, "RIGHT", 3, 0)
-        end)
-      end
-      U.StyleStockTab(tab)
-      previous = tab
-    end
+    if tab then table.insert(tabs, tab) end
   end
+
+  U.ChainStockTabs(tabs, 3)
+  U.StyleStockTabGroup(tabs, 1, { height = 20 })
 end
 
 -- ---------------------------------------------------------------------------
@@ -196,6 +228,87 @@ end
 -- legitimately be nil here.
 local function BookFrame()
   return frame or G("SpellBookFrame")
+end
+
+-- ---------------------------------------------------------------------------
+-- Book tabs (Spellbook / Pet)
+--
+-- Clicking the Pet tab did nothing at all: the page kept showing player
+-- spells. The client difference behind it is the one the highest-rank filter
+-- already documents -- knowledge.json /
+-- spellbook.rank_filter_redraw_requires_spellbutton_updatebutton
+-- (BEHAVIOR_VERIFIED): spell buttons here are repainted only from their own
+-- OnEvent, never from a frame-level updater, so a change of selected book is
+-- computed and never drawn. The same probe's _G enumeration lists
+-- SpellBookSkillLineTab_OnClick as present but names no book-tab click
+-- handler, so this does not assume the client's own tab handler switches
+-- anything.
+--
+-- The hook is therefore written to be correct either way. It runs after
+-- whatever handler the tab already has, reads the selected book back, and only
+-- writes it when the click did not already select this tab's book -- then it
+-- repaints, which is the part the client never does. If the native handler
+-- turns out to work, this costs one redundant repaint and no double toggle.
+--
+-- Behaviour, not chrome, so it installs under every theme, the same way the
+-- rank filter and the bar hint do.
+-- ---------------------------------------------------------------------------
+local booktab = {}
+
+-- The book a tab selects. Vanilla stores it on the button itself, which is
+-- preferred over an index assumption; the fallback tokens are read from the
+-- client rather than hardcoded. Only tabs 1 and 2 have a known meaning here,
+-- so a third tab is left entirely to the client.
+function booktab.Type(tab, index)
+  local own = tab and tab.bookType
+  if type(own) == "string" and own ~= "" then return own end
+
+  local spell = G("BOOKTYPE_SPELL")
+  local pet = G("BOOKTYPE_PET")
+  if type(spell) ~= "string" or spell == "" then spell = "spell" end
+  if type(pet) ~= "string" or pet == "" then pet = "pet" end
+
+  if index == 1 then return spell end
+  if index == 2 then return pet end
+  return nil
+end
+
+function booktab.Select(wanted)
+  local book = BookFrame()
+  if not book or type(wanted) ~= "string" then return end
+
+  if book.bookType ~= wanted then
+    book.bookType = wanted
+    -- Chrome only: this is what moves the skill-line tabs and page text
+    -- between the two books. It repaints no spell button, hence the explicit
+    -- repaint below.
+    local update = G("SpellBookFrame_Update")
+    if type(update) == "function" then pcall(update, 1) end
+  end
+
+  -- The filter caches one skill line's slot list; the other book is a
+  -- different list entirely.
+  rank.Invalidate()
+  RepaintSpellButtons()
+  rank.UpdatePaging()
+end
+
+function booktab.Install()
+  local i
+  for i = 1, 2 do
+    local tab = G("SpellBookFrameTabButton" .. i)
+    if tab and not tab.uuiBookTabHooked then
+      local index = i
+      local wanted = booktab.Type(tab, index)
+      if wanted then
+        tab.uuiBookTabHooked = true
+        U.PostHookScript(tab, "OnClick", function()
+          U.Debug("spellbook: book tab " .. index .. " -> " .. wanted)
+          booktab.Select(wanted)
+        end)
+      end
+    end
+  end
 end
 
 -- The book the window is currently showing. Returned as nil when the client
@@ -465,38 +578,13 @@ end
 
 -- Redraws the open window after the checkbox changes.
 --
--- This client repaints spell buttons only through SpellButton_UpdateButton,
--- reached from each button's own OnEvent -- never from a frame-level updater.
--- Driving SpellBookFrame_Update() produces zero GetSpellName/GetSpellTexture
--- calls and leaves every button untouched, and SpellBook_Update,
--- SpellBook_UpdateSpells and SpellBookFrame_UpdateSpells do not exist here at
--- all (behavior.json / spellbookrank.redraw.v2, .resolution.v1, .lua_surface.v2
--- -- BEHAVIOR_VERIFIED). Calling the frame updater, which is what this used to
--- do, therefore changed the setting and repainted nothing: the filter's own
--- page indicator moved while every icon stayed put.
---
--- SpellButton_UpdateButton takes its button from the global `this`, the
--- Vanilla convention, so `this` is set per button and restored afterwards.
--- Measured at 12 repaints for 12 buttons.
+-- Calling the frame updater, which is what this used to do, changed the
+-- setting and repainted nothing: the filter's own page indicator moved while
+-- every icon stayed put. See RepaintSpellButtons for why, and for the measured
+-- 12 repaints for 12 buttons.
 function rank.Refresh()
   rank.Invalidate()
-
-  local updater = G("SpellButton_UpdateButton")
-  if type(updater) == "function" then
-    local previous = G("this")
-    local i
-    for i = 1, SpellCount() do
-      local button = G("SpellButton" .. i)
-      if button then
-        U.SetG("this", button)
-        pcall(updater)
-      end
-    end
-    U.SetG("this", previous)
-  else
-    U.Debug("spellbook: SpellButton_UpdateButton unavailable, no rank redraw")
-  end
-
+  RepaintSpellButtons()
   rank.UpdatePaging()
 end
 
@@ -693,6 +781,8 @@ function rank.Install()
     -- Also the retry for the checkbox: the window is provably built by the
     -- time it is first shown, even if it was not at PLAYER_LOGIN.
     if not rank.box then rank.BuildToggle() end
+    -- Also the retry under native-chrome themes, which never run Reapply.
+    booktab.Install()
     rank.UpdatePaging()
   end)
 
@@ -2737,6 +2827,10 @@ local function Reapply()
   StripDecorations()
   if panel then panel:Show() end
 
+  -- Retry: the tab buttons are provably present once the window has been
+  -- shown, even if they were not at PLAYER_LOGIN. Idempotent per tab.
+  booktab.Install()
+
   local i
   for i = 1, SpellCount() do StyleSpellButton(i, true) end
   SetSpellFont(G("SpellBookTitleText"), M.fontSize.large, SPELL_GOLD)
@@ -2822,6 +2916,7 @@ function SB:OnEnable()
   -- is skipped. The highest-rank filter is behaviour rather than chrome and is
   -- installed for every theme.
   if not U.ThemeStyleUsesNativeChrome() then BuildFrame() end
+  booktab.Install()
   rank.Install()
   missing.Install()
 end

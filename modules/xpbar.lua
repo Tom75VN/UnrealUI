@@ -22,8 +22,8 @@ local WIDTH = 300
 local HEIGHT = 7
 local GAP = 3
 
-local COLOR_XP = { 0.55, 0.32, 0.87, 1.00 }
-local COLOR_XP_RESTED = { 0.30, 0.20, 0.55, 1.00 }
+local COLOR_XP = M.color.xp
+local COLOR_XP_RESTED = M.color.xpRested
 local COLOR_REP_FALLBACK = { 0.50, 0.50, 0.50, 1.00 }
 local COLOR_REP_EMPTY = { 0.35, 0.35, 0.35, 1.00 }
 

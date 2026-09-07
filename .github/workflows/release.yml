@@ -38,7 +38,7 @@ jobs:
           # the .toc because the client loads it from the addon folder itself;
           # locales/ and themes/ are listed in the .toc. A zip missing any of
           # them installs an addon that silently loses those files.
-          cp -R core locales media modules themes package/unrealUI/
+          cp -R core Database locales media modules themes package/unrealUI/
           cp Bindings.xml unrealUI.toc LICENSE package/unrealUI/
 
           # Guard against this copy list drifting from the .toc again: every

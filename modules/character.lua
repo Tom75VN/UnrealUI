@@ -30,6 +30,26 @@ local SLOTS = {
 -- and kept native selected-tab art (USER_CONFIRMED_INGAME).
 local TAB_COUNT = 5
 
+-- The visible window surface: panel sits this far inside CharacterFrame on
+-- each side. The tab strip is aligned to the same two insets so its first tab
+-- starts flush with the window's left edge and the run ends flush with its
+-- right, rather than to a second set of numbers.
+-- Measurements from the last LayoutTabs pass, for /uui tabs.
+local tabFit
+
+local PANEL_INSET_LEFT = 10
+local PANEL_INSET_RIGHT = 30
+local TAB_GAP = 3
+-- Offset from the panel's bottom edge. Negative lifts the strip into that
+-- edge, which is the placement the sheet uses.
+local TAB_DROP = -1
+-- Padding on each side of a tab's label. The Pet tab is the one conditional
+-- tab in the run, and the tighter five-tab layout reads better with a little
+-- more inset, so it gets the extra; U.FitStockTabStrip still reduces this if
+-- the run would not fit.
+local TAB_PADDING = 10
+local TAB_PET_PADDING = 2
+
 local function G(name)
   return U.G(name)
 end
@@ -491,14 +511,148 @@ end
 -- it would inherit a gap sized to an invisible button -- WORKING_SOURCE from
 -- UnrealPfUI's own character skin, which guards the same chain on
 -- lastTab:IsShown().
-local function StyleTabs()
+local function TabStrip()
   local tabs, i = {}, nil
   for i = 1, TAB_COUNT do
     tabs[i] = G("CharacterFrameTab" .. i)
   end
+  return tabs
+end
 
-  U.ChainStockTabs(tabs, 3)
+-- Whether the conditional Pet tab is currently in the run. Counted rather
+-- than read off a fixed index: Pet is the only tab the client shows and hides
+-- here, so a full run is a run with a pet in it, and that holds whatever
+-- position this client gives the tab.
+local function HasPetTab()
+  local tabs, shown, i = TabStrip(), 0, nil
+  for i = 1, TAB_COUNT do
+    local tab = tabs[i]
+    if tab and tab.IsShown then
+      local ok, visible = pcall(tab.IsShown, tab)
+      if ok and visible then shown = shown + 1 end
+    end
+  end
+  return shown >= TAB_COUNT
+end
+
+-- Chain + fit. The Pet tab is the fifth in the run and pushed it past the
+-- window edge; U.FitStockTabStrip rebuilds each tab as label + padding and
+-- reduces that padding until the whole run fits between the window's insets,
+-- so the tabs get tighter rather than the strip getting longer.
+local function LayoutTabs()
+  local tabs = TabStrip()
+  U.ChainStockTabs(tabs, TAB_GAP)
+
+  local padding = TAB_PADDING
+  if HasPetTab() then padding = padding + TAB_PET_PADDING end
+
+  -- Hung off the panel rather than the frame: the panel is the visible window
+  -- surface, and CharacterFrame extends well past its bottom edge, so a strip
+  -- placed against the frame overlapped the interface it belongs under.
+  local fits, info = U.FitStockTabStrip(tabs, frame or G("CharacterFrame"), {
+    gap = TAB_GAP,
+    left = PANEL_INSET_LEFT,
+    right = PANEL_INSET_RIGHT,
+    padding = padding,
+    anchor = panel and {
+      frame = panel,
+      point = "TOPLEFT",
+      relativePoint = "BOTTOMLEFT",
+      x = 0,
+      y = -TAB_DROP,
+    } or nil,
+  })
+  tabFit = info
+  if info then info.fits = fits end
+  if info and info.reason then
+    U.Debug("character: tab strip not sized - " .. info.reason)
+  end
+end
+
+-- The client resizes a tab from its own metrics whenever the sheet switches
+-- pages, and not always inside the OnClick this module can hook: /uui tabs
+-- showed widths already back to native between two passes with only a tab
+-- click in between. Rather than hunt every native resize path, the applied
+-- widths are re-asserted whenever one drifts from its target, and only while
+-- the sheet is open. A pass that is already correct writes nothing.
+local function TabFitDrifted()
+  local info = tabFit
+  if not info or not info.rows then return false end
+
+  local i
+  for i = 1, table.getn(info.rows) do
+    local row = info.rows[i]
+    local tab = G(row.name)
+    if tab and tab.GetWidth and tonumber(row.target) then
+      local ok, width = pcall(tab.GetWidth, tab)
+      if ok and tonumber(width) and math.abs(width - row.target) > 0.5 then
+        return true
+      end
+    end
+  end
+  return false
+end
+
+-- What the last layout pass actually measured and wrote. The tabs visibly kept
+-- their native width through two sizing attempts, and the two explanations for
+-- that -- the label measurement being wrong, or SetWidth being overwritten
+-- after the pass -- are only distinguishable from the client. Each row carries
+-- the width read back immediately after the write, so a target that did not
+-- stick is separable from one that stuck and was reset later.
+function U.CharacterTabReport()
+  LayoutTabs()
+
+  local report = { rows = {} }
+  local info = tabFit
+  if not info then
+    report.reason = "no layout pass has run"
+    return report
+  end
+
+  report.reason = info.reason
+  report.fits = info.fits
+  report.count = info.count
+  report.padding = info.padding
+  report.labelTotal = info.labelTotal
+  report.available = info.available
+  report.frameWidth = info.frameWidth
+
+  local i
+  for i = 1, table.getn(info.rows) do
+    local row = info.rows[i]
+    -- Read again now, one full frame after the write, so a native resize that
+    -- lands between the two reads shows up as after ~= live.
+    local tab = G(row.name)
+    local live
+    if tab and tab.GetWidth then
+      local ok, value = pcall(tab.GetWidth, tab)
+      if ok then live = value end
+    end
+    table.insert(report.rows, {
+      name = row.name,
+      label = row.label,
+      target = row.target,
+      before = row.before,
+      after = row.after,
+      live = live,
+    })
+  end
+  return report
+end
+
+local function StyleTabs()
+  local tabs = TabStrip()
   U.StyleStockTabGroup(tabs, 1)
+
+  -- The native tab template resizes a tab from its own metrics when the sheet
+  -- switches pages, which would undo the padding fit. Re-laying out after the
+  -- click restores it; the pass is idempotent.
+  local i
+  for i = 1, table.getn(tabs) do
+    if tabs[i] then U.PostHookScript(tabs[i], "OnClick", LayoutTabs) end
+  end
+
+  LayoutTabs()
 end
 
 -- ---------------------------------------------------------------------------
@@ -1032,9 +1186,139 @@ local function StyleHonorTab()
   end
 end
 
+-- ---------------------------------------------------------------------------
+-- Pet tab
+--
+-- Modern skin only; BuildFrame is the only caller and it does not run under
+-- the native-chrome themes.
+--
+-- Frame names here have no compact-evidence record at all (query_compat.py:
+-- no match for PetPaperDoll or PetAttribute). Every name below except
+-- PetLevelText is one UnrealPfUI's own character skin drives on this same
+-- client, which .claude/rules/unreal-pfui.md makes the correct fallback in an
+-- evidence gap -- WORKING_SOURCE, not runtime verification. Each read is
+-- G()+pcall guarded, so a name this client does not carry leaves that piece
+-- untouched rather than breaking the tab.
+--
+-- The stat text is deliberately not name-guessed. The child names inside
+-- PetAttributesFrame are the part pfUI never touches, so instead of inventing
+-- them the shared recursive pass (U.ForceStockTextWhite, already the way
+-- gossip/mail/quest/trainer recolour stock body text) is applied to the
+-- container. That gives every stat line the addon font at a consistent size
+-- whatever the client calls it; the named lines below then re-apply the
+-- label/value hierarchy on top of it where the names hold.
+-- ---------------------------------------------------------------------------
+local function StylePetTab()
+  local pet = G("PetPaperDollFrame")
+  if not pet then return end
+
+  U.StripStockTextures(pet)
+
+  -- Title block, matching the Character page: the pet's name is this page's
+  -- primary heading and sits in the same place the player's does.
+  local name = G("PetNameText")
+  if name and panel then
+    pcall(function()
+      name:ClearAllPoints()
+      name:SetPoint("TOP", panel, "TOP", 0, -10)
+    end)
+  end
+  SetTextFont(name, M.fontSize.large, GOLD)
+  SetTextFont(G("PetLevelText"), M.fontSize.small, GOLD)
+
+  -- The page carries its own close button on top of the window's. One close
+  -- control per window; the duplicate is stock chrome.
+  local close = G("PetPaperDollCloseButton")
+  if close then pcall(close.Hide, close) end
+
+  -- Unlike the Character page these keep working rather than being replaced by
+  -- a click-rotate catcher: that catcher is a single confirmed instance bound
+  -- to CharacterModelFrame, and duplicating it here would mean rebuilding a
+  -- USER_CONFIRMED_INGAME drag path against an unprobed second model frame.
+  -- Flat arrows with owned glyphs satisfy the native-texture policy and leave
+  -- the rotation intact.
+  U.StyleStockArrowButton(G("PetModelFrameRotateLeftButton"), "left", 16)
+  U.StyleStockArrowButton(G("PetModelFrameRotateRightButton"), "right", 16)
+
+  local attributes = G("PetAttributesFrame")
+  if attributes then
+    U.StripStockTextures(attributes)
+    U.ForceStockTextWhite(attributes, WHITE, M.fontSize.small)
+  end
+
+  SetTextFont(G("PetArmorFrameLabel"), M.fontSize.small, DIM)
+  SetTextFont(G("PetArmorFrameText"), M.fontSize.small, WHITE)
+  SetTextFont(G("PetTrainingPointLabel"), M.fontSize.small, DIM)
+  SetTextFont(G("PetTrainingPointText"), M.fontSize.small, WHITE)
+
+  -- Happiness/loyalty/diet. Stripped of its frame art; the icon itself is
+  -- meaningful content imagery and is left alone.
+  local info = G("PetPaperDollPetInfo")
+  if info then U.StripStockTextures(info) end
+
+  -- The player's XP bar colour, from the shared token, so the pet's experience
+  -- reads as the same bar as the one under the unit frames. The earlier pass
+  -- stripped this bar and then set its texture, which is exactly the empty-bar
+  -- failure U.StyleStockStatusBar exists to prevent -- hence the shared call
+  -- and the fail-closed branch rather than a local strip here.
+  local bar = G("PetPaperDollFrameExpBar")
+  if bar then
+    local styled = U.StyleStockStatusBar(bar, { color = M.color.xp })
+    if not styled then
+      U.Debug("character: pet exp bar fill not found, left native")
+    end
+    SetTextFont(bar, M.fontSize.small, WHITE)
+
+    -- Hovering the bar blanked it. The client runs its own art pass on this
+    -- bar's hover -- the equipment slots and reputation rows have no such
+    -- pass, which is why neither needed this -- and it lands after the skin,
+    -- so the skin is re-asserted after it. U.StyleStockStatusBar re-identifies
+    -- the live fill on every call, so this recovers the bar whether the hover
+    -- re-pointed the fill or restored native art over it.
+    --
+    -- Which of those it actually is has not been probed; the two debug lines
+    -- below separate them if it ever needs to be. Hooked once per bar, and
+    -- only on the two hover scripts, so the region walk stays off every other
+    -- path.
+    if not bar.uuiPetExpHovered then
+      bar.uuiPetExpHovered = true
+      local Reassert = function()
+        if not U.StyleStockStatusBar(bar, { color = M.color.xp }) then
+          U.Debug("character: pet exp bar fill unidentifiable after hover")
+        end
+        if bar.IsShown then
+          local ok, shown = pcall(bar.IsShown, bar)
+          if ok and not shown then
+            U.Debug("character: pet exp bar was hidden by the client on hover")
+          end
+        end
+      end
+      U.PostHookScript(bar, "OnEnter", Reassert)
+      U.PostHookScript(bar, "OnLeave", Reassert)
+    end
+  end
+
+  local resistances = G("PetResistanceFrame")
+  if resistances then U.StripStockTextures(resistances) end
+
+  -- The same five schools in the same order as the player's, so the shared
+  -- StyleResistance -- flat square, cropped glyph, owned outline -- applies
+  -- unchanged, including the native texcoords it restates.
+  local i
+  for i = 1, 5 do
+    local res = G("PetMagicResFrame" .. i)
+    if res then StyleResistance(res, i) end
+    SetTextFont(G("PetMagicResText" .. i), M.fontSize.small, WHITE)
+  end
+end
+
 local function Reapply()
   U.StripStockTextures(frame)
   if panel then panel:Show() end
+
+  -- The Pet tab is shown/hidden by the client as the player gains or loses a
+  -- pet, so the run has to be re-measured every time the sheet opens.
+  LayoutTabs()
 
   SetTextFont(G("CharacterNameText"), M.fontSize.large, GOLD)
   SetTextFont(G("CharacterLevelText"), M.fontSize.small, GOLD)
@@ -1076,8 +1360,8 @@ local function BuildFrame()
     height = 100,
     background = { 0.01, 0.01, 0.01, 0.78 },
   })
-  panel:SetPoint("TOPLEFT", frame, "TOPLEFT", 10, -10)
-  panel:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -30, 72)
+  panel:SetPoint("TOPLEFT", frame, "TOPLEFT", PANEL_INSET_LEFT, -10)
+  panel:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -PANEL_INSET_RIGHT, 72)
   pcall(panel.EnableMouse, panel, false)
 
   pcall(frame.SetHitRectInsets, frame, 10, 30, 10, 72)
@@ -1123,6 +1407,12 @@ local function BuildFrame()
   StyleReputationTab()
   StyleSkillsTab()
   StyleHonorTab()
+  StylePetTab()
+
+  -- The client redraws the pet page's own art when the tab is opened, so the
+  -- skin is re-asserted there rather than only at build. Every call in the
+  -- pass is idempotent.
+  U.PostHookScript(G("PetPaperDollFrame"), "OnShow", StylePetTab)
 
   U.PostHookScript(frame, "OnShow", Reapply)
   U.PostHookScript(frame, "OnHide", function()
@@ -1158,5 +1448,21 @@ function CH:OnEnable()
     end
     return
   end
-  BuildFrame()
+  if not BuildFrame() then return end
+
+  U.RegisterUpdate("character.tab-fit", 0.2, function()
+    if not frame or not frame.IsShown then return end
+    local ok, shown = pcall(frame.IsShown, frame)
+    if not ok or not shown then return end
+    if TabFitDrifted() then LayoutTabs() end
+  end)
+
+  -- The client shows and hides the Pet tab with the pet itself. Re-laying the
+  -- run out here keeps the fit correct when that happens while the sheet is
+  -- already open; the OnShow pass covers every other case.
+  U.RegisterEvent("UNIT_PET", function()
+    if not frame or not frame.IsShown then return end
+    local ok, shown = pcall(frame.IsShown, frame)
+    if ok and shown then LayoutTabs() end
+  end)
 end

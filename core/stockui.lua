@@ -497,6 +497,66 @@ function U.StyleStockScrollbar(scrollbar)
   return scrollbar
 end
 
+-- Retargets a native StatusBar's fill to unrealUI's flat texture and strips
+-- every other native texture off it, keeping the fill itself.
+--
+-- The keep set is the whole point. GetStatusBarTexture is absent on this
+-- client, so the live fill cannot be asked for directly -- it is located among
+-- the bar's direct Texture regions by the path SetStatusBarTexture just gave
+-- it. Stripping without that identification is the confirmed empty-bar
+-- failure: the strip hides the fill, and a later SetStatusBarTexture writes a
+-- path onto a region that is already hidden, so the bar renders as nothing at
+-- all. It happened first on the reputation rows and again on the pet page's
+-- experience bar.
+--
+-- Returns false without touching the bar when the fill cannot be identified,
+-- so a caller fails closed to the native bar rather than to an invisible one.
+--
+-- options: color (fill), background, border, hideBorder
+function U.StyleStockStatusBar(bar, options)
+  if not bar then return false end
+  options = options or {}
+
+  if not pcall(bar.SetStatusBarTexture, bar, M.texture.plain) then
+    return false
+  end
+
+  local keep, found = {}, false
+  if bar.GetRegions then
+    local regionsOk, regions = pcall(function() return { bar:GetRegions() } end)
+    if regionsOk and type(regions) == "table" then
+      local i
+      for i = 1, table.getn(regions) do
+        local region = regions[i]
+        if region and type(region.GetTexture) == "function" then
+          local textureOk, texture = pcall(region.GetTexture, region)
+          if textureOk and type(texture) == "string" and
+             string.lower(texture) == string.lower(M.texture.plain) then
+            keep[region] = true
+            found = true
+          end
+        end
+      end
+    end
+  end
+  if not found then return false end
+
+  U.StripStockTextures(bar, { keep = keep })
+
+  if options.color then
+    U.SetStatusBarColor(bar, M.Unpack(options.color))
+  end
+
+  U.CreateBackdrop(bar, {
+    background = options.background or M.color.healthBg,
+    border = options.border or M.color.border,
+  })
+  if options.hideBorder then
+    pcall(bar.SetBackdropBorderColor, bar, 0, 0, 0, 0)
+  end
+  return true
+end
+
 local function AlignTabText(button)
   if not button or not button.GetFontString then return end
 
@@ -618,6 +678,184 @@ function U.ChainStockTabs(tabs, gap)
       previous = tab
     end
   end
+end
+
+-- Label width of a stock tab, or nil when the client will not report one.
+-- FontString:GetStringWidth is measured on this client (behavior.json /
+-- chat.shadow_matrix_*.v2 return real numbers from it), and is the only read
+-- that gives a tab's text extent independently of the width the native
+-- template happened to give the button.
+local function TabLabelWidth(tab)
+  if not tab or not tab.GetFontString then return nil end
+
+  local ok, fontstring = pcall(tab.GetFontString, tab)
+  if not ok or not fontstring then return nil end
+
+  if fontstring.GetStringWidth then
+    local widthOk, width = pcall(fontstring.GetStringWidth, fontstring)
+    if widthOk and tonumber(width) and width > 0 then return width end
+  end
+  if fontstring.GetWidth then
+    local widthOk, width = pcall(fontstring.GetWidth, fontstring)
+    if widthOk and tonumber(width) and width > 0 then return width end
+  end
+  return nil
+end
+
+-- Sizes a chained tab strip from its labels instead of from the widths the
+-- native template baked in, and starts it flush with the window's left inset.
+--
+-- Written for the Character sheet's conditional Pet tab: the native widths are
+-- generous enough that a fifth tab ran past the window edge. Scaling those
+-- widths down proportionally was not enough, because the padding is where the
+-- slack actually is -- so each tab is rebuilt as label + padding, and the
+-- padding is the single value reduced until the whole run fits. Text is never
+-- squeezed: if even the labels plus the minimum padding do not fit, the run
+-- keeps that minimum and the caller is told so by the return value.
+--
+-- options:
+--   gap         between tabs (default 3, the shared tab-strip gap)
+--   left        inset from the window's left edge for the first tab, which is
+--               re-anchored there so the strip lines up with the window
+--   right       inset reserved on the right (defaults to `left`, symmetric)
+--   padding     preferred padding on each side of a label
+--   minPadding  floor that padding is never reduced below
+--   anchor      { frame, point, relativePoint, x, y } for the first tab; when
+--               omitted the tab is put at `left` and keeps its native Y
+-- Returns `fits, info`. `info` is a measurement record -- every number this
+-- read and wrote, plus a `reason` when it did not size anything -- so a strip
+-- that visibly ignores the fit can be diagnosed from the client instead of
+-- from a second guess. `fits` is false when the run could not be brought
+-- inside the window at the minimum padding, and nil when nothing was applied.
+function U.FitStockTabStrip(tabs, frame, options)
+  local info = { rows = {} }
+  if type(tabs) ~= "table" or not frame then
+    info.reason = "no tabs or no frame"
+    return nil, info
+  end
+  options = options or {}
+
+  local gap = tonumber(options.gap) or 3
+  local left = tonumber(options.left) or 10
+  local right = tonumber(options.right) or left
+  local padding = tonumber(options.padding) or 10
+  local minPadding = tonumber(options.minPadding) or 4
+
+  local shown, labels, labelTotal = {}, {}, 0
+  local i
+  for i = 1, table.getn(tabs) do
+    local tab = tabs[i]
+    local visible = false
+    if tab and tab.IsShown then
+      local ok, value = pcall(tab.IsShown, tab)
+      visible = ok and value and true or false
+    end
+    if visible then
+      local width = TabLabelWidth(tab)
+      if not width then
+        info.reason = "no label width for tab " .. i
+        return nil, info
+      end
+      table.insert(shown, tab)
+      table.insert(labels, width)
+      labelTotal = labelTotal + width
+    end
+  end
+
+  local count = table.getn(shown)
+  info.count = count
+  info.labelTotal = labelTotal
+  if count == 0 then
+    info.reason = "no shown tabs"
+    return nil, info
+  end
+
+  local first = shown[1]
+  local frameWidthOk, frameWidth = pcall(frame.GetWidth, frame)
+  if not frameWidthOk or not tonumber(frameWidth) then
+    info.reason = "window width unreadable"
+    return nil, info
+  end
+  info.frameWidth = frameWidth
+
+  -- Where the run starts. An `anchor` names the frame the strip should hang
+  -- off outright -- the window's own inset panel, for a window whose visible
+  -- surface stops short of the frame edge -- which is how a strip is placed
+  -- just below that surface instead of overlapping it.
+  --
+  -- Without one, only the horizontal start is taken over: the tab keeps
+  -- whatever vertical placement the client gave it, re-derived from its own
+  -- position rather than from an invented native offset.
+  local anchor = options.anchor
+  local anchorOk
+  if type(anchor) == "table" and anchor.frame then
+    anchorOk = pcall(function()
+      first:ClearAllPoints()
+      first:SetPoint(anchor.point or "TOPLEFT", anchor.frame,
+                     anchor.relativePoint or "BOTTOMLEFT",
+                     tonumber(anchor.x) or 0, tonumber(anchor.y) or 0)
+    end)
+  else
+    local frameLeftOk, frameLeft = pcall(frame.GetLeft, frame)
+    local frameBottomOk, frameBottom = pcall(frame.GetBottom, frame)
+    local tabBottomOk, tabBottom = pcall(first.GetBottom, first)
+    if not frameLeftOk or not frameBottomOk or not tabBottomOk
+       or not tonumber(frameLeft) or not tonumber(frameBottom)
+       or not tonumber(tabBottom) then
+      info.reason = "window or tab geometry unreadable"
+      return nil, info
+    end
+    anchorOk = pcall(function()
+      first:ClearAllPoints()
+      first:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", left,
+                     tabBottom - frameBottom)
+    end)
+  end
+  info.anchored = anchorOk
+
+  local available = frameWidth - left - right - (gap * (count - 1))
+  info.available = available
+  if available <= 0 then
+    info.reason = "no room between the window insets"
+    return nil, info
+  end
+
+  -- One padding value for the whole run, so the tabs keep a consistent inset
+  -- rather than each shrinking by a different amount.
+  local room = math.floor((available - labelTotal) / (count * 2))
+  local fits = true
+  if room < padding then
+    padding = room
+    if padding < minPadding then
+      padding = minPadding
+      fits = false
+    end
+  end
+  info.padding = padding
+
+  for i = 1, count do
+    local tab = shown[i]
+    local target = math.floor(labels[i] + (padding * 2))
+
+    local beforeOk, before = pcall(tab.GetWidth, tab)
+    pcall(tab.SetWidth, tab, target)
+    local afterOk, after = pcall(tab.GetWidth, tab)
+
+    local name = "?"
+    if tab.GetName then
+      local nameOk, value = pcall(tab.GetName, tab)
+      if nameOk and value then name = value end
+    end
+
+    table.insert(info.rows, {
+      name = name,
+      label = labels[i],
+      target = target,
+      before = beforeOk and before or nil,
+      after = afterOk and after or nil,
+    })
+  end
+  return fits, info
 end
 
 -- `tabs` is an ordered array of stock tab buttons (nil entries are skipped
