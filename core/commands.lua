@@ -29,16 +29,21 @@ local U = UnrealUI
 -- printed the Vanilla WTF path, which sent readers to a directory that does
 -- not exist and cost a later session real time.
 -- ---------------------------------------------------------------------------
+-- Wall-clock stamp for a diagnostic entry, or "?" where the client has no
+-- date(). Shared so every writer stamps the same way and a reader can compare
+-- two entries without knowing which command produced them.
+function U.DiagnosticStamp()
+  if type(date) == "function" then
+    local ok, formatted = pcall(date, "%Y-%m-%d %H:%M:%S")
+    if ok and type(formatted) == "string" then return formatted end
+  end
+  return "?"
+end
+
 local function SaveDiagnostic(key, data)
   if type(UnrealUIDiagDB) ~= "table" then UnrealUIDiagDB = {} end
   UnrealUIDiagDB[key] = data
-
-  local stamp = "?"
-  if type(date) == "function" then
-    local ok, formatted = pcall(date, "%Y-%m-%d %H:%M:%S")
-    if ok and type(formatted) == "string" then stamp = formatted end
-  end
-  UnrealUIDiagDB[key .. "_savedAt"] = stamp
+  UnrealUIDiagDB[key .. "_savedAt"] = U.DiagnosticStamp()
 end
 
 -- Shared with core/perf.lua: the perf recorder's report is numeric/table data
@@ -68,6 +73,49 @@ function U.AppendDiagnostic(key, data)
   table.insert(list, data)
   while table.getn(list) > APPEND_LIMIT do table.remove(list, 1) end
   return table.getn(list)
+end
+
+-- Append-or-update, keyed by a caller-supplied run id.
+--
+-- Why this exists rather than a second AppendDiagnostic call site: a perf run
+-- is reported more than once. /uui perf prints a mid-run report, /uui perf stop
+-- prints the final one, and a player checking progress prints several more.
+-- With a plain append every one of those took a slot, so three peeks at one run
+-- filled a quarter of the log and pushed genuinely separate earlier runs out of
+-- it -- the recorder's own A/B evidence being deleted by the act of looking at
+-- it. Keyed on the run id, a run occupies exactly one slot for its whole life
+-- and every later report overwrites its own entry in place.
+--
+-- Returns index, stored count and whether the insert evicted the oldest entry,
+-- so the caller can say so out loud instead of losing a run silently.
+function U.UpsertDiagnostic(key, id, data)
+  if type(UnrealUIDiagDB) ~= "table" then UnrealUIDiagDB = {} end
+  if type(UnrealUIDiagDB[key]) ~= "table" then UnrealUIDiagDB[key] = {} end
+
+  local list = UnrealUIDiagDB[key]
+  local i
+  for i = 1, table.getn(list) do
+    local entry = list[i]
+    if type(entry) == "table" and id ~= nil and entry.id == id then
+      list[i] = data
+      return i, table.getn(list), false
+    end
+  end
+
+  table.insert(list, data)
+  local evicted = false
+  while table.getn(list) > APPEND_LIMIT do
+    table.remove(list, 1)
+    evicted = true
+  end
+  return table.getn(list), table.getn(list), evicted
+end
+
+-- How many entries a diagnostic log currently holds, and its cap.
+function U.DiagnosticLogSize(key)
+  if type(UnrealUIDiagDB) ~= "table" then return 0, APPEND_LIMIT end
+  if type(UnrealUIDiagDB[key]) ~= "table" then return 0, APPEND_LIMIT end
+  return table.getn(UnrealUIDiagDB[key]), APPEND_LIMIT
 end
 
 local function Trim(text)
@@ -112,7 +160,14 @@ local DIAGNOSTIC_HELP = {
   "  |cffffff00/uui abcd|r - dump why an action button shows no cooldown number",
   "  |cffffff00/uui cb|r - arm a placement dump for the native cast bar",
   "  |cffffff00/uui movertest|r - foundation mover smoke test",
-  "  |cffffff00/uui perf|r - record frame time around target changes",
+  "  |cffffff00/uui perf start|r - the stutter scan: frame-time distribution, " ..
+    "group size, network and an addon-off control. |cffffff00stop|r ends it.",
+  "  |cffffff00/uui perf party|r - party freeze bisect: roster-event marks, " ..
+    "one party subsystem removed per phase",
+  "  |cffffff00/uui perf group|r - charge frame time to the group size it was " ..
+    "rendered at (leave on across an invite)",
+  "  |cffffff00/uui perf runs|r - list the stored runs (one slot each, 12 kept)",
+  "  |cffffff00/uui perf clear|r - empty the stored run log",
   "  |cffffff00/uui nosuppress|r - skip native frame suppression (needs /reload)",
   "  |cffffff00/uui suppress <0-4>|r - bisect the suppression recipe (needs /reload)",
 }
@@ -341,7 +396,10 @@ local function ShowUnitFrameCheck()
               ", second " .. tostring(bf.second) ..
               ", placed " .. tostring(bf.placed) ..
               ", driving " .. tostring(bf.driving) ..
-              ", native anchor " .. tostring(bf.nativeAnchorCaptured))
+              ", native anchor " .. tostring(bf.nativeAnchorCaptured) ..
+              ", shown " .. tostring(bf.nativeShown) ..
+              ", collapsed " .. tostring(bf.collapsed) ..
+              ", arrow " .. tostring(bf.toggle))
       if bf.skipped then U.Print("  second frame: " .. bf.skipped) end
     end
   end
@@ -664,6 +722,10 @@ local function ShowSelfCheck()
             tostring(chat.bottom) .. "  saved " ..
             tostring(chat.savedLeft) .. "," ..
             tostring(chat.savedBottom))
+    -- Non-zero corrections mean something else keeps moving the chat; stopped
+    -- means the enforcement gave up rather than fight it every pass.
+    U.Print("    position corrections " .. tostring(chat.enforceRuns) ..
+            ", stopped " .. tostring(chat.enforceStopped))
     -- The chat shadow route is documented but not runtime-verified: the shadow
     -- setters live on FontString and write through to the font object, and no
     -- record says which of those the client's chat windows expose. Print what

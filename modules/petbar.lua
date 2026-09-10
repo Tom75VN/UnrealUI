@@ -151,6 +151,8 @@ local nativeParent = nil
 local driving = false
 local reparented = false
 local driveFailures = 0
+local editNativeHidden = false
+local editNativeWasShown = false
 
 -- Native button geometry (native mode only).
 --
@@ -781,6 +783,58 @@ local function Apply()
   if NativeDrifted() then DriveNative() end
 end
 
+-- Whether the client is drawing the bar at all. Resolved by name on every read
+-- rather than through the retained root, so a bar the client replaced is not
+-- reported from a dead object.
+local function NativeBarShown()
+  local current = U.G(NATIVE_NAME)
+  if not current then return false end
+  local ok, shown = pcall(current.IsShown, current)
+  if not ok then return false end
+  return (shown and shown ~= 0) and true or false
+end
+
+-- Geometry for the empty-anchor sample: what the row is laid out at while
+-- unrealUI owns it, and the client's own measured 30x30 / 7 row otherwise.
+--
+-- Deliberately not NativeGeometry(): that measurement retains and reads the
+-- ten native buttons, and petbar.disabled_layout_captures_native_children is
+-- explicit that a profile which never enabled the layout must not pay for
+-- them. A sample is not worth crossing that line for.
+local function SampleButtonSize()
+  return (appliedLayout and appliedLayout.size) or NATIVE_BUTTON_SIZE
+end
+
+local function SampleButtonGap()
+  return (appliedLayout and appliedLayout.spacing) or NATIVE_BUTTON_GAP
+end
+
+-- The native bar is not parented to the mover anchor, so the shared mover
+-- cannot hide its content by hiding the anchor alone. The advanced visibility
+-- gate persists after edit mode closes; nil restores the client-owned pet state
+-- when the row is checked again.
+local function SetEditShown(shown)
+  if not native then return end
+  if shown == false then
+    local ok, wasShown = pcall(native.IsShown, native)
+    if ok and wasShown and wasShown ~= 0 then editNativeWasShown = true end
+    editNativeHidden = true
+    if not ok or (wasShown and wasShown ~= 0) then pcall(native.Hide, native) end
+    return
+  end
+
+  if not editNativeHidden then return end
+  editNativeHidden = false
+  local hasPetBar = editNativeWasShown
+  local petHasActionBar = U.G("PetHasActionBar")
+  if type(petHasActionBar) == "function" then
+    local ok, value = pcall(petHasActionBar)
+    if ok then hasPetBar = value and value ~= 0 and true or false end
+  end
+  editNativeWasShown = false
+  if hasPetBar then pcall(native.Show, native) else pcall(native.Hide, native) end
+end
+
 -- ---------------------------------------------------------------------------
 -- Geometry sub-commands
 --
@@ -1009,7 +1063,25 @@ function PB:OnEnable()
   -- No `default`: the client's own anchor is not UIParent-relative and cannot
   -- be written as one. U.OnPositionReset replays it instead, which is the case
   -- core/mover.lua documents that hook for.
-  U.RegisterMover("petbar", anchor, { label = U.L("MOVER_LABEL_PET_BAR") })
+  U.RegisterMover("petbar", anchor, {
+    label = U.L("MOVER_LABEL_PET_BAR"),
+    setEditShown = SetEditShown,
+  })
+
+  -- Without a pet the client hides the whole bar, so the anchor is an empty
+  -- 509x43 rectangle whose visible row is narrower than it is. Ten squares in
+  -- the row's own geometry show where the buttons will actually land.
+  if type(U.RegisterMoverSample) == "function" then
+    U.RegisterMoverSample("petbar", {
+      isEmpty = function() return not NativeBarShown() end,
+      cells = {
+        count = BUTTON_COUNT,
+        perRow = BUTTON_COUNT,
+        size = function() return SampleButtonSize() end,
+        spacing = function() return SampleButtonGap() end,
+      },
+    })
+  end
   U.OnPositionReset(function() return RestoreNativeAnchor() end)
 
   Apply()

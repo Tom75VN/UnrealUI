@@ -2178,15 +2178,22 @@ local function CreateBar(bar)
   return bars[bar]
 end
 
-local function LayoutBar(bar)
+-- previewName/previewValue are used by the edit-mode sliders only. They let
+-- the bar show one prospective numeric setting without writing it to the
+-- saved configuration; U.SetActionBarSetting still commits the final value.
+local function LayoutBar(bar, previewName, previewValue)
   local entry = bars[bar]
   if not entry then return end
 
   local enabled = IsEnabled(bar)
-  local count = Number(bar, "Buttons")
-  local perRow = Number(bar, "PerRow")
-  local size = Number(bar, "Size")
-  local spacing = Number(bar, "Spacing")
+  local count = previewName == "Buttons" and
+                  Clamp("Buttons", previewValue) or Number(bar, "Buttons")
+  local perRow = previewName == "PerRow" and
+                   Clamp("PerRow", previewValue) or Number(bar, "PerRow")
+  local size = previewName == "Size" and
+                 Clamp("Size", previewValue) or Number(bar, "Size")
+  local spacing = previewName == "Spacing" and
+                    Clamp("Spacing", previewValue) or Number(bar, "Spacing")
 
   if perRow > count then perRow = count end
 
@@ -2315,6 +2322,19 @@ function U.GetActionBarSetting(bar, name)
   return Number(bar, name)
 end
 
+-- Applies a numeric edit-mode value to the live bar without storing it or
+-- refreshing either settings view. The slider's normal onChange commits once
+-- the drag ends, replacing this preview through the regular layout path.
+function U.PreviewActionBarSetting(bar, name, value)
+  bar = tonumber(bar)
+  if not bar or bar < 1 or bar > BAR_COUNT or reservedPages[bar] or
+     not cfg or not LIMITS[name] then return nil end
+
+  local clamped = Clamp(name, value)
+  LayoutBar(bar, name, clamped)
+  return clamped
+end
+
 -- Writes a setting and re-applies that bar immediately. Returns the value that
 -- was actually stored after clamping.
 function U.SetActionBarSetting(bar, name, value)
@@ -2332,6 +2352,11 @@ function U.SetActionBarSetting(bar, name, value)
   end
 
   ApplyBar(bar)
+  -- The settings page and the edit-mode anchor panel are two views of this
+  -- same store; whichever one did not make the change re-reads it.
+  if type(U.RefreshActionBarSettingsViews) == "function" then
+    U.RefreshActionBarSettingsViews(bar)
+  end
   return U.GetActionBarSetting(bar, name)
 end
 

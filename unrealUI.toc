@@ -2,7 +2,7 @@
 ## Title: |cffffffffUnreal |cfff5ae0aUI
 ## Notes: Unreal Azeroth native UI addon.
 ## Author: unrealUI
-## Version: 0.5.1
+## Version: 0.6.0
 ## X-License: MIT
 ## SavedVariables: UnrealUIDB, UnrealUIProfiles, UnrealUIDiagDB, UnrealUIPriceDB
 ## SavedVariablesPerCharacter: UnrealUIProfileDB, UnrealUIFavoriteDB, UnrealUIBankCountDB
@@ -53,6 +53,7 @@ core\compat.lua
 core\weapons.lua
 core\config.lua
 core\style.lua
+core\easing.lua
 core\itemslot.lua
 core\itemcategory.lua
 core\itemsort.lua
@@ -60,6 +61,17 @@ core\widgets.lua
 core\stockui.lua
 core\dropdown.lua
 core\mover.lua
+
+# The contextual settings panel that follows the selected mover in edit mode.
+# A module registers what goes in it for its own mover id; this file owns the
+# window, its placement beside the handle and its show/hide lifecycle.
+core\moverpanel.lua
+
+# Placeholder content for anchors that are empty while edit mode is open (an
+# unsummoned pet bar, the tooltip guide, undamaged armour, an aura row with no
+# auras). Loaded after core\mover.lua because it is driven from the handle
+# show/hide path, and before any module that registers a sample.
+core\moversample.lua
 core\windowdrag.lua
 core\commands.lua
 
@@ -69,12 +81,14 @@ modules\swingbar.lua
 modules\gamemenu.lua
 modules\logout.lua
 modules\minimap.lua
+modules\durabilityframe.lua
 modules\worldmap.lua
 modules\microbar.lua
 modules\xpbar.lua
 modules\breathbar.lua
 modules\chat.lua
 modules\unitframes.lua
+modules\unitframeconfig.lua
 modules\auras.lua
 modules\hots.lua
 modules\healpredict.lua

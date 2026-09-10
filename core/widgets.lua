@@ -39,6 +39,20 @@ local M = U.media
 -- future copy and localization cannot escape the panel.
 local SETTINGS_TEXT_WIDTH = 484
 
+-- media/arrow.tga is 25x32, so a requested glyph height picks the width that
+-- keeps the authored triangle from stretching.
+local ARROW_ASPECT = 25 / 32
+-- 13x10 on screen. Calibrated against the buff row's collapse control at 30%
+-- below the 18 this started at, which read as a lit icon rather than as a
+-- control beside the icons. Central so the next arrow is the same arrow.
+local ARROW_GLYPH_HEIGHT = 13
+-- Default sits a little under full strength so the arrow reads as chrome next
+-- to game content rather than as another lit icon.
+local ARROW_ALPHA_DEFAULT = 0.80
+local ARROW_ALPHA_HOVER = 1.00
+local ARROW_ALPHA_PUSHED = 0.55
+local ARROW_ALPHA_DISABLED = 0.35
+
 -- Collects the regions a composite is made of. The settings panel walks this
 -- list, so a control that forgets a part would leave it visible on every tab.
 local function Part(control, region)
@@ -351,25 +365,37 @@ function U.CreateCheckbox(parent, options)
   options = options or {}
 
   local size = options.size or 14
-  local control = {}
+  local control = { enabled = options.disabled ~= true, hovered = false }
+  local rowHost
+  local Toggle
 
-  local box = U.CreateButton(parent, {
+  -- Optional full-row interaction for compact lists. The visible checkbox and
+  -- label remain the standard shared component; this host only expands the hit
+  -- area and owns the subdued accent hover fill.
+  if options.rowHover then
+    rowHost = CreateFrame("Button", options.name and (options.name .. "Row"),
+                          parent)
+    rowHost:SetWidth(options.rowWidth or SETTINGS_TEXT_WIDTH)
+    rowHost:SetHeight(options.rowHeight or math.max(size, 18))
+    U.CreateBackdrop(rowHost, { background = { 0, 0, 0, 0 }, border = false })
+    pcall(rowHost.EnableMouse, rowHost, true)
+    Part(control, rowHost)
+    control.row = rowHost
+  end
+
+  local box = U.CreateButton(rowHost or parent, {
     name = options.name,
     text = "",
     width = size,
     height = size,
     onClick = function()
-      control.value = not control.value
-      control.Apply()
-      if type(options.onChange) == "function" then
-        options.onChange(control.value)
-      end
+      if Toggle then Toggle() end
     end,
   })
   Part(control, box)
   control.box = box
 
-  local label = U.CreateSettingsLabel(parent, {
+  local label = U.CreateSettingsLabel(rowHost or parent, {
     size = M.fontSize.small,
     color = M.color.text,
     inherits = "GameFontNormalSmall",
@@ -386,9 +412,55 @@ function U.CreateCheckbox(parent, options)
     label:SetText(options.text or "")
   end
 
+  if rowHost then
+    box:SetPoint("LEFT", rowHost, "LEFT", 0, 0)
+    rowHost:SetScript("OnClick", function() if Toggle then Toggle() end end)
+    rowHost:SetScript("OnEnter", function()
+      if not control.enabled then return end
+      control.hovered = true
+      control.Apply()
+      if type(options.onEnter) == "function" then options.onEnter() end
+    end)
+    rowHost:SetScript("OnLeave", function()
+      control.hovered = false
+      control.Apply()
+      if type(options.onLeave) == "function" then options.onLeave() end
+    end)
+  end
+
   control.Apply = function()
     U.SetBackgroundColor(box, M.Unpack(M.color.background))
     U.SetCheckboxIndicator(box, control.value)
+    if box.uuiCheckboxMark and not control.enabled then
+      U.SetColor(box.uuiCheckboxMark, M.Unpack(M.color.textDim))
+    end
+    -- Written on every branch, not just hover/disabled: with rowHover the box's
+    -- own OnLeave never fires (its mouse is off), so leaving the accent border
+    -- unwritten kept a hovered row accented after the cursor left it.
+    U.SetBorderColor(box, M.Unpack(
+      (control.enabled and control.hovered) and M.color.accent or M.color.border))
+    if label then
+      local color = not control.enabled and M.color.textDim or
+                    (control.hovered and M.color.accent or M.color.text)
+      pcall(label.SetTextColor, label, M.Unpack(color))
+    end
+    if rowHost then
+      U.SetBackgroundColor(rowHost, M.Unpack(
+        control.hovered and M.color.accentFill or { 0, 0, 0, 0 }))
+      pcall(box.EnableMouse, box, false)
+      pcall(rowHost.EnableMouse, rowHost, control.enabled)
+    else
+      pcall(box.EnableMouse, box, control.enabled)
+    end
+  end
+
+  Toggle = function()
+    if not control.enabled then return end
+    control.value = not control.value
+    control.Apply()
+    if type(options.onChange) == "function" then
+      options.onChange(control.value)
+    end
   end
 
   control.SetValue = function(value)
@@ -396,9 +468,19 @@ function U.CreateCheckbox(parent, options)
     control.Apply()
   end
 
+  control.SetEnabled = function(enabled)
+    control.enabled = enabled and true or false
+    if not control.enabled and control.hovered then
+      control.hovered = false
+      if type(options.onLeave) == "function" then options.onLeave() end
+    end
+    control.Apply()
+  end
+
   control.SetPoint = function(point, relative, relativePoint, x, y)
-    box:ClearAllPoints()
-    box:SetPoint(point, relative, relativePoint, x, y)
+    local target = rowHost or box
+    target:ClearAllPoints()
+    target:SetPoint(point, relative, relativePoint, x, y)
   end
 
   control.SetValue(options.value)
@@ -1616,6 +1698,11 @@ end
 -- Shared, addon-wide control: any settings page reuses this exact bar by
 -- calling U.CreateSlider(parent, {...}) the same way modules/actionbarconfig.lua
 -- does; it owns no state of its own beyond the current display value.
+-- options.onInput(value), when supplied, receives the stepped display value
+-- while the thumb is moving. It is a preview hook only; options.onChange still
+-- publishes the final value when the drag ends.
+-- options.onInputStart/onInputEnd bracket both a thumb drag and a direct track
+-- click, so a caller can temporarily pin surrounding UI during live preview.
 -- ---------------------------------------------------------------------------
 function U.CreateSlider(parent, options)
   options = options or {}
@@ -1833,6 +1920,19 @@ function U.CreateSlider(parent, options)
     return down and true or false
   end
 
+  local inputActive = false
+  local function BeginInput()
+    if inputActive then return end
+    inputActive = true
+    if type(options.onInputStart) == "function" then options.onInputStart() end
+  end
+
+  local function EndInput()
+    if not inputActive then return end
+    inputActive = false
+    if type(options.onInputEnd) == "function" then options.onInputEnd() end
+  end
+
   local function FinishDrag()
     if not dragging then return end
     dragging = false
@@ -1845,6 +1945,7 @@ function U.CreateSlider(parent, options)
     else
       PlaceThumb(control.current or min)
     end
+    EndInput()
   end
 
   local function LiveReadoutFromDrag()
@@ -1858,7 +1959,12 @@ function U.CreateSlider(parent, options)
 
     visual:ClearAllPoints()
     visual:SetPoint("LEFT", track, "LEFT", offset, 0)
-    UpdateReadout(value)
+    local stepped = UpdateReadout(value)
+    if type(options.onInput) == "function" and
+       control.lastInput ~= stepped then
+      control.lastInput = stepped
+      options.onInput(stepped)
+    end
   end
 
   thumb:SetScript("OnDragStart", function()
@@ -1869,6 +1975,8 @@ function U.CreateSlider(parent, options)
     if not pcall(thumb.StartMoving, thumb) then return end
 
     dragging = true
+    control.lastInput = nil
+    BeginInput()
     U.RegisterUpdate(dragTicker, 0, LiveReadoutFromDrag)
     LiveReadoutFromDrag()
   end)
@@ -1881,7 +1989,9 @@ function U.CreateSlider(parent, options)
   track:SetScript("OnMouseDown", function()
     local value = ReadCursorValue()
     if value then
+      BeginInput()
       Publish(value)
+      EndInput()
     end
   end)
 
@@ -2330,6 +2440,114 @@ end
 
 local function HidePricePanel()
   U.HideMoneyRows()
+end
+
+-- ---------------------------------------------------------------------------
+-- Arrow toggles
+--
+-- A texture-only open/close control: unrealUI's own arrow art on no backdrop
+-- at all, so it can sit directly on the game world beside a block of content
+-- that collapses. Central rather than module-local because the design rules
+-- ask for the smallest shared component before a local variant, and "this
+-- block opens and closes" is one shape wherever it appears.
+--
+-- States are carried by the glyph's own alpha rather than by a border colour,
+-- since there is no border here to colour: the art is already the accent
+-- yellow, and knowledge.json / rendering.parent_alpha_not_propagated means the
+-- value has to be written on the texture, not on the button.
+--
+-- media/arrow.tga is authored pointing right. The left direction is the same
+-- rectangle sampled backwards; four-argument SetTexCoord is BEHAVIOR_VERIFIED
+-- on this client (knowledge.json /
+-- textures.rle_512_tga_atlas_four_arg_supported) but a *reversed* rectangle
+-- specifically is not. If a build ever draws both directions identically, the
+-- fix is a mirrored TGA at its own path, not a different call.
+--
+-- options: name, size (glyph height), width/height (hit area), direction,
+--          onClick
+-- ---------------------------------------------------------------------------
+function U.CreateArrowToggle(parent, options)
+  options = options or {}
+
+  local glyphHeight = tonumber(options.size) or ARROW_GLYPH_HEIGHT
+  local glyphWidth = math.max(1, math.floor(glyphHeight * ARROW_ASPECT + 0.5))
+
+  local button = CreateFrame("Button", options.name, parent or UIParent)
+  button:SetWidth(tonumber(options.width) or (glyphWidth + 4))
+  button:SetHeight(tonumber(options.height) or glyphHeight)
+  pcall(button.EnableMouse, button, true)
+
+  local glyph = button:CreateTexture(nil, "OVERLAY")
+  glyph:SetWidth(glyphWidth)
+  glyph:SetHeight(glyphHeight)
+  glyph:SetPoint("CENTER", button, "CENTER", 0, 0)
+  if not pcall(glyph.SetTexture, glyph, M.texture.arrow) then glyph:Hide() end
+  button.glyph = glyph
+  button.uuiArrowEnabled = true
+
+  local function Refresh()
+    local alpha = ARROW_ALPHA_DEFAULT
+    if not button.uuiArrowEnabled then
+      alpha = ARROW_ALPHA_DISABLED
+    elseif button.uuiArrowPushed then
+      alpha = ARROW_ALPHA_PUSHED
+    elseif button.uuiArrowHover then
+      alpha = ARROW_ALPHA_HOVER
+    end
+    pcall(glyph.SetAlpha, glyph, alpha)
+  end
+
+  function button.SetDirection(direction)
+    if direction ~= "left" then direction = "right" end
+    if button.uuiArrowDirection == direction then return end
+    button.uuiArrowDirection = direction
+    if direction == "left" then
+      pcall(glyph.SetTexCoord, glyph, 1, 0, 0, 1)
+    else
+      pcall(glyph.SetTexCoord, glyph, 0, 1, 0, 1)
+    end
+  end
+
+  function button.SetEnabled(enabled)
+    enabled = enabled and true or false
+    if button.uuiArrowEnabled == enabled then return end
+    button.uuiArrowEnabled = enabled
+    if enabled then
+      pcall(button.Enable, button)
+    else
+      button.uuiArrowHover, button.uuiArrowPushed = nil, nil
+      pcall(button.Disable, button)
+    end
+    Refresh()
+  end
+
+  -- Closures over `button`, never `this`: scripts.handler_arguments_direct.
+  button:SetScript("OnEnter", function()
+    button.uuiArrowHover = true
+    Refresh()
+  end)
+  button:SetScript("OnLeave", function()
+    button.uuiArrowHover = nil
+    button.uuiArrowPushed = nil
+    Refresh()
+  end)
+  button:SetScript("OnMouseDown", function()
+    button.uuiArrowPushed = true
+    Refresh()
+  end)
+  button:SetScript("OnMouseUp", function()
+    button.uuiArrowPushed = nil
+    Refresh()
+  end)
+
+  if type(options.onClick) == "function" then
+    button:SetScript("OnClick", options.onClick)
+  end
+
+  button.SetDirection(options.direction)
+  Refresh()
+
+  return button
 end
 
 -- ---------------------------------------------------------------------------

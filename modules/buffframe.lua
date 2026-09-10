@@ -54,6 +54,15 @@
 --     possible, since nothing has measured whether the buff buttons are
 --     really children of these two containers here -- the fallback is that
 --     pfUI pair plus a stated reload-to-re-enable, not more guessing.
+--   * The collapse arrow beside the row rides that same Hide() path rather
+--     than adding a second way of hiding these frames: it only moves the
+--     answer EnforceVisibility already computes. It is an unrealUI-owned
+--     button parented to our own anchor and anchored *outside* the icon block
+--     on the row's right edge, so it never sits in front of an icon and never
+--     needs a native child as a relative frame (.claude/rules/unreal-ui.md,
+--     native widget ownership boundaries). It is lined up with the row from
+--     the anchor's own captured corner and a nominal row height, not by
+--     reading a buff button.
 
 local U = UnrealUI
 
@@ -70,6 +79,10 @@ local CONFIG = "buffframe"
 
 local defaults = {
   nativeShown = true,
+  -- The arrow's state, kept apart from nativeShown: that one is the settings
+  -- page switching the whole display off, arrow and all, while this one is the
+  -- player folding the icons away and leaving the arrow behind to unfold them.
+  collapsed = false,
 }
 
 local function Config()
@@ -89,6 +102,16 @@ local FALLBACK_HEIGHT = 100
 -- Anchor offsets below this are treated as "unchanged" rather than drift.
 local DRIFT_EPSILON = 0.5
 
+-- The collapse arrow. Nominal stock buff icon size: the control's hit area is
+-- one icon tall with the glyph centred in it, so it lines up with the first
+-- row without reading a native buff button, which this module is not allowed
+-- to keep hold of. An icon that is not this size on some build leaves the
+-- arrow a couple of units off centre, which is the deliberate trade against
+-- that read.
+local NATIVE_ICON_SIZE = 30
+-- Requested gap between the first icon and the arrow.
+local TOGGLE_GAP = 5
+
 local anchor = nil
 local root = nil          -- the native frame the handle actually drives
 local rootName = nil
@@ -101,6 +124,12 @@ local captured = {}       -- frame -> its own anchor as the client had it
 local managed = {}        -- both native frames, in the order they were found
 local skipped = nil       -- why the second frame is not driven, for the report
 local driving = false
+local editShown = nil      -- advanced visibility gate; nil follows config
+local toggle = nil         -- the collapse arrow beside the row
+local toggleOffsetX = nil  -- last x offset written for it, to avoid rewrites
+-- Forward declaration: SetEditShown below refreshes the arrow, which cannot be
+-- built until the anchor exists further down the file.
+local UpdateToggle
 
 local function Number(value)
   value = tonumber(value)
@@ -121,13 +150,28 @@ function U.GetNativeAuraFrameShown()
   return value and true or false
 end
 
+-- The arrow's own state. Its own accessors rather than a second meaning for
+-- nativeShown, so the settings checkbox and the arrow cannot overwrite each
+-- other's intent.
+function U.GetNativeAuraCollapsed()
+  local value = Config().collapsed
+  if value == nil then return defaults.collapsed end
+  return value and true or false
+end
+
+-- The single answer the native frames are driven from.
+local function IconsShown()
+  return U.GetNativeAuraFrameShown() and not U.GetNativeAuraCollapsed()
+end
+
 local function IsVisible(frame)
   local ok, shown = pcall(frame.IsShown, frame)
   return (ok and shown and shown ~= 0) and true or false
 end
 
 local function EnforceVisibility()
-  local shown = U.GetNativeAuraFrameShown()
+  local shown = editShown
+  if shown == nil then shown = IconsShown() end
   local i
   for i = 1, table.getn(managed) do
     local frame = managed[i]
@@ -135,6 +179,12 @@ local function EnforceVisibility()
       if shown then pcall(frame.Show, frame) else pcall(frame.Hide, frame) end
     end
   end
+end
+
+local function SetEditShown(shown)
+  editShown = shown
+  EnforceVisibility()
+  UpdateToggle()
 end
 
 -- ---------------------------------------------------------------------------
@@ -338,12 +388,17 @@ end
 local function Apply()
   EnforceVisibility()
   if not anchor or not root then return end
+
+  UpdateToggle()
   -- Nothing to place while it is off, and no anchor writes to fight over the
   -- frames if the client moves them in the meantime; the next Apply after it
   -- is switched back on re-drives from the stored position.
   if not U.GetNativeAuraFrameShown() then return end
 
-  MirrorNativeSize()
+  -- Collapsed leaves the anchor exactly the size the expanded row last gave
+  -- it. The arrow hangs off its right edge, so re-mirroring a hidden frame
+  -- would move the control out from under the cursor that just clicked it.
+  if not U.GetNativeAuraCollapsed() then MirrorNativeSize() end
 
   local position = StoredPosition()
   local unlocked = U.IsUnlocked()
@@ -376,6 +431,133 @@ local function Apply()
                                   secondOffsetX, secondOffsetY) then
     DriveNative()
   end
+end
+
+-- ---------------------------------------------------------------------------
+-- The collapse arrow
+--
+-- The arrow hangs one gap off the right edge of the row. The vertical edge is
+-- derived from the root frame's own captured anchor point -- the same value
+-- DriveNative uses -- so the control sits level with the first row of icons.
+--
+-- The x offset is MEASURED, and that is the whole point of this section.
+-- FOCUSED_RUNTIME_PROBE, UnrealRuntimeProbe group `aurarow`, 2026-09-10:
+--
+--   BuffFrame              1590..1640   50 wide, TOPRIGHT
+--   TemporaryEnchantFrame  1604..1640   36 wide, TOPRIGHT +30
+--   the two visible icons  1575..1640   BuffButton0 is 1610..1640
+--   UnrealUIBuffAnchor     1560..1610   50 wide, mirrors BuffFrame's size
+--
+-- So the anchor's right edge is 30 units SHORT of the row's right edge, and an
+-- arrow placed one gap off the anchor lands on top of BuffButton0 -- which is
+-- exactly the reported symptom, and why changing the gap from 3 to 5 looked
+-- like nothing had moved. Both containers' right edge measured exactly on the
+-- last icon's right edge (1640), so the containers bound the row and no buff
+-- button needs to be read to find it.
+--
+-- The 30 is not a constant here: it is the offset the client currently keeps
+-- between the two containers, which DriveNative replays from its own capture,
+-- and it goes to zero when there is no temporary enchant. So the overhang is
+-- re-measured on the tick that already reads the root frame's width, and the
+-- offset is only written when it actually changes.
+--
+-- This is a bounded numeric read of the two frames this module already manages
+-- -- no native child is discovered, and nothing native is retained as a
+-- relative frame (.claude/rules/unreal-ui.md, native widget ownership
+-- boundaries). The arrow stays anchored to the addon-owned anchor.
+-- ---------------------------------------------------------------------------
+local function RightEdge(frame)
+  if not frame then return nil end
+  local ok, value = pcall(frame.GetRight, frame)
+  if not ok then return nil end
+  return tonumber(value)
+end
+
+-- How far the native row reaches past our own anchor's right edge, never less
+-- than zero: a row that sits inside the anchor still gets the plain gap.
+local function RowOverhang()
+  local base = RightEdge(anchor)
+  if not base then return 0 end
+
+  local furthest = base
+  local i
+  for i = 1, table.getn(managed) do
+    local right = RightEdge(managed[i])
+    if right and right > furthest then furthest = right end
+  end
+  return furthest - base
+end
+
+local function TogglePoints()
+  local vertical = ""
+  if string.find(rootPoint, "TOP") then
+    vertical = "TOP"
+  elseif string.find(rootPoint, "BOTTOM") then
+    vertical = "BOTTOM"
+  end
+  -- "" gives the plain LEFT/RIGHT pair, which is what a centre-anchored row
+  -- wants anyway.
+  return vertical .. "LEFT", vertical .. "RIGHT"
+end
+
+local function PlaceToggle()
+  if not toggle or not anchor then return end
+
+  -- Frozen while the row is folded away: hidden frames keep their rect on this
+  -- client, but a build that dropped it would otherwise snap the arrow 30
+  -- units left out from under the cursor that just clicked it.
+  if U.GetNativeAuraCollapsed() and toggleOffsetX then return end
+
+  local offsetX = RowOverhang() + TOGGLE_GAP
+  if toggleOffsetX and math.abs(offsetX - toggleOffsetX) <= DRIFT_EPSILON then
+    return
+  end
+  toggleOffsetX = offsetX
+
+  local own, edge = TogglePoints()
+  pcall(function()
+    toggle:ClearAllPoints()
+    toggle:SetPoint(own, anchor, edge, offsetX, 0)
+  end)
+end
+
+-- Assigns the forward-declared local above.
+function UpdateToggle()
+  if not toggle then return end
+
+  PlaceToggle()
+
+  -- Hidden with the whole display, hidden by an advanced edit-mode row, and
+  -- hidden while the UI is unlocked: the mover handle owns the anchor then,
+  -- and a live toggle beside it would compete for the same drag.
+  local visible = U.GetNativeAuraFrameShown() and editShown ~= false
+                  and not U.IsUnlocked()
+  if visible then toggle:Show() else toggle:Hide() end
+
+  -- Pointing the way the icons go: right while they are out and can be pushed
+  -- away, left while they are folded up and can be pulled back.
+  toggle.SetDirection(U.GetNativeAuraCollapsed() and "left" or "right")
+end
+
+local function CreateToggle()
+  if not anchor then return end
+
+  toggle = U.CreateArrowToggle(anchor, {
+    name = "UnrealUIBuffToggle",
+    height = NATIVE_ICON_SIZE,
+    onClick = function()
+      U.SetNativeAuraCollapsed(not U.GetNativeAuraCollapsed())
+    end,
+  })
+
+  -- Above the anchor it is parented to. The anchor carries no art and the
+  -- arrow sits outside the icon block, so nothing of the client's is covered.
+  local ok, level = pcall(anchor.GetFrameLevel, anchor)
+  if ok and tonumber(level) then
+    pcall(toggle.SetFrameLevel, toggle, level + 2)
+  end
+
+  UpdateToggle()
 end
 
 -- ---------------------------------------------------------------------------
@@ -442,8 +624,11 @@ function BF:OnEnable()
   U.RegisterMover("buffs", anchor, {
     label = U.L("MOVER_LABEL_BUFFS"),
     visible = function() return U.GetNativeAuraFrameShown() end,
+    setEditShown = SetEditShown,
   })
   U.OnPositionReset(function() return RestoreNativeAnchors() end)
+
+  CreateToggle()
 
   Apply()
   RegisterEvents()
@@ -461,6 +646,13 @@ function U.SetNativeAuraFrameShown(value)
   Apply()
 end
 
+-- Written by the arrow. Persisted, so a folded row stays folded across a
+-- reload; Apply does the rest, hiding the frames and turning the glyph round.
+function U.SetNativeAuraCollapsed(value)
+  Config().collapsed = value and true or false
+  Apply()
+end
+
 -- Reported by /uui check.
 function U.BuffFrameReport()
   return {
@@ -472,6 +664,10 @@ function U.BuffFrameReport()
     placed = StoredPosition() and true or false,
     driving = driving,
     nativeShown = U.GetNativeAuraFrameShown(),
+    collapsed = U.GetNativeAuraCollapsed(),
+    toggle = toggle and true or false,
+    toggleOffsetX = toggleOffsetX,
+    rowOverhang = anchor and RowOverhang() or nil,
     nativeAnchorCaptured = (root and captured[root]) and true or false,
   }
 end

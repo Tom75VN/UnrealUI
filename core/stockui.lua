@@ -414,7 +414,7 @@ end
 
 function U.StyleStockCloseButton(button, parent, x, y)
   if not button then return nil end
-  U.StyleStockButton(button, { hoverBorder = { 1, 0.25, 0.25, 1 } })
+  U.StyleStockButton(button, { hoverBorder = M.color.closeGlyph })
   pcall(button.SetWidth, button, 17)
   pcall(button.SetHeight, button, 17)
   -- Normalize the hit rect to the new 17x17 bounds rather than whatever inset
@@ -430,7 +430,7 @@ function U.StyleStockCloseButton(button, parent, x, y)
       button:SetPoint("TOPRIGHT", parent, "TOPRIGHT", x or -6, y or -6)
     end)
   end
-  local glyph = EnsureGlyph(button, "uuiCloseGlyph", "X", { 1, 0.25, 0.25, 1 },
+  local glyph = EnsureGlyph(button, "uuiCloseGlyph", "X", M.color.closeGlyph,
                             M.fontSize.small)
   if glyph then
     glyph:ClearAllPoints()

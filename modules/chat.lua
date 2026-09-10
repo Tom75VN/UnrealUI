@@ -17,6 +17,12 @@ local LOCK_UPDATE_ID = "chat.resize.lock"
 local POSITION_UPDATE_ID = "chat.position.sync"
 local POSITION_INTERVAL = 0.15
 local RESTORE_PASSES = 8
+local DRIFT_EPSILON = 1
+local ALPHA_EPSILON = 0.01
+-- Consecutive corrections tolerated before the enforcement gives up. At the
+-- position interval this is a few seconds of an unbroken fight with another
+-- owner, which no legitimate late layout produces.
+local ENFORCE_LIMIT = 40
 
 local frame, grip, config
 local dragging = false
@@ -27,10 +33,17 @@ local lastGripShown
 local lastSavedWidth, lastSavedHeight, lastSavedLeft, lastSavedBottom
 local restorePasses = 0
 local positionWasUnlocked = false
+local enforceRuns = 0
+local enforceStopped = false
 local shadowFonts = {}
 local shadowTouched = false
 local shadowReport = { bound = false, applied = false }
-local chatBackground = { alpha = 0.15, update = "chat.background", records = {} }
+local chatBackground = {
+  alpha = 0.25,
+  hoverAlpha = 0.5,
+  update = "chat.background",
+  records = {},
+}
 
 local function ReadNumber(object, method)
   if not object or type(object[method]) ~= "function" then return nil end
@@ -114,6 +127,10 @@ local function SaveGeometry(width, height, left, bottom)
   config.bottom = bottom
   lastSavedWidth, lastSavedHeight = width, height
   lastSavedLeft, lastSavedBottom = left, bottom
+  -- A fresh placement is a new target, so an enforcement that had given up
+  -- gets to try again.
+  enforceRuns = 0
+  enforceStopped = false
 end
 
 local function ApplyFrameGeometry(width, height, left, bottom)
@@ -136,19 +153,78 @@ local function ApplyGeometry(width, height, left, bottom)
   return ok
 end
 
-local function RestoreSavedGeometry()
-  if not config or not config.resized then return end
+-- The stored geometry clamped to the current screen, or nil while nothing has
+-- been placed yet.
+local function SavedGeometry()
+  if not config or not config.resized then return nil end
 
   local width = tonumber(config.width)
   local height = tonumber(config.height)
   local left = tonumber(config.left)
   local bottom = tonumber(config.bottom)
-  if not (width and height and left and bottom) then return end
+  if not (width and height and left and bottom) then return nil end
 
   width = Clamp(width, MIN_WIDTH, U.UIWidth() - left)
   height = Clamp(height, MIN_HEIGHT, U.UIHeight())
   bottom = Clamp(bottom, 0, U.UIHeight() - height)
+  return width, height, left, bottom
+end
+
+local function RestoreSavedGeometry()
+  local width, height, left, bottom = SavedGeometry()
+  if not width then return end
   ApplyGeometry(width, height, left, bottom)
+end
+
+-- frames.extra_anchor_point_survives_addon_setpoint (USER_CONFIRMED_INGAME):
+-- a native frame this addon re-anchors can end up carrying a second anchor
+-- point that actually places it while GetPoint(1) still reads back as ours, so
+-- the point count is tested first and any count other than one counts as drift
+-- by itself. The rect comparison is what catches the client's own late chat
+-- layout writing a different corner or size.
+local function GeometryDrifted(width, height, left, bottom)
+  local okCount, count = pcall(frame.GetNumPoints, frame)
+  if okCount and tonumber(count) and tonumber(count) ~= 1 then return true end
+
+  local currentWidth = ReadNumber(frame, "GetWidth")
+  local currentHeight = ReadNumber(frame, "GetHeight")
+  local currentLeft = ReadNumber(frame, "GetLeft")
+  local currentBottom = ReadNumber(frame, "GetBottom")
+  if not (currentWidth and currentHeight and currentLeft and currentBottom) then
+    return false
+  end
+
+  if math.abs(currentWidth - width) > DRIFT_EPSILON then return true end
+  if math.abs(currentHeight - height) > DRIFT_EPSILON then return true end
+  if math.abs(currentLeft - left) > DRIFT_EPSILON then return true end
+  if math.abs(currentBottom - bottom) > DRIFT_EPSILON then return true end
+  return false
+end
+
+-- Put the chat back on its saved geometry whenever something else has moved or
+-- resized it. This only runs while the chat is locked, where the resize grip is
+-- hidden and native tab dragging is unavailable, so any difference from the
+-- stored numbers is the client's own layout rather than the player.
+local function EnforceSavedGeometry()
+  if enforceStopped or not frame then return end
+
+  local width, height, left, bottom = SavedGeometry()
+  if not width then return end
+
+  if not GeometryDrifted(width, height, left, bottom) then
+    enforceRuns = 0
+    return
+  end
+
+  ApplyGeometry(width, height, left, bottom)
+  enforceRuns = enforceRuns + 1
+  if enforceRuns >= ENFORCE_LIMIT then
+    -- Another owner is rewriting the chat on every pass. Stand down rather
+    -- than flicker the frame between two placements for the whole session.
+    enforceStopped = true
+    U.Debug("chat position: stopped re-applying the saved geometry; " ..
+            "something keeps moving the chat back")
+  end
 end
 
 local function CaptureCurrentGeometry()
@@ -165,13 +241,16 @@ local function CaptureCurrentGeometry()
 end
 
 local function UpdatePositionPersistence()
-  -- The native chat performs late layout work during reload. Reapply the saved
-  -- geometry for a short bounded window before accepting any native position
-  -- as a new user placement; otherwise a late default layout would overwrite
-  -- the correct SavedVariables values in memory.
+  -- The native chat performs late layout work during reload, and it is not
+  -- confined to the first second after login: with a single bounded restore
+  -- window, any later native placement stood for the rest of the session,
+  -- which is why the chat did not keep a custom position across a reload. The
+  -- window now only suppresses capturing, so a late default layout cannot
+  -- overwrite the correct SavedVariables values in memory; the saved geometry
+  -- itself is re-applied for as long as the chat stays locked.
   if restorePasses > 0 then
-    RestoreSavedGeometry()
     restorePasses = restorePasses - 1
+    EnforceSavedGeometry()
     positionWasUnlocked = not ChatIsLocked()
     return
   end
@@ -181,10 +260,13 @@ local function UpdatePositionPersistence()
     -- While unlocked, native tab dragging owns the frame. Polling only reads
     -- its resulting geometry and stores numbers; it never re-anchors the chat.
     CaptureCurrentGeometry()
-  elseif positionWasUnlocked then
-    -- Capture once more on the unlocked -> locked transition so a quick lock
-    -- immediately after dropping cannot miss the final position.
-    CaptureCurrentGeometry()
+  else
+    if positionWasUnlocked then
+      -- Capture once more on the unlocked -> locked transition so a quick lock
+      -- immediately after dropping cannot miss the final position.
+      CaptureCurrentGeometry()
+    end
+    EnforceSavedGeometry()
   end
   positionWasUnlocked = unlocked
 end
@@ -379,12 +461,47 @@ local function ChatShadowFont(chat, index)
   return record.font
 end
 
+-- Is the cursor inside this chat frame?
+--
+-- GetMouseFocus reports <none> on this client (core/commands.lua records the
+-- 8s hover watch that found it useless), and the chat frames are client-owned,
+-- so no OnEnter/OnLeave script may be taken from them. The cursor rectangle
+-- test is the same GetCursorPosition/GetEffectiveScale pattern the world map
+-- and minimap already rely on. An unreadable rect answers "not hovered", which
+-- simply leaves the background at its idle opacity.
+local function CursorOverFrame(frame, cursorX, cursorY)
+  if not cursorX or not cursorY then return false end
+
+  local scale = ReadNumber(frame, "GetEffectiveScale")
+  if not scale or scale <= 0 then return false end
+
+  local left = ReadNumber(frame, "GetLeft")
+  local bottom = ReadNumber(frame, "GetBottom")
+  local width = ReadNumber(frame, "GetWidth")
+  local height = ReadNumber(frame, "GetHeight")
+  if not (left and bottom and width and height) then return false end
+  if width <= 0 or height <= 0 then return false end
+
+  local x, y = cursorX / scale, cursorY / scale
+  return x >= left and x <= left + width and y >= bottom and y <= bottom + height
+end
+
+local function CursorPoint()
+  if type(GetCursorPosition) ~= "function" then return nil end
+  local ok, x, y = pcall(GetCursorPosition)
+  if not ok or type(x) ~= "number" or type(y) ~= "number" then return nil end
+  return x, y
+end
+
 -- WORKING_SOURCE: UnrealPfUI/modules/chat.lua addresses ChatFrameNBackground
 -- directly. No native region discovery or cached native texture references.
--- Native opacity has a 15% floor, not a ceiling: its normal hover fade can
--- still brighten the background. Chat text and frame alpha stay intact.
+-- The background is held at 25% while idle and 50% while the cursor is over
+-- that chat frame. Unlike the earlier floor-only treatment this overrides the
+-- native hover fade in both directions, so the two states stay the ones
+-- configured here. Chat text and frame alpha stay intact.
 function chatBackground.Tick()
   if not config or not config.noTextShadow then return end
+  local cursorX, cursorY = CursorPoint()
   local i
   for i = 1, 2 do
     local chat = U.G("ChatFrame" .. i)
@@ -392,6 +509,10 @@ function chatBackground.Tick()
       pcall(function()
         local record = chatBackground.records[i] or {}
         chatBackground.records[i] = record
+        local target = chatBackground.alpha
+        if CursorOverFrame(chat, cursorX, cursorY) then
+          target = chatBackground.hoverAlpha
+        end
         local texture = U.G("ChatFrame" .. i .. "Background")
         if texture and type(texture.SetAlpha) == "function" and type(texture.Show) == "function" then
           if not record.native then
@@ -410,10 +531,12 @@ function chatBackground.Tick()
           end
           texture = record.owned
         end
+        -- Compared with a tolerance because the native fade animates: an
+        -- exact test would re-set the alpha on every frame of it.
         local alpha = ReadNumber(texture, "GetAlpha")
-        if (texture == record.owned and alpha ~= chatBackground.alpha)
-            or (texture ~= record.owned and (not alpha or alpha < chatBackground.alpha)) then
-          texture:SetAlpha(chatBackground.alpha)
+        if not alpha or alpha > target + ALPHA_EPSILON
+            or alpha < target - ALPHA_EPSILON then
+          texture:SetAlpha(target)
         end
         local ok, shown = pcall(texture.IsShown, texture)
         if not ok or not shown or shown == 0 then texture:Show() end
@@ -526,6 +649,8 @@ function U.ChatResizeReport()
     bottom = frame and ReadNumber(frame, "GetBottom") or nil,
     savedLeft = config and config.left or nil,
     savedBottom = config and config.bottom or nil,
+    enforceRuns = enforceRuns,
+    enforceStopped = enforceStopped,
     noTextShadow = config and config.noTextShadow and true or false,
     shadowBound = shadowReport.bound,
     shadowApplied = shadowReport.applied,

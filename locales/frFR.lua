@@ -49,9 +49,13 @@ LOADING_FPS_DEPENDENT     = "La duree depend des FPS. Retire dans une future mis
 -- Edit mode
 -- ---------------------------------------------------------------------------
 MOVER_TITLE               = "Editer l'interface",
-MOVER_HINT_FREE           = "|cfff5ae0aMaj + glisser|r : deplacement libre",
 MOVER_HINT_MAGNET         = "|cfff5ae0aPres d'un autre element|r : aimantation",
 MOVER_HINT_ARROWS         = "|cfff5ae0aCliquez un cadre|r : les fleches le deplacent d'1 px",
+MOVER_GRID                = "Afficher la grille d'alignement",
+MOVER_MAGNET              = "Aimantation des elements (sans chevauchement)",
+MOVER_GROUP               = "Deplacer ensemble les ancres qui se touchent",
+MOVER_GRID_SIZE           = "Taille de la grille",
+MOVER_ADVANCED_ANCHORS    = "Ancres avancees",
 MOVER_SAVE_EXIT           = "Enregistrer et quitter",
 MOVER_RESET               = "Reinitialiser",
 MOVER_DRAG_FIRST          = "Deplacez %s une fois avant de l'ajuster.",
@@ -64,6 +68,7 @@ MOVER_LABEL_PLAYER        = "Joueur",
 MOVER_LABEL_TARGET        = "Cible",
 MOVER_LABEL_TARGET_TARGET = "Cible de la cible",
 MOVER_LABEL_PET           = "Familier",
+MOVER_LABEL_PET_UNIT_FRAME = "Cadre du familier",
 MOVER_LABEL_PARTY         = "Groupe",
 MOVER_LABEL_PARTY_N       = "Groupe %d",
 MOVER_LABEL_DRUID_MANA    = "Mana du druide",
@@ -77,6 +82,7 @@ MOVER_LABEL_SWING_BAR     = "Attaque auto : barre d'attaque",
 MOVER_LABEL_MICRO_BAR     = "Micro-barre",
 MOVER_LABEL_BUFFS         = "Ameliorations et affaiblissements",
 MOVER_LABEL_MINIMAP       = "Minicarte",
+MOVER_LABEL_DURABILITY    = "Durabilite de l'armure",
 MOVER_LABEL_TOOLTIP       = "Infobulle",
 MOVER_LABEL_PET_BAR       = "Barre du familier",
 MOVER_LABEL_STANCE_BAR    = "Barre de posture",
@@ -119,6 +125,7 @@ SETTINGS_ZONE_LEVELS      = "Afficher les niveaux des zones sur la carte du mond
 SETTINGS_ZONE_LEVELS_HINT = "Survoler une zone sur une carte de continent affiche sa plage de niveaux a cote du nom : vert en dessous de votre niveau, orange a votre niveau, rouge au-dessus.",
 SETTINGS_TOOLTIP_CURSOR  = "Les infobulles du monde suivent le curseur",
 SETTINGS_TOOLTIP_CURSOR_HINT = "Garde les infobulles du monde pres du curseur, dans les limites de l'ecran. Desactivez pour utiliser la position enregistree.",
+SETTINGS_TOOLTIP_FADE_HOLD = "Delai de masquage de l'infobulle (secondes)",
 SETTINGS_CHAT_SHADOW      = "Supprimer l'ombre du texte de la discussion",
 SETTINGS_CHAT_SHADOW_RELOAD = "Tapez /reload pour retablir l'ombre du texte de la discussion.",
 SETTINGS_CHAT_SHADOW_HINT = "Affiche les messages de discussion a plat, sans ombre portee derriere les lettres. Les libelles des onglets ne sont pas touches.",
@@ -189,7 +196,8 @@ ABC_GENERAL_HINT          = "%d barres independantes sont disponibles. Les pages
 ABC_BIND_HINT             = "Survolez un emplacement et appuyez sur une touche pour l'assigner. Echap sur un emplacement l'efface. Les barres 1 a 5 sont assignables ; les barres 6 a 10 n'ont aucune commande de touche dans ce client, elles sont donc affichees mais ne peuvent rien recevoir.",
 ABC_PET_BAR              = "Barre du familier",
 ABC_PET_RESET            = "Restaurer la taille du client",
-ABC_PET_HINT             = "Ces reglages placent les boutons de familier du client : il n'y a donc ni activation ni nombre de boutons ici. Deplacer un curseur prend la rangee en charge ; Restaurer la taille du client la rend au jeu. Equivalent a /uui petbar size, spacing et reset.",
+ABC_PET_HINT             = "Ces reglages placent les boutons de familier du client : il n'y a donc pas de nombre de boutons ici. Deplacer un curseur prend la rangee en charge ; Restaurer la taille du client la rend au jeu. Equivalent a /uui petbar size, spacing et reset.",
+ABC_PET_ENABLE_HINT      = "Desactive, la barre de familier disparait entierement de l'interface. Meme reglage que sa ligne dans Ancres avancees en mode edition.",
 ABC_PET_UNAVAILABLE      = "La barre de familier native n'est pas active dans cette session, ses boutons ne peuvent donc pas etre places.",
 
 -- ---------------------------------------------------------------------------
@@ -249,6 +257,7 @@ UF_EXACT_VITALS           = "Afficher la sante et le mana exacts",
 UF_EXACT_VITALS_HINT      = "Le client ne communique la sante d'une creature qu'en pourcentage. Quand cette option est active, le cadre de cible affiche les valeurs reelles issues de la table de creatures fournie et affine la valeur courante avec les degats observes. Desactivez-la pour revenir au pourcentage.",
 
 UF_PARTY_HEADER           = "Cadres de groupe",
+UF_PARTY_PLAYER           = "Afficher votre personnage dans les cadres de groupe",
 UF_PARTY_PETS             = "Afficher les familiers des membres du groupe",
 UF_POWER_TICK_HEADER      = "Cycle de ressource du joueur",
 UF_MANA_TICK              = "Afficher le cycle de mana",
@@ -256,6 +265,11 @@ UF_ENERGY_TICK            = "Afficher le cycle d'energie",
 UF_COMBO_POINTS_HEADER    = "Points de combo",
 UF_COMBO_POINTS_PLAYER_FRAME = "Cadre joueur",
 UF_COMBO_POINTS_TARGET_FRAME = "Cadre cible",
+UF_MOVER_INCOMING_HEALS   = "Soins entrants",
+UF_MOVER_AURAS_ENABLED    = "Afficher les auras",
+UF_MOVER_AURAS_TIMERS     = "Minuteurs d'aura",
+UF_MOVER_AURAS_BELOW      = "Auras sous les cadres",
+UF_MOVER_EXACT_VITALS     = "Sante exacte",
 
 -- Indicateurs de soins periodiques sur les cadres de groupe (modules/hots.lua).
 -- ASCII uniquement : la police native rend mal les accents francais.
@@ -274,6 +288,7 @@ HEALPREDICT_HINT          = "Colore la partie de la barre de vie que votre soin 
 
 AURAS_HEADER              = "Auras des cadres d'unite",
 AURAS_ON_PLAYER_FRAME     = "Afficher les auras sur le cadre joueur",
+AURAS_ON_TARGET_FRAME     = "Afficher les auras sur le cadre cible",
 AURAS_NEAR_MINIMAP        = "Afficher les auras pres de la minicarte",
 AURAS_PLAYER_DEBUFFS      = "Affaiblissements du cadre joueur",
 AURAS_PLAYER_BUFFS        = "Ameliorations du cadre joueur",
@@ -400,8 +415,12 @@ SPELLBOOK_BAR_HINT_TOOLTIP = "Surligne les sorts absents des barres.",
 GAMEMENU_OPTIONS          = "Options",
 
 -- ---------------------------------------------------------------------------
--- Experience bar tooltip (modules/xpbar.lua)
+-- Experience bar settings and tooltip (modules/xpbar.lua)
 -- ---------------------------------------------------------------------------
+XPBAR_WIDTH               = "Largeur de la barre",
+XPBAR_HEIGHT              = "Hauteur de la barre",
+XPBAR_SHOW_TEXT           = "Afficher le texte d'experience",
+XPBAR_TEXT_FORMAT         = "%d / %d (%d%%)",
 XPTIP_TITLE               = "Experience",
 XPTIP_XP                  = "XP",
 XPTIP_REMAINING           = "Restant",

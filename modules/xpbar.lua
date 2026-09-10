@@ -22,41 +22,153 @@ local WIDTH = 300
 local HEIGHT = 7
 local GAP = 3
 
+local WIDTH_LIMIT = { min = 160, max = 600, step = 10 }
+local HEIGHT_LIMIT = { min = 7, max = 30, step = 1 }
+local MOVER_ID = "xpbar.xp"
+local MOVER_CONTENT_WIDTH = 318
+local MOVER_SLIDER_WIDTH = 150
+local MOVER_SLIDER_COLUMN = 168
+
 local COLOR_XP = M.color.xp
 local COLOR_XP_RESTED = M.color.xpRested
 local COLOR_REP_FALLBACK = { 0.50, 0.50, 0.50, 1.00 }
 local COLOR_REP_EMPTY = { 0.35, 0.35, 0.35, 1.00 }
 
 local config
-local xpAnchor, xpBar, xpRestedBar
+local xpAnchor, xpBar, xpRestedBar, xpText
 local repAnchor, repBar
 
 -- Session experience tracking for the tooltip's rate lines. Held on one table
 -- rather than as separate top-level locals (see the Lua local budget note in
 -- .claude/rules/unreal-ui.md), and never persisted: "this session" means since
 -- login or reload, not since the last zone change.
-local session = { startedAt = nil, xp = 0, lastXP = nil, lastXPMax = nil }
+--
+-- .elapsed is play time accumulated from the gap between successive samples
+-- rather than from one login baseline, and .recent is the tail of the session
+-- the rate is measured over.
+local session = {
+  xp = 0, lastXP = nil, lastXPMax = nil,
+  elapsed = 0, lastTick = nil,
+  recent = {},
+}
+
+-- Two samples further apart than this did not measure play time: the poll runs
+-- every 2s, so a larger gap is a loading screen, a stalled client or a clock
+-- that jumped, and the interval is dropped instead of counted.
+local MAX_SAMPLE_GAP = 10
+-- The rate is measured over the last RATE_WINDOW seconds of counted play time,
+-- sampled every SAMPLE_EVERY seconds, and nothing shorter than MIN_SAMPLE is
+-- extrapolated from.
+local RATE_WINDOW = 1800
+local SAMPLE_EVERY = 30
+local MIN_SAMPLE = 60
 
 -- ---------------------------------------------------------------------------
 -- Config
 -- ---------------------------------------------------------------------------
 local function EnsureConfig()
-  if not config then config = U.ModuleConfig("xpbar", { repEnabled = true }) end
+  if not config then
+    config = U.ModuleConfig("xpbar", {
+      repEnabled = true,
+      width = WIDTH,
+      height = HEIGHT,
+      showText = false,
+    })
+  end
   return config
+end
+
+local function ClampWidth(value)
+  value = tonumber(value) or WIDTH
+  if value < WIDTH_LIMIT.min then value = WIDTH_LIMIT.min end
+  if value > WIDTH_LIMIT.max then value = WIDTH_LIMIT.max end
+  return math.floor((value - WIDTH_LIMIT.min) / WIDTH_LIMIT.step + 0.5) *
+         WIDTH_LIMIT.step + WIDTH_LIMIT.min
+end
+
+local function ClampHeight(value)
+  value = tonumber(value) or HEIGHT
+  if value < HEIGHT_LIMIT.min then value = HEIGHT_LIMIT.min end
+  if value > HEIGHT_LIMIT.max then value = HEIGHT_LIMIT.max end
+  return math.floor((value - HEIGHT_LIMIT.min) / HEIGHT_LIMIT.step + 0.5) *
+         HEIGHT_LIMIT.step + HEIGHT_LIMIT.min
+end
+
+function U.GetXPBarSetting(key)
+  local cfg = EnsureConfig()
+  if key == "width" then return ClampWidth(cfg.width) end
+  if key == "height" then return ClampHeight(cfg.height) end
+  if key == "showText" then return cfg.showText and true or false end
+  return nil
+end
+
+function U.XPBarLimits(key)
+  if key == "width" then
+    return WIDTH_LIMIT.min, WIDTH_LIMIT.max, WIDTH_LIMIT.step
+  elseif key == "height" then
+    return HEIGHT_LIMIT.min, HEIGHT_LIMIT.max, HEIGHT_LIMIT.step
+  end
+  return 0, 0, 1
+end
+
+local function SetXPBarLayout(width, height)
+  if not xpAnchor then return end
+  width = ClampWidth(width)
+  height = ClampHeight(height)
+  xpAnchor:SetWidth(width)
+  xpAnchor:SetHeight(height)
+  if xpText then xpText:SetWidth(width - 8) end
+end
+
+local function ApplyXPBarLayout()
+  SetXPBarLayout(U.GetXPBarSetting("width"),
+                 U.GetXPBarSetting("height"))
+end
+
+-- Used only by the mover sliders' live-input hook. The preview changes frame
+-- geometry without writing SavedVariables or refreshing the panel; the normal
+-- onChange callback commits the final stepped value when the thumb is released.
+local function PreviewXPBarLayout(key, value)
+  local width = key == "width" and value or U.GetXPBarSetting("width")
+  local height = key == "height" and value or U.GetXPBarSetting("height")
+  SetXPBarLayout(width, height)
+end
+
+function U.SetXPBarSetting(key, value)
+  local cfg = EnsureConfig()
+  if key == "width" then
+    if not tonumber(value) then return false end
+    cfg.width = ClampWidth(value)
+  elseif key == "height" then
+    if not tonumber(value) then return false end
+    cfg.height = ClampHeight(value)
+  elseif key == "showText" then
+    cfg.showText = value and true or false
+  else
+    return false
+  end
+
+  U.ApplyXPBar()
+  if type(U.RefreshMoverPanel) == "function" then
+    U.RefreshMoverPanel(MOVER_ID)
+  end
+  return true
 end
 
 -- ---------------------------------------------------------------------------
 -- Build
 -- ---------------------------------------------------------------------------
-local function BuildBar(name, fillColor)
+local function BuildBar(name, fillColor, width, height)
+  width = tonumber(width) or WIDTH
+  height = tonumber(height) or HEIGHT
   local anchor = CreateFrame("Frame", name, UIParent)
-  anchor:SetWidth(WIDTH)
-  anchor:SetHeight(HEIGHT)
+  anchor:SetWidth(width)
+  anchor:SetHeight(height)
   U.CreateBackdrop(anchor, { background = M.color.healthBg })
 
   local bar = U.CreateStatusBar(anchor, {
-    width = WIDTH - 2 * U.BorderSize(),
-    height = HEIGHT - 2 * U.BorderSize(),
+    width = width - 2 * U.BorderSize(),
+    height = height - 2 * U.BorderSize(),
     color = fillColor,
     background = { 0, 0, 0, 0 },
   })
@@ -89,9 +201,47 @@ local function Now()
   return tonumber(value)
 end
 
-local function TrackSession(xp, xpmax)
-  if not session.startedAt then session.startedAt = Now() end
+-- Counted play time, advanced by the gap since the previous sample. Measuring
+-- it as a sum of small deltas instead of "now minus a login baseline" means no
+-- single bad clock reading can poison the session length: a backwards reading
+-- or a large forward jump simply fails the MAX_SAMPLE_GAP test and costs one
+-- poll interval. The old baseline form produced the observed "1 xp/hour,
+-- 147d remaining" tooltip: its baseline was ~45 days behind the GetTime the
+-- tooltip then read, consistent with the first sample being taken before the
+-- world clock this GetTime counts from was live. That cause is a hypothesis,
+-- not runtime verified; the delta form is correct either way, since it never
+-- depends on a single reading.
+local function TrackElapsed()
+  local now = Now()
+  if not now then return end
+  local last = session.lastTick
+  session.lastTick = now
+  if not last then return end
+  local delta = now - last
+  if delta > 0 and delta <= MAX_SAMPLE_GAP then
+    session.elapsed = session.elapsed + delta
+  end
+end
 
+-- One point of the rate window, recorded at most every SAMPLE_EVERY seconds of
+-- counted time. The oldest sample is kept until the one behind it is itself a
+-- full window old, so the window never shrinks below RATE_WINDOW while the
+-- session is long enough to fill it.
+local function TrackSample()
+  local count = table.getn(session.recent)
+  local head = count > 0 and session.recent[count] or nil
+  if not head or (session.elapsed - head.at) >= SAMPLE_EVERY then
+    table.insert(session.recent, { at = session.elapsed, xp = session.xp })
+    count = count + 1
+  end
+
+  while count > 1 and (session.elapsed - session.recent[2].at) >= RATE_WINDOW do
+    table.remove(session.recent, 1)
+    count = count - 1
+  end
+end
+
+local function TrackSession(xp, xpmax)
   local last, lastMax = session.lastXP, session.lastXPMax
   if last then
     if lastMax and xpmax ~= lastMax then
@@ -103,23 +253,25 @@ local function TrackSession(xp, xpmax)
   end
 
   session.lastXP, session.lastXPMax = xp, xpmax
+  TrackElapsed()
+  TrackSample()
 end
 
--- Seconds elapsed in this session, or nil while the clock is unusable or the
--- sample is too short for a meaningful rate.
-local function SessionElapsed()
-  if not session.startedAt then return nil end
-  local now = Now()
-  if not now then return nil end
-  local elapsed = now - session.startedAt
-  -- GetTime restarts across a reload, so a backwards reading means the baseline
-  -- is stale rather than that time ran backwards.
-  if elapsed < 0 then
-    session.startedAt = now
-    return nil
+-- Experience per second to extrapolate from: the recent window while it holds
+-- a long enough stretch of counted time with a gain in it, so the estimate
+-- follows how fast experience is coming in now, and the whole session when it
+-- does not, so an idle stretch reads as a slow rate rather than as no answer.
+-- nil while neither sample is long enough to mean anything.
+local function SessionRate()
+  local oldest = session.recent[1]
+  if oldest then
+    local span, gain = session.elapsed - oldest.at, session.xp - oldest.xp
+    if span >= MIN_SAMPLE and gain > 0 then return gain / span end
   end
-  if elapsed < 60 then return nil end
-  return elapsed
+  if session.elapsed >= MIN_SAMPLE and session.xp > 0 then
+    return session.xp / session.elapsed
+  end
+  return nil
 end
 
 local function FormatDuration(seconds)
@@ -137,6 +289,54 @@ local function FormatDuration(seconds)
            math.floor(math.mod(seconds, 60)) .. U.L("XPTIP_UNIT_SECOND")
   end
   return math.floor(seconds) .. U.L("XPTIP_UNIT_SECOND")
+end
+
+-- A short gap above the session block. GameTooltip has no per-line spacing
+-- API, so the gap is one empty line whose own font height is shrunk to
+-- SPACER_HEIGHT. That line belongs to the shared GameTooltip, so the swap is
+-- transient: the line's own font object is captured on the way in and put back
+-- when this tooltip hides, before any other tooltip can reuse the row. Held on
+-- one table rather than as separate top-level locals.
+local SPACER_HEIGHT = 5
+local spacer = { font = nil, line = nil, original = nil }
+
+local function SpacerFont()
+  if spacer.font then return spacer.font end
+  local path = U.ResolveFont()
+  if not path then return nil end
+  local ok, font = pcall(CreateFont, "UnrealUIXPTipSpacerFont")
+  if not ok or not font then return nil end
+  if not pcall(font.SetFont, font, path, SPACER_HEIGHT) then return nil end
+  spacer.font = font
+  return font
+end
+
+local function ReleaseSpacer()
+  if spacer.line and spacer.original then
+    pcall(spacer.line.SetFontObject, spacer.line, spacer.original)
+  end
+  spacer.line, spacer.original = nil, nil
+end
+
+-- Falls through to no gap at all rather than a full-height blank line: an
+-- unresolvable font or an unreadable row is a cosmetic loss, while leaving a
+-- shrunk font on a shared tooltip row is not.
+local function AddSpacer()
+  ReleaseSpacer()
+  local font = SpacerFont()
+  if not font then return end
+  if not pcall(GameTooltip.AddLine, GameTooltip, " ") then return end
+
+  local countOk, count = pcall(GameTooltip.NumLines, GameTooltip)
+  if not countOk or type(count) ~= "number" or count < 1 then return end
+  local line = U.G("GameTooltipTextLeft" .. count)
+  if not line or not line.SetFontObject or not line.GetFontObject then return end
+
+  local originalOk, original = pcall(line.GetFontObject, line)
+  if not originalOk or not original then return end
+  if pcall(line.SetFontObject, line, font) then
+    spacer.line, spacer.original = line, original
+  end
 end
 
 -- ---------------------------------------------------------------------------
@@ -181,34 +381,40 @@ local function XPTooltipShow()
     GameTooltip:AddDoubleLine(U.L("XPTIP_RESTED"), "+" .. rested .. " (" .. math.floor(rested / xpmax * 100 + 0.5) .. "%)", 1, 1, 1, 0.3, 0.3, 1)
   end
 
-  -- Session, rate and estimate, as UnrealPfUI's xpbar tooltip shows them. The
-  -- two derived lines read "--" until the session is long enough to mean
-  -- anything, rather than printing a wild extrapolation from a few seconds.
-  local elapsed = SessionElapsed()
-  local perSecond = (elapsed and session.xp > 0) and (session.xp / elapsed) or 0
+  -- Session, rate and estimate, as UnrealPfUI's xpbar tooltip shows them,
+  -- except for where the rate comes from: pfUI divides the whole session's
+  -- gain by "GetTime now minus GetTime at PLAYER_ENTERING_WORLD", which both
+  -- dilutes the estimate over a long session and cannot recover from a bad
+  -- baseline. SessionRate measures counted play time instead. Both derived
+  -- lines read "--" until there is enough of it to extrapolate from, rather
+  -- than printing a guess from a few seconds.
+  local perSecond = SessionRate()
 
-  GameTooltip:AddLine(" ")
+  AddSpacer()
   GameTooltip:AddDoubleLine(U.L("XPTIP_SESSION"), tostring(session.xp), 1, 1, 1, 1, 1, 1)
   GameTooltip:AddDoubleLine(U.L("XPTIP_PER_HOUR"),
-    perSecond > 0 and tostring(math.floor(perSecond * 3600)) or "--", 1, 1, 1, 1, 1, 1)
+    perSecond and tostring(math.floor(perSecond * 3600)) or "--", 1, 1, 1, 1, 1, 1)
   GameTooltip:AddDoubleLine(U.L("XPTIP_TIME_LEFT"),
-    (perSecond > 0 and FormatDuration(remaining / perSecond)) or "--", 1, 1, 1, 1, 1, 1)
+    (perSecond and FormatDuration(remaining / perSecond)) or "--", 1, 1, 1, 1, 1, 1)
 
   GameTooltip:Show()
 end
 
 local function XPTooltipHide()
   GameTooltip:Hide()
+  ReleaseSpacer()
 end
 
 local function Build()
-  xpAnchor, xpBar = BuildBar("UnrealUIXPBarAnchor", COLOR_XP)
+  xpAnchor, xpBar = BuildBar("UnrealUIXPBarAnchor", COLOR_XP,
+                            U.GetXPBarSetting("width"),
+                            U.GetXPBarSetting("height"))
 
   -- The rested portion sits behind the current-xp fill on its own bar, at a
   -- lower frame level, so it reads as an extension rather than covering it.
   xpRestedBar = U.CreateStatusBar(xpAnchor, {
-    width = WIDTH - 2 * U.BorderSize(),
-    height = HEIGHT - 2 * U.BorderSize(),
+    width = U.GetXPBarSetting("width") - 2 * U.BorderSize(),
+    height = U.GetXPBarSetting("height") - 2 * U.BorderSize(),
     color = COLOR_XP_RESTED,
     background = { 0, 0, 0, 0 },
   })
@@ -222,7 +428,31 @@ local function Build()
     pcall(xpBar.SetFrameLevel, xpBar, barLevel + 1)
   end
 
-  U.RegisterMover("xpbar.xp", xpAnchor, {
+  -- A raised owned layer keeps the optional readout above both the current-XP
+  -- and rested fills. It is mouse-transparent so the anchor retains its
+  -- tooltip and mover interactions.
+  local textLayer = CreateFrame("Frame", nil, xpAnchor)
+  textLayer:SetAllPoints(xpAnchor)
+  pcall(textLayer.EnableMouse, textLayer, false)
+  if barOk and tonumber(barLevel) then
+    pcall(textLayer.SetFrameLevel, textLayer, barLevel + 5)
+  end
+  xpText = U.CreateLabel(textLayer, {
+    size = M.fontSize.tiny,
+    color = M.color.text,
+    inherits = "GameFontNormalSmall",
+    width = U.GetXPBarSetting("width") - 8,
+    height = 12,
+    justify = "CENTER",
+    shadowOffset = M.compactTextShadowOffset,
+    shadowColor = M.color.shadowStrong,
+  })
+  if xpText then
+    xpText:SetPoint("CENTER", textLayer, "CENTER", 0, 0)
+    xpText:Hide()
+  end
+
+  U.RegisterMover(MOVER_ID, xpAnchor, {
     label = U.L("MOVER_LABEL_XP_BAR"),
     default = { point = "BOTTOM", relativePoint = "BOTTOM", x = 0, y = 66 },
   })
@@ -231,7 +461,8 @@ local function Build()
   xpAnchor:SetScript("OnEnter", XPTooltipShow)
   xpAnchor:SetScript("OnLeave", XPTooltipHide)
 
-  repAnchor, repBar = BuildBar("UnrealUIReputationBarAnchor", COLOR_REP_FALLBACK)
+  repAnchor, repBar = BuildBar("UnrealUIReputationBarAnchor",
+                              COLOR_REP_FALLBACK, WIDTH, HEIGHT)
 
   U.RegisterMover("xpbar.reputation", repAnchor, {
     label = U.L("MOVER_LABEL_REP_BAR"),
@@ -254,12 +485,26 @@ local function SetBar(bar, value, maximum)
   pcall(bar.SetValue, bar, value)
 end
 
+local function ApplyXPText(xp, xpmax)
+  if not xpText then return end
+  if not U.GetXPBarSetting("showText") or not tonumber(xpmax) or xpmax <= 0 then
+    xpText:Hide()
+    return
+  end
+
+  xp = tonumber(xp) or 0
+  local percent = math.floor(xp / xpmax * 100 + 0.5)
+  xpText:SetText(U.L("XPBAR_TEXT_FORMAT", xp, xpmax, percent))
+  xpText:Show()
+end
+
 local function RefreshXP()
   if not xpAnchor then return end
 
   local unitXP = U.G("UnitXP")
   local unitXPMax = U.G("UnitXPMax")
   if type(unitXP) ~= "function" or type(unitXPMax) ~= "function" then
+    if xpText then xpText:Hide() end
     xpAnchor:Hide()
     return
   end
@@ -271,6 +516,7 @@ local function RefreshXP()
 
   -- UnitXPMax reports 0 once no further experience is tracked (max level).
   if xpmax <= 0 then
+    if xpText then xpText:Hide() end
     xpAnchor:Hide()
     return
   end
@@ -278,6 +524,7 @@ local function RefreshXP()
 
   TrackSession(xp, xpmax)
   SetBar(xpBar, xp, xpmax)
+  ApplyXPText(xp, xpmax)
 
   local exhaustion = U.G("GetXPExhaustion")
   local rested = 0
@@ -345,8 +592,74 @@ end
 -- Public so modules/settings.lua's General page can flip the checkbox without
 -- reaching into this module's internals.
 function U.ApplyXPBar()
+  ApplyXPBarLayout()
   RefreshXP()
   RefreshReputation()
+end
+
+-- ---------------------------------------------------------------------------
+-- Contextual edit-mode settings
+-- ---------------------------------------------------------------------------
+local function BuildMoverPanel(frame, contentTop)
+  local pad = U.MoverPanelPad()
+  local widgets = {}
+
+  local function BeginResize()
+    if type(U.FreezeMoverPanel) == "function" then U.FreezeMoverPanel() end
+  end
+
+  local showText = U.CreateCheckbox(frame, {
+    name = "UnrealUIXPBarMoverShowText",
+    text = U.L("XPBAR_SHOW_TEXT"),
+    textWidth = MOVER_CONTENT_WIDTH - 20,
+    value = U.GetXPBarSetting("showText"),
+    onChange = function(value) U.SetXPBarSetting("showText", value) end,
+  })
+  showText.SetPoint("TOPLEFT", frame, "TOPLEFT", pad, contentTop)
+  table.insert(widgets, showText)
+
+  local min, max, step = U.XPBarLimits("width")
+  local width = U.CreateSlider(frame, {
+    name = "UnrealUIXPBarMoverWidth",
+    text = U.L("XPBAR_WIDTH"),
+    width = MOVER_SLIDER_WIDTH,
+    boxWidth = 60,
+    min = min,
+    max = max,
+    step = step,
+    value = U.GetXPBarSetting("width"),
+    onInputStart = BeginResize,
+    onInput = function(value) PreviewXPBarLayout("width", value) end,
+    onChange = function(value) U.SetXPBarSetting("width", value) end,
+  })
+  width.SetPoint("TOPLEFT", frame, "TOPLEFT", pad, contentTop - 58)
+  table.insert(widgets, width)
+
+  min, max, step = U.XPBarLimits("height")
+  local height = U.CreateSlider(frame, {
+    name = "UnrealUIXPBarMoverHeight",
+    text = U.L("XPBAR_HEIGHT"),
+    width = MOVER_SLIDER_WIDTH,
+    boxWidth = 60,
+    min = min,
+    max = max,
+    step = step,
+    value = U.GetXPBarSetting("height"),
+    onInputStart = BeginResize,
+    onInput = function(value) PreviewXPBarLayout("height", value) end,
+    onChange = function(value) U.SetXPBarSetting("height", value) end,
+  })
+  height.SetPoint("TOPLEFT", frame, "TOPLEFT",
+                  pad + MOVER_SLIDER_COLUMN, contentTop - 58)
+  table.insert(widgets, height)
+
+  local function Refresh()
+    showText.SetValue(U.GetXPBarSetting("showText"))
+    width.SetValue(U.GetXPBarSetting("width"))
+    height.SetValue(U.GetXPBarSetting("height"))
+  end
+
+  return widgets, Refresh
 end
 
 -- ---------------------------------------------------------------------------
@@ -354,6 +667,16 @@ end
 -- ---------------------------------------------------------------------------
 function XP:OnInit()
   EnsureConfig()
+  if type(U.RegisterMoverPanel) == "function" then
+    U.RegisterMoverPanel(MOVER_ID, {
+      name = "UnrealUIXPBarMoverSettings",
+      width = MOVER_CONTENT_WIDTH + U.MoverPanelPad() * 2,
+      height = 148,
+      build = BuildMoverPanel,
+      title = function() return U.L("MOVER_LABEL_XP_BAR") end,
+      preferVertical = true,
+    })
+  end
 end
 
 function XP:OnEnable()

@@ -9,7 +9,7 @@ UnrealUI = {}
 local U = UnrealUI
 
 U.name      = "unrealUI"
-U.version   = "0.5.1"
+U.version   = "0.6.0"
 U.modules   = {}       -- name -> module table
 U.moduleOrder = {}     -- load/enable order, registration order
 U.ready     = false    -- set once PLAYER_LOGIN work has run
@@ -171,7 +171,7 @@ dispatcher:SetScript("OnEvent", function(a, b, c, d, e, f, g, h, i, j)
 
   -- core/perf.lua's frame-time recorder. Off by default: one boolean read per
   -- dispatched event when nobody is measuring.
-  if U.perfActive then U.PerfEvent(event) end
+  if U.perfActive then U.PerfEvent(event, a1) end
 
   local list = listeners[event]
   if not list then return end

@@ -114,14 +114,16 @@ local A = U.RegisterModule("auras")
 local CONFIG = "auras"
 
 local defaults = {
-  -- Where the player's own auras are drawn. showOnPlayerFrame gates this
-  -- module's two player rows as a unit, so switching the display off and back
-  -- on keeps whatever buff/debuff choice was made below it. The other half of
-  -- the pair -- the client's own display near the minimap -- is not this
-  -- module's frames and is stored by modules/buffframe.lua instead.
+  -- Where auras are drawn. showOnPlayerFrame and showOnTargetFrame each gate
+  -- that frame's two rows as a unit, so switching a display off and back on
+  -- keeps whatever buff/debuff choice was made below it; they are also the one
+  -- aura switch each frame's contextual mover panel carries
+  -- (modules/unitframeconfig.lua). The client's own display near the minimap is
+  -- not this module's frames and is stored by modules/buffframe.lua instead.
   showOnPlayerFrame = true,
   playerEnabled     = true,
   playerBuffEnabled = true,
+  showOnTargetFrame = true,
   targetEnabled     = true,
   targetBuffEnabled = true,
   partyEnabled      = true,
@@ -165,6 +167,22 @@ function U.GetAuraSetting(key)
   local value = Config()[key]
   if value == nil then return defaults[key] end
   return value
+end
+
+-- The one write path for these settings. The Auras page and the contextual
+-- panels beside the player and target movers (modules/unitframeconfig.lua) all
+-- write here, so a value is stored, applied and re-read by the other views in
+-- one place.
+-- Only keys this module actually owns are accepted; the native display by the
+-- minimap belongs to modules/buffframe.lua and has its own accessors.
+function U.SetAuraSetting(key, value)
+  if defaults[key] == nil then return false end
+  Config()[key] = value
+  U.ApplyAuras()
+  if type(U.RefreshUnitFrameSettingsViews) == "function" then
+    U.RefreshUnitFrameSettingsViews()
+  end
+  return true
 end
 
 -- ---------------------------------------------------------------------------
@@ -1047,6 +1065,97 @@ local function BreakContinuity(row)
   row.scanDepth = nil
 end
 
+-- ---------------------------------------------------------------------------
+-- Empty-row sample (edit mode only)
+--
+-- A row with nothing to draw hides itself, so a unit frame placed in Move UI
+-- gives no sign of where its auras will appear or which way they will grow --
+-- and that is exactly the frame whose spacing the player is trying to judge.
+-- While edit mode is showing that frame's anchor, an empty row draws
+-- placeholder cells instead of hiding. Nothing here runs while the UI is
+-- locked.
+--
+-- The square is core/moversample.lua's shared primitive; the geometry is this
+-- module's, because a row's position, size, spacing and stacking direction
+-- come out of PositionRow/PlaceIcon and nothing outside this file can
+-- reproduce them. That is why the aura sample is registered as an `apply`
+-- rather than as `cells`.
+-- ---------------------------------------------------------------------------
+local SAMPLE_COUNT = 3
+
+local function SampleMoverId(unit)
+  if unit == "player" or unit == "target" then return "unitframes." .. unit end
+  -- Every party row rides the one party-block anchor, the same way its frame
+  -- does. modules/unitframes.lua already shows empty party shells while the UI
+  -- is unlocked, so a sample beside one is standing next to a real rectangle.
+  return "unitframes.party"
+end
+
+local function SampleWanted(row)
+  if type(U.MoverSampleShown) ~= "function" then return false end
+  if type(U.CreateMoverSampleCell) ~= "function" then return false end
+  return U.MoverSampleShown(SampleMoverId(row.unit)) and true or false
+end
+
+local function HideSample(row)
+  if not row.sample then return end
+  local i
+  for i = 1, table.getn(row.sample) do row.sample[i]:Hide() end
+end
+
+-- The one place an empty row is taken down, so the caller never has to decide
+-- between hiding and sampling. Returns the height the row now occupies, which
+-- is what stacks the second row clear of it -- a sampled buff row pushes the
+-- debuff row out exactly as a real one does.
+local function ShowSample(row, offset)
+  if not SampleWanted(row) then
+    HideSample(row)
+    row:Hide()
+    return 0
+  end
+
+  local size = row.size or U.GetAuraSetting("size")
+  local spacing = row.spacing or U.GetAuraSetting("spacing")
+  local perRow = row.perRow or U.GetAuraSetting("perRow")
+  local below = not row.beside and U.GetAuraSetting("belowFrame")
+  local maxIcons = row.maxIcons or
+                   U.GetAuraSetting(row.harmful and "maxIcons" or "maxBuffs")
+
+  local count = SAMPLE_COUNT
+  if count > maxIcons then count = maxIcons end
+  if count > perRow then count = perRow end
+  if count < 1 then
+    HideSample(row)
+    row:Hide()
+    return 0
+  end
+
+  PositionRow(row, below, offset)
+
+  row.sample = row.sample or {}
+  local i
+  for i = 1, count do
+    local cell = row.sample[i] or U.CreateMoverSampleCell(row)
+    if not cell then
+      HideSample(row)
+      row:Hide()
+      return 0
+    end
+    row.sample[i] = cell
+    cell:SetWidth(size)
+    cell:SetHeight(size)
+    PlaceIcon(row, cell, i, size, spacing, perRow, below)
+    cell:Show()
+  end
+  for i = count + 1, table.getn(row.sample) do row.sample[i]:Hide() end
+
+  local height = size + spacing
+  row:SetWidth(count * (size + spacing))
+  row:SetHeight(height)
+  row:Show()
+  return height
+end
+
 local function RefreshRow(row, offset)
   statRows = statRows + 1
   if not row then return 0 end
@@ -1056,12 +1165,24 @@ local function RefreshRow(row, offset)
   end
 
   local i
-  if not RowEnabled(row) or not UnitExists(row.unit) or
-     (row.beside and U.UnitObjectVisible(row.unit) == false) then
+  -- A row switched off by its setting stays off in edit mode too: the sample
+  -- is a preview of what will be drawn, and this row will not be.
+  if not RowEnabled(row) then
     for i = 1, table.getn(row.icons) do HideIcon(row.icons[i]) end
+    HideSample(row)
     row:Hide()
     BreakContinuity(row)
     return 0
+  end
+
+  -- Nothing to read: no unit in the slot, or a party unit the client is not
+  -- drawing. There is still an anchor to place, so this goes through the
+  -- sample path rather than hiding outright.
+  if not UnitExists(row.unit) or
+     (row.beside and U.UnitObjectVisible(row.unit) == false) then
+    for i = 1, table.getn(row.icons) do HideIcon(row.icons[i]) end
+    BreakContinuity(row)
+    return ShowSample(row, offset)
   end
 
   local size = row.size or U.GetAuraSetting("size")
@@ -1185,14 +1306,14 @@ local function RefreshRow(row, offset)
     local lines = math.floor((shown - 1) / perRow) + 1
     local columns = shown < perRow and shown or perRow
     local height = lines * (size + spacing)
+    HideSample(row)
     row:SetWidth(columns * (size + spacing))
     row:SetHeight(height)
     row:Show()
     return height
   end
 
-  row:Hide()
-  return 0
+  return ShowSample(row, offset)
 end
 
 -- Buffs take the frame edge and debuffs stack outside them, the same way in
@@ -1237,7 +1358,12 @@ local function RefreshPartyUnit(token, clearNames)
   RefreshRow(buffs, 0)
 end
 
+-- The party half of this module, gated separately from "auras": core/perf.lua
+-- bisects the work that scales with the roster, and the player/target rows do
+-- not.
 local function RefreshParty(clearNames)
+  if U.PerfDisabled and U.PerfDisabled("partyaura") then return end
+
   local i
   for i = 1, PARTY_COUNT do
     RefreshPartyUnit("party" .. i, clearNames)
@@ -1521,22 +1647,25 @@ local function SetNativeShown(value)
   pcall(U.SetNativeAuraFrameShown, value)
 end
 
--- Row 0 is where the player's own auras appear -- one switch per location, the
--- unrealUI rows on the player frame and the client's own row by the minimap.
--- The rows under it are which auras each frame draws, so the page reads
--- "where" first and "what" after.
+-- The page reads "where" first and "what" after: a location switch stands above
+-- the pair of buff/debuff checkboxes it gates, so turning a display off leaves
+-- the choice under it intact. Row 0 pairs the player frame's switch with the
+-- client's own row by the minimap, which is the only toggle here that is not
+-- one of this module's rows. The target's switch has no such partner and stands
+-- alone above its own pair.
 local TOGGLES = {
   { key = "showOnPlayerFrame", textKey = "AURAS_ON_PLAYER_FRAME", column = 0, row = 0 },
   { key = "nativeShown",       textKey = "AURAS_NEAR_MINIMAP",    column = 1, row = 0,
     get = NativeShown, set = SetNativeShown },
   { key = "playerEnabled",     textKey = "AURAS_PLAYER_DEBUFFS",  column = 0, row = 1 },
   { key = "playerBuffEnabled", textKey = "AURAS_PLAYER_BUFFS",    column = 1, row = 1 },
-  { key = "targetEnabled",     textKey = "AURAS_TARGET_DEBUFFS",  column = 0, row = 2 },
-  { key = "targetBuffEnabled", textKey = "AURAS_TARGET_BUFFS",    column = 1, row = 2 },
-  { key = "partyEnabled",      textKey = "AURAS_PARTY_DEBUFFS",   column = 0, row = 3 },
-  { key = "partyBuffEnabled",  textKey = "AURAS_PARTY_BUFFS",     column = 1, row = 3 },
-  { key = "showTimers",        textKey = "AURAS_SHOW_TIMERS",     column = 0, row = 4 },
-  { key = "belowFrame",        textKey = "AURAS_BELOW_FRAME",     column = 1, row = 4 },
+  { key = "showOnTargetFrame", textKey = "AURAS_ON_TARGET_FRAME", column = 0, row = 2 },
+  { key = "targetEnabled",     textKey = "AURAS_TARGET_DEBUFFS",  column = 0, row = 3 },
+  { key = "targetBuffEnabled", textKey = "AURAS_TARGET_BUFFS",    column = 1, row = 3 },
+  { key = "partyEnabled",      textKey = "AURAS_PARTY_DEBUFFS",   column = 0, row = 4 },
+  { key = "partyBuffEnabled",  textKey = "AURAS_PARTY_BUFFS",     column = 1, row = 4 },
+  { key = "showTimers",        textKey = "AURAS_SHOW_TIMERS",     column = 0, row = 5 },
+  { key = "belowFrame",        textKey = "AURAS_BELOW_FRAME",     column = 1, row = 5 },
 }
 
 -- A toggle either lives in this module's config table or, for the native
@@ -1551,8 +1680,7 @@ local function SetToggleValue(spec, value)
     spec.set(value)
     return
   end
-  Config()[spec.key] = value
-  U.ApplyAuras()
+  U.SetAuraSetting(spec.key, value)
 end
 
 -- Three per row rather than two: the toggle grid above needed one more line
@@ -1594,10 +1722,12 @@ local function BuildSettingsPage(parent)
     table.insert(widgets, check)
   end
 
+  -- One row below where this header used to sit: the toggle grid above grew a
+  -- row when the target frame got its own location switch.
   local filterHeader = U.CreateSectionHeader(parent, {
     text = U.L("AURAS_DISPEL_HEADER"),
     width = PAGE_WIDTH,
-    y = -160,
+    y = -186,
   })
   table.insert(widgets, filterHeader)
 
@@ -1609,13 +1739,12 @@ local function BuildSettingsPage(parent)
       textWidth = FILTER_COLUMN_X - 26,
       value = U.GetAuraSetting(spec.key),
       onChange = function(value)
-        Config()[spec.key] = value
-        U.ApplyAuras()
+        U.SetAuraSetting(spec.key, value)
       end,
     })
     check.SetPoint("TOPLEFT", parent, "TOPLEFT",
                    spec.column * FILTER_COLUMN_X,
-                   -190 - spec.row * 26)
+                   -216 - spec.row * 26)
     controls[spec.key] = check
     table.insert(widgets, check)
   end
@@ -1683,8 +1812,10 @@ function A:OnEnable()
            { master = "showOnPlayerFrame" })
   BuildRow("playerBuff", "player", false, "playerBuffEnabled",
            { master = "showOnPlayerFrame" })
-  BuildRow("target", "target", true, "targetEnabled")
-  BuildRow("targetBuff", "target", false, "targetBuffEnabled")
+  BuildRow("target", "target", true, "targetEnabled",
+           { master = "showOnTargetFrame" })
+  BuildRow("targetBuff", "target", false, "targetBuffEnabled",
+           { master = "showOnTargetFrame" })
 
   local i
   for i = 1, PARTY_COUNT do
@@ -1704,6 +1835,19 @@ function A:OnEnable()
   if table.getn(rowOrder) == 0 then
     U.Error("aura rows could not be anchored; unit frames are unavailable")
     return
+  end
+
+  -- Edit mode tells this module when a unit frame's anchor is on screen; the
+  -- rows themselves are drawn by RefreshRow above, which reads the same state
+  -- back through U.MoverSampleShown. The callback only makes the change
+  -- immediate rather than waiting for the 0.2s refresh.
+  if type(U.RegisterMoverSample) == "function" then
+    local sampleMovers = {
+      "unitframes.player", "unitframes.target", "unitframes.party",
+    }
+    for i = 1, table.getn(sampleMovers) do
+      U.RegisterMoverSample(sampleMovers[i], { apply = function() RefreshAll() end })
+    end
   end
 
   -- UNIT_AURA is the one aura event observed firing on this client

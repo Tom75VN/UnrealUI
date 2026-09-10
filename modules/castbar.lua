@@ -1003,9 +1003,8 @@ end
 -- timer drawn on top of the fill. `frameName` distinguishes the created
 -- widget names so registering both bars does not collide.
 local function BuildBarWidget(frameName, width, height, parent)
-  -- height and parent are the pet bar's two departures from the free-standing
-  -- bars: it is shorter, and it is parented to the unit frame it belongs to so
-  -- it inherits that frame's position and visibility.
+  -- The optional height keeps the pet bar compact; all current widgets are
+  -- free-standing mover targets parented to UIParent.
   height = height or HEIGHT
   local iconSize = height
   local barWidth = width - iconSize
@@ -1097,11 +1096,9 @@ local function BuildBarWidget(frameName, width, height, parent)
   return widget
 end
 
--- The pet castbar rides the pet unit frame instead of owning a mover, the same
--- way modules/auras.lua attaches its aura rows: it describes that frame's unit,
--- so it has to keep the frame's width and follow it wherever the frame is
--- moved. Parenting also hands it the frame's visibility -- no pet, no bar --
--- so there is no pet-presence logic to keep in step here.
+-- The pet castbar uses the pet unit frame only to inherit its compact width.
+-- Its own mover lets it be positioned independently and remains available in
+-- edit mode even when no pet is summoned.
 local function BuildPetBar()
   local anchor = type(U.GetUnitFrame) == "function" and U.GetUnitFrame("pet")
   if not anchor then
@@ -1116,12 +1113,20 @@ local function BuildPetBar()
   if not width or width <= PET_HEIGHT then width = PET_FALLBACK_WIDTH end
 
   local pet = NewTracker("pet", "pet", "MOVER_LABEL_PET_CASTBAR")
-  pet.bar = BuildBarWidget("UnrealUICastBarPet", width, PET_HEIGHT, anchor)
-  -- Stacked rows overlap by one border unit, the same as the unit frames' own
-  -- rows: butting the two outlines together would draw a 2-unit band.
-  pet.bar:SetPoint("TOPLEFT", anchor, "BOTTOMLEFT", 0, U.BorderSize())
+  pet.bar = BuildBarWidget("UnrealUICastBarPet", width, PET_HEIGHT)
   ApplyUnitIdlePlaceholder(pet)
   pet.bar:Hide()
+  SetWidgetCellsShown(pet.bar, false)
+
+  -- Matches the original position directly beneath the default pet frame,
+  -- including the one-unit border overlap the attached version used.
+  U.RegisterMover("castbar.pet", pet.bar, {
+    label = U.L("MOVER_LABEL_PET_CASTBAR"),
+    default = {
+      point = "TOPRIGHT", relativePoint = "BOTTOM",
+      x = -75, y = 90 + U.BorderSize(),
+    },
+  })
 end
 
 local nativeTargetStyle = nil

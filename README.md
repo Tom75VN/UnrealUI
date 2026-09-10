@@ -21,7 +21,7 @@ Built specifically for **Unreal Azeroth / Emberveil**.
 
 ### Your layout should follow your instincts
 
-Move unit frames, action bars, bags, cast bars, XP and reputation bars, the quest tracker, status displays, the microbar, and other supported elements through one visual edit mode. Snap them cleanly to the grid or hold Shift for free placement, then keep the layout across reloads.
+Move unit frames, action bars, bags, cast bars, XP and reputation bars, the quest tracker, status displays, the microbar, and other supported elements through one visual edit mode. Snap them cleanly to an adjustable grid, or hide the grid for free placement, then keep the layout across reloads.
 
 ### Change bindings while you are still thinking about the ability
 
@@ -91,7 +91,7 @@ Use `/uui` to open the settings, `/uui unlock` to arrange supported elements, an
 
 ## Version
 
-Current release: **0.5.1**
+Current release: **0.6.0**
 
 ## Acknowledgements
 

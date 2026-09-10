@@ -396,6 +396,19 @@ SelectPage = function(entry)
   RenderSidebar()
 end
 
+-- Re-runs the shown page's refresh callback so it cannot keep displaying a
+-- value that was changed somewhere else. A page is normally refreshed when it
+-- is selected; this is for settings a second surface can write while the window
+-- is open, which the edit-mode anchor panel is the first of. Pass the page id to
+-- refresh only that page.
+function U.RefreshSettingsPage(id)
+  if not activePage then return false end
+  if id and activePage.id ~= id then return false end
+  if type(activePage.refresh) ~= "function" then return false end
+  activePage.refresh()
+  return true
+end
+
 -- Opens a page by id, expanding its group first. Modules use this to send the
 -- user straight at their own options.
 function U.OpenSettingsPage(id)
@@ -1228,12 +1241,18 @@ local function BuildGeneralPage(parent)
     table.insert(widgets, chatShadowHint)
   end
 
+  local tooltipFadeHold
+  local tooltipConfig = U.ModuleConfig("tooltip", {
+    followCursor = false,
+    fadeHold = 0.25,
+  })
   local tooltipCursor = U.CreateCheckbox(parent, {
     name = "UnrealUISettingsTooltipCursor",
     text = U.L("SETTINGS_TOOLTIP_CURSOR"),
-    value = U.ModuleConfig("tooltip", { followCursor = false }).followCursor,
+    value = tooltipConfig.followCursor,
     onChange = function(value)
-      U.ModuleConfig("tooltip", { followCursor = false }).followCursor = value
+      tooltipConfig.followCursor = value
+      SetShown(tooltipFadeHold, value)
       if type(U.ApplyTooltipPosition) == "function" then U.ApplyTooltipPosition() end
     end,
   })
@@ -1252,6 +1271,22 @@ local function BuildGeneralPage(parent)
     table.insert(widgets, tooltipCursorHint)
   end
 
+  tooltipFadeHold = U.CreateSlider(parent, {
+    name = "UnrealUISettingsTooltipFadeHold",
+    text = U.L("SETTINGS_TOOLTIP_FADE_HOLD"),
+    width = 220,
+    min = 0.25,
+    max = 1,
+    step = 0.05,
+    value = tooltipConfig.fadeHold,
+    onChange = function(value)
+      tooltipConfig.fadeHold = value
+    end,
+  })
+  tooltipFadeHold.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -572)
+  table.insert(widgets, tooltipFadeHold)
+  SetShown(tooltipFadeHold, tooltipConfig.followCursor)
+
   local function Refresh()
     themes.SetValue(U.GetThemeStyle(), false)
     autoAttack.SetValue(U.ModuleConfig("autoattack", { enabled = false }).enabled)
@@ -1261,7 +1296,13 @@ local function BuildGeneralPage(parent)
     minimapButton.SetValue(U.ModuleConfig("minimap", { enabled = true }).enabled)
     zoneLevels.SetValue(U.ModuleConfig("worldmap", { zoneLevels = true }).zoneLevels)
     chatShadow.SetValue(U.ModuleConfig("chat", { noTextShadow = false }).noTextShadow)
-    tooltipCursor.SetValue(U.ModuleConfig("tooltip", { followCursor = false }).followCursor)
+    tooltipConfig = U.ModuleConfig("tooltip", {
+      followCursor = false,
+      fadeHold = 0.25,
+    })
+    tooltipCursor.SetValue(tooltipConfig.followCursor)
+    tooltipFadeHold.SetValue(tooltipConfig.fadeHold)
+    SetShown(tooltipFadeHold, tooltipConfig.followCursor)
   end
 
   return widgets, Refresh

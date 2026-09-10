@@ -202,6 +202,11 @@ local PARTY_GAP = 5
 -- never be built at different widths.
 local PARTY_WIDTH = 164
 
+-- Frame id of the player's own row inside the party block. Not a unit token:
+-- the row's unit is "player" (see the spec below), and nothing may hand
+-- "party0" to a client API.
+local PARTY_PLAYER_ID = "party0"
+
 -- The party frames are laid out inside one anchor frame and moved as a block:
 -- a party is a single unit of layout, and dragging four frames into alignment
 -- by hand is exactly what the grid exists to avoid. Only the anchor gets a
@@ -213,6 +218,34 @@ local PARTY_ANCHOR = "party"
 local LayoutParty
 
 do
+  -- The player's own row, at the top of the party block, so the block reads as
+  -- the whole five-person party instead of the four other members. Geometry is
+  -- a member row's exactly -- the block is one column of identical rows -- but
+  -- the unit is "player": this client has no "party0" unit token, only the
+  -- frame id is called that.
+  --
+  -- LayoutParty owns whether the row is on screen at all, the same way it owns
+  -- the optional pet rows: it is off with PARTY_DEFAULTS.partyPlayer and hidden
+  -- while the player is solo.
+  --
+  -- No rangeCheck and no partyIndex: the player is never out of their own
+  -- range, and there is no roster slot 0 for FrameUnitExists to ask about.
+  table.insert(SPECS, {
+    id = PARTY_PLAYER_ID,
+    unit = "player",
+    partyPlayer = true,
+    name = "PartyPlayer",
+    width = PARTY_WIDTH, health = 36, power = 8, gap = 0,
+    healthTexture = true,
+    healthLabels = { left = "unit", right = "healthdyn" },
+    healthLabelSize = M.fontSize.large,
+    healthLabelInherits = "GameFontNormal",
+    nameClassColor = true,
+    powerLabels = { right = "powerdyn" },
+    anchorTo = PARTY_ANCHOR,
+    anchorPoint = "TOPLEFT", anchorRelativePoint = "TOPLEFT",
+  })
+
   local i
   for i = 1, PARTY_COUNT do
     table.insert(SPECS, {
@@ -1530,6 +1563,10 @@ local REST_ICON_HEIGHT = 39 * REST_ICON_SCALE
 -- refresh, and art on the same frame level can end up behind it.
 local function BuildRestIcon(frame, health)
   if frame.unit ~= "player" then return end
+  -- The player's party row shares the unit but not the chrome: the standalone
+  -- player frame already carries the resting icon, and the party block reads
+  -- as a roster of identical rows.
+  if frame.spec.partyPlayer then return end
   if type(health.CreateTexture) ~= "function" then return end
 
   local layer = CreateFrame("Frame", nil, frame)
@@ -2223,11 +2260,39 @@ function U.GetComboPointAnchor()
   return powerTick.Config().comboAnchor
 end
 
+-- The player's own power-tick settings, reachable from outside this file so the
+-- Unit Frames page and the contextual panel beside the player mover
+-- (modules/unitframeconfig.lua) write through one path rather than each poking
+-- the stored table. key is "manaTick" or "energyTick".
+function U.GetUnitFramePowerTick(key)
+  if key ~= "manaTick" and key ~= "energyTick" then return nil end
+  return powerTick.Config()[key] and true or false
+end
+
+function U.SetUnitFramePowerTick(key, value)
+  if key ~= "manaTick" and key ~= "energyTick" then return end
+  powerTick.Config()[key] = value and true or false
+  powerTick.ApplySettings()
+  if type(U.RefreshUnitFrameSettingsViews) == "function" then
+    U.RefreshUnitFrameSettingsViews()
+  end
+end
+
+-- UnitClass's unlocalised token for the player, for the modules that build unit
+-- frame settings outside this file. Kept here rather than copied there, since
+-- this is where the guarded UnitClass lookup already lives.
+function U.PlayerClassToken()
+  return UnitClassToken("player")
+end
+
 function U.SetComboPointAnchor(value)
   value = value == "target" and "target" or "player"
   powerTick.Config().comboAnchor = value
   U.ApplyComboPointAnchor(value)
   RefreshComboPoints()
+  if type(U.RefreshUnitFrameSettingsViews) == "function" then
+    U.RefreshUnitFrameSettingsViews()
+  end
 end
 
 function powerTick.WantedMode()
@@ -3440,7 +3505,12 @@ local function RefreshScheduledUnits()
   -- when edit mode opens or closes. Nothing here has an event either, and the
   -- call is a cheap visibility comparison that returns before touching a
   -- single SetPoint unless the block's shape actually changed.
-  LayoutParty()
+  --
+  -- Skipped with the party rows themselves: core/perf.lua's party bisect
+  -- removes "the work that scales with the roster" as one unit, and a reflow
+  -- of rows that are not being refreshed is part of that unit.
+  local partyRows = not (U.PerfDisabled and U.PerfDisabled("partyrows"))
+  if partyRows then LayoutParty() end
 
   if refreshCycle >= 5 then
     refreshCycle = 0
@@ -3460,28 +3530,41 @@ local function RefreshScheduledUnits()
 
   -- Party events are not load-bearing: sample existence, health and power at
   -- the established 0.2s cadence even when PARTY_MEMBERS_CHANGED never emits.
-  local i
-  for i = 1, PARTY_COUNT do
-    local id = "party" .. i
-    local mode = dirtyUnits[id]
-    dirtyUnits[id] = nil
-    if mode == "full" then
-      RefreshFrame(frames[id], "full")
-    else
-      RefreshFrame(frames[id], "vitals")
-    end
+  --
+  -- The player's own row rides the same cadence rather than the standalone
+  -- player frame's event path, because what switches it on and off is party
+  -- membership, which is exactly the thing without a load-bearing event here.
+  local playerRow = frames[PARTY_PLAYER_ID]
+  if playerRow and partyRows then
+    local playerMode = dirtyUnits[PARTY_PLAYER_ID]
+    dirtyUnits[PARTY_PLAYER_ID] = nil
+    RefreshFrame(playerRow, playerMode == "full" and "full" or "vitals")
+  end
 
-    -- The member's pet rides the same cadence for the same reason the
-    -- player's own pet does below: no pet unit token has an observed event on
-    -- this client. With the option off the frame is flagged disabled and
-    -- RefreshFrame returns before reading anything.
-    local petId = "partypet" .. i
-    local petMode = dirtyUnits[petId]
-    dirtyUnits[petId] = nil
-    if petMode == "full" then
-      RefreshFrame(frames[petId], "full")
-    else
-      RefreshFrame(frames[petId], "vitals")
+  local i
+  if partyRows then
+    for i = 1, PARTY_COUNT do
+      local id = "party" .. i
+      local mode = dirtyUnits[id]
+      dirtyUnits[id] = nil
+      if mode == "full" then
+        RefreshFrame(frames[id], "full")
+      else
+        RefreshFrame(frames[id], "vitals")
+      end
+
+      -- The member's pet rides the same cadence for the same reason the
+      -- player's own pet does below: no pet unit token has an observed event
+      -- on this client. With the option off the frame is flagged disabled and
+      -- RefreshFrame returns before reading anything.
+      local petId = "partypet" .. i
+      local petMode = dirtyUnits[petId]
+      dirtyUnits[petId] = nil
+      if petMode == "full" then
+        RefreshFrame(frames[petId], "full")
+      else
+        RefreshFrame(frames[petId], "vitals")
+      end
     end
   end
 
@@ -3663,6 +3746,9 @@ local function RegisterEvents()
         mode = "power"
       end
       QueueUnitToken(unit, mode)
+      -- The party row is a second frame on the same unit, so it needs the same
+      -- accelerator: QueueUnitToken keys on frame id, not on unit token.
+      if unit == "player" then QueueUnitToken(PARTY_PLAYER_ID, mode) end
     end)
   end
 
@@ -3675,6 +3761,7 @@ local function RegisterEvents()
       -- The player carries a leader star of its own (see BuildLeaderIcon), so
       -- a leadership change has to reach the player frame as well.
       QueueUnitToken("player", "full")
+      QueueUnitToken(PARTY_PLAYER_ID, "full")
       classicNative.Reanchor()
     end)
   end
@@ -3738,7 +3825,7 @@ end
 -- mover handle and the snap edges the grid uses stay over the visible frames
 -- instead of over a rectangle sized for a layout that is not on screen.
 -- ---------------------------------------------------------------------------
-local PARTY_DEFAULTS = { partyPets = false }
+local PARTY_DEFAULTS = { partyPets = false, partyPlayer = true }
 
 -- Same "unitframes" store the colour settings use -- U.ModuleConfig only fills
 -- in the keys of the defaults table it is handed, so the two views never
@@ -3761,6 +3848,24 @@ local function PartyPetShown(index)
   return ApiTruth("UnitExists", "partypet" .. index) and true or false
 end
 
+-- Whether the player's own row occupies the top of the block this pass. Same
+-- shape as PartyPetShown: off with the option, off under the Classic theme
+-- (which hands the party to the client's own frames, so a lone UnrealUI row
+-- above them would belong to nothing), always on in edit mode so the block
+-- dragged into place is the tallest one it can become, and otherwise on only
+-- while there is a party to be part of.
+--
+-- GetNumPartyMembers is documented (documentation.json / Group) but not runtime
+-- verified here; GetPartyMember is what this module already polls for member
+-- occupancy, so it stands as the fallback if the count is missing.
+local function PartyPlayerShown()
+  if not PartyConfig().partyPlayer then return false end
+  if classicNative.active then return false end
+  if U.IsUnlocked() then return true end
+  if ApiTruth("GetNumPartyMembers") then return true end
+  return ApiTruth("GetPartyMember", 1) and true or false
+end
+
 -- Recomputed every scheduler tick, so it has to be cheap when nothing moved:
 -- the pass builds a short shape string and returns before touching a frame
 -- unless that string changed.
@@ -3771,7 +3876,8 @@ LayoutParty = function(force)
   if not anchor then return end
 
   local border = U.BorderSize()
-  local shown, shape, i = {}, border .. ":", nil
+  local player = PartyPlayerShown()
+  local shown, shape, i = {}, border .. ":" .. (player and "P" or "-"), nil
   for i = 1, PARTY_COUNT do
     shown[i] = PartyPetShown(i)
     shape = shape .. (shown[i] and "1" or "0")
@@ -3780,12 +3886,33 @@ LayoutParty = function(force)
   partyLayoutShape = shape
 
   local offset, width = 0, 0
+
+  -- The player's row first, so the members below it keep their own order. It
+  -- carries no pet row of its own: the player's pet already has a frame and a
+  -- mover of its own.
+  local playerRow = frames[PARTY_PLAYER_ID]
+  if playerRow then
+    playerRow.uuiDisabled = not player
+    if player then
+      playerRow:ClearAllPoints()
+      playerRow:SetPoint("TOPLEFT", anchor, "TOPLEFT", 0, 0)
+      offset = FrameHeight(playerRow.spec)
+      if FrameWidth(playerRow.spec) > width then
+        width = FrameWidth(playerRow.spec)
+      end
+    else
+      SetFrameShown(playerRow, false)
+    end
+  end
+
   for i = 1, PARTY_COUNT do
     local member = frames["party" .. i]
     local pet = frames["partypet" .. i]
 
     if member then
-      if i > 1 then offset = offset + PARTY_GAP end
+      -- Not "i > 1": the first member also needs the gap when the player's own
+      -- row is sitting above it.
+      if offset > 0 then offset = offset + PARTY_GAP end
       member:ClearAllPoints()
       member:SetPoint("TOPLEFT", anchor, "TOPLEFT", 0, -offset)
       offset = offset + FrameHeight(member.spec)
@@ -3812,16 +3939,38 @@ LayoutParty = function(force)
   anchor:SetHeight(offset > 0 and offset or 1)
 end
 
--- Re-lays the block and refreshes the pet rows immediately, so ticking the
--- option does not leave the user watching for the next scheduler tick.
-local function ApplyPartyPets()
+-- Re-lays the block and refreshes the rows LayoutParty can switch on or off
+-- immediately, so ticking either option does not leave the user watching for
+-- the next scheduler tick.
+local function ApplyPartyLayout()
   LayoutParty(true)
+
+  local playerRow = frames[PARTY_PLAYER_ID]
+  if playerRow then RefreshFrame(playerRow, "full") end
 
   local i
   for i = 1, PARTY_COUNT do
     local pet = frames["partypet" .. i]
     if pet then RefreshFrame(pet, "full") end
   end
+end
+
+-- One settings path for both the Party Frames page and the contextual panel
+-- beside the party mover. Keeping the layout write here means either view
+-- stores, applies and publishes the new shape in the same order.
+function U.GetUnitFramePartySetting(key)
+  if PARTY_DEFAULTS[key] == nil then return nil end
+  return PartyConfig()[key] and true or false
+end
+
+function U.SetUnitFramePartySetting(key, value)
+  if PARTY_DEFAULTS[key] == nil then return false end
+  PartyConfig()[key] = value and true or false
+  ApplyPartyLayout()
+  if type(U.RefreshUnitFrameSettingsViews) == "function" then
+    U.RefreshUnitFrameSettingsViews()
+  end
+  return true
 end
 
 -- ---------------------------------------------------------------------------
@@ -3838,6 +3987,35 @@ end
 -- know what any other page is doing.
 local SETTINGS_GROUP = "unitframes"
 local PAGE_WIDTH = 484
+
+-- The unit movers registered in OnEnable that carry a contextual settings
+-- panel (modules/unitframeconfig.lua). Only the panel that is actually open
+-- re-reads, so listing all three ids costs nothing.
+local PLAYER_MOVER_ID = "unitframes.player"
+local TARGET_MOVER_ID = "unitframes.target"
+local PARTY_MOVER_ID = "unitframes.party"
+
+-- The pages in this group and the contextual panels beside the player and
+-- target movers are views of the same stored settings, so whichever one wrote a
+-- value tells the others to re-read it. Only the page that is actually open re-reads, and every
+-- view re-reads with SetValue, which does not publish, so this cannot bounce
+-- back into another write.
+--
+-- The Auras page (modules/auras.lua) is listed here because the panel carries
+-- three of its toggles; the page ids stay in one place rather than being spelt
+-- out in each module that writes one of these values.
+function U.RefreshUnitFrameSettingsViews()
+  if type(U.RefreshMoverPanel) == "function" then
+    U.RefreshMoverPanel(PLAYER_MOVER_ID)
+    U.RefreshMoverPanel(TARGET_MOVER_ID)
+    U.RefreshMoverPanel(PARTY_MOVER_ID)
+  end
+  if type(U.RefreshSettingsPage) == "function" then
+    U.RefreshSettingsPage(SETTINGS_GROUP .. ".general")
+    U.RefreshSettingsPage(SETTINGS_GROUP .. ".party")
+    U.RefreshSettingsPage(SETTINGS_GROUP .. ".auras")
+  end
+end
 
 -- Unit frame style (core/unitframestyle.lua). Kept as its own section because
 -- it does not configure a detail of the frames, it selects which
@@ -3935,23 +4113,60 @@ local function BuildUnitFramePartySettings(parent, y, width)
   })
   table.insert(widgets, header)
 
+  local playerToggle = U.CreateCheckbox(parent, {
+    name = "UnrealUISettingsPartyPlayer",
+    text = U.L("UF_PARTY_PLAYER"),
+    value = U.GetUnitFramePartySetting("partyPlayer"),
+    onChange = function(value)
+      U.SetUnitFramePartySetting("partyPlayer", value)
+    end,
+  })
+  playerToggle.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, y - 30)
+  table.insert(widgets, playerToggle)
+
   local petToggle = U.CreateCheckbox(parent, {
     name = "UnrealUISettingsPartyPets",
     text = U.L("UF_PARTY_PETS"),
-    value = PartyConfig().partyPets,
+    value = U.GetUnitFramePartySetting("partyPets"),
     onChange = function(value)
-      PartyConfig().partyPets = value and true or false
-      ApplyPartyPets()
+      U.SetUnitFramePartySetting("partyPets", value)
     end,
   })
-  petToggle.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, y - 30)
+  petToggle.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, y - 54)
   table.insert(widgets, petToggle)
 
   local function Refresh()
-    petToggle.SetValue(PartyConfig().partyPets)
+    playerToggle.SetValue(U.GetUnitFramePartySetting("partyPlayer"))
+    petToggle.SetValue(U.GetUnitFramePartySetting("partyPets"))
   end
 
   return widgets, Refresh
+end
+
+-- The target frame's exact creature health and mana (core/unitvitals.lua),
+-- reachable from outside this file so the Unit Frames page and the contextual
+-- panel beside the target mover (modules/unitframeconfig.lua) write through one
+-- path rather than each poking the stored table. The vitals code is a core
+-- module that a stripped build can leave out, so both halves answer safely when
+-- U.unitvitals is not there.
+function U.GetExactVitals()
+  if not U.unitvitals then return false end
+  return U.unitvitals.Config().exactVitals and true or false
+end
+
+function U.SetExactVitals(value)
+  if not U.unitvitals then return false end
+  local config = U.unitvitals.Config()
+  config.exactVitals = value and true or false
+  -- The index and the event handlers are installed once at load, so a change
+  -- that switches the feature back on inside the same session has to build
+  -- what OnEnable would have.
+  if config.exactVitals then U.unitvitals.StartIndex() end
+  RefreshAll()
+  if type(U.RefreshUnitFrameSettingsViews) == "function" then
+    U.RefreshUnitFrameSettingsViews()
+  end
+  return true
 end
 
 -- What the exact-vitals section occupies from its own heading down to the next
@@ -3972,21 +4187,12 @@ local function BuildUnitFrameGeneralSettings(parent, y, width)
   })
   table.insert(widgets, vitalsHeader)
 
-  local vitalsConfig = U.unitvitals and U.unitvitals.Config()
   local exactVitals = U.CreateCheckbox(parent, {
     name = "UnrealUISettingsExactVitals",
     text = U.L("UF_EXACT_VITALS"),
-    value = vitalsConfig and vitalsConfig.exactVitals,
+    value = U.GetExactVitals(),
     onChange = function(value)
-      if not vitalsConfig then return end
-      vitalsConfig.exactVitals = value and true or false
-      -- The index and the event handlers are installed once at load, so a
-      -- change that switches the feature back on inside the same session has
-      -- to build what OnEnable would have.
-      if vitalsConfig.exactVitals and U.unitvitals then
-        U.unitvitals.StartIndex()
-      end
-      RefreshAll()
+      U.SetExactVitals(value)
     end,
   })
   exactVitals.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, y - 26)
@@ -4020,10 +4226,9 @@ local function BuildUnitFrameGeneralSettings(parent, y, width)
     name = "UnrealUISettingsManaTick",
     text = U.L("UF_MANA_TICK"),
     textWidth = 214,
-    value = powerTick.Config().manaTick,
+    value = U.GetUnitFramePowerTick("manaTick"),
     onChange = function(value)
-      powerTick.Config().manaTick = value and true or false
-      powerTick.ApplySettings()
+      U.SetUnitFramePowerTick("manaTick", value)
     end,
   })
   manaTick.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, y - 26)
@@ -4033,10 +4238,9 @@ local function BuildUnitFrameGeneralSettings(parent, y, width)
     name = "UnrealUISettingsEnergyTick",
     text = U.L("UF_ENERGY_TICK"),
     textWidth = 214,
-    value = powerTick.Config().energyTick,
+    value = U.GetUnitFramePowerTick("energyTick"),
     onChange = function(value)
-      powerTick.Config().energyTick = value and true or false
-      powerTick.ApplySettings()
+      U.SetUnitFramePowerTick("energyTick", value)
     end,
   })
   energyTick.SetPoint("TOPLEFT", parent, "TOPLEFT", 240, y - 26)
@@ -4096,9 +4300,9 @@ local function BuildUnitFrameGeneralSettings(parent, y, width)
   end
 
   local function Refresh()
-    if vitalsConfig then exactVitals.SetValue(vitalsConfig.exactVitals) end
-    manaTick.SetValue(powerTick.Config().manaTick)
-    energyTick.SetValue(powerTick.Config().energyTick)
+    exactVitals.SetValue(U.GetExactVitals())
+    manaTick.SetValue(U.GetUnitFramePowerTick("manaTick"))
+    energyTick.SetValue(U.GetUnitFramePowerTick("energyTick"))
     local class = UnitClassToken("player")
     local supported = class == "DRUID"
     comboHeader.uuiSetShown(supported)
@@ -4274,7 +4478,7 @@ local function BuildPartyPage(parent)
   local refreshHots
   if type(U.BuildHotSettings) == "function" then
     local hotWidgets
-    hotWidgets, refreshHots = U.BuildHotSettings(parent, -64, PAGE_WIDTH)
+    hotWidgets, refreshHots = U.BuildHotSettings(parent, -88, PAGE_WIDTH)
     local i
     for i = 1, table.getn(hotWidgets) do
       table.insert(widgets, hotWidgets[i])

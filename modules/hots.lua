@@ -125,11 +125,16 @@ local CORNERS = {
   { value = "BOTTOMRIGHT", textKey = "HOTS_CORNER_BOTTOMRIGHT" },
 }
 
+-- Numeric values being previewed by the party mover panel. They deliberately
+-- live outside SavedVariables and are cleared by the final committed change.
+local preview = {}
+
 local function Config()
   return U.ModuleConfig(CONFIG, defaults)
 end
 
 function U.GetHotSetting(key)
+  if preview[key] ~= nil then return preview[key] end
   local value = Config()[key]
   if value == nil then return defaults[key] end
   return value
@@ -146,6 +151,27 @@ function U.HotCorners()
 end
 
 local ApplyIndicators
+
+function U.PreviewHotSetting(key, value)
+  local limit = LIMITS[key]
+  local number = tonumber(value)
+  if not limit or not number then return nil end
+  if number < limit.min then number = limit.min end
+  if number > limit.max then number = limit.max end
+  preview[key] = number
+  if ApplyIndicators then ApplyIndicators() end
+  return number
+end
+
+-- Normally onChange clears the preview first. This is also used by the
+-- slider's input-end hook so an interrupted drag cannot leave preview-only
+-- geometry on screen.
+function U.EndHotSettingPreview(key)
+  if preview[key] == nil then return false end
+  preview[key] = nil
+  if ApplyIndicators then ApplyIndicators() end
+  return true
+end
 
 function U.SetHotSetting(key, value)
   if key == "enabled" then
@@ -164,11 +190,16 @@ function U.SetHotSetting(key, value)
     Config()[key] = number
   end
 
+  preview[key] = nil
+
   if ApplyIndicators then ApplyIndicators() end
   -- The party buff row defers to this module, so turning it off has to hand
   -- those icons straight back rather than on the aura module's next sweep.
   if key == "enabled" and type(U.ApplyAuras) == "function" then
     pcall(U.ApplyAuras)
+  end
+  if type(U.RefreshUnitFrameSettingsViews) == "function" then
+    U.RefreshUnitFrameSettingsViews()
   end
 end
 
@@ -532,30 +563,91 @@ local function SizeHolder(holder)
   return true
 end
 
-local function PlaceIcon(holder, icon, slot)
+-- The single geometry path for both live icons and their edit-mode samples, so
+-- changing a corner or spacing value cannot make the preview disagree with the
+-- indicators it represents.
+local function PlaceAtCorner(holder, object, slot, size, spacing)
   local corner = U.GetHotSetting("corner")
-  local size = U.GetHotSetting("size")
-  local spacing = U.GetHotSetting("spacing")
   local step = (slot - 1) * (size + spacing)
 
-  icon:ClearAllPoints()
-  icon:SetWidth(size)
-  icon:SetHeight(size)
+  object:ClearAllPoints()
+  object:SetWidth(size)
+  object:SetHeight(size)
+  if corner == "TOPRIGHT" then
+    object:SetPoint("TOPRIGHT", holder.frame, "TOPRIGHT", -step, 0)
+  elseif corner == "BOTTOMLEFT" then
+    object:SetPoint("BOTTOMLEFT", holder.frame, "BOTTOMLEFT", step, 0)
+  elseif corner == "BOTTOMRIGHT" then
+    object:SetPoint("BOTTOMRIGHT", holder.frame, "BOTTOMRIGHT", -step, 0)
+  else
+    object:SetPoint("TOPLEFT", holder.frame, "TOPLEFT", step, 0)
+  end
+end
+
+local function PlaceIcon(holder, icon, slot)
+  local size = U.GetHotSetting("size")
+  PlaceAtCorner(holder, icon, slot, size, U.GetHotSetting("spacing"))
   -- The overlay carries its own size for the reason CreateIcon states, so it
   -- has to be re-sized here rather than following the icon through an anchor.
   icon.overlay:SetWidth(size - 2)
   icon.overlay:SetHeight(size - 2)
   U.SizeRadialWipe(icon.wipe, size - 2)
+end
 
-  if corner == "TOPRIGHT" then
-    icon:SetPoint("TOPRIGHT", holder.frame, "TOPRIGHT", -step, 0)
-  elseif corner == "BOTTOMLEFT" then
-    icon:SetPoint("BOTTOMLEFT", holder.frame, "BOTTOMLEFT", step, 0)
-  elseif corner == "BOTTOMRIGHT" then
-    icon:SetPoint("BOTTOMRIGHT", holder.frame, "BOTTOMRIGHT", -step, 0)
-  else
-    icon:SetPoint("TOPLEFT", holder.frame, "TOPLEFT", step, 0)
+-- ---------------------------------------------------------------------------
+-- Empty HoT sample (edit mode only)
+--
+-- The real indicators only exist after this character casts a tracked HoT, so
+-- the party mover would otherwise give no preview of their selected corner,
+-- size or spacing. These are the same shared edit-mode cells used by aura-row
+-- samples; this module owns only their placement because it owns the real HoT
+-- geometry above.
+-- ---------------------------------------------------------------------------
+local SAMPLE_COUNT = 3
+
+local function HideSample(holder)
+  if not holder.sample then return end
+  local i
+  for i = 1, table.getn(holder.sample) do holder.sample[i]:Hide() end
+end
+
+local function SampleWanted()
+  if not U.GetHotSetting("enabled") then return false end
+  if type(U.MoverSampleShown) ~= "function" then return false end
+  if type(U.CreateMoverSampleCell) ~= "function" then return false end
+  return U.MoverSampleShown("unitframes.party") and true or false
+end
+
+local function PlaceSample(holder, cell, slot)
+  local size = U.GetHotSetting("size")
+  PlaceAtCorner(holder, cell, slot, size, U.GetHotSetting("spacing"))
+end
+
+local function ShowSample(holder)
+  if not SampleWanted() or not SizeHolder(holder) then
+    HideSample(holder)
+    return false
   end
+
+  holder.sample = holder.sample or {}
+  local i
+  for i = 1, SAMPLE_COUNT do
+    local cell = holder.sample[i]
+    if not cell then
+      cell = U.CreateMoverSampleCell(holder.frame)
+      if not cell then
+        HideSample(holder)
+        return false
+      end
+      holder.sample[i] = cell
+    end
+    PlaceSample(holder, cell, i)
+    cell:Show()
+  end
+  for i = SAMPLE_COUNT + 1, table.getn(holder.sample) do
+    holder.sample[i]:Hide()
+  end
+  return true
 end
 
 local function Holder(unit)
@@ -637,6 +729,7 @@ end
 local function ClearUnit(holder)
   holder.active = nil
   HideFrom(holder, 1)
+  ShowSample(holder)
 end
 
 -- The stamps this unit's character still has, or nil. Cheap enough to run on
@@ -758,6 +851,11 @@ local function ScanUnit(unit)
 
   holder.active = active
   HideFrom(holder, table.getn(active) + 1)
+  if table.getn(active) > 0 then
+    HideSample(holder)
+  else
+    ShowSample(holder)
+  end
 end
 
 -- The party token currently holding this character, or nil.
@@ -1122,6 +1220,16 @@ function H:OnEnable()
   end
   U.RegisterEvent("ACTIONBAR_SLOT_CHANGED", function() slotNames = {} end)
 
+  -- The party anchor is shared with aura and pet previews. core/moversample.lua
+  -- composes their registrations and calls this module whenever that handle's
+  -- edit-mode lifetime changes; the normal scan then chooses real icons or the
+  -- sample without a second layout path.
+  if type(U.RegisterMoverSample) == "function" then
+    U.RegisterMoverSample("unitframes.party", {
+      apply = function() RefreshAll() end,
+    })
+  end
+
   U.RegisterEvent("UNIT_AURA", function(event, unit)
     if type(unit) == "string" and string.find(unit, "^party%d") then
       ScanUnit(unit)
@@ -1143,12 +1251,16 @@ function H:OnEnable()
   -- fallback beside its own event registration. 0.5s because this is also what
   -- notices a HoT falling off, which nothing else reports.
   U.RegisterUpdate("hots.scan", 0.5, function()
+    if U.PerfDisabled and U.PerfDisabled("hots") then return end
     if Tracking() then RefreshAll() end
   end)
 
   -- The fast half: no client calls at all, so the radial can move at the same
   -- 0.1s the aura timers and the action buttons use.
-  U.RegisterUpdate("hots.wipe", 0.1, function() TickWipes() end)
+  U.RegisterUpdate("hots.wipe", 0.1, function()
+    if U.PerfDisabled and U.PerfDisabled("hots") then return end
+    TickWipes()
+  end)
 
   RefreshAll()
 end

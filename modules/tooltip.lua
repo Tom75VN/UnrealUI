@@ -217,6 +217,13 @@ end
 -- to clear the backdrop out from under a native frame.
 -- ---------------------------------------------------------------------------
 local healthLabel
+local healthFill
+local healthRest
+local healthHolder
+local UpdateHealthFill
+local healthFillAlpha = 1
+local healthFillColor = { M.color.health[1], M.color.health[2],
+                          M.color.health[3] }
 
 local function ClearNativeEdge(frame)
   if not frame or not frame.SetBackdropBorderColor then return end
@@ -253,13 +260,76 @@ local function StyleStatusBar()
   U.CreateBackdrop(bar, { background = M.color.healthBg, border = M.color.border })
   ClearNativeEdge(bar)
 
+  -- The native StatusBar fill cannot be faded: knowledge.json /
+  -- rendering.statusbar_alpha_does_not_fade_fill (RUNTIME_FAILURE_CONFIRMED)
+  -- has the fill staying fully opaque through widget alpha and through every
+  -- accessible descendant's alpha. An unrealUI-owned texture is used as the
+  -- health fill instead, so the fadeout can drive it with the same explicit
+  -- vertex-colour alpha the body backdrop and the outline already use, and the
+  -- bar fades in step with the tooltip instead of hanging or being collapsed.
+  if not healthFill and bar.CreateTexture then
+    local fillOk, fillHolder = pcall(CreateFrame, "Frame", nil, bar)
+    if fillOk and fillHolder then
+      pcall(fillHolder.SetAllPoints, fillHolder, bar)
+      local levelOk, level = pcall(bar.GetFrameLevel, bar)
+      pcall(fillHolder.SetFrameLevel, fillHolder,
+            (levelOk and type(level) == "number" and level or 0) + 1)
+
+      local textureOk, texture =
+        pcall(fillHolder.CreateTexture, fillHolder, nil, "ARTWORK")
+      if textureOk and texture then
+        pcall(texture.SetTexture, texture, M.texture.statusBar)
+        pcall(texture.SetPoint, texture, "TOPLEFT", fillHolder, "TOPLEFT", 0, 0)
+        pcall(texture.SetPoint, texture, "BOTTOMLEFT", fillHolder,
+              "BOTTOMLEFT", 0, 0)
+        pcall(texture.SetWidth, texture, 1)
+        healthFill = texture
+        healthHolder = fillHolder
+      end
+
+      -- The depleted part of the bar, anchored between the fill's right edge
+      -- and the holder's own right edge rather than given a width. The bar is
+      -- anchored to the tooltip, so it takes the tooltip's new width the frame
+      -- the tooltip grows, while a fill that is *sized* is a frame or more
+      -- behind -- tooltip.health_fill_uncovered_on_show.v2 caught the bar at
+      -- 110 and then 199 while the fill was still 55 and 110. The probe did
+      -- not identify the underlying texture. Keep the remainder attached to
+      -- both edges so it can cover the depleted area as the holder resizes.
+      if healthFill then
+        local restOk, rest =
+          pcall(fillHolder.CreateTexture, fillHolder, nil, "ARTWORK")
+        if restOk and rest then
+          pcall(rest.SetTexture, rest, M.texture.plain)
+          pcall(rest.SetPoint, rest, "TOPLEFT", healthFill, "TOPRIGHT", 0, 0)
+          pcall(rest.SetPoint, rest, "BOTTOMRIGHT", fillHolder,
+                "BOTTOMRIGHT", 0, 0)
+          healthRest = rest
+        end
+      end
+    end
+  end
+
+  -- Refresh proportional partial-health sizing when the holder reports a
+  -- resize. Full health follows its edges without waiting for this callback.
+  if healthHolder and not healthHolder.uuiSizeHooked then
+    if pcall(healthHolder.SetScript, healthHolder, "OnSizeChanged", function()
+      if UpdateHealthFill then UpdateHealthFill() end
+    end) then
+      healthHolder.uuiSizeHooked = true
+    end
+  end
+
+  -- Only once the replacement exists, so a failed creation leaves the native
+  -- fill drawing rather than a permanently empty bar.
+  if healthFill then pcall(bar.SetStatusBarTexture, bar, "") end
+
   if not healthLabel and bar.CreateFontString then
     local holderOk, holder = pcall(CreateFrame, "Frame", nil, bar)
     if holderOk and holder then
       pcall(holder.SetAllPoints, holder, bar)
       local levelOk, level = pcall(bar.GetFrameLevel, bar)
       pcall(holder.SetFrameLevel, holder,
-            (levelOk and type(level) == "number" and level or 0) + 1)
+            (levelOk and type(level) == "number" and level or 0) + 2)
 
       healthLabel = U.CreateLabel(holder, {
         size = M.fontSize.small,
@@ -273,6 +343,158 @@ local function StyleStatusBar()
   end
 
   return bar
+end
+
+-- True while the tooltip is fading out, under either fade: unrealUI's own
+-- accelerated one in cursor mode (healthFillAlpha below 1) or the client's
+-- ramp, which is the only fade running at the fixed anchor.
+--
+-- tooltip.fixed_fade_healthbar_flicker.v1 (fadebar probe, 2150 frames over
+-- five fadeouts with followCursor off) measured the ramp reaching the owned
+-- pieces on its own: the fill, the depleted remainder, their holder and the
+-- health readout each reported exactly GameTooltip's alpha, frame for frame,
+-- 0.99 down to 0.005 over ~1.0s. Nothing here has to drive that. What it must
+-- not do is write over it -- see the alpha write at the end of UpdateHealthFill.
+local function TooltipFading()
+  if healthFillAlpha < 1 then return true end
+  local tooltip = U.G("GameTooltip")
+  if not tooltip then return false end
+  local ok, alpha = pcall(tooltip.GetAlpha, tooltip)
+  if not ok or type(alpha) ~= "number" then return false end
+  return alpha < 0.999
+end
+
+-- Sizes and colours the unrealUI-owned fill from the native bar's own state.
+-- GameTooltipStatusBar reports a fixed 0-100 range rather than the unit's real
+-- pool (see this file's header), so its value is read as a fraction of that
+-- range, which is exactly the percentage the client keeps updating for every
+-- unit -- player or not. The colour cannot come from the bar (no
+-- GetStatusBarColor on this client), so it is resolved below instead.
+function UpdateHealthFill(r, g, b)
+  if not healthFill then return end
+
+  local bar = U.G("GameTooltipStatusBar")
+  if not bar then return end
+
+  -- One read per pass, because every decision below turns on it: which fade is
+  -- running decides whether the colour is re-resolved, whether the geometry is
+  -- re-sampled, and whether this pass may touch the fill's opacity at all.
+  local fading = TooltipFading()
+
+  -- The colour is resolved here rather than read back from the native bar:
+  -- this client's StatusBar has SetStatusBarColor but no GetStatusBarColor
+  -- (documentation.json / widgets/StatusBar lists only GetMinMaxValues,
+  -- GetValue, SetMinMaxValues, SetOrientation, SetStatusBarColor,
+  -- SetStatusBarTexture, SetValue), so the read always failed and the fill
+  -- kept its plain white vertex colour over the grey bar texture. That is the
+  -- grey bar. The unit path passes the class colour in directly; everything
+  -- else takes unrealUI's semantic health colour, which is the green the
+  -- native fill was drawing before it was replaced.
+  --
+  -- Nothing is re-resolved once the fade is running, and nothing is resolved
+  -- without a live mouseover either: the subject is already gone by then, so
+  -- either would drop the hovered unit's colour back to the fallback part-way
+  -- through the fadeout. The colour the bar had on hover is the colour it
+  -- fades out with.
+  if type(r) ~= "number" and not fading and
+     IsTruthy(Call("UnitExists", "mouseover")) then
+    if IsTruthy(Call("UnitIsPlayer", "mouseover")) then
+      local _, classToken = Call("UnitClass", "mouseover")
+      if type(classToken) == "string" then r, g, b = M.ClassColor(classToken) end
+    end
+    if type(r) ~= "number" then
+      r, g, b = M.color.health[1], M.color.health[2], M.color.health[3]
+    end
+  end
+  if type(r) == "number" and type(g) == "number" and type(b) == "number" then
+    healthFillColor[1], healthFillColor[2], healthFillColor[3] = r, g, b
+  end
+
+  -- Repopulating the tooltip restores the native fill the same way it restores
+  -- the stock edge art, and that fill is opaque and unfadeable, so it would
+  -- draw over the owned one. Re-clearing it here is cheap and idempotent.
+  pcall(bar.SetStatusBarTexture, bar, "")
+
+  -- Sample health only while the tooltip is solid. During fade, retain the
+  -- last geometry mode and partial width; full health stays attached to the
+  -- holder. Late health changes cannot switch modes during fadeout. The gate
+  -- is both fades: the fadebar trace caught two and three width jumps inside
+  -- single fixed-anchor fadeouts, from this pass re-reading a bar whose
+  -- subject was already gone.
+  if not fading then
+    local width = 0
+    local widthOk, barWidth = pcall(bar.GetWidth, bar)
+    if widthOk and type(barWidth) == "number" then width = barWidth end
+
+    local pct = 0
+    local valueOk, value = pcall(bar.GetValue, bar)
+    local rangeOk, minValue, maxValue = pcall(bar.GetMinMaxValues, bar)
+    if valueOk and rangeOk and type(value) == "number" and
+       type(minValue) == "number" and type(maxValue) == "number" and
+       maxValue > minValue then
+      pct = (value - minValue) / (maxValue - minValue)
+    end
+    if pct < 0 then pct = 0 elseif pct > 1 then pct = 1 end
+
+    -- Full health follows the holder's live edges as quest rows widen the
+    -- tooltip. A sampled pixel width lagged by 64ms in
+    -- tooltip.health_fill_uncovered_on_show.v2.
+    local fullWidth = pct >= 1
+    if healthFill.uuiFullWidthAnchored ~= fullWidth then
+      pcall(healthFill.ClearAllPoints, healthFill)
+      pcall(healthFill.SetPoint, healthFill, "TOPLEFT", healthHolder,
+            "TOPLEFT", 0, 0)
+      if fullWidth then
+        pcall(healthFill.SetPoint, healthFill, "BOTTOMRIGHT", healthHolder,
+              "BOTTOMRIGHT", 0, 0)
+      else
+        pcall(healthFill.SetPoint, healthFill, "BOTTOMLEFT", healthHolder,
+              "BOTTOMLEFT", 0, 0)
+      end
+      healthFill.uuiFullWidthAnchored = fullWidth
+    end
+    if not fullWidth then
+      -- Keep the remainder's anchor valid at zero health.
+      local fillWidth = width * pct
+      if fillWidth < 0.1 then fillWidth = 0.1 end
+      pcall(healthFill.SetWidth, healthFill, fillWidth)
+    end
+    pcall(healthFill.Show, healthFill)
+  end
+
+  -- Opacity goes through SetAlpha, not through the alpha channel of
+  -- SetVertexColor. tooltip.statusbar_fill_clear_holds.v1 (hpfill probe,
+  -- 2196 frames) caught the owned fill reading GetAlpha 0.69 at the exact
+  -- frame GameTooltip and the bar had both reached 0: it was tracking the
+  -- client's own one-second tooltip fade (1 - elapsed) and ignoring the vertex
+  -- alpha entirely, so the bar stayed two-thirds opaque with its colour intact
+  -- while everything around it vanished. That is the colour change. The bar's
+  -- outline and the health readout already fade through SetAlpha and were
+  -- always in step, which is the pattern followed here; the vertex colour is
+  -- left at full alpha and carries the colour only.
+  --
+  -- There is one case where this pass must write nothing at all: the client's
+  -- own fadeout, which is the only fade running at the fixed anchor.
+  -- tooltip.fixed_fade_healthbar_flicker.v1 caught the fill and the remainder
+  -- snapping back to alpha 1 for a single frame ten times inside one ~1.0s
+  -- fade -- 10, 10, 6 and 10 rises across four traced fades, once per 0.10s
+  -- restyle tick, which is exactly this write re-asserting healthFillAlpha's
+  -- resting value of 1 over the ramp the client had already applied to the
+  -- owned pieces. That single-frame snap is the flicker. In cursor mode
+  -- healthFillAlpha carries unrealUI's own ramp and this write is what makes
+  -- the bar fade at all, so only the un-driven case is skipped.
+  if not fading or healthFillAlpha < 1 then
+    U.SetColor(healthFill, healthFillColor[1], healthFillColor[2],
+      healthFillColor[3], 1)
+    pcall(healthFill.SetAlpha, healthFill, healthFillAlpha)
+
+    if healthRest then
+      U.SetColor(healthRest, M.color.healthBg[1], M.color.healthBg[2],
+        M.color.healthBg[3], M.color.healthBg[4] or 1)
+      pcall(healthRest.SetAlpha, healthRest, healthFillAlpha)
+      pcall(healthRest.Show, healthRest)
+    end
+  end
 end
 
 local function StyleFrame()
@@ -1331,6 +1553,9 @@ end
 -- placement sequence on every shared-driver frame. No native methods replaced.
 local placement = {
   offset = 16,
+  -- Horizontal gap is wider than the vertical one: at 16 the box still
+  -- overlapped the hovered unit, so the cursor sat on the tooltip.
+  offsetX = 48,
   margin = 4,
   fadeDuration = 0.30,
 }
@@ -1348,6 +1573,25 @@ function placement.Register()
     default = { point = "BOTTOMRIGHT", relativePoint = "BOTTOMRIGHT",
                 x = -103, y = 97 },
   })
+  -- The anchor is an owned frame with nothing in it at any time -- the tooltip
+  -- itself is transient and is placed against this guide, never parented to it
+  -- -- so there is no state to test and the sample is unconditional. Four bars
+  -- standing in for the name, the level/class line, a body line and the health
+  -- bar under it: enough to read the box's footprint and its top-left origin
+  -- while dragging.
+  if type(U.RegisterMoverSample) == "function" then
+    U.RegisterMoverSample("tooltip", {
+      lines = {
+        { width = 0.70, height = 8 },
+        { width = 0.44, height = 5 },
+        { width = 0.60, height = 5 },
+        { width = 1.00, height = 7 },
+        spacing = 5,
+        inset = 8,
+      },
+    })
+  end
+
   -- A separate guide keeps cursor motion out of the saved mover position.
   placement.cursor = CreateFrame("Frame", "UnrealUITooltipCursor", UIParent)
   placement.cursor:SetWidth(1)
@@ -1359,15 +1603,100 @@ end
 -- each axis when needed, then clamp the whole box, including the health bar
 -- below the body. Content size is read again while shown, so native rebuilds
 -- and screen-size changes cannot leave stale bounds in use.
-function placement.CursorBox(cx, cy, width, height, foot, screenWidth, screenHeight)
+--
+-- padX/padY are the measured overflow allowance from placement.NoteOverflow:
+-- extra width/height reserved on top of what the tooltip reports, so anything
+-- that rendered past an edge last frame is inside the box the flip and the
+-- clamp are computed from. Both default to zero.
+--
+-- The final clamp is ordered so that a box too large for the screen keeps its
+-- top-left corner on screen -- that is where the name and the first lines are.
+-- The right bound is applied before the left and the bottom before the top, so
+-- the left and top edges win whenever both bounds cannot be satisfied.
+function placement.CursorBox(cx, cy, width, height, foot, screenWidth, screenHeight,
+                             padX, padY)
   local margin, offset = placement.margin, placement.offset
-  local x = cx + offset
-  if x + width > screenWidth - margin then x = cx - offset - width end
+  local offsetX = placement.offsetX
+  width = width + (padX or 0)
+  height = height + (padY or 0)
+
+  local x = cx + offsetX
+  if x + width > screenWidth - margin then x = cx - offsetX - width end
   local y = cy + offset + foot
   if y + height > screenHeight - margin then y = cy - offset - height end
-  x = math.max(margin, math.min(x, screenWidth - margin - width))
-  y = math.max(margin + foot, math.min(y, screenHeight - margin - height))
+
+  x = math.min(x, screenWidth - margin - width)
+  x = math.max(margin, x)
+  y = math.max(margin + foot, y)
+  y = math.min(y, screenHeight - margin - height)
   return x, y
+end
+
+-- Reset the measured allowance. Called whenever the tooltip stops showing the
+-- content it was measured against, so a small tooltip is never pushed around
+-- by the previous, larger one's allowance.
+function placement.ResetOverflowAllowance()
+  placement.padX, placement.padY = 0, 0
+end
+
+-- Fold whatever actually hangs off the screen back into the predicted box.
+--
+-- The prediction can be short: GameTooltip reports the size it had before the
+-- current content on the frame it is repopulated, and the styled pieces are
+-- not part of that measurement either. Because the guide is anchored
+-- BOTTOMLEFT with no offset, the tooltip grows up and to the right, so those
+-- are the two edges a short prediction pushes past.
+--
+-- The allowance only ever grows while one tooltip stays up, so the predictor
+-- and this correction converge instead of trading the frame back and forth:
+-- once the reserved size covers what renders, CursorBox keeps the box inside
+-- and there is nothing left to measure. Growth is skipped unless the measured
+-- corner matches the guide, which means a layout pass that has not caught up
+-- with the last move is never counted twice, and it is capped at one screen so
+-- a permanently unmeasurable frame cannot walk the tooltip away.
+function placement.NoteOverflow(tooltip)
+  if not placement.config or not placement.config.followCursor then return end
+  if not placement.cursor or not placement.cursorX then return end
+
+  local point, relative = U.GetFramePoint(tooltip)
+  if relative ~= placement.cursor or point ~= "BOTTOMLEFT" then return end
+
+  local ok, uiLeft, uiBottom, left, bottom, width, height = pcall(function()
+    return UIParent:GetLeft(), UIParent:GetBottom(),
+           tooltip:GetLeft(), tooltip:GetBottom(),
+           tooltip:GetWidth(), tooltip:GetHeight()
+  end)
+  if not ok or type(uiLeft) ~= "number" or type(uiBottom) ~= "number" or
+     type(left) ~= "number" or type(bottom) ~= "number" or
+     type(width) ~= "number" or width <= 0 or
+     type(height) ~= "number" or height <= 0 then return end
+
+  -- frames.scaled_frame_edge_coordinates_mixed_space: the origin comes back in
+  -- the parent's space while the extent comes back unscaled, so measure the
+  -- corner from the edges and the size from the dimensions.
+  left, bottom = left - uiLeft, bottom - uiBottom
+  if math.abs(left - placement.cursorX) > 0.5 or
+     math.abs(bottom - placement.cursorY) > 0.5 then return end
+
+  local ratio = CompareScaleRatio(tooltip)
+  local margin = placement.margin
+  local overX = left + width * ratio - (U.UIWidth() - margin)
+  local overY = bottom + height * ratio - (U.UIHeight() - margin)
+
+  local grew = false
+  if overX > 0.5 then
+    placement.padX = math.min((placement.padX or 0) + overX, U.UIWidth())
+    grew = true
+  end
+  if overY > 0.5 then
+    placement.padY = math.min((placement.padY or 0) + overY, U.UIHeight())
+    grew = true
+  end
+  if not grew then return end
+
+  -- Re-place with the new allowance in the same frame the overflow was seen.
+  placement.cursorX, placement.cursorY = nil, nil
+  placement.Apply(tooltip)
 end
 
 function placement.CursorTarget(tooltip)
@@ -1388,7 +1717,8 @@ function placement.CursorTarget(tooltip)
   local ratio = CompareScaleRatio(tooltip)
   -- Reserve the styled bar even before its native OnShow has arrived.
   local x, y = placement.CursorBox(cx / uiScale - left, cy / uiScale - bottom,
-    width * ratio, height * ratio, BAR_HEIGHT * ratio, U.UIWidth(), U.UIHeight())
+    width * ratio, height * ratio, BAR_HEIGHT * ratio, U.UIWidth(), U.UIHeight(),
+    placement.padX, placement.padY)
   if x ~= placement.cursorX or y ~= placement.cursorY then
     if not U.ApplyFramePoint(placement.cursor, {
       point = "BOTTOMLEFT", relativePoint = "BOTTOMLEFT", x = x, y = y,
@@ -1415,8 +1745,34 @@ function placement.Apply(tooltip)
   placement.applying = true
   local target, targetPoint = placement.frame, "BOTTOMRIGHT"
   if placement.config and placement.config.followCursor then
-    local cursor = placement.CursorTarget(tooltip)
-    if cursor then target, targetPoint = cursor, "BOTTOMLEFT" end
+    -- Mouselook early-out. knowledge.json / input.ismouselooking_added
+    -- (FOCUSED_RUNTIME_PROBE, group mouselook, 2026-09-09): IsMouselooking
+    -- returns exactly one value, the number 1 while the player is steering the
+    -- camera and nil at rest -- never 0, never a boolean. Measured over 5660
+    -- per-frame reads: 16 clean segments, no segment shorter than 0.378s, and
+    -- seven returns to nil after release, so it neither flickers nor latches.
+    --
+    -- While it is 1 the pointer is hidden and driving the camera, so
+    -- recomputing a cursor-relative anchor every frame produces a position
+    -- nobody can see. This branch SKIPS that recompute and nothing else: the
+    -- tooltip keeps the anchor it already has, so it does not move, and the
+    -- equality check below then finds it already placed and returns without
+    -- touching a single point. The next tick after release recomputes normally.
+    --
+    -- Deliberately NOT a fallback to placement.frame: retargeting the mover
+    -- anchor here would make the tooltip jump across the screen the moment the
+    -- player turned, which is a visible state change rather than skipped work.
+    -- And deliberately gated on placement.cursorX, so a tooltip that has never
+    -- been positioned takes the normal path and gets a real position first.
+    --
+    -- Absent symbol, failed pcall, or any value other than a truthy one all
+    -- land on the else branch, which is the behaviour that shipped before this.
+    if placement.cursorX and IsTruthy(Call("IsMouselooking")) then
+      target, targetPoint = placement.cursor, "BOTTOMLEFT"
+    else
+      local cursor = placement.CursorTarget(tooltip)
+      if cursor then target, targetPoint = cursor, "BOTTOMLEFT" end
+    end
   end
   if relative == target and point == targetPoint and relativePoint == targetPoint and
      x == 0 and y == 0 then
@@ -1454,27 +1810,21 @@ function placement.SetCursorFadeAlpha(tooltip, alpha)
 
   local bar = U.G("GameTooltipStatusBar")
   if bar then
+    -- The bar's geometry is never touched by the fade: its height stays at
+    -- BAR_HEIGHT and its anchors stay flush against the body, because
+    -- collapsing it read as the health bar moving instead of fading. Only
+    -- opacity changes here, and the fill, the bar background, the outline and
+    -- the body all take the same alpha in the same step, so nothing lags.
     pcall(bar.SetAlpha, bar, alpha)
-    -- StatusBar alpha does not reliably fade its native fill on this client.
-    -- Collapse that last visible piece with the same smooth progress instead.
-    pcall(bar.SetHeight, bar, math.max(0.1, BAR_HEIGHT * alpha))
     U.SetBackgroundColor(bar, M.color.healthBg[1], M.color.healthBg[2],
       M.color.healthBg[3], (M.color.healthBg[4] or 1) * alpha)
     for i = 1, table.getn(bar.uuiEdges or {}) do
       pcall(bar.uuiEdges[i].SetAlpha, bar.uuiEdges[i], alpha)
     end
-
-    if not placement.fadeBarR and type(bar.GetStatusBarColor) == "function" then
-      local colorOk, r, g, b = pcall(bar.GetStatusBarColor, bar)
-      if colorOk and type(r) == "number" then
-        placement.fadeBarR, placement.fadeBarG, placement.fadeBarB = r, g, b
-      end
-    end
-    if placement.fadeBarR then
-      pcall(bar.SetStatusBarColor, bar, placement.fadeBarR,
-        placement.fadeBarG, placement.fadeBarB, alpha)
-    end
   end
+
+  healthFillAlpha = alpha
+  UpdateHealthFill()
 
   if healthLabel then pcall(healthLabel.SetAlpha, healthLabel, alpha) end
 end
@@ -1482,8 +1832,8 @@ end
 function placement.ResetCursorFade(tooltip)
   placement.fadeStartedAt = nil
   placement.fadeHidePending = nil
+  placement.ResetOverflowAllowance()
   if tooltip then placement.SetCursorFadeAlpha(tooltip, 1) end
-  placement.fadeBarR, placement.fadeBarG, placement.fadeBarB = nil, nil, nil
 end
 
 function placement.AccelerateCursorFade(tooltip)
@@ -1539,6 +1889,7 @@ function placement.Tick()
   local tooltip = U.G("GameTooltip")
   if CompareVisible(tooltip) then
     placement.Apply(tooltip)
+    placement.NoteOverflow(tooltip)
     placement.AccelerateCursorFade(tooltip)
   end
 end
@@ -1548,7 +1899,10 @@ end
 U.ProbeTooltipAnchorApply = placement.Tick
 
 function U.ApplyTooltipPosition()
-  placement.config = U.ModuleConfig("tooltip", { followCursor = false })
+  placement.config = U.ModuleConfig("tooltip", {
+    followCursor = false,
+    fadeHold = 0.25,
+  })
   -- Native hover restores the screen-corner anchor between frames even for a
   -- stationary subject. The 0.10s styling backstop left that position visible;
   -- tooltipanchor phase B corrected 1041 resets with no visible blinking.
@@ -1606,11 +1960,14 @@ local function RefreshTooltip(force)
     ClearNativeTextures("GameTooltip")
   end
 
+  -- Ahead of the player-only gate below: the bar is shown for any hovered
+  -- unit, so the owned fill has to follow the native bar's value for creatures
+  -- too, not only for players.
+  UpdateHealthFill()
+
   -- Before the unit path, which owns the name colour on a unit tooltip and
   -- overwrites this one when both somehow apply to the same frame.
   ApplyItemNameColor()
-
-  if not IsTruthy(Call("UnitIsPlayer", "mouseover")) then return end
 
   local unitName = Call("UnitName", "mouseover")
   if type(unitName) ~= "string" then return end
@@ -1623,13 +1980,27 @@ local function RefreshTooltip(force)
     return
   end
 
+  -- The title line carries the standing towards the hovered unit, for players
+  -- and creatures alike: hostile red, neutral orange, friendly green, through
+  -- the shared reaction palette (M.ReactionColor prefers the client's own
+  -- UnitReactionColor when it exists). UnitReaction is documented on this
+  -- client (documentation.json / global:Unit:UnitReaction,
+  -- DOCUMENTED_NOT_RUNTIME_VERIFIED) and returns nil when either unit is
+  -- missing, so an unresolved standing falls back to the plain name colour
+  -- rather than leaving the native tint in place.
+  local nr, ng, nb
+  local reaction = tonumber(Call("UnitReaction", "mouseover", "player"))
+  if reaction then nr, ng, nb = M.ReactionColor(reaction) end
+  if not nr then nr, ng, nb = COLOR.name[1], COLOR.name[2], COLOR.name[3] end
+  pcall(nameLabel.SetTextColor, nameLabel, nr, ng, nb)
+
+  if not IsTruthy(Call("UnitIsPlayer", "mouseover")) then return end
+
   local localizedClass, classToken = Call("UnitClass", "mouseover")
   if type(localizedClass) ~= "string" or type(classToken) ~= "string" then return end
 
   local r, g, b = M.ClassColor(classToken)
   r = r or 1; g = g or 1; b = b or 1
-
-  pcall(nameLabel.SetTextColor, nameLabel, COLOR.name[1], COLOR.name[2], COLOR.name[3])
 
   local guildName, rankName = Call("GetGuildInfo", "mouseover")
   local localizedRace = Call("UnitRace", "mouseover")
@@ -1639,6 +2010,7 @@ local function RefreshTooltip(force)
   if bar and bar.SetStatusBarColor then
     pcall(bar.SetStatusBarColor, bar, r, g, b)
   end
+  UpdateHealthFill(r, g, b)
 
   if healthLabel then
     local hp = Call("UnitHealth", "mouseover")
@@ -1720,7 +2092,7 @@ local function InstallTriggers()
     U.ClearTooltipItemName()
     placement.fadeStartedAt = nil
     placement.fadeHidePending = nil
-    placement.fadeBarR, placement.fadeBarG, placement.fadeBarB = nil, nil, nil
+    healthFillAlpha = 1
   end)
 
   return installed

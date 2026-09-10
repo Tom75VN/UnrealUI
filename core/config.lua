@@ -15,7 +15,7 @@
 
 local U = UnrealUI
 
-local CONFIG_VERSION = 4
+local CONFIG_VERSION = 5
 local PROFILE_STORE_VERSION = 1
 local MAX_PROFILE_NAME = 64
 
@@ -245,6 +245,14 @@ local function PrepareConfig(stored)
   -- Version 3 still selected Homespun automatically for unit/party frames.
   -- Keep those native too until the same probe establishes a safe path.
   if storedVersion < 4 then db.unitFrameFont = U.media.defaultUnitFrameFontId end
+  -- Version 4 shipped the cursor-follow tooltip mouse-out delay at 0.7s, which
+  -- held the tooltip visibly longer than the fixed-anchor mode does. Align the
+  -- default with the range floor once; anyone who prefers a longer hold can
+  -- raise the slider again while follow-cursor is on.
+  if storedVersion < 5 and type(db.modules) == "table" and
+     type(db.modules.tooltip) == "table" then
+    db.modules.tooltip.fadeHold = 0.25
+  end
 
   if db.version ~= CONFIG_VERSION then
     U.Debug("config version " .. tostring(db.version) ..

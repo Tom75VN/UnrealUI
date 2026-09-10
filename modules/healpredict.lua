@@ -150,6 +150,12 @@ function U.SetHealPredictSetting(key, value)
   if key == "enabled" then
     Config().enabled = value and true or false
     if Apply then Apply() end
+    -- The Unit Frames page and the contextual panels beside the player and
+    -- target movers all show this toggle, so whichever one wrote it tells the
+    -- others to re-read. They re-read with SetValue, which does not publish.
+    if type(U.RefreshUnitFrameSettingsViews) == "function" then
+      U.RefreshUnitFrameSettingsViews()
+    end
   end
 end
 
@@ -447,6 +453,11 @@ end
 -- cannot land on a corpse, and pfUI suppresses it the same way) and for
 -- everyone when the feature is off.
 function U.UnitIncomingHeal(unit)
+  -- Called once per unit-frame refresh, so its cost is multiplied by the
+  -- roster: core/perf.lua's party bisect switches it off as one of the
+  -- subsystems that scale with group size. Zero reads as "nothing incoming"
+  -- everywhere, which is the same answer the feature gives when it is off.
+  if U.PerfDisabled and U.PerfDisabled("heal") then return 0, 0 end
   if not Enabled() then return 0, 0 end
 
   -- Preview overrides the real store while it runs. Fractions of maximum
@@ -817,6 +828,7 @@ function HP:OnEnable()
   -- Only the timeout net; every normal end of a cast is an event. Nothing here
   -- touches a client API while no heal is in flight and no preview is running.
   U.RegisterUpdate("healpredict.expire", 0.1, function()
+    if U.PerfDisabled and U.PerfDisabled("heal") then return end
     local changed = ExpireHeals()
     if preview then
       if preview <= Now() then

@@ -121,6 +121,12 @@ M.texture = {
   -- U.CreateIconButton's fallback letter cannot catch it -- swapping this one
   -- line is the whole fix, and doing it here fixes both windows at once.
   sortIcon = "Interface\\Icons\\INV_Misc_Note_01",
+  -- unrealUI's own open/close arrow (media/arrow.tga, 25x32, uncompressed
+  -- 32-bit): a yellow triangle carrying its own dark outline, so it reads
+  -- over the game world with no panel behind it and needs no vertex tint.
+  -- Authored pointing right; U.CreateArrowToggle samples it backwards for
+  -- the left direction. Extensionless addon path, like the bundled art above.
+  arrow = "Interface\\AddOns\\unrealUI\\media\\arrow",
   -- Ornamental target-frame classification artwork (modules/unitframes.lua).
   -- One 350x117 32-bit RLE type-10 TGA per tier, drawn as an eight-slice
   -- border around the target frame 182x47 opening. Extensionless addon
@@ -158,9 +164,9 @@ M.languageFlag = {
 --
 -- The addon colour is #f5ae0a, a vibrant orange-yellow. It carries every
 -- unrealUI accent: panel headings, the active item in the settings list,
--- checkbox fills, slider thumbs and the edit-mode handles. Bar fills and unit
--- colours stay as they are -- the accent marks unrealUI's own chrome, not game
--- state.
+-- checkbox fills, slider thumbs and selected edit-mode handles. Bar fills and
+-- unit colours stay as they are -- the accent marks unrealUI's own chrome, not
+-- game state.
 M.color = {
   background = { 0.06, 0.06, 0.06, 0.85 },
   border     = { 0.16, 0.16, 0.16, 1.00 },
@@ -183,6 +189,12 @@ M.color = {
   text       = { 0.90, 0.90, 0.90, 1.00 },
   textDim    = { 0.60, 0.60, 0.60, 1.00 },
   textAccent = { 0.96, 0.68, 0.04, 1.00 },
+
+  -- The X and the hover outline every unrealUI close button carries, whether
+  -- the button is a skinned stock one (U.StyleStockCloseButton) or unrealUI's
+  -- own. Restrained semantic red: closing is the one destructive-shaped action
+  -- on an otherwise neutral window chrome.
+  closeGlyph = { 1.00, 0.25, 0.25, 1.00 },
 
   health     = { 0.25, 0.75, 0.30, 1.00 },
   healthBg   = { 0.10, 0.10, 0.10, 0.90 },
@@ -234,10 +246,27 @@ M.color = {
   breath     = { 0.22, 0.60, 0.74, 1.00 },
 
   highlight  = { 0.96, 0.68, 0.04, 0.22 },
-  mover      = { 0.55, 0.36, 0.02, 0.45 },
+
+  -- Edit-mode anchors stay cool blue until selected. The active anchor then
+  -- uses the ordinary accent tokens, so selection reads like every other
+  -- focused UnrealUI control without making all of edit mode compete for the
+  -- eye at once.
+  mover      = { 0.04, 0.36, 0.58, 0.32 },
+  moverIdleEdge = { 0.18, 0.68, 0.92, 1.00 },
+  moverIdleHover = { 0.36, 0.82, 1.00, 1.00 },
+  moverIdleGlow = { 0.10, 0.62, 0.95, 1.00 },
   moverEdge  = { 0.96, 0.68, 0.04, 1.00 },
+
+  -- Placeholder content drawn inside an anchor that is empty while edit mode
+  -- is open (core/moversample.lua). Deliberately part of the mover family and
+  -- not of the ordinary panel tokens: a sample is edit-mode chrome, and must
+  -- never be mistaken for the real element it stands in for.
+  moverSample = { 0.02, 0.02, 0.02, 0.55 },
+  moverSampleEdge = { 0.18, 0.68, 0.92, 0.55 },
+
   grid       = { 0.45, 0.45, 0.45, 0.30 },
   gridAxis   = { 0.96, 0.68, 0.04, 0.55 },
+  moverGuide = { 1.00, 0.20, 0.20, 0.90 },
 }
 
 -- Unit frames have a small theme-owned style surface. Their geometry,
