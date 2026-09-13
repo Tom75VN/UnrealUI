@@ -804,16 +804,8 @@ local function HighlightBagSlots(bag, on)
 end
 
 local function RefreshBagSlotButton(button)
-  if not button then return end
-
-  local inventoryId = button.uuiInventoryId
-  if not inventoryId then return end
-
-  local texture
-  local ok, value = pcall(GetInventoryItemTexture, "player", inventoryId)
-  if ok then texture = value end
-
-  pcall(SetItemButtonTexture, button, texture)
+  if not button or not button.uuiInventoryId then return end
+  U.RefreshBagSlotIcon(button)
   U.SetBorderColor(button, M.Unpack(M.color.border))
 end
 
@@ -825,68 +817,10 @@ local function RefreshBagSlotButtons()
   for i = 1, BAG_SLOT_COUNT do RefreshBagSlotButton(tray.buttons[i]) end
 end
 
--- Taking a bag back out of its slot.
---
--- The stock BagSlotButtonTemplate works out its own inventory id inside its
--- OnLoad, from the frame name and the XML id the client's own bag buttons are
--- declared with. A button created through CreateFrame has neither at load time,
--- so whatever that handler resolved was not this slot. The id is corrected with
--- SetID below, but nothing available here can confirm the template's click and
--- drag handlers read it back afterwards rather than something they kept from
--- OnLoad -- query_compat.py has no record of BagSlotButtonTemplate at all, and
--- the client ships no FrameXML to read.
---
--- Rather than guess at native template internals, the stock scripts are kept
--- and wrapped: they run first, and UnrealUI only steps in when the cursor shows
--- they moved nothing at all. PickupBagFromSlot is documented for this client
--- (OFFICIAL_CLIENT_DOCUMENTATION, Container) and takes exactly the inventory
--- slot 20-23 that ContainerIDToInventoryID returns, so the fallback rests on no
--- assumption the template does not already make, and it is inert wherever the
--- native path already does the work.
---
--- The fallback covers taking a bag *out* and nothing else, which is the one
--- direction where an empty cursor before and after is unambiguous proof that
--- nothing happened. Putting a bag in is deliberately left entirely native: a
--- swap into an occupied slot leaves a different bag on the cursor, so "the
--- cursor still holds something" cannot tell a completed swap from a handler
--- that did nothing, and a fallback firing there would undo the swap it just
--- misread.
---
--- Only a left click falls back. The stock right click opens the bag rather than
--- unequipping it, and that path deliberately reaches UnrealUI's own no-op
--- ToggleBag, which leaves the cursor untouched and would otherwise look exactly
--- like a handler that did nothing.
---
--- A bag that still holds items stays put either way: PickupBagFromSlot itself
--- declines an occupied bag, which is the client's rule and not something this
--- wrapper tries to work around.
-local function WrapBagSlotPickup(button, script, inventoryId, leftOnly)
-  local original = button:GetScript(script)
-
-  button:SetScript(script, function(a1, a2, a3, a4, a5, a6, a7, a8, a9)
-    local hadItem = U.CursorHasItem()
-    local mouseButton = U.MouseButton(a1, a2)
-
-    if original then
-      original(a1, a2, a3, a4, a5, a6, a7, a8, a9)
-    end
-
-    if hadItem or U.CursorHasItem() then return end
-    if leftOnly and mouseButton and mouseButton ~= "LeftButton" then return end
-
-    local pickup = U.G("PickupBagFromSlot")
-    if type(pickup) == "function" then pcall(pickup, inventoryId) end
-  end)
-end
-
-local function InstallBagSlotHandlers(button, inventoryId)
-  if not button or button.uuiBagSlotFallback then return end
-  button.uuiBagSlotFallback = true
-
-  WrapBagSlotPickup(button, "OnClick", inventoryId, true)
-  WrapBagSlotPickup(button, "OnDragStart", inventoryId, false)
-end
-
+-- Creation, the corrected inventory id and the PickupBagFromSlot fallback for
+-- these buttons all live in core/itemslot.lua (U.CreateBagSlotButton): the HUD
+-- bag bar needs the identical button, and the evidence notes that justify the
+-- fallback belong with the one implementation rather than with either caller.
 local function LayoutBagSlots()
   if not frame or not frame.bagslots then return end
 
@@ -902,25 +836,8 @@ local function LayoutBagSlots()
   local i
   for i = 1, BAG_SLOT_COUNT do
     local name = "UnrealUIBagBagSlot" .. i
-    local ok, button = pcall(CreateFrame, "CheckButton", name, tray,
-                             "BagSlotButtonTemplate")
-    if ok and button then
-      -- Container id i maps to the inventory slot the stock template reads.
-      local idOk, inventoryId = pcall(ContainerIDToInventoryID, i)
-      if idOk and tonumber(inventoryId) then
-        pcall(button.SetID, button, inventoryId)
-        button.uuiInventoryId = inventoryId
-        InstallBagSlotHandlers(button, inventoryId)
-      end
-      button.slot = i
-
-      -- The template registers these in its own OnLoad. Repeating them is
-      -- idempotent and costs nothing, and it means a button whose OnLoad gave
-      -- up early -- on the id it could not resolve for a CreateFrame'd frame --
-      -- still receives the clicks and drags the wrappers above depend on.
-      pcall(button.RegisterForClicks, button, "LeftButtonUp", "RightButtonUp")
-      pcall(button.RegisterForDrag, button, "LeftButton")
-
+    local button = U.CreateBagSlotButton(tray, name, i)
+    if button then
       button:ClearAllPoints()
       button:SetPoint("TOPLEFT", tray, "TOPLEFT",
                       PADDING + (i - 1) * (TRAY_SLOT + slotGap), -PADDING)
@@ -940,9 +857,6 @@ local function LayoutBagSlots()
         HighlightBagSlots(button.slot, false)
       end)
       button:Show()
-    else
-      U.Error("bags: BagSlotButtonTemplate unavailable; bag slot " .. i ..
-              " not created")
     end
   end
 
@@ -1446,7 +1360,7 @@ local function BuildHeader()
   -- from the money readout and close button on the right.
   frame.keyToggle = U.CreateIconButton(frame, {
     name = "UnrealUIBagKeyToggle",
-    texture = "Interface\\Icons\\INV_Misc_Key_03",
+    texture = M.texture.keyringIcon,
     fallback = "K",
     title = U.L("BAGS_TOGGLE_KEYRING"),
     detail = function() return U.L("BAGS_KEYRING_HINT") end,
@@ -1466,7 +1380,7 @@ local function BuildHeader()
 
   frame.bagsToggle = U.CreateIconButton(frame, {
     name = "UnrealUIBagBagsToggle",
-    texture = "Interface\\Icons\\INV_Misc_Bag_08",
+    texture = M.texture.bagIcon,
     fallback = "B",
     title = U.L("BAGS_TOGGLE_BAGS"),
     detail = function() return U.L("BAGS_BAG_SLOTS_HINT") end,
@@ -1800,9 +1714,51 @@ local function BuildSettingsPage(parent)
     table.insert(widgets, categoriesHint)
   end
 
+  -- The HUD bag bar (modules/bagbar.lua) stands in for this window while the
+  -- module above is off, so its one switch belongs on this page rather than on
+  -- a tab of its own. It is shown always and simply has no visible effect
+  -- while the merged bag is the container UI, which the description says.
+  local bar = U.CreateCheckbox(parent, {
+    name = "UnrealUISettingsBagsHudBar",
+    text = U.L("SETTINGS_BAGBAR_ENABLE"),
+    value = U.BagBarEnabled and U.BagBarEnabled(),
+    onChange = function(value)
+      if type(U.SetBagBarEnabled) ~= "function" then return end
+      U.SetBagBarEnabled(value)
+      U.ShowConfirm({
+        owner = "bagbar.enable-reload",
+        centered = true,
+        text = U.L("SETTINGS_BAGS_CHANGED"),
+        detail = U.L("SETTINGS_BAGBAR_RELOAD"),
+        acceptText = U.L("COMMON_OK_SHORT"),
+        cancelText = U.L("COMMON_CLOSE"),
+      })
+    end,
+  })
+  if categoriesHint then
+    bar.SetPoint("TOPLEFT", categoriesHint, "BOTTOMLEFT", 0, -12)
+  else
+    bar.SetPoint("TOPLEFT", categories.box, "BOTTOMLEFT", 0, -12)
+  end
+  table.insert(widgets, bar)
+
+  local barHint = U.CreateSettingsLabel(parent, {
+    size = M.fontSize.small,
+    color = M.color.textDim,
+    inherits = "GameFontNormalSmall",
+    justify = "LEFT",
+    width = 484,
+  })
+  if barHint then
+    U.AnchorSettingsDescription(barHint, bar.box)
+    barHint:SetText(U.L("SETTINGS_BAGBAR_ENABLE_HINT"))
+    table.insert(widgets, barHint)
+  end
+
   local function Refresh()
     enable.SetValue(EnsureConfig().enabled)
     categories.SetValue(EnsureConfig().categories)
+    if U.BagBarEnabled then bar.SetValue(U.BagBarEnabled()) end
   end
 
   return widgets, Refresh

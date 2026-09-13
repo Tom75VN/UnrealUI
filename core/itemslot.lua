@@ -51,6 +51,101 @@ function U.ItemLinkQualityColor(link)
   return U.ItemQualityColor(quality)
 end
 
+-- Rarity colour for one quest reward, shared by the Quest Log ("log") and the
+-- quest-giver window ("giver") under every theme.
+--
+-- The colour rule deliberately matches UnrealQuest's QuestRewardColors, which
+-- also tints the giver's completion window: GetItemQualityColor(quality) from
+-- the info getter first, so both addons write the same value and never fight
+-- over the region. Only when that yields nothing -- quality -1 is documented
+-- for non-equippable quest-log rewards, and an uncached item reports no
+-- quality -- does the reward's link supply it through GetItemInfo.
+-- Every getter is DOCUMENTED_NOT_RUNTIME_VERIFIED here, so each is pcall'd
+-- and a miss returns nil, leaving the caller's own colour in place.
+local QUEST_REWARD_INFO = {
+  log = { link = "GetQuestLogItemLink",
+          choice = "GetQuestLogChoiceInfo", reward = "GetQuestLogRewardInfo" },
+  giver = { link = "GetQuestItemLink", info = "GetQuestItemInfo" },
+}
+
+function U.QuestRewardColor(source, itemType, index)
+  local api = QUEST_REWARD_INFO[source]
+  index = tonumber(index)
+  if not api or (itemType ~= "choice" and itemType ~= "reward")
+     or not index or index < 1 then
+    return nil
+  end
+
+  -- Both getter families return name, texture, count, quality.
+  local ok, name, texture, count, quality
+  if api.info then
+    local fn = U.G(api.info)
+    if type(fn) == "function" then
+      ok, name, texture, count, quality = pcall(fn, itemType, index)
+    end
+  else
+    local fn = U.G(api[itemType])
+    if type(fn) == "function" then
+      ok, name, texture, count, quality = pcall(fn, index)
+    end
+  end
+
+  quality = ok and tonumber(quality) or nil
+  if quality and quality >= 0 then
+    local colorFn = U.G("GetItemQualityColor")
+    if type(colorFn) == "function" then
+      local colorOk, r, g, b = pcall(colorFn, quality)
+      if colorOk and tonumber(r) and tonumber(g) and tonumber(b) then
+        return { r, g, b }
+      end
+    end
+    local stock = U.ItemQualityColor(quality)
+    if stock then return stock end
+  end
+
+  local linkFn = U.G(api.link)
+  if type(linkFn) ~= "function" then return nil end
+  local linkOk, link = pcall(linkFn, itemType, index)
+  if not linkOk then return nil end
+  return U.ItemLinkQualityColor(link)
+end
+
+-- Tints a reward button's Name FontString. The button's own identity is used
+-- ("choice"/"reward" in button.type, 1-based index in GetID()) -- the same pair
+-- its native OnEnter feeds the tooltip -- so a translated name still resolves.
+-- `position` is the button's 1-based slot number, used only when a build
+-- leaves button.type unset: the client fills choice buttons first, then the
+-- guaranteed rewards restart their own index after them.
+-- Returns true when a colour was written; otherwise the region is untouched.
+function U.ColorQuestRewardName(button, region, source, position)
+  if not button or not region or not region.SetTextColor then return false end
+
+  local itemType, index = button.type, nil
+  if itemType then
+    local idOk, id = false, nil
+    if button.GetID then idOk, id = pcall(button.GetID, button) end
+    if not idOk then return false end
+    index = id
+  else
+    position = tonumber(position)
+    local countFn = U.G(source == "log" and "GetNumQuestLogChoices"
+                        or "GetNumQuestChoices")
+    if not position or type(countFn) ~= "function" then return false end
+    local countOk, choices = pcall(countFn)
+    choices = countOk and tonumber(choices) or 0
+    if position <= choices then
+      itemType, index = "choice", position
+    else
+      itemType, index = "reward", position - choices
+    end
+  end
+
+  local color = U.QuestRewardColor(source, itemType, index)
+  if not color then return false end
+  return pcall(region.SetTextColor, region, color[1], color[2], color[3], 1)
+         and true or false
+end
+
 -- The client's documented GetItemInfo tuple puts the item class fifth, after
 -- minLevel (documentation.json / global:Item:GetItemInfo; documented, not
 -- runtime verified). Read the native tuple directly, without pfUI's adapter.
@@ -641,4 +736,124 @@ function U.UpdateItemSlot(button, bag, slot)
   end
 
   U.UpdateItemSlotCooldown(bag, button)
+end
+
+-- ---------------------------------------------------------------------------
+-- Equipped-bag buttons
+--
+-- The four swappable bag slots, as a shared component. The recipe lived in
+-- modules/bags.lua first and moved here the moment modules/bagbar.lua needed
+-- the identical button, per rules/unreal-ui-design.md ("add the smallest
+-- central reusable component first"). Only creation, identity and the pickup
+-- fallback are shared: each window still styles and lays out its own row.
+--
+-- WORKING_SOURCE recipe from UnrealPfUI's CreateBagSlots -- a CheckButton on
+-- BagSlotButtonTemplate -- with one correction pfUI does not make: the stock
+-- template derives its inventory id in its own OnLoad, from the frame name and
+-- XML id the client's own bag buttons are declared with, and a CreateFrame'd
+-- button has neither. SetID below supplies the id the template reads back.
+-- ---------------------------------------------------------------------------
+
+-- Taking a bag back out of its slot.
+--
+-- Nothing available here can confirm the template's click and drag handlers
+-- re-read the corrected id rather than something they kept from OnLoad --
+-- query_compat.py has no record of BagSlotButtonTemplate at all, and the
+-- client ships no FrameXML to read. Rather than guess at native template
+-- internals, the stock scripts are kept and wrapped: they run first, and
+-- UnrealUI only steps in when the cursor shows they moved nothing at all.
+-- PickupBagFromSlot is documented for this client (OFFICIAL_CLIENT_DOCUMENTATION,
+-- Container) and takes exactly the inventory slot 20-23 that
+-- ContainerIDToInventoryID returns, so the fallback rests on no assumption the
+-- template does not already make, and it is inert wherever the native path
+-- already does the work.
+--
+-- The fallback covers taking a bag *out* and nothing else, which is the one
+-- direction where an empty cursor before and after is unambiguous proof that
+-- nothing happened. Putting a bag in is deliberately left entirely native: a
+-- swap into an occupied slot leaves a different bag on the cursor, so "the
+-- cursor still holds something" cannot tell a completed swap from a handler
+-- that did nothing, and a fallback firing there would undo the swap it just
+-- misread.
+--
+-- Only a left click falls back. A right click opens the bag rather than
+-- unequipping it, and that path can reach a toggle that leaves the cursor
+-- untouched -- which would otherwise look exactly like a handler that did
+-- nothing.
+--
+-- A bag that still holds items stays put either way: PickupBagFromSlot itself
+-- declines an occupied bag, which is the client's rule and not something this
+-- wrapper tries to work around.
+local function WrapBagSlotPickup(button, script, inventoryId, leftOnly)
+  local original = button:GetScript(script)
+
+  button:SetScript(script, function(a1, a2, a3, a4, a5, a6, a7, a8, a9)
+    local hadItem = U.CursorHasItem()
+    local mouseButton = U.MouseButton(a1, a2)
+
+    if original then
+      original(a1, a2, a3, a4, a5, a6, a7, a8, a9)
+    end
+
+    if hadItem or U.CursorHasItem() then return end
+    if leftOnly and mouseButton and mouseButton ~= "LeftButton" then return end
+
+    local pickup = U.G("PickupBagFromSlot")
+    if type(pickup) == "function" then pcall(pickup, inventoryId) end
+  end)
+end
+
+-- Creates one equipped-bag button for container id `bag` (1-4). Returns the
+-- button, or nil when the client has no such template -- the caller decides
+-- whether that is fatal for its row or simply means one fewer control.
+--
+-- The button carries `slot` (the container id) and `uuiInventoryId` (the
+-- paper-doll slot), which is everything a caller needs to refresh or highlight
+-- it without resolving either again.
+function U.CreateBagSlotButton(parent, name, bag)
+  local ok, button = pcall(CreateFrame, "CheckButton", name, parent,
+                           "BagSlotButtonTemplate")
+  if not ok or not button then
+    U.Error("itemslot: BagSlotButtonTemplate unavailable; bag slot " ..
+            tostring(bag) .. " not created")
+    return nil
+  end
+
+  button.slot = bag
+
+  local idOk, inventoryId = pcall(ContainerIDToInventoryID, bag)
+  if idOk and tonumber(inventoryId) then
+    pcall(button.SetID, button, inventoryId)
+    button.uuiInventoryId = inventoryId
+    if not button.uuiBagSlotFallback then
+      button.uuiBagSlotFallback = true
+      WrapBagSlotPickup(button, "OnClick", inventoryId, true)
+      WrapBagSlotPickup(button, "OnDragStart", inventoryId, false)
+    end
+  end
+
+  -- The template registers these in its own OnLoad. Repeating them is
+  -- idempotent and costs nothing, and it means a button whose OnLoad gave up
+  -- early -- on the id it could not resolve for a CreateFrame'd frame -- still
+  -- receives the clicks and drags the wrappers above depend on.
+  pcall(button.RegisterForClicks, button, "LeftButtonUp", "RightButtonUp")
+  pcall(button.RegisterForDrag, button, "LeftButton")
+
+  return button
+end
+
+-- The template's own bag picture is native button artwork, which
+-- U.StyleItemSlot deliberately removes with the rest of the stock chrome.
+-- Populating the item texture explicitly is also what makes a newly equipped
+-- bag appear without recreating the row.
+function U.RefreshBagSlotIcon(button)
+  if not button or not button.uuiInventoryId then return nil end
+
+  local texture
+  local ok, value = pcall(GetInventoryItemTexture, "player",
+                          button.uuiInventoryId)
+  if ok then texture = value end
+
+  pcall(SetItemButtonTexture, button, texture)
+  return texture
 end

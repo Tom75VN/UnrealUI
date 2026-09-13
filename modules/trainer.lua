@@ -21,6 +21,7 @@ local TR = U.RegisterModule("trainer")
 local WHITE = { 1.00, 1.00, 1.00, 1 }
 
 local frame, panel
+local useModernWow = false
 
 local function G(name)
   return U.G(name)
@@ -79,6 +80,11 @@ local function StyleSkillRows()
       U.StripStockTextures(row)
       SetTrainerFont(row, M.fontSize.normal, WHITE)
       U.StyleStockCollapseButton(row)
+      if useModernWow and type(U.ModernWowSurfaceEnabled) == "function" and
+         U.ModernWowSurfaceEnabled("npcdialogs") and
+         type(U.ModernWowCollapseFace) == "function" then
+        U.ModernWowCollapseFace(row)
+      end
       NudgeRowText(row)
     end
   end
@@ -87,6 +93,11 @@ local function StyleSkillRows()
   if collapseAll then
     U.StripStockTextures(collapseAll)
     U.StyleStockCollapseButton(collapseAll, true)
+    if useModernWow and type(U.ModernWowSurfaceEnabled) == "function" and
+       U.ModernWowSurfaceEnabled("npcdialogs") and
+       type(U.ModernWowCollapseFace) == "function" then
+      U.ModernWowCollapseFace(collapseAll)
+    end
   end
 
   local expandFrame = G("ClassTrainerExpandButtonFrame")
@@ -140,6 +151,18 @@ local function ReapplyAllText()
   StyleSkillRows()
 end
 
+local function ApplyModernWowDialog()
+  if not useModernWow then return end
+
+  if type(U.ModernWowNpcDialog) == "function" then
+    U.ModernWowNpcDialog(frame, panel, nil, "ClassTrainerFrameCloseButton")
+  end
+  if type(U.ModernWowNpcActionButton) == "function" then
+    U.ModernWowNpcActionButton(G("ClassTrainerCancelButton"))
+    U.ModernWowNpcActionButton(G("ClassTrainerTrainButton"))
+  end
+end
+
 -- BUG (reported in game): the Filter dropdown box extended past the
 -- interface's visible edge. Its native anchor was set for the full-width,
 -- unstripped ClassTrainerFrame; the content panel above is inset from the
@@ -173,6 +196,7 @@ local function Reapply()
   U.StripStockTextures(frame)
   ReapplyAllText()
   RepositionFilterDropdown()
+  ApplyModernWowDialog()
 end
 
 local function BuildFrame()
@@ -219,10 +243,14 @@ local function BuildFrame()
   RepositionFilterDropdown()
 
   U.StripStockTextures(G("ClassTrainerListScrollFrame"))
-  U.StyleStockScrollbar(G("ClassTrainerListScrollFrameScrollBar"))
+  if not useModernWow then
+    U.StyleStockScrollbar(G("ClassTrainerListScrollFrameScrollBar"))
+  end
 
   U.StripStockTextures(G("ClassTrainerDetailScrollFrame"))
-  U.StyleStockScrollbar(G("ClassTrainerDetailScrollFrameScrollBar"))
+  if not useModernWow then
+    U.StyleStockScrollbar(G("ClassTrainerDetailScrollFrameScrollBar"))
+  end
 
   StyleSkillIcon()
   StyleSkillRows()
@@ -233,6 +261,7 @@ local function BuildFrame()
   if train and cancel then
     Reposition(train, "RIGHT", cancel, "LEFT", -6, 0)
   end
+  ApplyModernWowDialog()
 
   -- Native list rebuilds (filter change, new service learned) can restore
   -- stock row/collapse art; reapply the same way modules/questlog.lua does
@@ -276,7 +305,9 @@ local function TryBuild()
 end
 
 function TR:OnEnable()
-  if U.ThemeStyleUsesNativeChrome() then return end
+  useModernWow = type(U.GetActiveThemeStyle) == "function" and
+                 U.GetActiveThemeStyle() == "modern-wow"
+  if U.ThemeStyleUsesClassicInteractionChrome() then return end
   if TryBuild() then return end
 
   U.RegisterEvent("ADDON_LOADED", TryBuild)

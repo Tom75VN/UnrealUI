@@ -16,8 +16,19 @@ local QUEST_ACCENT = M.color.accent
 local QUEST_BRIGHT = { 0.92, 0.92, 0.92, 1 }
 local QUEST_WHITE = { 1.00, 1.00, 1.00, 1 }
 
+-- Ink for the modern-wow page art. That theme draws the details pane as
+-- parchment, so near-white body text and the chrome accent are both illegible
+-- on it; these are the two colours used there instead. The quest LIST keeps
+-- its bright text, because the same art draws that page dark.
+local QUEST_INK_HEADING = { 0.30, 0.13, 0.02, 1 }
+local QUEST_INK_BODY = { 0.16, 0.12, 0.08, 1 }
+
 local config
 local frame, detail, listScroll, detailPanel, collapseAllButton
+
+-- The stock buttons the modern-wow art has a drawn bed for, in bed order.
+-- Filled by BuildFrame; empty under every other theme.
+local modernWowButtons = {}
 
 -- Filled by the first header click attempt so /uui check can report which of
 -- the collapse entry points this client actually provides.
@@ -79,31 +90,130 @@ local function StripDecorations(object)
   U.StripStockTextures(object)
 end
 
-local function SetQuestFont(object, size, color)
-  U.SetStockFont(object, size or M.fontSize.normal, color or M.color.text)
+local function ModernWow()
+  return type(U.GetActiveThemeStyle) == "function"
+         and U.GetActiveThemeStyle() == "modern-wow"
+end
+
+-- Text on the right page. Under modern-wow these are left-aligned to the
+-- parchment's inner margin: the art gives that page a printed edge, and a
+-- centred paragraph inside it reads as floating rather than set on the page.
+-- The flat themes keep whatever justification the client shipped, so this is
+-- applied through SetQuestFont's `align` flag rather than to every string.
+local function SetQuestFont(object, size, color, align)
+  local points = size or M.fontSize.normal
+  U.SetStockFont(object, points, color or M.color.text)
+
+  -- No shadow on the page art: the details pane is parchment there, where a
+  -- dark shadow under dark ink reads as a smudge rather than separation, and
+  -- the quest list is dark enough not to need one either. Re-declared through
+  -- U.SetFont with shadowFree so a later restyle does not put it back, then
+  -- cleared, because the shadow this call already applied is still on the
+  -- FontString.
+  if ModernWow() then
+    U.SetFont(object, points, nil, nil, true)
+    U.ClearTextShadow(object)
+  end
+
+  -- Justification LAST, and that ordering is the whole fix.
+  --
+  -- Every font call above ends in FontString:SetFontObject -- U.SetStockFont
+  -- binds GameFontNormal, and U.SetFont binds the private Font object that
+  -- core/compat.lua builds per FontString (ApplyFontRecord). SetFontObject
+  -- carries the font object's OWN justification onto the string, so a
+  -- SetJustifyH issued before them is overwritten by the next one. That is why
+  -- the wrapped body already read left -- its font object is left-justified --
+  -- while the title, the section headings and the objectives snapped back to
+  -- centred no matter what this module asked for.
+  --
+  -- Only justification is touched. Converting these strings' anchors was tried
+  -- and is wrong on this client: knowledge.json /
+  -- frames.getpoint_relative_name_y_inverted records that GetPoint returns the
+  -- relative frame as a name string with an inverted Y, and lists "recapturing
+  -- then immediately clearing/reapplying the same point" as a failed approach.
+  if align and ModernWow() then
+    pcall(object.SetJustifyH, object, "LEFT")
+  end
+end
+
+-- Left-aligns a single-line details string under modern-wow without relying
+-- on justification.
+--
+-- /uui qlalign (2026-09-13, modern-wow, UnrealUIDiagDB.questLogAlign) measured
+-- the title, headings and objective lines as fixed 285-wide boxes anchored
+-- TOPLEFT, with text 59-98 wide drawn centred inside them, even though
+-- SetQuestFont issues SetJustifyH("LEFT") last; GetJustifyH does not exist on
+-- these FontStrings, so the justification call is not observable here. The
+-- box already starts at the page margin, so shrinking it to its own text puts
+-- the text there. The native width is remembered once and restored for empty
+-- text, and is the ceiling, so a long line still wraps where it did before.
+--
+-- Failed approach (USER_CONFIRMED_INGAME 2026-09-13, reverted): adding a
+-- second TOPRIGHT point derived from the live GetPoint tuple plus
+-- SetJustifyH("LEFT") broke the whole details page layout.
+local function FitLineToText(object)
+  if not object or not ModernWow() then return end
+  if not object.uuiNativeWidth then
+    local ok, width = pcall(object.GetWidth, object)
+    if not ok or not tonumber(width) or width <= 0 then return end
+    object.uuiNativeWidth = width
+  end
+  local width = object.uuiNativeWidth
+  -- Back to full width BEFORE measuring (USER_CONFIRMED_INGAME 2026-09-13):
+  -- measured inside the box the previous quest shrank it to, a longer line is
+  -- already wrapped and reports only its wrapped width, so it stayed narrow
+  -- and broke onto several lines.
+  pcall(object.SetWidth, object, width)
+  local ok, textWidth = pcall(object.GetStringWidth, object)
+  textWidth = ok and tonumber(textWidth) or 0
+  -- +2 absorbs rounding so a line that fits is not wrapped by its own box.
+  if textWidth > 0 and textWidth + 2 < width then width = textWidth + 2 end
+  pcall(object.SetWidth, object, width)
 end
 
 local function ApplyQuestFonts()
+  -- Only the details pane changes colour between themes: it is the one part of
+  -- this window that sits on parchment under modern-wow. Everything anchored
+  -- to the header or the quest list is over dark art in both themes and keeps
+  -- unrealUI's own colours.
+  local parchment = ModernWow()
+  local heading = parchment and QUEST_INK_HEADING or QUEST_ACCENT
+  local body = parchment and QUEST_INK_BODY or QUEST_WHITE
+
   SetQuestFont(G("QuestLogTitleText"), M.fontSize.large, QUEST_BRIGHT)
   SetQuestFont(G("QuestLogQuestCount"), M.fontSize.small, QUEST_ACCENT)
-  SetQuestFont(G("QuestLogQuestTitle"), M.fontSize.large, QUEST_ACCENT)
-  SetQuestFont(G("QuestLogObjectivesText"), nil, QUEST_WHITE)
-  SetQuestFont(G("QuestLogQuestDescription"), nil, QUEST_WHITE)
-  SetQuestFont(G("QuestLogDescriptionTitle"), M.fontSize.large, QUEST_ACCENT)
-  SetQuestFont(G("QuestLogRewardTitleText"), M.fontSize.large, QUEST_ACCENT)
-  SetQuestFont(G("QuestLogItemChooseText"), nil, QUEST_WHITE)
-  SetQuestFont(G("QuestLogItemReceiveText"), nil, QUEST_WHITE)
-  SetQuestFont(G("QuestLogRequiredMoneyText"), nil, QUEST_WHITE)
-  SetQuestFont(G("QuestLogSpellLearnText"), nil, QUEST_WHITE)
+  SetQuestFont(G("QuestLogQuestTitle"), M.fontSize.large, heading, true)
+  SetQuestFont(G("QuestLogObjectivesText"), nil, body, true)
+  SetQuestFont(G("QuestLogQuestDescription"), nil, body, true)
+  SetQuestFont(G("QuestLogDescriptionTitle"), M.fontSize.large, heading, true)
+  SetQuestFont(G("QuestLogRewardTitleText"), M.fontSize.large, heading, true)
+  SetQuestFont(G("QuestLogItemChooseText"), nil, body, true)
+  SetQuestFont(G("QuestLogItemReceiveText"), nil, body, true)
+  SetQuestFont(G("QuestLogRequiredMoneyText"), nil, body, true)
+  SetQuestFont(G("QuestLogSpellLearnText"), nil, body, true)
+  -- Single-line strings only; the wrapped paragraphs already read left.
+  FitLineToText(G("QuestLogQuestTitle"))
+  FitLineToText(G("QuestLogDescriptionTitle"))
+  FitLineToText(G("QuestLogRewardTitleText"))
+  -- "You will be able to choose one of these rewards:" is a single line drawn
+  -- centred in the same fixed-width box, so it takes the same fit.
+  FitLineToText(G("QuestLogItemChooseText"))
 
   local i
   for i = 1, QUEST_ROWS do
     SetQuestFont(G("QuestLogTitle" .. i), M.fontSize.normal, QUEST_BRIGHT)
   end
   for i = 1, 10 do
-    SetQuestFont(G("QuestLogObjective" .. i), nil, QUEST_WHITE)
+    SetQuestFont(G("QuestLogObjective" .. i), nil, body, true)
+    FitLineToText(G("QuestLogObjective" .. i))
+    -- The reward name and count stay bright in both themes: they are drawn on
+    -- the reward button's own dark face, not on the page behind it.
     SetQuestFont(G("QuestLogItem" .. i .. "Name"), nil, QUEST_WHITE)
     SetQuestFont(G("QuestLogItem" .. i .. "Count"), M.fontSize.small, QUEST_WHITE)
+    -- Rarity wins over the white base; a reward with no resolvable quality
+    -- simply stays white (core/itemslot.lua U.ColorQuestRewardName).
+    U.ColorQuestRewardName(G("QuestLogItem" .. i), G("QuestLogItem" .. i .. "Name"),
+                           "log", i)
   end
 end
 
@@ -111,6 +221,289 @@ local function ReapplyNativeStrip()
   StripDecorations(frame)
   StripDecorations(detail)
   ApplyQuestFonts()
+end
+
+-- ---------------------------------------------------------------------------
+-- modern-wow drawing path
+--
+-- The Dragonflight page art (modules/modernwow.lua, `questlog` surface) is a
+-- whole window: two pages, a header strip, and a recessed bed drawn for each
+-- of the three action buttons. So under that theme this module stops drawing
+-- its own flat window -- the near-black window fill, its outline and the two
+-- panel beds all come off -- and puts its controls into the art instead.
+--
+-- Kept in one place and entered through ModernWow(), rather than threaded
+-- through the shared build as per-detail conditionals
+-- (rules/unreal-ui-design.md, theme scope).
+-- ---------------------------------------------------------------------------
+
+-- The details toggle is taken off the window under this theme. The art draws
+-- three button beds and one window control, the close button, with nowhere a
+-- fourth belongs; the header strip is not it. Hidden rather than never built,
+-- because the pane itself still works -- SetDetailVisible drives it, and the
+-- empty-log path still collapses it -- and the flat themes still show the
+-- control.
+local function HideModernWowExpand(expand)
+  if not expand then return end
+  pcall(expand.Hide, expand)
+  pcall(expand.EnableMouse, expand, false)
+end
+
+-- The action buttons sit in beds that are proportions of the window's left
+-- page, and the window changes width whenever the details pane opens or
+-- closes, so this runs again after every resize instead of once at build.
+local function PlaceModernWowButtons()
+  if type(U.ModernWowQuestLogButtonRect) ~= "function" then return end
+  local i
+  for i = 1, table.getn(modernWowButtons) do
+    local entry = modernWowButtons[i]
+    local left, bottom, width, height = U.ModernWowQuestLogButtonRect(entry.bed)
+    if left and entry.button then
+      pcall(function()
+        entry.button:ClearAllPoints()
+        entry.button:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", left, bottom)
+        entry.button:SetWidth(width)
+        entry.button:SetHeight(height)
+      end)
+    end
+  end
+end
+
+-- Both scroll panes move into the pages the art draws instead of filling the
+-- flat window, which is what the removed panel beds used to define. These are
+-- measured off the art at the window's shipped 676x440 -- the same footing as
+-- the flat layout numbers in BuildFrame, and the window only has that width
+-- and the collapsed 340 where the details pane is hidden anyway.
+-- Where a scroll bar's left edge sits relative to its pane's right edge.
+-- The stock templates hang the bar outside the pane (x = +6), which on this
+-- art puts it past the page's printed edge and onto the frame. Negative pulls
+-- it back inside, so the gutter lands on parchment and the bar lines up with
+-- the pane the art defines. One constant for both panes, because they are the
+-- same gutter on two pages.
+local MW_SCROLLBAR_X = -10
+local MW_SCROLLBAR_INSET_Y = 16
+
+-- Where the details pane's left edge sits, measured from the quest list's
+-- right edge. This is the whole offset, not an inset added to the flat
+-- layout's own 35: that 35 belongs to the `modern` theme, which is frozen with
+-- respect to this work, so modern-wow states its own value rather than padding
+-- the shared one. The pane is only moved, not narrowed -- the art leaves slack
+-- on the right that the wrap can grow into.
+local MW_DETAIL_LEFT = 30
+
+-- Clearance between the page art's gold ring and the first control placed
+-- beside it.
+local MW_RING_GAP = 6
+
+-- Re-anchors one stock scroll bar to its own pane. Both ends are set, so the
+-- bar keeps tracking a pane whose height changes with the details toggle.
+local function PlaceModernWowScrollBar(pane, barName)
+  local bar = G(barName)
+  if not pane or not bar then return end
+  pcall(function()
+    bar:ClearAllPoints()
+    bar:SetPoint("TOPLEFT", pane, "TOPRIGHT",
+                 MW_SCROLLBAR_X, -MW_SCROLLBAR_INSET_Y)
+    bar:SetPoint("BOTTOMLEFT", pane, "BOTTOMRIGHT",
+                 MW_SCROLLBAR_X, MW_SCROLLBAR_INSET_Y)
+  end)
+end
+
+-- The details pane's bar goes into the channel the art recesses down the right
+-- page, so it is placed against the window and the measured art rather than
+-- against its own pane: the pane's right edge is a native width this module
+-- does not own, and it is not what the channel lines up with.
+--
+-- The bar keeps its own width and is centred in the channel, because the art
+-- draws a lit bevel down each side of it that the bar must not cover.
+local function PlaceModernWowDetailScrollBar()
+  local bar = G("QuestLogDetailScrollFrameScrollBar")
+  if not bar or not frame then return false end
+  if type(U.ModernWowQuestLogScrollRect) ~= "function" then return false end
+
+  local left, top, width, height = U.ModernWowQuestLogScrollRect()
+  if not left then return false end
+
+  local okWidth, barWidth = pcall(bar.GetWidth, bar)
+  barWidth = (okWidth and tonumber(barWidth)) or 0
+  -- Centred in the channel, then nudged 2px left by request.
+  local x = left + (width - barWidth) / 2 - 2
+
+  pcall(function()
+    bar:ClearAllPoints()
+    bar:SetPoint("TOPLEFT", frame, "TOPLEFT", x, top)
+    bar:SetPoint("BOTTOMLEFT", frame, "TOPLEFT", x, top - height)
+  end)
+
+  -- Only the bottom arrow drops 2px, by request; the bar and track stay put.
+  -- WORKING_SOURCE: Vanilla's UIPanelScrollBarTemplate hangs ScrollDownButton
+  -- TOP to the bar's BOTTOM with no offset. No runtime record confirms that
+  -- anchor here, and GetPoint is not read back because this client inverts
+  -- its Y (knowledge.json / frames.getpoint_relative_name_y_inverted).
+  local down = G("QuestLogDetailScrollFrameScrollBarScrollDownButton")
+  if down then
+    pcall(function()
+      down:ClearAllPoints()
+      down:SetPoint("TOP", bar, "BOTTOM", 0, -2)
+    end)
+  end
+  return true
+end
+
+local function PlaceModernWowPanes()
+  if listScroll then
+    pcall(function()
+      listScroll:ClearAllPoints()
+      listScroll:SetPoint("TOPLEFT", frame, "TOPLEFT", 20, -72)
+      listScroll:SetHeight(322)
+    end)
+  end
+  PlaceModernWowScrollBar(listScroll, "QuestLogListScrollFrameScrollBar")
+  PlaceModernWowDetailScrollBar()
+  -- The details pane keeps its anchor to the list pane's top-right corner, so
+  -- it has already followed the list onto the parchment. Its height has to
+  -- come in or it runs off the bottom of the page, and its left edge is set
+  -- outright -- see MW_DETAIL_LEFT.
+  if detail then
+    if listScroll then
+      pcall(function()
+        detail:ClearAllPoints()
+        detail:SetPoint("TOPLEFT", listScroll, "TOPRIGHT", MW_DETAIL_LEFT, 0)
+      end)
+    end
+    pcall(detail.SetHeight, detail, 340)
+    local child = G("QuestLogDetailScrollChildFrame")
+    -- Keep the page viewport inside the modern-wow artwork, but retain the
+    -- native 376px content extent. Collapsing both to 340 clipped the native
+    -- money row exactly 35px below the child (questrewardlayout.live_geometry.v3),
+    -- while classic-wow kept the row because it never shortened this child.
+    if child then pcall(child.SetHeight, child, 376) end
+    if type(detail.UpdateScrollChildRect) == "function" then
+      pcall(detail.UpdateScrollChildRect, detail)
+    end
+  end
+end
+
+local function RefreshModernWow()
+  if not ModernWow() then return false end
+  PlaceModernWowPanes()
+  PlaceModernWowButtons()
+  -- Re-hidden on every refresh: the shared toggle path restyles and re-places
+  -- this control whenever the pane changes, so once is not enough.
+  HideModernWowExpand(G("UnrealUIQuestLogExpand"))
+  return true
+end
+
+-- Keep the client's working parent and anchor untouched. Re-anchoring this
+-- frame by the requested 12px made it disappear again, confirming that its
+-- native ownership is the important part of the fix. For a positive reward,
+-- only reassert visibility and put it above the MEDIUM-strata page chrome.
+local function RaiseModernWowMoney()
+  if not ModernWow() then return false end
+  local money = G("QuestLogMoneyFrame")
+  local getMoney = G("GetQuestLogRewardMoney")
+  if not money or type(getMoney) ~= "function" then return false end
+  local ok, amount = pcall(getMoney)
+  if not ok or not tonumber(amount) or amount <= 0 then return false end
+  if type(money.SetFrameStrata) == "function" then
+    pcall(money.SetFrameStrata, money, "HIGH")
+  end
+  if type(money.SetFrameLevel) == "function" then
+    pcall(money.SetFrameLevel, money, 100)
+  end
+  pcall(money.Show, money)
+  return true
+end
+
+-- One-time setup, run at the end of BuildFrame once every control exists.
+local function DressModernWow(panels, buttons)
+  if not ModernWow() then return false end
+
+  -- The art's header strip is deeper than the flat window's title row, so the
+  -- close button drops into it.
+  local close = G("QuestLogFrameCloseButton")
+  if close then
+    pcall(function()
+      close:ClearAllPoints()
+      close:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -10, -16)
+    end)
+  end
+
+  -- The collapse-all control moves out from under the page art's gold ring.
+  -- Anchored to the first quest row it sat at roughly x 24, y -50..-68 from
+  -- the window's top-left, and the ring covers x 5..69, y -2..-63 there, so
+  -- the two overlapped. It goes beside the ring instead of above the list,
+  -- which is also where the native window puts it relative to its book icon.
+  --
+  -- Measured off the live ring rather than hardcoded, because the ring is a
+  -- fraction of a window whose width changes with the details pane.
+  local ringLeft, ringTop, ringWidth, ringHeight
+  if type(U.ModernWowQuestLogRingRect) == "function" then
+    ringLeft, ringTop, ringWidth, ringHeight = U.ModernWowQuestLogRingRect()
+  end
+  if collapseAllButton and ringLeft then
+    pcall(function()
+      collapseAllButton:ClearAllPoints()
+      collapseAllButton:SetPoint("LEFT", frame, "TOPLEFT",
+                                 ringLeft + ringWidth + MW_RING_GAP,
+                                 ringTop - ringHeight / 2)
+    end)
+  elseif collapseAllButton and G("QuestLogTitle1") then
+    -- No ring rect means no page art measurement to place against; the old
+    -- row-relative spot is still better than leaving the control unplaced.
+    pcall(function()
+      collapseAllButton:ClearAllPoints()
+      collapseAllButton:SetPoint("BOTTOMLEFT", G("QuestLogTitle1"), "TOPLEFT", 4, 4)
+    end)
+  end
+  if type(U.ModernWowCollapseFace) == "function" then
+    pcall(U.ModernWowCollapseFace, collapseAllButton)
+  end
+
+  -- The ring the art draws is empty on purpose; modules/modernwow.lua fills it
+  -- with the stock book portrait on its own chrome, out of this strip's reach.
+  if type(U.ModernWowQuestLogBook) == "function" then
+    pcall(U.ModernWowQuestLogBook)
+  end
+  ReapplyNativeStrip()
+
+  local i
+  for i = 1, table.getn(panels) do
+    -- The art draws both pages itself, so these beds are what hid the
+    -- parchment. The frames stay -- detailPanel still tracks the pane's
+    -- visibility -- they simply stop painting.
+    U.SetBackdropShown(panels[i], false)
+  end
+
+  for i = 1, table.getn(buttons) do
+    local button = buttons[i]
+    if button then
+      table.insert(modernWowButtons, { button = button, bed = i })
+      U.SetBackdropShown(button, false)
+      local ok, label = pcall(button.GetFontString, button)
+      if ok and label then
+        -- The bed is the button's face now, so hover and normal are carried by
+        -- the label alone. Pressed and disabled stay with the client, which
+        -- offsets and greys the label itself.
+        U.SetStockFont(label, M.fontSize.small, M.color.text)
+        U.PostHookScript(button, "OnEnter", function()
+          pcall(label.SetTextColor, label, M.Unpack(M.color.accent))
+        end)
+        U.PostHookScript(button, "OnLeave", function()
+          pcall(label.SetTextColor, label, M.Unpack(M.color.text))
+        end)
+      end
+    end
+  end
+
+  return RefreshModernWow()
+end
+
+local function ResizeModernWowTexture()
+  if type(U.ResizeModernWowQuestLog) == "function" then
+    pcall(U.ResizeModernWowQuestLog)
+  end
+  RefreshModernWow()
 end
 
 local function SetDetailVisible(show)
@@ -130,32 +523,7 @@ local function SetDetailVisible(show)
   local expand = G("UnrealUIQuestLogExpand")
   if expand then U.StyleStockArrowButton(expand, show and "left" or "right", 21) end
   U.RefreshWindowOverlap(frame)
-end
-
-local function BuildQuestLevelToggle(collapseAll)
-  if not collapseAll then return nil end
-
-  local ok, toggle = pcall(CreateFrame, "CheckButton",
-    "UnrealUIQuestLogLevels", frame, "UICheckButtonTemplate")
-  if not ok or not toggle then return nil end
-
-  toggle:SetPoint("LEFT", collapseAll, "RIGHT", 4, 1)
-  toggle:SetChecked(config.showQuestLevels and true or nil)
-  U.StyleStockCheckbox(toggle, 20)
-
-  local text = G("UnrealUIQuestLogLevelsText")
-  if text then
-    text:SetText(U.L("QUESTLOG_LEVELS"))
-    SetQuestFont(text, M.fontSize.small, M.color.textDim)
-  end
-
-  toggle:SetScript("OnClick", function()
-    config.showQuestLevels = not config.showQuestLevels
-    toggle:SetChecked(config.showQuestLevels and true or nil)
-    local update = G("QuestLog_Update")
-    if type(update) == "function" then pcall(update) end
-  end)
-  return toggle
+  ResizeModernWowTexture()
 end
 
 -- Header expand/collapse.
@@ -200,6 +568,69 @@ local function ToggleHeader(row)
   end
   collapseReport.nativeClick = "missing"
   U.Error("questlog: no working header collapse call (" .. name .. " missing)")
+end
+
+-- Read-only alignment readout for the details page (/uui qlalign).
+--
+-- Reported in game under modern-wow: the quest title, the "Description"
+-- heading and the objective lines stay centred although SetQuestFont issues
+-- SetJustifyH("LEFT") last, while the wrapped summary and body read left.
+-- Rather than guess again, this records what the client reports for each
+-- string: justification, box width versus text width, and the raw anchor
+-- points. GetPoint is only read here, never reapplied (knowledge.json /
+-- frames.getpoint_relative_name_y_inverted), so its Y sign is as reported.
+function U.QuestLogAlignReport()
+  -- UnrealQuestLogLevel is UnrealQuest's level label, placed inside the
+  -- title's grown height; recorded so an overlap with the summary can be
+  -- measured rather than guessed.
+  local names = { "QuestLogQuestTitle", "UnrealQuestLogLevel",
+                  "QuestLogObjectivesText",
+                  "QuestLogDescriptionTitle", "QuestLogQuestDescription" }
+  local n
+  for n = 1, 10 do table.insert(names, "QuestLogObjective" .. n) end
+
+  local function read(object, method)
+    if not object or type(object[method]) ~= "function" then return nil end
+    local ok, a, b, c, d, e = pcall(object[method], object)
+    if not ok then return "error" end
+    return a, b, c, d, e
+  end
+
+  local report = { theme = ModernWow() and "modern-wow" or "other" }
+  local i
+  for i = 1, table.getn(names) do
+    local object = G(names[i])
+    local entry = { name = names[i], present = object and "yes" or "no" }
+    if object then
+      entry.shown = read(object, "IsShown") and "yes" or "no"
+      entry.text = tostring(read(object, "GetText") or "")
+      entry.justifyH = tostring(read(object, "GetJustifyH"))
+      entry.width = tostring(read(object, "GetWidth"))
+      entry.height = tostring(read(object, "GetHeight"))
+      entry.top = tostring(read(object, "GetTop"))
+      entry.bottom = tostring(read(object, "GetBottom"))
+      entry.stringWidth = tostring(read(object, "GetStringWidth"))
+      local count = tonumber(read(object, "GetNumPoints")) or 0
+      entry.numPoints = count
+      entry.points = {}
+      local p
+      for p = 1, math.max(count, 1) do
+        local ok, point, relative, relativePoint, x, y =
+          pcall(object.GetPoint, object, p)
+        if ok and point then
+          if type(relative) == "table" and relative.GetName then
+            local nameOk, relName = pcall(relative.GetName, relative)
+            relative = nameOk and relName or "table"
+          end
+          table.insert(entry.points, tostring(point) .. " -> " ..
+            tostring(relative) .. " " .. tostring(relativePoint) ..
+            " " .. tostring(x) .. "," .. tostring(y))
+        end
+      end
+    end
+    table.insert(report, entry)
+  end
+  return report
 end
 
 function U.QuestLogCollapseReport()
@@ -295,6 +726,9 @@ local function BuildRows()
     if row then
       row.uuiCollapseClick = ToggleHeader
       U.StyleStockCollapseButton(row)
+      if ModernWow() and type(U.ModernWowCollapseFace) == "function" then
+        pcall(U.ModernWowCollapseFace, row)
+      end
       BuildTrackMark(row)
     end
   end
@@ -384,11 +818,6 @@ local function UpdateRows()
         end
       end
     end
-
-    if config.showQuestLevels and row and titleOk and not isHeader then
-      local shownLevel = tostring(level or "?") .. (questTag and "+" or "")
-      pcall(row.SetText, row, " [" .. shownLevel .. "] " .. text)
-    end
   end
 
   -- The All button keeps its native click; only its icon is unrealUI's, so its
@@ -458,7 +887,12 @@ local function StyleQuestItems()
     local item = G(name)
     local icon = G(name .. "IconTexture")
     HookQuestItemTooltip(item)
-    if item and not item.uuiQuestItemStyled then
+    -- modern-wow keeps the reward buttons' native art -- the same slot
+    -- background, size and icon placement Classic WoW shows -- because the
+    -- dark flat cell reads as a hole in that theme's parchment page. The
+    -- tooltip hooks above still apply. Theme changes are reload-bound, so a
+    -- button is never left half-styled by a switch.
+    if item and not item.uuiQuestItemStyled and not ModernWow() then
       item.uuiQuestItemStyled = true
 
       local widthOk, width = pcall(item.GetWidth, item)
@@ -629,6 +1063,7 @@ local function BuildFrame()
       pcall(frame.SetWidth, frame, 340)
       U.StyleStockArrowButton(expand, "right", 21)
       U.RefreshWindowOverlap(frame)
+      ResizeModernWowTexture()
     end
   end)
   U.PostHookScript(detail, "OnShow", function()
@@ -637,6 +1072,7 @@ local function BuildFrame()
       pcall(frame.SetWidth, frame, 676)
       U.StyleStockArrowButton(expand, "left", 21)
       U.RefreshWindowOverlap(frame)
+      ResizeModernWowTexture()
     end
   end)
 
@@ -653,10 +1089,16 @@ local function BuildFrame()
       collapseAll:SetPoint("BOTTOMLEFT", G("QuestLogTitle1"), "TOPLEFT", -6, 4)
     end)
   end
-  local levelToggle = BuildQuestLevelToggle(collapseAll)
 
   U.StripStockTextures(listScroll)
-  U.StyleStockScrollbar(G("QuestLogListScrollFrameScrollBar"))
+  -- modern-wow keeps the client's own scroll bar art. DragonflightUI ships no
+  -- scroll bar textures at all -- it never skins them -- so the stock gold bar
+  -- is the one piece of chrome on this window that already matches parchment.
+  -- U.StripTextures is not recursive, so the bar keeps its own art as long as
+  -- nothing restyles it.
+  if not ModernWow() then
+    U.StyleStockScrollbar(G("QuestLogListScrollFrameScrollBar"))
+  end
   pcall(function()
     listScroll:ClearAllPoints()
     listScroll:SetPoint("TOPLEFT", frame, "TOPLEFT", 10, -54)
@@ -679,7 +1121,9 @@ local function BuildFrame()
   if levelOk and tonumber(level) then pcall(listPanel.SetFrameLevel, listPanel, level) end
 
   U.StripStockTextures(detail)
-  U.StyleStockScrollbar(G("QuestLogDetailScrollFrameScrollBar"))
+  if not ModernWow() then
+    U.StyleStockScrollbar(G("QuestLogDetailScrollFrameScrollBar"))
+  end
   pcall(function()
     detail:ClearAllPoints()
     detail:SetPoint("TOPLEFT", listScroll, "TOPRIGHT", 35, 0)
@@ -698,27 +1142,19 @@ local function BuildFrame()
   if levelOk and tonumber(level) then pcall(detailPanel.SetFrameLevel, detailPanel, level) end
   if not IsShown(detail) then pcall(detailPanel.Hide, detailPanel) end
 
+  -- The native track square (its tooltip is the "Shift-click a quest" hint) is
+  -- removed by request; Shift-click on a row still tracks. Alpha 0 and no mouse
+  -- as well as Hide, so a native refresh re-showing it stays invisible and inert.
   local track = G("QuestLogTrack")
-  local tracking = G("QuestLogTrackTracking")
   if track then
-    U.StripStockTextures(track, { keep = tracking and { [tracking] = true } or {} })
-    U.CreateBackdrop(track)
-    pcall(track.SetWidth, track, 10)
-    pcall(track.SetHeight, track, 10)
-    if count then
-      pcall(function()
-        track:ClearAllPoints()
-        track:SetPoint("RIGHT", count, "LEFT", -5, 0)
-      end)
-    end
-  end
-  if tracking then
-    pcall(tracking.SetTexture, tracking, M.texture.plain)
-    U.SetColor(tracking, 0.90, 0.05, 0.05, 1)
-    pcall(tracking.SetAlpha, tracking, 1)
+    pcall(track.EnableMouse, track, false)
+    pcall(track.SetAlpha, track, 0)
+    pcall(track.Hide, track)
   end
   local trackTitle = G("QuestLogTrackTitle")
   if trackTitle then pcall(trackTitle.Hide, trackTitle) end
+
+  DressModernWow({ listPanel, detailPanel }, { abandon, push, exit })
 
   -- Keep the modern Quest Log's controls explicitly above the shared low-level
   -- drag strip because several of them occupy that same header area.
@@ -733,8 +1169,6 @@ local function BuildFrame()
       headerControlOffsets[collapseAll.uuiCollapseIcon] = 2
     end
   end
-  if levelToggle then table.insert(headerControls, levelToggle) end
-  if track then table.insert(headerControls, track) end
   U.MakeWindowDraggable("questlog", frame, {
     headerHeight = 48,
     headerLevelOffset = 1,
@@ -752,6 +1186,7 @@ local function BuildFrame()
       frame:SetPoint("TOPLEFT", UIParent, "TOPLEFT", 10, -104)
     end)
     ReapplyNativeStrip()
+    ResizeModernWowTexture()
   end)
   -- The native list update restores its own FontObjects after rendering rows.
   -- Reapply colours after that work so body text remains legible and headings
@@ -764,6 +1199,7 @@ local function BuildFrame()
   -- selected quest, and both helpers are idempotent, so a button that already
   -- carries its styling and hooks is skipped.
   U.PostHookGlobal("QuestLog_UpdateQuestDetails", function()
+    RaiseModernWowMoney()
     StyleQuestItems()
     ApplyQuestFonts()
   end)
@@ -877,12 +1313,26 @@ local function BeginTrackingRestore()
 end
 
 function QL:OnInit()
-  config = U.ModuleConfig("questlog", { showQuestLevels = false, trackedQuests = {} })
+  config = U.ModuleConfig("questlog", { trackedQuests = {} })
 end
 
 function QL:OnEnable()
   -- Quest tracking is feature state rather than chrome, so retain its restore
   -- path while leaving the client Quest Log visually untouched.
-  if not U.ThemeStyleUsesNativeChrome() then BuildFrame() end
+  if not U.ThemeStyleUsesNativeChrome() then
+    BuildFrame()
+  else
+    -- Native chrome (classic-wow) keeps the client's Quest Log, but reward
+    -- names still take their rarity colour, applied after the native detail
+    -- pass has populated the buttons. Colour only: no font, anchor or art.
+    U.PostHookGlobal("QuestLog_UpdateQuestDetails", function()
+      local maxItems = tonumber(G("MAX_NUM_ITEMS")) or 10
+      local i
+      for i = 1, maxItems do
+        U.ColorQuestRewardName(G("QuestLogItem" .. i),
+                               G("QuestLogItem" .. i .. "Name"), "log", i)
+      end
+    end)
+  end
   BeginTrackingRestore()
 end

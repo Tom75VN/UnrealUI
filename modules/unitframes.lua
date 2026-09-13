@@ -158,6 +158,7 @@ local SPECS = {
     labelKey = "MOVER_LABEL_TARGET",
     width = PRIMARY_WIDTH, health = 34, power = 10, gap = 0,
     healthTexture = true,
+    targetReactionName = true,
     healthLabels = { left = "healthdyn", right = "unitrev" },
     powerLabels = { left = "powerdyn" },
     default = { point = "BOTTOMLEFT", relativePoint = "BOTTOM", x = 75, y = 125 },
@@ -626,11 +627,26 @@ local function ReadUnit(frame)
 end
 
 -- The colour a unit's *name* is drawn in: class colour for players, reaction
--- colour for everything else.
-local function UnitNameColor(data)
+-- colour for everything else. The target frame opts into the relationship-only
+-- path so friendly players are green rather than class-coloured, and hostile
+-- reaction 3 is grouped with the other enemies instead of appearing orange.
+-- Exported because modern-wow draws the target name in its own header row.
+function U.UnitFrameNameColor(data, targetReactionName)
   local r, g, b
 
-  if data.isPlayer and data.class then
+  if targetReactionName then
+    if data.reaction then
+      local reaction = data.reaction
+      if reaction <= 3 then
+        reaction = 1
+      elseif reaction == 4 then
+        reaction = 4
+      else
+        reaction = 5
+      end
+      r, g, b = M.ReactionColor(reaction)
+    end
+  elseif data.isPlayer and data.class then
     r, g, b = M.ClassColor(data.class)
   elseif data.reaction then
     r, g, b = M.ReactionColor(data.reaction)
@@ -673,16 +689,17 @@ end
 
 -- Shared by StatusText's name/level tokens and the target frame's split
 -- name/level labels (BuildBarLabels), so both colour text identically.
-local function ColoredName(data, nameClassColor)
+local function ColoredName(data, nameClassColor, targetReactionName)
   local name, truncated = TruncateName(data.name)
   name = name or U.G("UNKNOWN") or "Unknown"
   if data.muted then
     return Hex(M.Unpack(M.color.textDim)) .. name, truncated
   end
-  local nr, ng, nb = UnitNameColor(data)
+  local nr, ng, nb = U.UnitFrameNameColor(data, targetReactionName)
   -- Party player names retain the full shared class colour instead of the
   -- muted pastel treatment, making classes easier to distinguish at a glance.
-  if not (nameClassColor and data.isPlayer and data.class) then
+  if not targetReactionName and
+     not (nameClassColor and data.isPlayer and data.class) then
     nr, ng, nb = PastelText(nr, ng, nb)
   end
   return Hex(nr, ng, nb) .. name, truncated
@@ -716,7 +733,8 @@ local function StatusText(frame, token)
   end
 
   if token == "unit" or token == "unitrev" or token == "name" then
-    local colored = ColoredName(data, frame.spec.nameClassColor)
+    local colored = ColoredName(data, frame.spec.nameClassColor,
+                                frame.spec.targetReactionName)
 
     if token == "name" then return colored end
 
@@ -724,6 +742,55 @@ local function StatusText(frame, token)
 
     if token == "unitrev" then return colored .. "  " .. level end
     return level .. "  " .. colored
+  end
+
+  -- Split readouts, added for modern-wow: the source interface puts a bare
+  -- percentage at one end of the bar and the absolute value at the other,
+  -- where UnrealUI's own "healthdyn"/"powerdyn" pack both into one string.
+  -- Kept as separate tokens rather than as a flag on those, so every existing
+  -- layout is untouched.
+  if token == "healthpct" or token == "powerpct" then
+    if data.connected == false then return "" end
+    if token == "healthpct" and data.isDead then return "" end
+
+    -- Only health carries a ready-made percentage (ReadHealth sets
+    -- data.healthPercent); power is stored as value and maximum, so the power
+    -- share is worked out here rather than adding a second stored field.
+    local pct
+    if token == "healthpct" then
+      pct = data.healthPercent
+    elseif type(data.powerMax) == "number" and data.powerMax > 0 then
+      pct = data.power / data.powerMax
+    end
+    if type(pct) ~= "number" then return "" end
+
+    local cr, cg, cb = M.Unpack(M.color.text)
+    if data.muted then cr, cg, cb = M.Unpack(M.color.textDim) end
+    return Hex(cr, cg, cb) .. math.ceil(pct * 100) .. "%"
+  end
+
+  if token == "healthval" then
+    if data.connected == false then
+      return Hex(M.Unpack(M.color.textDim)) .. U.L("UF_OFFLINE")
+    end
+    if data.isDead then return U.G("DEAD") or "Dead" end
+
+    local cr, cg, cb = M.Unpack(M.color.text)
+    if data.muted then cr, cg, cb = M.Unpack(M.color.textDim) end
+    -- A unit whose health is only known as a percentage has no absolute value
+    -- to print, so the percentage at the other end is the whole readout.
+    if data.healthIsPercent and not data.exactHealthMax then return "" end
+    return Hex(cr, cg, cb) .. Abbreviate(data.exactHealth or data.health)
+  end
+
+  if token == "powerval" then
+    if data.connected == false then return "" end
+    local value = data.exactPower or data.power
+    if type(value) ~= "number" then return "" end
+
+    local cr, cg, cb = M.Unpack(M.color.text)
+    if data.muted then cr, cg, cb = M.Unpack(M.color.textDim) end
+    return Hex(cr, cg, cb) .. Abbreviate(value)
   end
 
   if token == "healthdyn" then
@@ -1383,14 +1450,77 @@ local function BuildPortraitBox(parent, size, border)
   return box
 end
 
+-- Whether this session draws the flat class circle instead of a unit portrait.
+-- True only under modern-wow AND only when the client has no
+-- SetPortraitTexture: that theme's frame art is built around a portrait, and a
+-- ring with an empty hole in it reads as a bug rather than as a missing
+-- feature. Every other theme keeps the existing behaviour exactly -- no
+-- portrait at all on a client without the API.
+local function UsesClassPortrait()
+  if ResolveApiFn("SetPortraitTexture") then return false end
+  return type(U.GetActiveThemeStyle) == "function" and
+         U.GetActiveThemeStyle() == "modern-wow"
+end
+
 local function RefreshPortrait(frame)
   if frame.classicNative then return end
   local box = frame.portrait
   if not box or not box.icon then return end
 
   local setPortrait = ResolveApiFn("SetPortraitTexture")
-  if not setPortrait then return end
-  pcall(setPortrait, box.icon, frame.unit)
+  if setPortrait then
+    -- Repaint only when the unit behind the frame actually changes.
+    --
+    -- SetPortraitTexture renders the unit's LIVE model into the texture on
+    -- every call, so it returns a fresh snapshot each time rather than a fixed
+    -- portrait. RefreshFrame promotes anything that is not a health, power or
+    -- vitals update to a full refresh, so calling it from there repainted the
+    -- portrait several times a second and the model's idle animation showed
+    -- through as a visibly choppy, low-framerate picture.
+    --
+    -- The unit name is the key: it changes on every target switch and party
+    -- reshuffle, which is exactly when a repaint is wanted, and stays put for
+    -- the player. A nil key -- a frame with no unit yet -- always repaints, so
+    -- a portrait that was not ready at login still fills in.
+    -- The unit's model is not always loaded the first time this runs -- at
+    -- login the call returns a black texture -- so a single paint per unit is
+    -- not enough: caching that first result left the portrait black forever.
+    -- A small budget of repaints per unit settles on a real portrait and then
+    -- stops, which is the fixed picture wanted rather than a running animation.
+    local key = frame.data and frame.data.name or nil
+    local paints = frame.uuiPortraitPaints or 0
+    if key ~= frame.uuiPortraitKey then
+      paints = 0
+      frame.uuiPortraitKey = key
+    elseif paints >= 4 then
+      return
+    end
+
+    frame.uuiPortraitPaints = paints + 1
+    pcall(setPortrait, box.icon, frame.unit)
+    return
+  end
+
+  -- modern-wow's class-circle fallback, used only on a client with no
+  -- SetPortraitTexture. The cell comes from the shared media table;
+  -- modules/modernwow.lua owns everything else about how the box looks.
+  --
+  -- Gated on UnitIsPlayer the way DragonflightUI gates the same substitution
+  -- (modules/unit/player.lua, WORKING_SOURCE): a creature has no class, so a
+  -- class icon on an NPC target would be an invented one. Those draw nothing
+  -- and the ring frames the empty bed.
+  if not box.uuiClassPortrait then return end
+
+  local isPlayer = ApiTruth("UnitIsPlayer", frame.unit)
+  local token = isPlayer and frame.data and frame.data.class or nil
+  local cell = token and M.modernWow.classCell[token]
+  if not cell then
+    pcall(box.icon.SetTexture, box.icon, "")
+    pcall(box.icon.SetTexCoord, box.icon, 0, 1, 0, 1)
+    return
+  end
+  pcall(box.icon.SetTexture, box.icon, M.modernWow.texture.classPortraits)
+  pcall(box.icon.SetTexCoord, box.icon, cell[1], cell[2], cell[3], cell[4])
 end
 
 -- ---------------------------------------------------------------------------
@@ -1544,19 +1674,85 @@ end
 -- Interface\CharacterFrame\UI-StateIcon, gated on PLAYER_UPDATE_RESTING) as a
 -- WORKING_SOURCE fallback -- query_compat.py had zero evidence for either the
 -- texture or the event on this client. User confirmed in game it never drew.
--- Second attempt was unrealUI's own flat accent glyph, no client asset at all.
--- Now replaced by a user-supplied icon (media/rest-icon.tga, native 36x39).
--- TGA rather than PNG: this is a Vanilla-era client and
--- media/resize.tga is this addon's only other shipped custom
--- texture, so TGA is the one raster format already confirmed to render here
--- -- PNG support was never verified. Displayed 60% smaller than native size,
--- by request.
+-- Second attempt was unrealUI's own flat accent glyph, no client asset at all;
+-- the third was a static user-supplied icon. Modern now uses the same 42-cell
+-- resting-Z flipbook as modern-wow, while keeping this path's existing anchor
+-- on the compact frame. The sheet is copied into the shared media directory so
+-- modern does not read modern-wow's theme-owned media tree.
 -- IsResting() is unchanged -- that call IS documented for this client
 -- (documentation.json / global:Character:IsResting).
+--
+-- modern-wow does not use this icon at all: its playerfx surface draws a
+-- flipbook glyph over its own frame art instead, and BuildRestIcon below
+-- stands down when that surface is on. The two are alternatives, never both.
 -- ---------------------------------------------------------------------------
-local REST_ICON_SCALE = 0.4
-local REST_ICON_WIDTH = 36 * REST_ICON_SCALE
-local REST_ICON_HEIGHT = 39 * REST_ICON_SCALE
+UF.restIconFX = { updateId = "unitframes.resticon" }
+
+function UF.restIconFX.SetCell(frame, index)
+  local texture = frame and frame.restIconTexture
+  if not texture then return end
+
+  local cfg = M.unitFrame.restIconFX
+  local unit = cfg.cell / cfg.sheet
+  local column = math.mod(index - 1, cfg.columns)
+  local row = math.floor((index - 1) / cfg.columns)
+  pcall(texture.SetTexCoord, texture,
+        column * unit, (column + 1) * unit,
+        row * unit, (row + 1) * unit)
+end
+
+function UF.restIconFX.Now()
+  local getTime = ResolveApiFn("GetTime")
+  if not getTime then return nil end
+  local ok, value = pcall(getTime)
+  if not ok or type(value) ~= "number" then return nil end
+  return value
+end
+
+function UF.restIconFX.Stop(frame)
+  U.UnregisterUpdate(UF.restIconFX.updateId)
+  if not frame then return end
+  frame.restIconCell = 1
+  frame.restIconCellTime = 0
+  frame.restIconLastTick = nil
+  pcall(frame.restIcon.Hide, frame.restIcon)
+end
+
+function UF.restIconFX.Tick()
+  local frame = UF.restIconFX.frame
+  if not frame or not frame.restIconState then
+    UF.restIconFX.Stop(frame)
+    return
+  end
+
+  local now = UF.restIconFX.Now()
+  if not now then return end
+  local elapsed = now - (frame.restIconLastTick or now)
+  frame.restIconLastTick = now
+  if elapsed < 0 then elapsed = 0 end
+  if elapsed > 0.25 then elapsed = 0.25 end
+
+  local cfg = M.unitFrame.restIconFX
+  frame.restIconCellTime = (frame.restIconCellTime or 0) + elapsed
+  while frame.restIconCellTime >= cfg.interval do
+    frame.restIconCellTime = frame.restIconCellTime - cfg.interval
+    frame.restIconCell = (frame.restIconCell or 1) + 1
+    if frame.restIconCell > cfg.columns * cfg.rows then
+      frame.restIconCell = 1
+    end
+    UF.restIconFX.SetCell(frame, frame.restIconCell)
+  end
+end
+
+function UF.restIconFX.Start(frame)
+  UF.restIconFX.frame = frame
+  frame.restIconCell = 1
+  frame.restIconCellTime = 0
+  frame.restIconLastTick = UF.restIconFX.Now()
+  UF.restIconFX.SetCell(frame, frame.restIconCell)
+  pcall(frame.restIcon.Show, frame.restIcon)
+  U.RegisterUpdate(UF.restIconFX.updateId, 0, UF.restIconFX.Tick)
+end
 
 -- Same raised-child-layer guard as the classification icon and happiness
 -- badge: the health bar's fill is a sibling texture that changes size on every
@@ -1567,11 +1763,22 @@ local function BuildRestIcon(frame, health)
   -- player frame already carries the resting icon, and the party block reads
   -- as a roster of identical rows.
   if frame.spec.partyPlayer then return end
+  -- modern-wow draws its own resting glyph on this frame, over its own art
+  -- (modules/modernwow.lua, the playerfx surface). Two resting marks on one
+  -- frame is the failure here, so the shared one steps aside for it. Safe to
+  -- read at build time: modules/modernwow.lua is last in the TOC, so its chunk
+  -- has run long before this module builds a frame -- the same reason
+  -- U.ModernWowWantsPortrait can be asked here.
+  if type(U.ModernWowSurfaceEnabled) == "function" and
+     U.ModernWowSurfaceEnabled("playerfx") then
+    return
+  end
   if type(health.CreateTexture) ~= "function" then return end
 
+  local cfg = M.unitFrame.restIconFX
   local layer = CreateFrame("Frame", nil, frame)
-  layer:SetWidth(REST_ICON_WIDTH)
-  layer:SetHeight(REST_ICON_HEIGHT)
+  layer:SetWidth(cfg.size)
+  layer:SetHeight(cfg.size)
   -- Centred on the frame's top-left corner, by request: half the icon (its
   -- top-left quadrant) sits outside the frame, the rest overlaps it.
   layer:SetPoint("CENTER", frame, "TOPLEFT", 0, 0)
@@ -1582,11 +1789,13 @@ local function BuildRestIcon(frame, health)
 
   local icon = layer:CreateTexture(nil, "OVERLAY")
   icon:SetAllPoints(layer)
-  pcall(icon.SetTexture, icon, M.texture.restIcon)
+  pcall(icon.SetTexture, icon, M.texture.restingFlipbook)
 
   pcall(layer.Hide, layer)
   frame.restIcon = layer
+  frame.restIconTexture = icon
   frame.restIconState = false
+  UF.restIconFX.SetCell(frame, 1)
 end
 
 -- ---------------------------------------------------------------------------
@@ -1900,7 +2109,28 @@ local function BuildFrame(spec, parent)
   -- client without SetPortraitTexture drops the portrait rather than guessing
   -- at a replacement, and the frame is simply bars-only in that case.
   local portraitSize = FrameHeight(spec)
-  local hasPortrait = spec.portrait and ResolveApiFn("SetPortraitTexture") ~= nil
+  -- modern-wow reproduces an external interface down to its text layout, so it
+  -- rewrites the spec's label tokens before the frame is built. Done through a
+  -- hook rather than in the spec tables because those are shared with `modern`
+  -- and `classic-wow`, both of which are frozen. Absent under every other
+  -- theme, where the spec is used exactly as declared.
+  if type(U.ModernWowSpecOverride) == "function" then
+    U.ModernWowSpecOverride(spec)
+  end
+
+  -- Which frames want a portrait at all. Only the pet spec asks for one in
+  -- UnrealUI's own layout, so modern-wow -- whose frame art is built around a
+  -- portrait circle -- adds the rest through this predicate rather than by
+  -- editing the specs. The function is absent under any other theme and the
+  -- answer is then spec.portrait alone.
+  local wantsPortrait = spec.portrait
+  if not wantsPortrait and type(U.ModernWowWantsPortrait) == "function" then
+    wantsPortrait = U.ModernWowWantsPortrait(spec.id)
+  end
+
+  local classPortrait = UsesClassPortrait()
+  local hasPortrait = wantsPortrait and
+                      (ResolveApiFn("SetPortraitTexture") ~= nil or classPortrait)
   local barOffsetX = hasPortrait and (portraitSize - border) or 0
 
   frame:SetWidth(FrameWidth(spec) + barOffsetX)
@@ -1912,6 +2142,10 @@ local function BuildFrame(spec, parent)
   if hasPortrait then
     frame.portrait = BuildPortraitBox(frame, portraitSize, border)
     frame.portrait:SetPoint("TOPLEFT", frame, "TOPLEFT", 0, 0)
+    -- Marks the box for the class-circle path. modules/modernwow.lua reads
+    -- this to know the square chrome has to come off: the class art is a
+    -- circle, so the box's outline and fill would draw a square behind it.
+    frame.portrait.uuiClassPortrait = classPortrait or nil
     if spec.happiness then BuildHappinessIndicator(frame, border) end
   end
 
@@ -1989,10 +2223,11 @@ end
 -- and Druid Cat Form; the pfUI reference's separate paladin "reck" tracker is
 -- intentionally out of scope.
 --
--- Five equal pips use the ordered muted red-to-green palette from the intended
--- player-frame treatment when filled, with the existing empty tone otherwise.
--- The raised child layer sits immediately above the player frame, so it follows
--- the mover without changing the player's geometry.
+-- The flat themes use five equal pips with the ordered muted red-to-green
+-- palette. Modern WoW uses its own two-state circular atlas and mirrors the
+-- configured aura position: auras above put the circles below, and vice versa.
+-- Both treatments live on one raised child layer, so choosing the player or
+-- target frame follows that frame's mover without changing its geometry.
 -- ---------------------------------------------------------------------------
 local COMBO_MAX = 5
 -- The reference has a single dark 1px divider between each textured point.
@@ -2038,60 +2273,96 @@ local function BuildComboPoints(playerFrame, isDruid)
   local health = playerFrame and playerFrame.health
   if not health then return end
 
-  -- Match the outer box, including its one-pixel frame outline, rather than
-  -- the narrower inner health/power bar.
-  local width = FrameWidth(playerFrame.spec)
-  local inset = U.BorderSize()
-  local pipWidth = (width - inset * 2 - (COMBO_MAX - 1) * COMBO_GAP) / COMBO_MAX
-  local pipHeight = COMBO_HEIGHT - inset * 2
+  local modernWow = type(U.ModernWowSurfaceEnabled) == "function" and
+                    U.ModernWowSurfaceEnabled("unitframes") and
+                    M.modernWow and M.modernWow.combo
+  local width, pipWidth, pipHeight, inset
+  if modernWow then
+    -- The circular art follows the Modern WoW aura icon height. That makes the
+    -- opposite-side swap exact even when a saved aura size changes.
+    local auraSize = type(U.GetAuraSetting) == "function" and
+                     tonumber(U.GetAuraSetting("size")) or 24
+    local auraScale = tonumber(M.modernWow.aura and
+                                M.modernWow.aura.iconScale) or 1
+    pipHeight = auraSize * auraScale *
+                (tonumber(M.modernWow.combo.scale) or 1)
+    pipWidth = pipHeight * (tonumber(M.modernWow.combo.aspect) or 1)
+    width = COMBO_MAX * pipWidth +
+            (COMBO_MAX - 1) * (tonumber(M.modernWow.combo.gap) or 0)
+  else
+    -- Match the outer box, including its one-pixel frame outline, rather than
+    -- the narrower inner health/power bar.
+    width = FrameWidth(playerFrame.spec)
+    inset = U.BorderSize()
+    pipWidth = (width - inset * 2 -
+                (COMBO_MAX - 1) * COMBO_GAP) / COMBO_MAX
+    pipHeight = COMBO_HEIGHT - inset * 2
+  end
 
-  -- Same raised-child-layer trick as the targettarget health label: sits above
-  -- the player frame so the pips remain visible and move with it. Its bottom
-  -- edge meets the player's top edge exactly: no separating gap.
+  -- Same raised-child-layer trick as the targettarget health label. The flat
+  -- strip starts at the player's top edge; Modern WoW re-anchors this layer to
+  -- the opposite aura origin after the themed housing publishes its geometry.
   local layer = CreateFrame("Frame", nil, playerFrame)
   layer:SetWidth(width)
-  layer:SetHeight(COMBO_HEIGHT)
+  layer:SetHeight(modernWow and pipHeight or COMBO_HEIGHT)
   layer:SetPoint("BOTTOMLEFT", playerFrame, "TOPLEFT", 0, 0)
-  -- The layer's black fill is visible only through the one-pixel gutters,
-  -- giving every adjacent pair of points the reference's crisp separator.
-  local separators = layer:CreateTexture(nil, "BACKGROUND")
-  separators:SetTexture(M.texture.plain)
-  separators:SetAllPoints(layer)
-  U.SetColor(separators, 0, 0, 0, 1)
-  U.CreateBorder(layer, inset)
-  U.SetBorderColor(layer, 0, 0, 0, 1)
+  if not modernWow then
+    -- The layer's black fill is visible only through the one-pixel gutters,
+    -- giving every adjacent pair of points the reference's crisp separator.
+    local separators = layer:CreateTexture(nil, "BACKGROUND")
+    separators:SetTexture(M.texture.plain)
+    separators:SetAllPoints(layer)
+    U.SetColor(separators, 0, 0, 0, 1)
+    U.CreateBorder(layer, inset)
+    U.SetBorderColor(layer, 0, 0, 0, 1)
+  end
   local levelOk, level = pcall(health.GetFrameLevel, health)
   if levelOk and tonumber(level) then
     pcall(layer.SetFrameLevel, layer, level + 10)
   end
 
-  comboPips = { layer = layer, druid = isDruid and true or false }
+  comboPips = { layer = layer, druid = isDruid and true or false,
+                modernWow = modernWow and true or false }
   local i
   for i = 1, COMBO_MAX do
-    local pip = U.CreateStatusBar(layer, {
-      width = pipWidth,
-      height = pipHeight,
-      texture = M.texture.statusBar,
-      color = COMBO_EMPTY,
-      background = COMBO_EMPTY,
-    })
-    pip:SetPoint("TOPLEFT", layer, "TOPLEFT",
-                inset + (i - 1) * (pipWidth + COMBO_GAP), -inset)
+    local pip
+    if modernWow then
+      pip = layer:CreateTexture(nil, "ARTWORK")
+      pip:SetTexture(M.modernWow.texture.comboPoints)
+      pip:SetWidth(pipWidth)
+      pip:SetHeight(pipHeight)
+      local cell = M.modernWow.combo.inactive
+      pip:SetTexCoord(cell[1], cell[2], cell[3], cell[4])
+      pip:SetPoint("TOPLEFT", layer, "TOPLEFT",
+                   (i - 1) * (pipWidth + M.modernWow.combo.gap), 0)
+    else
+      pip = U.CreateStatusBar(layer, {
+        width = pipWidth,
+        height = pipHeight,
+        texture = M.texture.statusBar,
+        color = COMBO_EMPTY,
+        background = COMBO_EMPTY,
+      })
+      pip:SetPoint("TOPLEFT", layer, "TOPLEFT",
+                   inset + (i - 1) * (pipWidth + COMBO_GAP), -inset)
+    end
     comboPips[i] = pip
   end
 end
 
--- The strip covers the exact edge an aura row above a unit frame anchors to,
--- so a rogue's buffs -- and a druid's while in Cat Form -- would sit on top of
--- the pips. Publish the strip's height on whichever frame currently carries it
--- and clear it from the other; modules/auras.lua reads the field the same way
--- it reads the classic-chrome edge offsets, on every refresh pass, so the
--- druid's form change moves the row without an event of its own.
+-- The flat strip covers the edge an above-frame aura row uses, so publish its
+-- height on whichever frame currently carries it and clear the other. Modern
+-- WoW places its circles on the opposite edge and therefore publishes zero.
+-- modules/auras.lua reads the field on every refresh pass, so a druid's form
+-- change moves the flat row without an event of its own.
 local function UpdateComboAuraOffset()
   local onTarget = comboPips and comboPips.anchor == "target"
   local shown = comboPips and comboPips.layer and
                 comboPips.layer:IsShown() and true or false
-  local height = shown and COMBO_HEIGHT or 0
+  -- Modern WoW deliberately puts the circles on the side opposite the aura
+  -- rows, so those rows never need to be pushed away. The flat strip used by
+  -- the other themes still occupies the above-frame aura edge.
+  local height = shown and not comboPips.modernWow and COMBO_HEIGHT or 0
   if frames.player then
     frames.player.uuiAuraComboOffset = (not onTarget) and height or 0
   end
@@ -2108,6 +2379,59 @@ function U.ApplyComboPointAnchor(location)
   comboPips.anchor = location == "target" and "target" or "player"
   local anchor = comboPips.anchor == "target" and frames.target or frames.player
   if not anchor then return end
+
+  if comboPips.modernWow then
+    local token = M.modernWow.combo
+    local auraSize = type(U.GetAuraSetting) == "function" and
+                     tonumber(U.GetAuraSetting("size")) or 24
+    local auraScale = tonumber(anchor.uuiAuraLayout and
+                                anchor.uuiAuraLayout.iconScale) or
+                      tonumber(M.modernWow.aura and
+                               M.modernWow.aura.iconScale) or 1
+    local pipHeight = auraSize * auraScale * (tonumber(token.scale) or 1)
+    local pipWidth = pipHeight * (tonumber(token.aspect) or 1)
+    local gap = tonumber(token.gap) or 0
+    local layout = anchor.uuiAuraLayout
+    local aurasBelow = type(U.GetAuraSetting) == "function" and
+                       U.GetAuraSetting("belowFrame") and true or false
+
+    comboPips.layer:ClearAllPoints()
+    comboPips.layer:SetWidth(COMBO_MAX * pipWidth + (COMBO_MAX - 1) * gap)
+    comboPips.layer:SetHeight(pipHeight)
+    if layout and aurasBelow then
+      -- Auras below: reuse their above-frame origin for the combo row.
+      comboPips.layer:SetPoint("BOTTOMLEFT", anchor, "TOPLEFT",
+                               tonumber(layout.left) or 0,
+                               tonumber(layout.top) or 0)
+    elseif layout then
+      -- Auras above: reuse their below-frame origin for the combo row.
+      comboPips.layer:SetPoint("TOPLEFT", anchor, "TOPLEFT",
+                               tonumber(layout.belowLeft or layout.left) or 0,
+                               tonumber(layout.belowTop) or 0)
+    elseif aurasBelow then
+      comboPips.layer:SetPoint("BOTTOMLEFT", anchor, "TOPLEFT", 0, 0)
+    else
+      comboPips.layer:SetPoint("TOPLEFT", anchor, "BOTTOMLEFT", 0, 0)
+    end
+
+    local levelOk, level = pcall(anchor.GetFrameLevel, anchor)
+    if levelOk and tonumber(level) then
+      pcall(comboPips.layer.SetFrameLevel, comboPips.layer, level + 22)
+    end
+
+    local i
+    for i = 1, COMBO_MAX do
+      local pip = comboPips[i]
+      pip:SetWidth(pipWidth)
+      pip:SetHeight(pipHeight)
+      pip:ClearAllPoints()
+      pip:SetPoint("TOPLEFT", comboPips.layer, "TOPLEFT",
+                   (i - 1) * (pipWidth + gap), 0)
+    end
+
+    UpdateComboAuraOffset()
+    return
+  end
 
   -- FrameWidth includes the selected frame's outer outline, so the combo strip
   -- reaches precisely from edge to edge on either player or target.
@@ -2139,7 +2463,11 @@ local function SetComboPoints(count)
 
   local i
   for i = 1, COMBO_MAX do
-    if i <= count then
+    if comboPips.modernWow then
+      local cell = i <= count and M.modernWow.combo.active or
+                   M.modernWow.combo.inactive
+      comboPips[i]:SetTexCoord(cell[1], cell[2], cell[3], cell[4])
+    elseif i <= count then
       U.SetStatusBarColor(comboPips[i], M.Unpack(M.rogueCombo[i]))
     else
       U.SetStatusBarColor(comboPips[i], M.Unpack(COMBO_EMPTY))
@@ -2705,7 +3033,9 @@ local function ApplyBarLabels(frame, box, labels, mode)
   end
   if box.rightLabel and TokenNeedsRefresh(labels.right, mode) then
     if box.rightNameLabel and labels.right == "unitrev" then
-      local name, truncated = ColoredName(frame.data, frame.spec.nameClassColor)
+      local name, truncated = ColoredName(frame.data,
+                                          frame.spec.nameClassColor,
+                                          frame.spec.targetReactionName)
       SetLabelText(box.rightNameLabel, name)
       SetLabelText(box.rightLabel, ColoredLevel(frame.data))
       box.rightNameLabel:SetPoint("RIGHT", box.rightLabel, "LEFT",
@@ -2926,7 +3256,7 @@ local function ApplyRestIcon(frame)
   if not icon then return end
   if frame.classicNative then
     frame.restIconState = false
-    pcall(icon.Hide, icon)
+    UF.restIconFX.Stop(frame)
     return
   end
 
@@ -2936,16 +3266,16 @@ local function ApplyRestIcon(frame)
   frame.restIconState = resting
 
   if resting then
-    pcall(icon.Show, icon)
+    UF.restIconFX.Start(frame)
   else
-    pcall(icon.Hide, icon)
+    UF.restIconFX.Stop(frame)
   end
 end
 
 local function HideRestIcon(frame)
   if not frame.restIcon or frame.restIconState == false then return end
   frame.restIconState = false
-  pcall(frame.restIcon.Hide, frame.restIcon)
+  UF.restIconFX.Stop(frame)
 end
 
 local function ApplyLeaderIcon(frame)
@@ -3093,6 +3423,11 @@ local function RefreshFrame(frame, mode)
 
   if not exists then
     frame.data.initialised = false
+    -- Drop the cached portrait identity with the unit. The next unit to take
+    -- this frame repaints, even if it happens to share a name with the one
+    -- that just left.
+    frame.uuiPortraitKey = nil
+    frame.uuiPortraitPaints = nil
     classSkin.Hide(frame)
     HideClassificationIcon(frame)
     HideHappinessIndicator(frame)
@@ -3192,6 +3527,12 @@ local function RefreshFrame(frame, mode)
     textMode = "power"
   end
   if textMode then ApplyTexts(frame, textMode) end
+  -- modern-wow's name/level row, which lives above the health bar and so has
+  -- no slot in this module's label system. One call, only while that theme is
+  -- loaded, and it reads frame.data rather than the client.
+  if textMode and type(U.ModernWowRefreshHeader) == "function" then
+    U.ModernWowRefreshHeader(frame)
+  end
   -- Before the icon, not after: ApplyClassificationIcon reads the skin state
   -- this sets to decide whether the icon is still the thing showing the tier.
   if mode == "full" then classSkin.Apply(frame) end
@@ -3885,7 +4226,9 @@ LayoutParty = function(force)
   if not force and shape == partyLayoutShape then return end
   partyLayoutShape = shape
 
-  local offset, width = 0, 0
+  -- `lastHeight` is the declared height of the row that ends the block, kept
+  -- so the anchor can be given the block's DRAWN extent below.
+  local offset, width, lastHeight = 0, 0, 0
 
   -- The player's row first, so the members below it keep their own order. It
   -- carries no pet row of its own: the player's pet already has a frame and a
@@ -3897,6 +4240,7 @@ LayoutParty = function(force)
       playerRow:ClearAllPoints()
       playerRow:SetPoint("TOPLEFT", anchor, "TOPLEFT", 0, 0)
       offset = FrameHeight(playerRow.spec)
+      lastHeight = FrameHeight(playerRow.spec)
       if FrameWidth(playerRow.spec) > width then
         width = FrameWidth(playerRow.spec)
       end
@@ -3916,6 +4260,7 @@ LayoutParty = function(force)
       member:ClearAllPoints()
       member:SetPoint("TOPLEFT", anchor, "TOPLEFT", 0, -offset)
       offset = offset + FrameHeight(member.spec)
+      lastHeight = FrameHeight(member.spec)
       if FrameWidth(member.spec) > width then width = FrameWidth(member.spec) end
     end
 
@@ -3928,6 +4273,7 @@ LayoutParty = function(force)
         pet:ClearAllPoints()
         pet:SetPoint("TOPLEFT", anchor, "TOPLEFT", 0, -(offset - border))
         offset = offset + FrameHeight(pet.spec) - border
+        lastHeight = FrameHeight(pet.spec)
         if FrameWidth(pet.spec) > width then width = FrameWidth(pet.spec) end
       else
         SetFrameShown(pet, false)
@@ -3935,8 +4281,41 @@ LayoutParty = function(force)
     end
   end
 
-  anchor:SetWidth(width > 0 and width or (PARTY_WIDTH + 2 * U.BorderSize()))
-  anchor:SetHeight(offset > 0 and offset or 1)
+  -- The anchor carries the party mover, so its rect has to be the block as
+  -- DRAWN: edit mode's handle and the magnet barrier are that rectangle, and a
+  -- rect that does not cover the block puts both somewhere the player cannot
+  -- see.
+  --
+  -- A theme may draw the rows at a scale of their own. `modern-wow` gives each
+  -- one a pixel-perfect own-scale times its 1.15 size trim (modules/
+  -- modernwow.lua, mw.units), and a frame's own scale resizes it about its
+  -- anchor point without touching the offsets around it (core/mover.lua,
+  -- EntryScale, records the measurement). So each row is drawn `ratio` times
+  -- its declared size while the stacking offsets above are not, and the block
+  -- ends `ratio` times the last row's height below where that row starts.
+  --
+  -- The ratio is 1 in every theme that draws the rows at the anchor's own
+  -- scale, which leaves this arithmetic exactly as it was.
+  local reference = (player and playerRow) or frames["party1"]
+  local ratio = 1
+  if reference then
+    local rowOk, rowScale = pcall(reference.GetEffectiveScale, reference)
+    local anchorOk, anchorScale = pcall(anchor.GetEffectiveScale, anchor)
+    rowScale, anchorScale = tonumber(rowScale), tonumber(anchorScale)
+    if rowOk and anchorOk and rowScale and anchorScale and
+       rowScale > 0 and anchorScale > 0 then
+      ratio = rowScale / anchorScale
+    end
+  end
+
+  local height = offset
+  if height > 0 and lastHeight > 0 and ratio ~= 1 then
+    height = height - lastHeight + lastHeight * ratio
+  end
+
+  anchor:SetWidth((width > 0 and width or
+                   (PARTY_WIDTH + 2 * U.BorderSize())) * ratio)
+  anchor:SetHeight(height > 0 and height or 1)
 end
 
 -- Re-lays the block and refreshes the rows LayoutParty can switch on or off
@@ -3955,9 +4334,29 @@ local function ApplyPartyLayout()
   end
 end
 
+-- Re-measures the party block and re-sizes its anchor.
+--
+-- For a theme that scales the party rows after they were built: LayoutParty
+-- reads the rows' scale to size the anchor, and at build time that scale is
+-- still the frames' own. modules/modernwow.lua calls this once its unit
+-- surface has dressed and scaled the rows, so the party mover's rect, handle
+-- and magnet barrier end up over the block as drawn.
+function U.RelayoutPartyBlock()
+  if not frames[PARTY_ANCHOR] then return false end
+  LayoutParty(true)
+  return true
+end
+
 -- One settings path for both the Party Frames page and the contextual panel
 -- beside the party mover. Keeping the layout write here means either view
 -- stores, applies and publishes the new shape in the same order.
+-- The unit-frame id of the player's own row inside the party block, for the
+-- modules that draw on that row (modules/hots.lua). Exposed rather than copied,
+-- since "party0" is this file's own spelling of it.
+function U.PartyPlayerFrameId()
+  return PARTY_PLAYER_ID
+end
+
 function U.GetUnitFramePartySetting(key)
   if PARTY_DEFAULTS[key] == nil then return nil end
   return PartyConfig()[key] and true or false
@@ -4653,6 +5052,22 @@ function UF:OnEnable()
   U.RegisterUpdate("unitframes.refresh", 0.2, RefreshScheduledUnits)
 
   RefreshAll()
+
+  -- The Modern theme opts every owned unit-frame bar in after the initial
+  -- refresh, so the first real health/power change animates from a settled
+  -- value. modern-wow attaches later through its reload-bound `barfx` surface,
+  -- and Classic keeps the native bars untouched.
+  if not nativeChrome and type(U.GetActiveThemeStyle) == "function" and
+     U.GetActiveThemeStyle() == "modern" and
+     type(U.AttachStatusBarFX) == "function" then
+    for i = 1, table.getn(frameOrder) do
+      local frame = frames[frameOrder[i]]
+      if frame and frame.health then U.AttachStatusBarFX(frame.health.bar) end
+      if frame and frame.power then U.AttachStatusBarFX(frame.power.bar) end
+    end
+    if druidBar then U.AttachStatusBarFX(druidBar.bar) end
+  end
+
   U.Debug("unit frames built: " .. table.getn(frameOrder))
 end
 

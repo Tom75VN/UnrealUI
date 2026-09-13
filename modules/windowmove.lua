@@ -9,6 +9,12 @@
 -- undone before a header drag means anything, and unrealUI does not do that --
 -- modules/worldmap.lua leaves the native map's layout alone and only draws the
 -- zone level range beside the hovered zone name.
+--
+-- Modern WoW keeps NPC/service dialogs and the mailbox on the classic-wow
+-- native path (U.ThemeStyleUsesClassicInteractionChrome), so their Modern
+-- modules never build and never register a drag handle. Under that theme only
+-- the `interaction` entries are registered here; Friends, Spellbook, Talents
+-- and Quest Log are themed surfaces whose own modules own their drag handles.
 
 local U = UnrealUI
 local WM = U.RegisterModule("windowmove")
@@ -20,12 +26,13 @@ local WINDOWS = {
   -- TBC-shaped PlayerTalentFrame variant. Resolve whichever one was loaded.
   { id = "talents", frames = { "PlayerTalentFrame", "TalentFrame" } },
   { id = "questlog", frame = "QuestLogFrame" },
-  { id = "merchant", frame = "MerchantFrame" },
-  { id = "trainer", frame = "ClassTrainerFrame" },
-  { id = "gossip", frame = "GossipFrame" },
-  { id = "quest", frame = "QuestFrame" },
-  { id = "mail", frame = "MailFrame" },
+  { id = "merchant", frame = "MerchantFrame", interaction = true },
+  { id = "trainer", frame = "ClassTrainerFrame", interaction = true },
+  { id = "gossip", frame = "GossipFrame", interaction = true },
+  { id = "quest", frame = "QuestFrame", interaction = true },
+  { id = "mail", frame = "MailFrame", interaction = true },
 }
+local interactionOnly = false
 
 -- Several stock dialogs are created lazily on this client. Reuse the same
 -- documented opening events their Modern modules already trust, then stop
@@ -60,7 +67,7 @@ local function TryRegister()
   local i
   for i = 1, table.getn(WINDOWS) do
     local entry = WINDOWS[i]
-    if not entry.registered then
+    if not entry.registered and (entry.interaction or not interactionOnly) then
       local frame = ResolveFrame(entry)
       if frame then
         U.MakeWindowDraggable(entry.id, frame, { headerInset = 40 })
@@ -80,7 +87,8 @@ local function TryRegister()
 end
 
 function WM:OnEnable()
-  if not U.ThemeStyleUsesNativeChrome() then return end
+  if not U.ThemeStyleUsesClassicInteractionChrome() then return end
+  interactionOnly = not U.ThemeStyleUsesNativeChrome()
   if TryRegister() then return end
 
   listening = true

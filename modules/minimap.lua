@@ -1,13 +1,15 @@
 -- unrealUI :: modules/minimap.lua
 --
--- A settings button beside the native minimap, and a mover anchor so the
--- native minimap cluster can be dragged in unrealUI's edit mode.
+-- A settings button beside the minimap, and a mover anchor so the minimap
+-- cluster can be dragged in unrealUI's edit mode.
 --
--- The native minimap is kept as it is: no replacement, no reskin, no chrome
--- suppression. knowledge.json / minimap.render_pass_under_ordinary_frames says
--- the map surface is drawn in a special pass beneath ordinary frames, which is
--- also why the button is placed *outside* the map rather than over it -- an
--- ordinary frame on top of the map would cover it.
+-- The map surface and its behavior stay native. Under modern-wow only, the
+-- stock decorative ring, zone bed, zoom-button faces and mail art are replaced
+-- with that theme's authored textures, and the close button and clock are
+-- removed. knowledge.json /
+-- minimap.render_pass_under_ordinary_frames says the map surface is drawn in a
+-- special pass beneath ordinary frames, which is why the new shadow is alpha-
+-- only over the map and the settings button remains outside the ring.
 --
 -- The mover targets MinimapCluster rather than bare Minimap: behavior.json /
 -- minimap.context.frames.MinimapCluster confirms it holds the map's native
@@ -28,6 +30,222 @@ local BUTTON_SIZE = 24
 -- the button is dragged directly rather than through edit mode.
 local POSITION_ID = "minimapbutton"
 
+local modernWowMinimap = { dressed = false }
+
+local function ModernWow()
+  return U.GetActiveThemeStyle and
+         U.GetActiveThemeStyle() == "modern-wow"
+end
+
+-- The stock minimap ring on this client is not one dependable region:
+-- knowledge.json / minimap.native_chrome_requires_targeted_suppression and the
+-- working UnrealPfUI path both identify an oversized MinimapBackdrop plus the
+-- two named border regions. Strip only those exact decorative objects, before
+-- any addon art is attached; all native map behavior and status widgets stay.
+local BUTTON_ART = { "Normal", "Pushed", "Highlight", "Disabled" }
+
+-- Clears a native button's own state textures by direct getter/setter, never
+-- by a region walk (rules: region walks cannot match by identity here), then
+-- hides the button and drops its mouse input.
+local function ClearButtonArt(button)
+  if not button then return end
+  local i
+  for i = 1, table.getn(BUTTON_ART) do
+    local getter = button["Get" .. BUTTON_ART[i] .. "Texture"]
+    if type(getter) == "function" then
+      local ok, texture = pcall(getter, button)
+      if ok and texture then U.HideRegion(texture) end
+    end
+    local setter = button["Set" .. BUTTON_ART[i] .. "Texture"]
+    if type(setter) == "function" then pcall(setter, button, "") end
+  end
+  pcall(button.EnableMouse, button, false)
+  U.HideRegion(button)
+end
+
+local function HideStockChrome()
+  local backdrop = U.G("MinimapBackdrop")
+  if backdrop then U.StripTextures(backdrop) end
+  U.HideRegion(U.G("MinimapBorder"))
+  U.HideRegion(U.G("MinimapBorderTop"))
+
+  -- The close "X", the day/night clock and the native zone label. All four
+  -- globals were confirmed present on 2026-09-14 (user /script readback;
+  -- MinimapToggleButton and GameTimeFrame are MinimapCluster children). Hiding
+  -- the frames alone left both icons drawn: UnrealPfUI records that child
+  -- regions draw independently of their parent on this client, so each
+  -- button's own state art is cleared directly as well.
+  ClearButtonArt(U.G("MinimapToggleButton"))
+  ClearButtonArt(U.G("GameTimeFrame"))
+  U.HideRegion(U.G("GameTimeTexture"))
+  U.HideRegion(U.G("MinimapZoneText"))
+
+  -- knowledge.json / minimap.native_chrome_requires_targeted_suppression
+  -- (WORKING_SOURCE): a single Hide() does not keep this chrome off screen, so
+  -- the shared periodic suppression keeps them hidden afterwards.
+  U.SuppressNativeFrame({
+    "MinimapBorderTop",
+    "MinimapToggleButton",
+    "GameTimeFrame", "GameTimeTexture",
+    "MinimapZoneTextButton", "MinimapZoneText",
+  })
+end
+
+local function SetButtonTexture(button, methodName, path)
+  if not button or not path then return false end
+  local method = button[methodName]
+  if type(method) ~= "function" then return false end
+  return pcall(method, button, path)
+end
+
+local function DressZoomButton(button, normal, over, pushed, disabled)
+  if not button then return false end
+  SetButtonTexture(button, "SetNormalTexture", normal)
+  SetButtonTexture(button, "SetHighlightTexture", over)
+  SetButtonTexture(button, "SetPushedTexture", pushed)
+  SetButtonTexture(button, "SetDisabledTexture", disabled)
+  return true
+end
+
+-- Complete modern-wow drawing path. The imported layout is working-source
+-- evidence from DragonflightUI-Reforged; every client-owned object remains
+-- capability-checked because only MinimapZoomIn is named in official client
+-- documentation and the other exact globals are not runtime-verified here.
+local function DressModernWowMinimap()
+  if modernWowMinimap.dressed or not ModernWow() then return false end
+
+  local minimap = U.G("Minimap")
+  local art = M.modernWow and M.modernWow.texture
+  local layout = M.modernWow and M.modernWow.minimap
+  if not minimap or not art or not layout then return false end
+
+  HideStockChrome()
+
+  local border = minimap:CreateTexture(nil, "OVERLAY")
+  border:SetTexture(art.minimapBorder)
+  border:SetPoint("TOPLEFT", minimap, "TOPLEFT",
+    -layout.borderOffset, layout.borderOffset)
+  border:SetPoint("BOTTOMRIGHT", minimap, "BOTTOMRIGHT",
+    layout.borderOffset, -layout.borderOffset)
+
+  local shadow = minimap:CreateTexture(nil, "BORDER")
+  shadow:SetTexture(art.minimapShadow)
+  shadow:SetPoint("TOPLEFT", minimap, "TOPLEFT",
+    -layout.borderOffset, layout.borderOffset)
+  shadow:SetPoint("BOTTOMRIGHT", minimap, "BOTTOMRIGHT",
+    layout.borderOffset, -layout.borderOffset)
+  shadow:SetAlpha(layout.shadowAlpha)
+
+  local panel = CreateFrame("Frame", "UnrealUIModernWowMinimapTopPanel", minimap)
+  local width = 140
+  local ok, liveWidth = pcall(minimap.GetWidth, minimap)
+  if ok and type(liveWidth) == "number" and liveWidth > 0 then width = liveWidth end
+  panel:SetWidth(width)
+  panel:SetHeight(layout.topPanelHeight)
+  panel:SetPoint("BOTTOM", minimap, "TOP", 0, layout.topPanelGap)
+
+  local panelArt = panel:CreateTexture(nil, "BACKGROUND")
+  panelArt:SetTexture(art.minimapTopPanel)
+  -- One anchor plus explicit size: the stretched two-point form did not
+  -- visibly change the height in game (2026-09-14).
+  panelArt:SetPoint("BOTTOMLEFT", panel, "BOTTOMLEFT",
+    0, -layout.topPanelBottomOverhang)
+  panelArt:SetWidth(width + layout.topPanelRightOverhang)
+  panelArt:SetHeight(layout.topPanelArtHeight)
+
+  -- The zone name is an addon-owned label on the panel art. Reparenting the
+  -- native MinimapZoneTextButton did not take on this client (2026-09-14: it
+  -- was still a MinimapCluster child afterwards), so the native label is
+  -- suppressed in HideStockChrome and this one reads GetMinimapZoneText
+  -- (DOCUMENTED_NOT_RUNTIME_VERIFIED) -- the same source UnrealPfUI's working
+  -- zone panel uses. No zone event is verified here, so a throttled refresh
+  -- is the guarantee and the events are only a faster path.
+  local zoneLabel = U.CreateLabel(panel, {
+    name = "UnrealUIModernWowMinimapZoneText",
+    inherits = "GameFontNormal",
+    size = M.fontSize.normal,
+    color = layout.zoneColor,
+    justify = "CENTER",
+    width = width - layout.zoneX * 2,
+  })
+  if zoneLabel then
+    -- Vertically centre on the art's visible band, derived from the measured
+    -- texel rows and the art's drawn height.
+    local artHeight = layout.topPanelArtHeight
+    local bandCentreFromBottom = artHeight * (1 -
+      (layout.topPanelVisibleTop + layout.topPanelVisibleBottom) /
+      (2 * layout.topPanelTexHeight))
+    local artWidth = width + layout.topPanelRightOverhang
+    local bandCentreX = artWidth *
+      (layout.topPanelVisibleLeft + layout.topPanelVisibleRight) /
+      (2 * layout.topPanelTexWidth)
+    pcall(zoneLabel.SetPoint, zoneLabel, "CENTER", panel, "BOTTOMLEFT",
+      bandCentreX,
+      bandCentreFromBottom - layout.topPanelBottomOverhang + layout.zoneY)
+
+    local lastZone
+    local function RefreshZone()
+      if type(GetMinimapZoneText) ~= "function" then return end
+      local ok, zone = pcall(GetMinimapZoneText)
+      if not ok or type(zone) ~= "string" or zone == lastZone then return end
+      lastZone = zone
+      pcall(zoneLabel.SetText, zoneLabel, zone)
+    end
+    RefreshZone()
+    U.RegisterEvent("PLAYER_ENTERING_WORLD", RefreshZone)
+    U.RegisterEvent("ZONE_CHANGED", RefreshZone)
+    U.RegisterEvent("ZONE_CHANGED_INDOORS", RefreshZone)
+    U.RegisterEvent("ZONE_CHANGED_NEW_AREA", RefreshZone)
+    U.RegisterUpdate("minimap.modernwow.zone", layout.zoneRefresh, RefreshZone)
+    modernWowMinimap.zoneLabel = zoneLabel
+  end
+
+  local zoomIn = U.G("MinimapZoomIn")
+  if zoomIn then
+    pcall(zoomIn.SetParent, zoomIn, minimap)
+    pcall(zoomIn.ClearAllPoints, zoomIn)
+    pcall(zoomIn.SetPoint, zoomIn, "TOPLEFT", minimap, "BOTTOMRIGHT",
+      layout.zoomX, layout.zoomY)
+    pcall(zoomIn.SetScale, zoomIn, layout.zoomScale)
+    DressZoomButton(zoomIn, art.minimapZoomIn, art.minimapZoomInOver,
+      art.minimapZoomInPush, art.minimapZoomInOff)
+  end
+
+  local zoomOut = U.G("MinimapZoomOut")
+  if zoomOut then
+    pcall(zoomOut.SetParent, zoomOut, minimap)
+    pcall(zoomOut.ClearAllPoints, zoomOut)
+    if zoomIn then
+      pcall(zoomOut.SetPoint, zoomOut, "TOPRIGHT", zoomIn, "BOTTOMLEFT", 0, 0)
+    else
+      pcall(zoomOut.SetPoint, zoomOut, "TOPLEFT", minimap, "BOTTOMRIGHT",
+        layout.zoomX, layout.zoomY - 29)
+    end
+    pcall(zoomOut.SetScale, zoomOut, layout.zoomScale)
+    DressZoomButton(zoomOut, art.minimapZoomOut, art.minimapZoomOutOver,
+      art.minimapZoomOutPush, art.minimapZoomOutOff)
+  end
+
+  local mailFrame = U.G("MiniMapMailFrame")
+  local mailIcon = U.G("MiniMapMailIcon")
+  if mailFrame and mailIcon then
+    pcall(mailFrame.ClearAllPoints, mailFrame)
+    pcall(mailFrame.SetPoint, mailFrame, "TOPLEFT", panel, "BOTTOMLEFT",
+      layout.mailX, layout.mailY)
+    pcall(mailIcon.SetTexture, mailIcon, art.minimapMail)
+    pcall(mailIcon.SetWidth, mailIcon, layout.mailSize)
+    pcall(mailIcon.SetHeight, mailIcon, layout.mailSize)
+    U.HideRegion(U.G("MiniMapMailBorder"))
+  end
+
+  modernWowMinimap.dressed = true
+  modernWowMinimap.border = border
+  modernWowMinimap.shadow = shadow
+  modernWowMinimap.topPanel = panel
+  U.Debug("modern-wow minimap chrome applied")
+  return true
+end
+
 -- Anchored to the map's left edge so it never lands on the map surface or on
 -- the stock chrome hanging off the right side -- unless the user has dragged
 -- the button, in which case the position they dropped it on is used instead.
@@ -43,7 +261,11 @@ local function AnchorButton(button)
 
   local minimap = U.G("Minimap")
   if minimap then
-    button:SetPoint("TOPRIGHT", minimap, "TOPLEFT", -6, 0)
+    local gap = 6
+    if modernWowMinimap.dressed then
+      gap = gap + M.modernWow.minimap.borderOffset
+    end
+    button:SetPoint("TOPRIGHT", minimap, "TOPLEFT", -gap, 0)
     return "Minimap"
   end
 
@@ -298,6 +520,8 @@ U.ApplyMinimapButton = Apply
 
 function MM:OnEnable()
   if self.button then return end
+
+  DressModernWowMinimap()
 
   local button = U.CreateButton(UIParent, {
     name = "UnrealUISettingsButton",

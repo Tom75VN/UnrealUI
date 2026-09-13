@@ -52,6 +52,7 @@ local QUEST_ROW_TEXTURES = {
 }
 
 local frame, panel
+local useModernWow = false
 
 local function G(name)
   return U.G(name)
@@ -74,6 +75,18 @@ end
 -- SetTextColor. See U.ForceStockTextWhite in core/stockui.lua.
 local function ForceWhiteText(object)
   U.ForceStockTextWhite(object, WHITE, M.fontSize.normal)
+end
+
+-- The portrait is meaningful NPC content, not frame chrome.  Keep it out of
+-- the destructive texture strip so both the flat and Modern WoW drawing paths
+-- can crop/place the live portrait after each native refresh.
+local function StripFrameChrome()
+  local portrait = G("QuestFramePortrait")
+  if portrait then
+    U.StripStockTextures(frame, { keep = { [portrait] = true } })
+  else
+    U.StripStockTextures(frame)
+  end
 end
 
 -- Match questlog.lua's reliable path: address the known stock content strings
@@ -436,6 +449,52 @@ local function StyleTitleRows()
   end
 end
 
+-- Modern WoW keeps the same verified row-state detection and the same three
+-- quest-marker textures, but gives the labels the warmer retail hierarchy:
+-- available/complete are quest gold and an accepted, unfinished quest follows
+-- ActiveQuestIcon's cool grey.  This is a complete theme pass after the common
+-- white-row styling, so the `modern` path above remains unchanged.
+local function StyleModernWowTitleRows()
+  if not useModernWow then return end
+
+  local token = M.modernWow.npcDialog
+  local colors = token and token.questState
+  if not colors then return end
+
+  local rows = tonumber(G("MAX_NUM_QUESTS")) or 32
+  local i
+  for i = 1, rows do
+    local rowIndex = i
+    local button = G("QuestTitleButton" .. rowIndex)
+    if button then
+      local function PaintRow(hovered)
+        local fontOk, fontstring = false, nil
+        if button.GetFontString then
+          fontOk, fontstring = pcall(button.GetFontString, button)
+        end
+        local nativeIcon = G("QuestTitleButton" .. rowIndex .. "QuestIcon")
+        local state = QuestRowState(button, nativeIcon,
+                                    fontOk and fontstring or nil)
+        local color = hovered and colors.hover or
+                      colors[state or "unknown"] or colors.unknown
+        if button.SetTextColor then
+          pcall(button.SetTextColor, button, color[1], color[2], color[3])
+        end
+        if fontOk and fontstring then
+          SetQuestFont(fontstring, M.fontSize.normal, color)
+        end
+      end
+
+      PaintRow(false)
+      if not button.uuiModernWowQuestHooks then
+        button.uuiModernWowQuestHooks = true
+        U.PostHookScript(button, "OnEnter", function() PaintRow(true) end)
+        U.PostHookScript(button, "OnLeave", function() PaintRow(false) end)
+      end
+    end
+  end
+end
+
 -- The client marks the chosen reward with QuestRewardItemHighlight, a stock
 -- gold UI-QuestItemHighlight box sized for the untouched native reward row
 -- (WORKING_SOURCE: UnrealPfUI's skins/blizzard/gossipquest.lua replaces the
@@ -627,6 +686,21 @@ end
 -- directly.  Do not maintain a second card layout here: it let the native
 -- accept-panel refresh leave reward icons on top of one another.
 local function StyleItemSlots()
+  -- Match the Modern WoW Quest Log exactly: keep the client's native item
+  -- cell, dimensions, icon placement and reward-selection highlight. Only the
+  -- behavior-only tooltip additions remain. This is especially important on
+  -- the grey-? progress panel, where required items must not turn into flat
+  -- UnrealUI cards inside the textured NPC window.
+  if useModernWow then
+    local p, i
+    for p = 1, table.getn(ITEM_PREFIXES) do
+      for i = 1, ITEMS_PER_PANEL do
+        HookRewardTooltip(G(ITEM_PREFIXES[p] .. i), ITEM_PREFIXES[p])
+      end
+    end
+    return
+  end
+
   StripRewardHighlight()
   hoveredReward = nil
 
@@ -724,6 +798,11 @@ local function StyleItemSlots()
 
         SetQuestFont(itemName, M.fontSize.normal, WHITE)
         SetQuestFont(count, M.fontSize.small, WHITE)
+        -- Rewards take their rarity colour over the white base. Required items
+        -- on the progress panel are not rewards and stay white.
+        if ITEM_PREFIXES[p] ~= "QuestProgressItem" then
+          U.ColorQuestRewardName(button, itemName, "giver", i)
+        end
 
         -- These anchors are deliberately identical to StyleQuestItems in the
         -- Quest Log: the icon occupies the left inset, the name is constrained
@@ -758,6 +837,24 @@ local function StyleHeader()
   end
 end
 
+local function ApplyModernWowDialog()
+  if useModernWow and type(U.ModernWowNpcDialog) == "function" then
+    U.ModernWowNpcDialog(frame, panel, G("QuestFramePortrait"),
+                         "QuestFrameCloseButton")
+  end
+  if useModernWow and type(U.ModernWowNpcActionButton) == "function" then
+    local i
+    for i = 1, table.getn(BUTTONS) do
+      U.ModernWowNpcActionButton(G(BUTTONS[i]))
+    end
+  end
+  if useModernWow and
+     type(U.ModernWowQuestProgressBarBackground) == "function" then
+    U.ModernWowQuestProgressBarBackground(
+      G("QuestProgressScrollFrameScrollBar"))
+  end
+end
+
 -- Strings that keep the `large` size after the uniform white pass flattens
 -- everything to `normal`. Colour is unchanged -- still the same white as the
 -- rest of the window -- this only restores hierarchy, matching how
@@ -782,7 +879,7 @@ local function ApplyTitleSizes()
 end
 
 local function Reapply()
-  U.StripStockTextures(frame)
+  StripFrameChrome()
   StripPanels()
   StyleHeader()
   ForceWhiteText(frame)
@@ -790,7 +887,9 @@ local function Reapply()
   ApplyTitleSizes()
   ApplySectionHeadingColors()
   StyleTitleRows()
+  StyleModernWowTitleRows()
   StyleItemSlots()
+  ApplyModernWowDialog()
 end
 
 -- Native quest handlers can continue assigning their FontObjects after panel
@@ -809,7 +908,7 @@ local function BuildFrame()
     return false
   end
 
-  U.StripStockTextures(frame)
+  StripFrameChrome()
 
   -- Content backdrop inset from the real frame bounds, using the same insets as
   -- modules/gossip.lua so the quest-giver and gossip windows are the same size
@@ -842,7 +941,11 @@ local function BuildFrame()
   local i
   for i = 1, table.getn(PANELS) do
     local name = PANELS[i]
-    U.StyleStockScrollbar(G("Quest" .. name .. "ScrollFrameScrollBar"))
+    -- Modern WoW preserves the client's native scrollbar atlas and state
+    -- machine; the flat themes keep the shared UnrealUI scrollbar treatment.
+    if not useModernWow then
+      U.StyleStockScrollbar(G("Quest" .. name .. "ScrollFrameScrollBar"))
+    end
 
     -- Each panel repaints its own parchment when the stock window switches to
     -- it, which happens without QuestFrame itself re-firing OnShow.
@@ -860,7 +963,9 @@ local function BuildFrame()
   ApplyTitleSizes()
   ApplySectionHeadingColors()
   StyleTitleRows()
+  StyleModernWowTitleRows()
   StyleItemSlots()
+  ApplyModernWowDialog()
 
   -- Native item rebuilds also restore their owning panels' FontObjects. Apply
   -- the complete pass after each native update, matching the Quest Log's
@@ -1016,15 +1121,45 @@ local function TryBuild()
   return false
 end
 
+-- Native-chrome reward rarity colour: the one visual change classic-wow makes
+-- to the stock quest frame, matching what StyleItemSlots gives the modern
+-- themes. Colour only -- no font, anchor or art is touched.
+local function ColorNativeRewardNames()
+  local p
+  for p = 1, table.getn(ITEM_PREFIXES) do
+    if ITEM_PREFIXES[p] ~= "QuestProgressItem" then
+      local i
+      for i = 1, ITEMS_PER_PANEL do
+        local name = ITEM_PREFIXES[p] .. i
+        U.ColorQuestRewardName(G(name), G(name .. "Name"), "giver", i)
+      end
+    end
+  end
+end
+
 function QF:OnEnable()
-  if U.ThemeStyleUsesNativeChrome() then
+  useModernWow = type(U.GetActiveThemeStyle) == "function" and
+                 U.GetActiveThemeStyle() == "modern-wow"
+  if U.ThemeStyleUsesClassicInteractionChrome() then
     -- The stock quest frame is left exactly as the client draws it. Only the
     -- reward price and equipped-item comparison are added, matching what the
-    -- modern themes get from StyleItemSlots.
+    -- modern themes get from StyleItemSlots, plus reward rarity colour.
     HookQuestRewards()
     local i
     for i = 1, table.getn(pendingEvents) do
       U.RegisterEvent(pendingEvents[i], HookQuestRewards)
+    end
+
+    -- Same post-native timing as ReapplyAfterNative: immediately, then once
+    -- more after the native refresh has settled.
+    local function colorAfterNative()
+      ColorNativeRewardNames()
+      U.DeferOnce("quest-reward-colors", ColorNativeRewardNames)
+    end
+    U.PostHookGlobal("QuestFrameItems_Update", colorAfterNative)
+    U.PostHookGlobal("QuestFrameRewardItems_Update", colorAfterNative)
+    for i = 1, table.getn(pendingEvents) do
+      U.RegisterEvent(pendingEvents[i], colorAfterNative)
     end
     return
   end

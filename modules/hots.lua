@@ -83,8 +83,11 @@
 -- Scope
 -- ---------------------------------------------------------------------------
 --
--- Party frames only, per request. The player's own frame is not included: a
--- HoT the player puts on themselves does not draw here.
+-- The party block only, per request -- including the player's own row inside
+-- it, so a HoT cast on yourself draws where the other four do. The standalone
+-- player frame is not included; when the party block's player row is turned off
+-- (modules/unitframes.lua PARTY_DEFAULTS.partyPlayer) or the player is not in a
+-- party, that row is hidden and its indicators hide with it.
 --
 -- The native radial is not an option and is not attempted: knowledge.json /
 -- cooldown.model_swipe_not_rendered (BROKEN, RUNTIME_FAILURE_CONFIRMED,
@@ -484,6 +487,22 @@ end
 local MAX_BUFF_SLOTS = 32
 local PARTY_COUNT = 4
 
+-- Every unit this module draws on, in one list, because the player's row breaks
+-- the assumption the rest of the module was written under: that a unit token
+-- and the unit-frame id it draws on are the same string. The player is read as
+-- "player" -- there is no party token for yourself -- and drawn on the party
+-- block's own player row, whose id modules/unitframes.lua owns.
+local DRAWN_UNITS = { "player" }
+for i = 1, PARTY_COUNT do
+  table.insert(DRAWN_UNITS, "party" .. i)
+end
+
+local function FrameIdFor(unit)
+  if unit ~= "player" then return unit end
+  if type(U.PartyPlayerFrameId) ~= "function" then return nil end
+  return U.PartyPlayerFrameId()
+end
+
 local units = {}          -- unit token -> { anchor, frame, icons }
 
 local function CreateIcon(holder, index)
@@ -547,8 +566,8 @@ end
 -- right-hand corner has a right edge to sit against. Re-read per placement
 -- because the bar's width is a frame the module does not own.
 local function SizeHolder(holder)
-  local okW, width = pcall(holder.bar.GetWidth, holder.bar)
-  local okH, height = pcall(holder.bar.GetHeight, holder.bar)
+  local okW, width = pcall(holder.host.GetWidth, holder.host)
+  local okH, height = pcall(holder.host.GetHeight, holder.host)
   width, height = okW and tonumber(width), okH and tonumber(height)
   if not width or width <= 0 or not height or height <= 0 then return false end
 
@@ -563,6 +582,19 @@ local function SizeHolder(holder)
   return true
 end
 
+-- Whether the active theme draws the HoT indicators beside the unit frame
+-- instead of inside its health bar. See M.modernWow.hot for why modern-wow
+-- does. Read once per holder at creation: selecting a theme takes effect only
+-- after a reload, so the answer cannot change while a holder lives.
+local function SideRow()
+  if type(U.GetActiveThemeStyle) ~= "function" then return false end
+  return U.GetActiveThemeStyle() == "modern-wow"
+end
+
+local function SideGap()
+  return tonumber(M.modernWow and M.modernWow.hot and M.modernWow.hot.gap) or 4
+end
+
 -- The single geometry path for both live icons and their edit-mode samples, so
 -- changing a corner or spacing value cannot make the preview disagree with the
 -- indicators it represents.
@@ -573,6 +605,25 @@ local function PlaceAtCorner(holder, object, slot, size, spacing)
   object:ClearAllPoints()
   object:SetWidth(size)
   object:SetHeight(size)
+
+  if holder.side then
+    -- A column outside the frame rather than a row inside the bar: the
+    -- corner's left/right half picks which side of the frame it sits on, its
+    -- top/bottom half which end it grows from. Spacing still separates the
+    -- icons, now vertically.
+    local gap = SideGap()
+    if corner == "TOPRIGHT" then
+      object:SetPoint("TOPLEFT", holder.frame, "TOPRIGHT", gap, -step)
+    elseif corner == "BOTTOMRIGHT" then
+      object:SetPoint("BOTTOMLEFT", holder.frame, "BOTTOMRIGHT", gap, step)
+    elseif corner == "BOTTOMLEFT" then
+      object:SetPoint("BOTTOMRIGHT", holder.frame, "BOTTOMLEFT", -gap, step)
+    else
+      object:SetPoint("TOPRIGHT", holder.frame, "TOPLEFT", -gap, -step)
+    end
+    return
+  end
+
   if corner == "TOPRIGHT" then
     object:SetPoint("TOPRIGHT", holder.frame, "TOPRIGHT", -step, 0)
   elseif corner == "BOTTOMLEFT" then
@@ -654,25 +705,38 @@ local function Holder(unit)
   local holder = units[unit]
   if holder then return holder end
 
-  local anchor = U.GetUnitFrame(unit)
+  local frameId = FrameIdFor(unit)
+  local anchor = frameId and U.GetUnitFrame(frameId)
   if not anchor or not anchor.health or not anchor.health.bar then return nil end
 
-  -- Parented to the health bar itself, not the bar's box, so the icons sit
-  -- inside the unit frame outline instead of on top of it.
+  -- What the row is measured against and hangs from.
+  --
+  --   * On the bar: parented to the health bar itself, not the bar's box, so
+  --     the icons sit inside the unit frame outline instead of on top of it.
+  --   * Beside the frame (SideRow): parented to the unit frame, because the
+  --     column is anchored to the frame's own outer edge and the bar says
+  --     nothing about where that is.
+  --
+  -- Both are UnrealUI-owned frames; no native widget is retained here.
+  local side = SideRow()
   local bar = anchor.health.bar
-  local frame = CreateFrame("Frame", "UnrealUIHotRow" .. unit, bar)
-  local levelOk, level = pcall(bar.GetFrameLevel, bar)
-  if levelOk and tonumber(level) then
-    pcall(frame.SetFrameLevel, frame, level + 6)
-  end
-  -- Same caution as the overlay above: sized from the bar's own numbers and
-  -- anchored at one corner, rather than trusting SetAllPoints to resize a frame
-  -- on this client. The two right-hand corner options anchor against this
-  -- frame's right edge, so a frame that reports zero width would stack every
-  -- icon on the bar's left edge whatever corner was chosen.
-  frame:SetPoint("TOPLEFT", bar, "TOPLEFT", 0, 0)
+  local host = side and anchor or bar
 
-  holder = { unit = unit, anchor = anchor, frame = frame, bar = bar, icons = {} }
+  local frame = CreateFrame("Frame", "UnrealUIHotRow" .. unit, host)
+  local levelOk, level = pcall(host.GetFrameLevel, host)
+  if levelOk and tonumber(level) then
+    -- +21 clears the housing rim overlay modern-wow draws at +20 over the same
+    -- frame; +6 is the bar-local ordering the on-bar row has always used.
+    pcall(frame.SetFrameLevel, frame, level + (side and 21 or 6))
+  end
+  -- Same caution as the overlay above: sized from the host's own numbers and
+  -- anchored at one corner, rather than trusting SetAllPoints to resize a frame
+  -- on this client. Every placement anchors against one of this frame's edges,
+  -- so a frame that reported zero size would stack every icon in one spot.
+  frame:SetPoint("TOPLEFT", host, "TOPLEFT", 0, 0)
+
+  holder = { unit = unit, anchor = anchor, frame = frame, bar = bar,
+             host = host, side = side, icons = {} }
   units[unit] = holder
   return holder
 end
@@ -861,8 +925,8 @@ end
 -- The party token currently holding this character, or nil.
 local function PartyUnitFor(name)
   local i
-  for i = 1, PARTY_COUNT do
-    local unit = "party" .. i
+  for i = 1, table.getn(DRAWN_UNITS) do
+    local unit = DRAWN_UNITS[i]
     if Call("UnitName", unit) == name then return unit end
   end
   return nil
@@ -906,8 +970,8 @@ RefreshAll = function()
   CommitByPresence()
 
   local i
-  for i = 1, PARTY_COUNT do
-    ScanUnit("party" .. i)
+  for i = 1, table.getn(DRAWN_UNITS) do
+    ScanUnit(DRAWN_UNITS[i])
   end
 end
 
@@ -1009,8 +1073,8 @@ function U.HotDebugDump()
           "s since last cast signal (window " .. ADOPT_WINDOW .. "s)")
 
   local now = Now()
-  for i = 1, PARTY_COUNT do
-    local unit = "party" .. i
+  for i = 1, table.getn(DRAWN_UNITS) do
+    local unit = DRAWN_UNITS[i]
     local name = Call("UnitName", unit)
     if not Call("UnitExists", unit) then
       U.Print("  " .. unit .. ": absent")
@@ -1231,7 +1295,8 @@ function H:OnEnable()
   end
 
   U.RegisterEvent("UNIT_AURA", function(event, unit)
-    if type(unit) == "string" and string.find(unit, "^party%d") then
+    if type(unit) ~= "string" then return end
+    if unit == "player" or string.find(unit, "^party%d") then
       ScanUnit(unit)
     end
   end)

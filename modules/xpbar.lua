@@ -25,6 +25,7 @@ local GAP = 3
 local WIDTH_LIMIT = { min = 160, max = 600, step = 10 }
 local HEIGHT_LIMIT = { min = 7, max = 30, step = 1 }
 local MOVER_ID = "xpbar.xp"
+local REP_MOVER_ID = "xpbar.reputation"
 local MOVER_CONTENT_WIDTH = 318
 local MOVER_SLIDER_WIDTH = 150
 local MOVER_SLIDER_COLUMN = 168
@@ -37,6 +38,137 @@ local COLOR_REP_EMPTY = { 0.35, 0.35, 0.35, 1.00 }
 local config
 local xpAnchor, xpBar, xpRestedBar, xpText
 local repAnchor, repBar
+local modernWow = { applied = false }
+
+-- ---------------------------------------------------------------------------
+-- modern-wow drawing path
+--
+-- DragonflightUI-Reforged's Xprep module is WORKING_SOURCE for this visual
+-- path. UnrealUI keeps ownership of its frames, values, tooltips and movers.
+-- DF's purple/blue palette is retained, with the blue fill drawn as the rested
+-- extension so the amount of rested XP remains visible.
+-- ---------------------------------------------------------------------------
+function modernWow.Enabled()
+  return type(U.GetActiveThemeStyle) == "function" and
+         U.GetActiveThemeStyle() == "modern-wow" and
+         type(U.ModernWowSurfaceEnabled) == "function" and
+         U.ModernWowSurfaceEnabled("xpbar") or false
+end
+
+function modernWow.StyleBar(bar, hasBackground)
+  if not bar then return end
+  U.SetStatusBarTexture(bar, M.modernWow.texture.xpFill)
+  if bar.uuiBackground then
+    bar.uuiBackground:SetTexture(hasBackground and M.texture.classicStatusBar or
+                                  M.texture.plain)
+    if hasBackground then
+      U.SetColor(bar.uuiBackground, M.Unpack(M.modernWow.xpbar.background))
+    else
+      U.SetColor(bar.uuiBackground, 0, 0, 0, 0)
+    end
+  end
+end
+
+function modernWow.CreateBorder(anchor, bar)
+  if not anchor or anchor.uuiModernWowBorder then return end
+
+  -- DF creates these on the StatusBar itself. Keeping them on UnrealUI's bar
+  -- frame likewise guarantees OVERLAY draws above that same frame's fill;
+  -- the former parent-anchor ownership let the child fill cover the border.
+  local left = bar:CreateTexture(nil, "OVERLAY")
+  left:SetTexture(M.modernWow.texture.xpBorder)
+  left:SetPoint("LEFT", anchor, "LEFT", -M.modernWow.xpbar.borderOverhang, 0)
+
+  local right = bar:CreateTexture(nil, "OVERLAY")
+  right:SetTexture(M.modernWow.texture.xpBorder)
+  right:SetPoint("RIGHT", anchor, "RIGHT", M.modernWow.xpbar.borderOverhang, 0)
+  right:SetTexCoord(1, 0, 0, 1)
+
+  anchor.uuiModernWowBorder = { left, right }
+end
+
+function modernWow.LayoutBorder(anchor)
+  local border = anchor and anchor.uuiModernWowBorder
+  if not border then return end
+  local width = (tonumber(anchor:GetWidth()) or WIDTH) / 2 +
+                M.modernWow.xpbar.borderWidthExtra
+  local height = (tonumber(anchor:GetHeight()) or HEIGHT) +
+                 M.modernWow.xpbar.borderHeightExtra
+  border[1]:SetWidth(width)
+  border[1]:SetHeight(height)
+  border[2]:SetWidth(width)
+  border[2]:SetHeight(height)
+end
+
+function modernWow.RefreshFillGeometry(bar)
+  if not bar or not bar.SetValue then return end
+  local value = bar.uuiValue
+  bar.uuiValue = nil
+  bar:SetValue(value or 0)
+end
+
+function modernWow.Layout()
+  if not modernWow.applied then return end
+  xpBar:ClearAllPoints()
+  xpBar:SetPoint("TOPLEFT", xpAnchor, "TOPLEFT", 0,
+                 M.modernWow.xpbar.fillTopOverhang)
+  xpBar:SetPoint("BOTTOMRIGHT", xpAnchor, "BOTTOMRIGHT", 0, 0)
+  xpRestedBar:ClearAllPoints()
+  xpRestedBar:SetPoint("TOPLEFT", xpAnchor, "TOPLEFT", 0,
+                       M.modernWow.xpbar.fillTopOverhang)
+  xpRestedBar:SetPoint("BOTTOMRIGHT", xpAnchor, "BOTTOMRIGHT", 0, 0)
+  repBar:ClearAllPoints()
+  repBar:SetPoint("TOPLEFT", repAnchor, "TOPLEFT", 0,
+                  M.modernWow.xpbar.fillTopOverhang)
+  repBar:SetPoint("BOTTOMRIGHT", repAnchor, "BOTTOMRIGHT", 0, 0)
+  modernWow.RefreshFillGeometry(xpBar)
+  modernWow.RefreshFillGeometry(xpRestedBar)
+  modernWow.RefreshFillGeometry(repBar)
+  modernWow.LayoutBorder(xpAnchor)
+  modernWow.LayoutBorder(repAnchor)
+end
+
+function modernWow.ApplyXPColor()
+  if not modernWow.applied then return end
+  U.SetStatusBarColor(xpBar, M.Unpack(M.modernWow.xpbar.xp))
+  U.SetStatusBarColor(xpRestedBar, M.Unpack(M.modernWow.xpbar.rested))
+end
+
+function modernWow.ApplyReputationColor(standingID)
+  if not modernWow.applied then return false end
+  local color = M.modernWow.xpbar.reputation[tonumber(standingID)] or
+                COLOR_REP_FALLBACK
+  U.SetStatusBarColor(repBar, M.Unpack(color))
+  return true
+end
+
+function modernWow.Apply()
+  if modernWow.applied then return true end
+  if not xpAnchor or not xpBar or not xpRestedBar or not repAnchor or not repBar then
+    return false
+  end
+
+  U.SetBackdropShown(xpAnchor, false)
+  U.SetBackdropShown(repAnchor, false)
+
+  xpBar:ClearAllPoints()
+  xpBar:SetAllPoints(xpAnchor)
+  xpRestedBar:ClearAllPoints()
+  xpRestedBar:SetAllPoints(xpAnchor)
+  repBar:ClearAllPoints()
+  repBar:SetAllPoints(repAnchor)
+
+  -- The bed belongs to the lower rested layer; the earned-XP layer must stay
+  -- transparent or its background covers the rested extension beneath it.
+  modernWow.StyleBar(xpBar, false)
+  modernWow.StyleBar(xpRestedBar, true)
+  modernWow.StyleBar(repBar, true)
+  modernWow.CreateBorder(xpAnchor, xpBar)
+  modernWow.CreateBorder(repAnchor, repBar)
+  modernWow.applied = true
+  modernWow.Layout()
+  return true
+end
 
 -- Session experience tracking for the tooltip's rate lines. Held on one table
 -- rather than as separate top-level locals (see the Lua local budget note in
@@ -72,6 +204,8 @@ local function EnsureConfig()
       repEnabled = true,
       width = WIDTH,
       height = HEIGHT,
+      repWidth = WIDTH,
+      repHeight = HEIGHT,
       showText = false,
     })
   end
@@ -98,6 +232,8 @@ function U.GetXPBarSetting(key)
   local cfg = EnsureConfig()
   if key == "width" then return ClampWidth(cfg.width) end
   if key == "height" then return ClampHeight(cfg.height) end
+  if key == "repWidth" then return ClampWidth(cfg.repWidth) end
+  if key == "repHeight" then return ClampHeight(cfg.repHeight) end
   if key == "showText" then return cfg.showText and true or false end
   return nil
 end
@@ -118,11 +254,18 @@ local function SetXPBarLayout(width, height)
   xpAnchor:SetWidth(width)
   xpAnchor:SetHeight(height)
   if xpText then xpText:SetWidth(width - 8) end
+  modernWow.Layout()
 end
 
 local function ApplyXPBarLayout()
   SetXPBarLayout(U.GetXPBarSetting("width"),
                  U.GetXPBarSetting("height"))
+  if repAnchor then
+    repAnchor:SetWidth(U.GetXPBarSetting("repWidth"))
+    repAnchor:SetHeight(U.GetXPBarSetting("repHeight"))
+    modernWow.Layout()
+    if not modernWow.applied then modernWow.RefreshFillGeometry(repBar) end
+  end
 end
 
 -- Used only by the mover sliders' live-input hook. The preview changes frame
@@ -134,6 +277,16 @@ local function PreviewXPBarLayout(key, value)
   SetXPBarLayout(width, height)
 end
 
+local function PreviewRepBarLayout(key, value)
+  if not repAnchor then return end
+  local width = key == "repWidth" and value or U.GetXPBarSetting("repWidth")
+  local height = key == "repHeight" and value or U.GetXPBarSetting("repHeight")
+  repAnchor:SetWidth(ClampWidth(width))
+  repAnchor:SetHeight(ClampHeight(height))
+  modernWow.Layout()
+  if not modernWow.applied then modernWow.RefreshFillGeometry(repBar) end
+end
+
 function U.SetXPBarSetting(key, value)
   local cfg = EnsureConfig()
   if key == "width" then
@@ -142,6 +295,12 @@ function U.SetXPBarSetting(key, value)
   elseif key == "height" then
     if not tonumber(value) then return false end
     cfg.height = ClampHeight(value)
+  elseif key == "repWidth" then
+    if not tonumber(value) then return false end
+    cfg.repWidth = ClampWidth(value)
+  elseif key == "repHeight" then
+    if not tonumber(value) then return false end
+    cfg.repHeight = ClampHeight(value)
   elseif key == "showText" then
     cfg.showText = value and true or false
   else
@@ -150,7 +309,8 @@ function U.SetXPBarSetting(key, value)
 
   U.ApplyXPBar()
   if type(U.RefreshMoverPanel) == "function" then
-    U.RefreshMoverPanel(MOVER_ID)
+    U.RefreshMoverPanel((key == "repWidth" or key == "repHeight") and
+                        REP_MOVER_ID or MOVER_ID)
   end
   return true
 end
@@ -461,12 +621,23 @@ local function Build()
   xpAnchor:SetScript("OnEnter", XPTooltipShow)
   xpAnchor:SetScript("OnLeave", XPTooltipHide)
 
+  local repWidth = U.GetXPBarSetting("repWidth")
+  local repHeight = U.GetXPBarSetting("repHeight")
   repAnchor, repBar = BuildBar("UnrealUIReputationBarAnchor",
-                              COLOR_REP_FALLBACK, WIDTH, HEIGHT)
+                              COLOR_REP_FALLBACK, repWidth, repHeight)
 
-  U.RegisterMover("xpbar.reputation", repAnchor, {
+  -- DF places the two bar centres 20 pixels apart. Its border art is taller
+  -- than either fill, so UnrealUI's ordinary HEIGHT + GAP spacing made the two
+  -- ornamental layers overlap. This is only the default: a player-moved bar
+  -- retains its saved position.
+  local repDefaultY = 66 - repHeight - GAP
+  if modernWow.Enabled() then
+    repDefaultY = 66 - M.modernWow.xpbar.barSeparation
+  end
+
+  U.RegisterMover(REP_MOVER_ID, repAnchor, {
     label = U.L("MOVER_LABEL_REP_BAR"),
-    default = { point = "BOTTOM", relativePoint = "BOTTOM", x = 0, y = 66 - HEIGHT - GAP },
+    default = { point = "BOTTOM", relativePoint = "BOTTOM", x = 0, y = repDefaultY },
     -- A disabled bar keeps its stored position but offers no drag handle in
     -- edit mode; see core/mover.lua / modules/microbar.lua.
     visible = function() return config and config.repEnabled end,
@@ -536,9 +707,15 @@ local function RefreshXP()
   if rested > 0 then
     SetBar(xpRestedBar, math.min(xp + rested, xpmax), xpmax)
     xpRestedBar:Show()
+  elseif modernWow.applied then
+    -- Keep the lower layer present as the dark bar bed while its zero-value
+    -- fill remains hidden. Hiding the frame would remove the background too.
+    SetBar(xpRestedBar, 0, 1)
+    xpRestedBar:Show()
   else
     xpRestedBar:Hide()
   end
+  modernWow.ApplyXPColor()
 end
 
 local function RefreshReputation()
@@ -582,11 +759,26 @@ local function RefreshReputation()
 
   local colors = U.G("FACTION_BAR_COLORS")
   local color = type(colors) == "table" and colors[standingID]
-  if color and color.r then
+  if modernWow.ApplyReputationColor(standingID) then
+    return
+  elseif color and color.r then
     U.SetStatusBarColor(repBar, (color.r + 0.3), (color.g + 0.3), (color.b + 0.3), 1)
   else
     U.SetStatusBarColor(repBar, M.Unpack(COLOR_REP_FALLBACK))
   end
+end
+
+-- Called by modules/modernwow.lua after xpbar's own OnEnable has built both
+-- bars. Idempotent so it is also safe if the surface registry reapplies it.
+function U.BuildModernWowXPBars()
+  if type(U.GetActiveThemeStyle) ~= "function" or
+     U.GetActiveThemeStyle() ~= "modern-wow" then return false end
+  if type(U.ModernWowSurfaceEnabled) == "function" and
+     not U.ModernWowSurfaceEnabled("xpbar") then return false end
+  if not modernWow.Apply() then return false end
+  RefreshXP()
+  RefreshReputation()
+  return true
 end
 
 -- Public so modules/settings.lua's General page can flip the checkbox without
@@ -662,6 +854,57 @@ local function BuildMoverPanel(frame, contentTop)
   return widgets, Refresh
 end
 
+local function BuildRepMoverPanel(frame, contentTop)
+  local pad = U.MoverPanelPad()
+  local widgets = {}
+
+  local function BeginResize()
+    if type(U.FreezeMoverPanel) == "function" then U.FreezeMoverPanel() end
+  end
+
+  local min, max, step = U.XPBarLimits("width")
+  local width = U.CreateSlider(frame, {
+    name = "UnrealUIRepBarMoverWidth",
+    text = U.L("XPBAR_WIDTH"),
+    width = MOVER_SLIDER_WIDTH,
+    boxWidth = 60,
+    min = min,
+    max = max,
+    step = step,
+    value = U.GetXPBarSetting("repWidth"),
+    onInputStart = BeginResize,
+    onInput = function(value) PreviewRepBarLayout("repWidth", value) end,
+    onChange = function(value) U.SetXPBarSetting("repWidth", value) end,
+  })
+  width.SetPoint("TOPLEFT", frame, "TOPLEFT", pad, contentTop)
+  table.insert(widgets, width)
+
+  min, max, step = U.XPBarLimits("height")
+  local height = U.CreateSlider(frame, {
+    name = "UnrealUIRepBarMoverHeight",
+    text = U.L("XPBAR_HEIGHT"),
+    width = MOVER_SLIDER_WIDTH,
+    boxWidth = 60,
+    min = min,
+    max = max,
+    step = step,
+    value = U.GetXPBarSetting("repHeight"),
+    onInputStart = BeginResize,
+    onInput = function(value) PreviewRepBarLayout("repHeight", value) end,
+    onChange = function(value) U.SetXPBarSetting("repHeight", value) end,
+  })
+  height.SetPoint("TOPLEFT", frame, "TOPLEFT",
+                  pad + MOVER_SLIDER_COLUMN, contentTop)
+  table.insert(widgets, height)
+
+  local function Refresh()
+    width.SetValue(U.GetXPBarSetting("repWidth"))
+    height.SetValue(U.GetXPBarSetting("repHeight"))
+  end
+
+  return widgets, Refresh
+end
+
 -- ---------------------------------------------------------------------------
 -- Registration
 -- ---------------------------------------------------------------------------
@@ -674,6 +917,14 @@ function XP:OnInit()
       height = 148,
       build = BuildMoverPanel,
       title = function() return U.L("MOVER_LABEL_XP_BAR") end,
+      preferVertical = true,
+    })
+    U.RegisterMoverPanel(REP_MOVER_ID, {
+      name = "UnrealUIRepBarMoverSettings",
+      width = MOVER_CONTENT_WIDTH + U.MoverPanelPad() * 2,
+      height = 92,
+      build = BuildRepMoverPanel,
+      title = function() return U.L("MOVER_LABEL_REP_BAR") end,
       preferVertical = true,
     })
   end

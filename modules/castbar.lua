@@ -332,6 +332,12 @@ end
 local delayCount = 0
 local delaySeconds = 0
 local lastIconSource = "none"
+-- The argument shape SPELLCAST_CHANNEL_START actually arrived with, reported
+-- by /uui check: this client has no capture for that event at all.
+local lastChannelShape = "none"
+-- What the player's running cast is: "cast", "channel" or "craft". Only a
+-- skin that installs uuiCastKind draws the difference (see ApplyCastKind).
+local castKind = "cast"
 
 -- Same shape as modules/actionbar.lua's helper: a global that is missing or
 -- differently shaped here returns nil rather than erroring.
@@ -341,6 +347,58 @@ local function Call(name, a, b)
   local ok, r1, r2 = pcall(fn, a, b)
   if not ok then return nil end
   return r1, r2
+end
+
+-- ---------------------------------------------------------------------------
+-- The action the player just pressed
+--
+-- A cast can reach this module with no spell name in it. SPELLCAST_START's
+-- shape is measured (name, ms), but SPELLCAST_CHANNEL_START has no capture at
+-- all on this client (knowledge.json / castbar.player_events_partial), and a
+-- channel that arrives as a duration with no name leaves the bar unnamed and
+-- its icon cell hidden -- which is exactly what an Arcane Missiles channel
+-- looked like. The same gap exists for a cast the spellbook cannot resolve at
+-- all, such as an item or a trinket proc.
+--
+-- UnrealPfUI's libs/libcast.lua fills that gap with a `lastcasttex` remembered
+-- from hooked CastSpell / UseContainerItem calls and used whenever its own
+-- spell data has no icon (WORKING_SOURCE). The hook route it uses does not
+-- exist here -- knowledge.json / hooks.no_global_hooksecurefunc -- but
+-- UnrealUI's own action-press fan-out does, and it is already how
+-- modules/hots.lua and modules/healpredict.lua identify an instant cast.
+--
+-- Only the slot and the time are kept. Resolving the slot costs a tooltip scan
+-- (U.ActionSlotSpellName), so it is done on demand, in the one case that needs
+-- it, rather than on every button press. The window keeps a press from being
+-- credited to a cast that starts seconds later.
+-- ---------------------------------------------------------------------------
+local PRESS_WINDOW = 1.5
+local pressedSlot, pressedAt = nil, 0
+
+local function RememberPress(slot)
+  pressedSlot = tonumber(slot)
+  pressedAt = GetTime()
+end
+
+-- The spell name and the action art of that press, or nothing once the window
+-- has passed. A macro slot deliberately answers no name (U.ActionSlotSpellName
+-- refuses one) but still answers its art, which is the icon the client itself
+-- draws on the button.
+local function PressedCast()
+  if not pressedSlot or (GetTime() - pressedAt) > PRESS_WINDOW then
+    return nil, nil
+  end
+
+  local name = nil
+  if type(U.ActionSlotSpellName) == "function" then
+    name = U.ActionSlotSpellName(pressedSlot)
+  end
+  if type(name) ~= "string" or name == "" then name = nil end
+
+  local art = Call("GetActionTexture", pressedSlot)
+  if type(art) ~= "string" or art == "" then art = nil end
+
+  return name, art
 end
 
 -- ---------------------------------------------------------------------------
@@ -513,6 +571,18 @@ local function ApplyIcon(name)
   local texture = SpellIcon(name)
   lastIconSource = texture and "spellbook" or "none"
 
+  -- Nothing in the book: an item, a trinket proc, or a cast whose event
+  -- carried no name to look up. The action just pressed carries the art the
+  -- client itself draws for it -- pfUI's `lastcasttex` fallback, through
+  -- UnrealUI's own press notification.
+  if not texture then
+    local _, art = PressedCast()
+    if art then
+      texture = art
+      lastIconSource = "action"
+    end
+  end
+
   if not texture then
     bar.showIcon = false
     return
@@ -665,7 +735,7 @@ local function ApplyPushback(seconds)
     if shown then
       bar.time:SetPoint("RIGHT", bar.pushback, "LEFT", -1, 0)
     else
-      bar.time:SetPoint("RIGHT", bar.bar, "RIGHT", -3, 0)
+      bar.time:SetPoint("RIGHT", bar.bar, "RIGHT", -3, bar.uuiTimeY or 0)
     end
   end
 
@@ -690,6 +760,14 @@ end
 local function ApplyUnitBarTint(widget)
   if not widget or not widget.bar or widget.uuiKeepNativeTint then return end
   U.SetStatusBarColor(widget.bar, M.Unpack(M.color.cast))
+end
+
+-- Optional skin hook: uuiCastKind(widget, kind) with "cast", "channel" or
+-- "craft", before the first fill write of a cast. modules/modernwow.lua uses
+-- it to swap the fill art; `modern` and `classic-wow` install nothing.
+local function ApplyCastKind(widget, kind)
+  if not widget or type(widget.uuiCastKind) ~= "function" then return end
+  pcall(widget.uuiCastKind, widget, kind)
 end
 
 local function ApplyUnitTimer(tracker, remaining)
@@ -732,10 +810,78 @@ local function SetCellsShown(shown)
   SetWidgetCellsShown(bar, shown)
 end
 
+-- ---------------------------------------------------------------------------
+-- Themed finish animation
+--
+-- What the end of a cast looks like belongs to the skin, not to this module.
+-- A widget may install three optional hooks:
+--
+--   uuiFinish(widget, kind)  -- "stop", "failed" or "interrupted"; returns how
+--                               many seconds the bar wants to stay on screen
+--   uuiFinishTick(widget)    -- once per tick while that time runs
+--   uuiFinishEnd(widget)     -- when it expires, to put the widget back
+--
+-- A widget that installs none of them behaves exactly as before: the bar is
+-- hidden the moment the cast ends, which is what `modern` and `classic-wow`
+-- do. modules/modernwow.lua installs all three, to reproduce
+-- DragonflightUI's fill-to-full, flash and fade under `modern-wow`.
+--
+-- The kind is the finishing event, which is why StopCast now takes it: only
+-- SPELLCAST_INTERRUPTED has a runtime capture on this client
+-- (knowledge.json / combat.ranged_autorepeat_interrupted_stop_is_not_a_player_stop),
+-- so an unrecognised or absent event still finishes the bar as a plain stop
+-- rather than leaving it up.
+-- ---------------------------------------------------------------------------
+local FINISH_KIND = {
+  SPELLCAST_STOP = "stop",
+  SPELLCAST_CHANNEL_STOP = "stop",
+  SPELLCAST_FAILED = "failed",
+  SPELLCAST_INTERRUPTED = "interrupted",
+}
+
+local function Finishing(widget)
+  if not widget or not widget.uuiFinishUntil then return false end
+  return GetTime() < widget.uuiFinishUntil
+end
+
+local function CancelFinish(widget)
+  if not widget or not widget.uuiFinishUntil then return end
+  widget.uuiFinishUntil = nil
+  if type(widget.uuiFinishEnd) == "function" then
+    pcall(widget.uuiFinishEnd, widget)
+  end
+  -- The tick runs per frame while anything is finishing; put it back on the
+  -- idle cadence as soon as the last animation is over.
+  if UpdateTickRate then UpdateTickRate() end
+end
+
+local function BeginFinish(widget, kind)
+  if not widget or not kind then return end
+  if type(widget.uuiFinish) ~= "function" then return end
+  local ok, hold = pcall(widget.uuiFinish, widget, kind)
+  hold = (ok and tonumber(hold)) or 0
+  if hold <= 0 then return end
+  widget.uuiFinishUntil = GetTime() + hold
+end
+
+-- True while the widget is still animating, so the caller leaves it alone.
+-- The expiry is handled here, once, on the tick that reaches it.
+local function FinishTick(widget)
+  if not widget or not widget.uuiFinishUntil then return false end
+  if GetTime() < widget.uuiFinishUntil then
+    if type(widget.uuiFinishTick) == "function" then
+      pcall(widget.uuiFinishTick, widget)
+    end
+    return true
+  end
+  CancelFinish(widget)
+  return false
+end
+
 local function UpdateUnitVisibility(tracker)
   local widget = tracker.bar
   if not widget then return end
-  local shown = tracker.casting or U.IsUnlocked()
+  local shown = tracker.casting or U.IsUnlocked() or Finishing(widget)
   if shown then
     if not widget:IsShown() then widget:Show() end
   else
@@ -748,6 +894,7 @@ local function ApplyUnitIdlePlaceholder(tracker)
   local widget = tracker.bar
   if not widget then return end
 
+  ApplyCastKind(widget, "cast")
   ApplyUnitBarTint(widget)
   pcall(widget.bar.SetMinMaxValues, widget.bar, 0, 1)
   SetUnitBarValue(widget, 0.4)
@@ -764,10 +911,11 @@ local function ApplyUnitIdlePlaceholder(tracker)
 end
 
 local function AnyCastActive()
-  if casting then return true end
+  if casting or Finishing(bar) then return true end
   local i
   for i = 1, table.getn(trackerOrder) do
-    if trackerOrder[i].casting then return true end
+    local tracker = trackerOrder[i]
+    if tracker.casting or Finishing(tracker.bar) then return true end
   end
   return false
 end
@@ -786,13 +934,16 @@ UpdateTickRate = function()
   U.RegisterUpdate("castbar.tick", interval, Tick)
 end
 
-local function StopUnitCast(tracker)
+-- `kind` is nil for a stop that is not the end of a cast -- the unit changed,
+-- or a new cast superseded this one -- and no finish animation is run for it.
+local function StopUnitCast(tracker, kind)
   if not tracker or not tracker.casting then return end
   tracker.casting = false
   tracker.caster = nil
   tracker.spell = nil
   tracker.startTime = nil
   tracker.duration = nil
+  BeginFinish(tracker.bar, kind)
   UpdateUnitVisibility(tracker)
   UpdateTickRate()
 end
@@ -810,6 +961,7 @@ local function StartUnitCast(tracker, eventName, caster, spell)
   -- A new start supersedes any earlier timer from the same named unit, even
   -- when the new spell is unknown and therefore cannot be drawn accurately.
   if tracker.casting then StopUnitCast(tracker) end
+  CancelFinish(tracker.bar)
   tracker.lastEvent = eventName
 
   -- The pet book is the accurate icon source for a pet cast; the shared table
@@ -832,6 +984,9 @@ local function StartUnitCast(tracker, eventName, caster, spell)
   tracker.lastTimeText = nil
   tracker.starts = tracker.starts + 1
 
+  -- Reconstructed from combat text, which names a spell and nothing about
+  -- whether it channels, so a unit cast is always drawn as a plain cast.
+  ApplyCastKind(tracker.bar, "cast")
   ApplyUnitBarTint(tracker.bar)
   pcall(tracker.bar.bar.SetMinMaxValues, tracker.bar.bar, 0,
         tracker.duration)
@@ -860,8 +1015,13 @@ end
 -- same reasoning as the unit frames' empty-unit shell: a frame that only
 -- exists while it has something to show could never be dragged into place.
 local function ApplyIdlePlaceholder()
+  castKind = "cast"
+  ApplyCastKind(bar, "cast")
   ApplyUnitBarTint(bar)
   pcall(bar.bar.SetMinMaxValues, bar.bar, 0, 1)
+  if type(U.ResetStatusBarFX) == "function" then
+    U.ResetStatusBarFX(bar.bar, 0.4)
+  end
   SetUnitBarValue(bar, 0.4)
   if bar.name then bar.name:SetText(U.L("MOVER_LABEL_CASTBAR")) end
   if bar.icon then pcall(bar.icon.SetTexture, bar.icon, FALLBACK_ICON) end
@@ -878,7 +1038,7 @@ end
 local function UpdateVisibility()
   -- No player bar under a native-chrome theme; the client draws that one.
   if not bar then return end
-  local shown = casting or U.IsUnlocked()
+  local shown = casting or U.IsUnlocked() or Finishing(bar)
   if shown then
     if not bar:IsShown() then bar:Show() end
   else
@@ -887,7 +1047,62 @@ local function UpdateVisibility()
   SetCellsShown(shown)
 end
 
-local function StartCast(name, castTimeMs)
+-- Trade-skill casts. SPELLCAST_START names the recipe and nothing marks it as
+-- a craft, so the name is matched against the trade-skill and craft lists.
+-- GetNumTradeSkills / GetTradeSkillInfo / GetNumCrafts / GetCraftInfo are only
+-- DOCUMENTED_NOT_RUNTIME_VERIFIED in query_compat.py; Call() turns a missing or
+-- failing one into nil, so an unconfirmed API only ever degrades a craft to
+-- the plain cast art. A closed window lists nothing and matches nothing.
+local CRAFT_LISTS = {
+  { count = "GetNumTradeSkills", info = "GetTradeSkillInfo" },
+  { count = "GetNumCrafts", info = "GetCraftInfo" },
+}
+
+local function IsCraftCast(name)
+  if type(name) ~= "string" or name == "" then return false end
+  local i, j
+  for i = 1, table.getn(CRAFT_LISTS) do
+    local list = CRAFT_LISTS[i]
+    local count = tonumber(Call(list.count)) or 0
+    for j = 1, count do
+      local recipe, rowType = Call(list.info, j)
+      if recipe == name and rowType ~= "header" then return true end
+    end
+  end
+  return false
+end
+
+-- Every player fill write. A skin that sets uuiDrainChannel draws a channel
+-- running down from full, as the Dragonflight channel bar does; everything
+-- else fills forward exactly as before. The drain is written as a reset, not
+-- a SetValue: core/statusbarfx.lua reads every falling value as damage and
+-- would spawn a cutout on each tick of a channel.
+local function ApplyPlayerProgress(elapsed)
+  if castKind ~= "channel" or not bar.uuiDrainChannel then
+    SetUnitBarValue(bar, elapsed)
+    return
+  end
+  local remaining = duration - elapsed
+  if remaining < 0 then remaining = 0 end
+  if type(U.ResetStatusBarFX) ~= "function" or
+     not U.ResetStatusBarFX(bar.bar, remaining) then
+    pcall(bar.bar.SetValue, bar.bar, remaining)
+  end
+  if bar.uuiUpdateSpark then bar.uuiUpdateSpark(bar) end
+end
+
+-- `kind` is "channel" from SPELLCAST_CHANNEL_START and nil otherwise; a nil
+-- kind is a craft when the name is a known recipe, else a plain cast.
+local function StartCast(name, castTimeMs, kind)
+  CancelFinish(bar)
+
+  -- A channel can arrive with a duration and no name (see the press note
+  -- above). The action the player just used is the only other thing that
+  -- knows which spell this is.
+  if type(name) ~= "string" or name == "" then
+    name = PressedCast()
+  end
+
   casting = true
   startTime = GetTime()
   duration = (tonumber(castTimeMs) or 0) / 1000
@@ -898,9 +1113,14 @@ local function StartCast(name, castTimeMs)
   delayCount, delaySeconds = 0, 0
   ApplyPushback(0)
 
+  castKind = kind or (IsCraftCast(name) and "craft") or "cast"
+  ApplyCastKind(bar, castKind)
   ApplyUnitBarTint(bar)
   pcall(bar.bar.SetMinMaxValues, bar.bar, 0, duration)
-  SetUnitBarValue(bar, 0)
+  if type(U.ResetStatusBarFX) == "function" then
+    U.ResetStatusBarFX(bar.bar, 0)
+  end
+  ApplyPlayerProgress(0)
   if bar.name then bar.name:SetText(tostring(name or "")) end
   ApplyIcon(name)
   lastTimeText = nil
@@ -930,13 +1150,16 @@ local function DelayCast(delayMs)
   -- showed on the next 0.1s tick would read as a stutter, not a rollback.
   local elapsed = GetTime() - startTime
   if elapsed < 0 then elapsed = 0 end
-  SetUnitBarValue(bar, elapsed)
+  ApplyPlayerProgress(elapsed)
   ApplyTimer(duration - elapsed)
 end
 
-local function StopCast()
+-- Receives the event name from U.RegisterEvent; the tick's own duration
+-- expiry calls it with none, which finishes the bar as a plain stop.
+local function StopCast(eventName)
   if not casting then return end
   casting = false
+  BeginFinish(bar, FINISH_KIND[eventName] or "stop")
   UpdateVisibility()
   UpdateTickRate()
 end
@@ -961,19 +1184,21 @@ Tick = function()
       else
         local unitElapsed = GetTime() - tracker.startTime
         if unitElapsed >= tracker.duration then
-          StopUnitCast(tracker)
+          StopUnitCast(tracker, "stop")
         else
           if unitElapsed < 0 then unitElapsed = 0 end
           SetUnitBarValue(tracker.bar, unitElapsed)
           ApplyUnitTimer(tracker, tracker.duration - unitElapsed)
         end
       end
-    elseif tracker.bar and tracker.bar:IsShown() then
+    elseif not FinishTick(tracker.bar) and tracker.bar and
+           tracker.bar:IsShown() then
       ApplyUnitIdlePlaceholder(tracker)
     end
   end
 
   if not casting then
+    if FinishTick(bar) then return end
     if bar and bar:IsShown() then ApplyIdlePlaceholder() end
     return
   end
@@ -990,7 +1215,7 @@ Tick = function()
   -- hand the fill a negative value.
   if elapsed < 0 then elapsed = 0 end
 
-  SetUnitBarValue(bar, elapsed)
+  ApplyPlayerProgress(elapsed)
   ApplyTimer(duration - elapsed)
 end
 
@@ -1207,9 +1432,20 @@ local function RegisterPlayerCastEvents()
 
   -- Reversed argument order from SPELLCAST_START -- see the header note on
   -- the channelled-cast evidence gap (castTimeMs first, name second, per
-  -- UnrealPfUI's libcast.lua:219).
-  U.RegisterEvent("SPELLCAST_CHANNEL_START", function(event, castTimeMs, name)
-    StartCast(name, castTimeMs)
+  -- UnrealPfUI's libcast.lua:219). Since that order is WORKING_SOURCE and not
+  -- measured here, the two are told apart by type instead of by position: the
+  -- number is the duration and the string is the name, whichever way round
+  -- this client sends them, and a payload carrying only a duration leaves the
+  -- name to the action press above. The shape actually received is recorded
+  -- for /uui check, so the gap can be closed from a real channel.
+  U.RegisterEvent("SPELLCAST_CHANNEL_START", function(event, a, b)
+    lastChannelShape = type(a) .. "/" .. type(b)
+
+    local castTimeMs, name
+    if tonumber(a) then castTimeMs, name = a, b else name, castTimeMs = a, b end
+    if type(name) ~= "string" then name = nil end
+
+    StartCast(name, castTimeMs, "channel")
   end)
 
   U.RegisterEvent("SPELLCAST_DELAYED", function(event, delayMs)
@@ -1227,6 +1463,11 @@ local function Build()
   -- anchor the two cells hang off, so each cell keeps its own outline the way
   -- the reference layout shows them.
   bar = BuildBarWidget("UnrealUICastBar", WIDTH)
+  if type(U.GetActiveThemeStyle) == "function" and
+     U.GetActiveThemeStyle() == "modern" and
+     type(U.AttachStatusBarFX) == "function" then
+    U.AttachStatusBarFX(bar.bar)
+  end
   bar:Hide()
   SetCellsShown(false)
 
@@ -2115,6 +2356,12 @@ function CB:OnEnable()
   RegisterPlayerCastEvents()
   RegisterUnitCastEvents()
 
+  -- modules/actionbar.lua announces every press just before it hands the slot
+  -- to UseAction; that is what lets a nameless channel still be identified.
+  if type(U.RegisterActionUsed) == "function" then
+    U.RegisterActionUsed(RememberPress)
+  end
+
   -- A new pet has a different name and a different spellbook, so the running
   -- bar and the cached pet icons both belong to the old one. The tick's own
   -- name check would catch the cast a frame later; this is just immediate.
@@ -2194,6 +2441,7 @@ function U.CastbarReport()
     duration = duration,
     remaining = casting and (duration - (GetTime() - startTime)) or nil,
     iconSource = lastIconSource,
+    channelShape = lastChannelShape,
     delays = delayCount,
     delaySeconds = delaySeconds,
     nativeSuppressed = nativeCastbarSuppressed,

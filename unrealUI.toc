@@ -2,7 +2,7 @@
 ## Title: |cffffffffUnreal |cfff5ae0aUI
 ## Notes: Unreal Azeroth native UI addon.
 ## Author: unrealUI
-## Version: 0.6.0
+## Version: 0.7.0
 ## X-License: MIT
 ## SavedVariables: UnrealUIDB, UnrealUIProfiles, UnrealUIDiagDB, UnrealUIPriceDB
 ## SavedVariablesPerCharacter: UnrealUIProfileDB, UnrealUIFavoriteDB, UnrealUIBankCountDB
@@ -54,6 +54,7 @@ core\weapons.lua
 core\config.lua
 core\style.lua
 core\easing.lua
+core\statusbarfx.lua
 core\itemslot.lua
 core\itemcategory.lua
 core\itemsort.lua
@@ -108,11 +109,29 @@ modules\stancebar.lua
 modules\rogue.lua
 modules\bagfavorites.lua
 modules\bags.lua
+
+# The HUD bag bar. Loaded after modules\bags.lua because it stands in for
+# it: it builds nothing at all unless that module is switched off, and it
+# reads the same persisted flag to decide.
+modules\bagbar.lua
 modules\bankcount.lua
 modules\bank.lua
 modules\status.lua
 modules\questlog.lua
+
+# The Classic WoW theme's two-page parchment Quest Log (classic-wow layout).
+# Loaded right after modules\questlog.lua because the two are the same
+# surface under different themes: that module builds nothing under native
+# chrome, this one builds nothing under anything else. Before
+# modules\windowmove.lua so the window is already at its extended size
+# when the drag header is measured.
+modules\questlogextended.lua
 modules\spellbook.lua
+
+# The Spellbook's modern-wow drawing path. Defines entry points only;
+# modules\spellbook.lua decides in its own OnEnable whether to call them, so
+# nothing here runs under any other theme.
+modules\spellbookmodernwow.lua
 modules\talents.lua
 modules\character.lua
 modules\friends.lua
@@ -122,3 +141,9 @@ modules\mail.lua
 modules\gossip.lua
 modules\quest.lua
 modules\windowmove.lua
+
+# The modern-wow theme's own drawing path. Last on purpose: it dresses
+# frames the modules above own, so every one of them has already been
+# built by the time its OnEnable runs. It returns immediately under any
+# other theme.
+modules\modernwow.lua

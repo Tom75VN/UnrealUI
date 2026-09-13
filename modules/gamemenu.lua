@@ -39,6 +39,20 @@ local uuiButton
 local bindButton
 local closeButton
 
+-- Layout metrics and drawing hooks for the non-native menu. Both start as the
+-- `modern` theme's; G:OnEnable swaps them once for Modern WoW (wowMenu).
+local metrics = {
+  frameWidth = FRAME_WIDTH,
+  buttonWidth = BUTTON_WIDTH,
+  buttonHeight = BUTTON_HEIGHT,
+  top = TOP_OFFSET,
+  bottom = BOTTOM_PADDING,
+  spacing = SPACING,
+  groupSpacing = GROUP_SPACING,
+}
+local skin = {}
+local wowMenu = {}
+
 local LABELS = {
   GameMenuButtonOptions = "Video",
   GameMenuButtonSoundOptions = "Sound",
@@ -189,15 +203,9 @@ end
 
 local function EnsureOwnButtons(frame)
   if not uuiButton then
-    uuiButton = U.CreateButton(frame, {
-      name = "UnrealUIGameMenuButton",
-      text = "|cffffffffUnreal|cfff5ae0aUI|r",
-      width = BUTTON_WIDTH,
-      height = BUTTON_HEIGHT,
-      background = { 0.025, 0.025, 0.025, 0.96 },
-      border = { 0.11, 0.11, 0.11, 1 },
-      onClick = function() OpenSettingsPanel(frame) end,
-    })
+    uuiButton = skin.OwnButton(frame, "UnrealUIGameMenuButton",
+      "|cffffffffUnreal|cfff5ae0aUI|r",
+      function() OpenSettingsPanel(frame) end, true)
     RaiseAbove(uuiButton, frame, 20)
   end
 
@@ -205,28 +213,16 @@ local function EnsureOwnButtons(frame)
   -- settings page, so it opens straight from here instead of through the
   -- settings window (which it would only have to close again).
   if not bindButton then
-    bindButton = U.CreateButton(frame, {
-      name = "UnrealUIGameMenuQuickBindButton",
-      text = U.L("SETTINGS_QUICKBIND"),
-      width = BUTTON_WIDTH,
-      height = BUTTON_HEIGHT,
-      background = { 0.025, 0.025, 0.025, 0.96 },
-      border = { 0.11, 0.11, 0.11, 1 },
-      onClick = function() OpenQuickBinding(frame) end,
-    })
+    bindButton = skin.OwnButton(frame, "UnrealUIGameMenuQuickBindButton",
+      U.L("SETTINGS_QUICKBIND"),
+      function() OpenQuickBinding(frame) end, true)
     RaiseAbove(bindButton, frame, 20)
   end
 
   if not closeButton then
-    closeButton = U.CreateButton(frame, {
-      name = "UnrealUIGameMenuCloseButton",
-      text = U.L("COMMON_CLOSE"),
-      width = BUTTON_WIDTH,
-      height = BUTTON_HEIGHT,
-      background = { 0.025, 0.025, 0.025, 0.96 },
-      border = { 0.11, 0.11, 0.11, 1 },
-      onClick = function() HideMenu(frame) end,
-    })
+    closeButton = skin.OwnButton(frame, "UnrealUIGameMenuCloseButton",
+      U.L("COMMON_CLOSE"),
+      function() HideMenu(frame) end)
     RaiseAbove(closeButton, frame, 20)
   end
 end
@@ -296,7 +292,7 @@ local function Layout(frame)
 
   local previous
   local previousGroup
-  local height = TOP_OFFSET
+  local height = metrics.top
   local i
 
   for i = 1, table.getn(order) do
@@ -307,30 +303,32 @@ local function Layout(frame)
     if shown then
       if button ~= uuiButton and button ~= bindButton and
          button ~= closeButton then
-        StyleNativeButton(button)
+        skin.StyleRow(button)
       end
 
       button:ClearAllPoints()
-      pcall(button.SetWidth, button, BUTTON_WIDTH)
-      pcall(button.SetHeight, button, BUTTON_HEIGHT)
+      pcall(button.SetWidth, button, metrics.buttonWidth)
+      pcall(button.SetHeight, button, metrics.buttonHeight)
 
       local group = ButtonGroup(button)
       if previous then
-        local gap = group ~= previousGroup and GROUP_SPACING or SPACING
+        local gap = group ~= previousGroup and metrics.groupSpacing or
+                    metrics.spacing
         button:SetPoint("TOP", previous, "BOTTOM", 0, -gap)
         height = height + gap
       else
-        button:SetPoint("TOP", frame, "TOP", 0, -TOP_OFFSET)
+        button:SetPoint("TOP", frame, "TOP", 0, -metrics.top)
       end
 
-      height = height + BUTTON_HEIGHT
+      height = height + metrics.buttonHeight
       previous = button
       previousGroup = group
     end
   end
 
-  frame:SetWidth(FRAME_WIDTH)
-  frame:SetHeight(height + BOTTOM_PADDING)
+  frame:SetWidth(metrics.frameWidth)
+  frame:SetHeight(height + metrics.bottom)
+  skin.AfterLayout(frame, metrics.frameWidth, height + metrics.bottom)
 end
 
 local function BuildChrome(frame)
@@ -356,6 +354,194 @@ local function BuildChrome(frame)
   title:SetText(U.L("GAMEMENU_OPTIONS"))
   title:SetPoint("TOP", chrome, "TOP", 0, -10)
 end
+
+skin.StyleRow = StyleNativeButton
+skin.BuildChrome = BuildChrome
+skin.AfterLayout = function() end
+skin.OwnButton = function(frame, name, text, onClick)
+  return U.CreateButton(frame, {
+    name = name,
+    text = text,
+    width = BUTTON_WIDTH,
+    height = BUTTON_HEIGHT,
+    background = { 0.025, 0.025, 0.025, 0.96 },
+    border = { 0.11, 0.11, 0.11, 1 },
+    onClick = onClick,
+  })
+end
+
+-- ---------------------------------------------------------------------------
+-- Modern WoW skin
+--
+-- The `modern` menu above, drawn with the theme's media instead of flat
+-- surfaces. G:OnEnable selects it once; the ordering, grouping, hooks and
+-- native strip are the modern path's own. Only what is drawn changes:
+--  * chrome: the diamond-metal housing and its translucent bed
+--    (M.modernWow.metalFrame) with an owned gold title;
+--  * each native row: the modern path's child cover -- above every native
+--    draw layer, taking no mouse, so the row stays the click target --
+--    dressed with the measured 128RedButton three-slice and an owned label;
+--  * the UnrealUI, Quick Binding and Close rows: plain owned buttons with the
+--    same face, never U.CreateButton's flat surface or a native template.
+-- Alpha is never used to hide native art: it did not hide this client's menu
+-- rows (USER_CONFIRMED_INGAME, 2026-09-13 screenshot), and the covers, being
+-- children of those rows, would inherit it.
+-- ---------------------------------------------------------------------------
+function wowMenu.Label(owner)
+  local token = M.modernWow.gameMenu
+  local label = U.CreateLabel(owner, {
+    size = M.fontSize.normal,
+    color = M.color.text,
+    inherits = "GameFontNormal",
+  })
+  if label then label:SetPoint("CENTER", owner, "CENTER", 0, token.labelY) end
+  return label
+end
+
+function wowMenu.StyleRow(button)
+  if not button then return end
+  local token = M.modernWow.gameMenu
+
+  local cover = button.uuiGameMenuCover
+  if not cover then
+    cover = CreateFrame("Frame", nil, button)
+    cover:SetPoint("TOPLEFT", button, "TOPLEFT", 0, 0)
+    cover:SetPoint("BOTTOMRIGHT", button, "BOTTOMRIGHT", 0, 0)
+    pcall(cover.EnableMouse, cover, false)
+    RaiseAbove(cover, button, 10)
+    cover.label = wowMenu.Label(cover)
+    button.uuiGameMenuCover = cover
+
+    U.PostHookScript(button, "OnEnter", function()
+      U.ModernWowPaintRedButton(cover, true)
+      wowMenu.ColorLabel(cover, true)
+    end)
+    U.PostHookScript(button, "OnLeave", function()
+      U.ModernWowPaintRedButton(cover, false)
+      wowMenu.ColorLabel(cover, false)
+    end)
+  end
+
+  -- As in StyleNativeButton: clear what is enumerable, and let the cover's
+  -- face hide anything that is not.
+  U.RefreshStockButtonArtwork(button)
+  U.ModernWowRedButtonFace(cover, token.buttonHeight)
+
+  local enabled = true
+  if button.IsEnabled then
+    local ok, value = pcall(button.IsEnabled, button)
+    if ok then enabled = value and value ~= 0 end
+  end
+  cover.enabled = enabled
+  -- The first native row (Donation Rewards) draws the atlas's grey face by
+  -- user request (2026-09-13). Matched by position, as the user named it; its
+  -- native name is not in the compatibility evidence.
+  cover.grey = order ~= nil and order[1] == button
+  U.ModernWowSetRedButtonGrey(cover, cover.grey)
+  U.ModernWowSetRedButtonDisabled(cover, not enabled)
+  if cover.label then
+    cover.label:SetText(NativeText(button))
+    wowMenu.ColorLabel(cover, false)
+  end
+  cover:Show()
+end
+
+-- The grey cell has no hover variant, so a grey row shows hover as a warm
+-- gold label; red rows keep their neutral label and hover through the face.
+function wowMenu.ColorLabel(cover, hovered)
+  if not cover.label then return end
+  local color = M.color.text
+  if not cover.enabled then
+    color = M.color.textDim
+  elseif cover.grey and hovered then
+    color = M.modernWow.gameMenu.titleColor
+  end
+  pcall(cover.label.SetTextColor, cover.label, M.Unpack(color))
+end
+
+-- `gold` draws the gold-rimmed atlas (the UnrealUI and Quick Binding rows).
+function wowMenu.OwnButton(frame, name, text, onClick, gold)
+  local token = M.modernWow.gameMenu
+  local button = CreateFrame("Button", name, frame)
+  if not button then return nil end
+  button:SetWidth(token.buttonWidth)
+  button:SetHeight(token.buttonHeight)
+  pcall(button.EnableMouse, button, true)
+  button:SetScript("OnClick", onClick)
+
+  button.label = wowMenu.Label(button)
+  if button.label then button.label:SetText(text) end
+  U.ModernWowRedButtonFace(button, token.buttonHeight, gold)
+
+  button:SetScript("OnEnter", function()
+    U.ModernWowPaintRedButton(button, true)
+  end)
+  button:SetScript("OnLeave", function()
+    U.ModernWowPaintRedButton(button, false)
+  end)
+  return button
+end
+
+-- The menu's own backdrop is the second, inset background that stops short of
+-- the metal frame. SetBackdrop(nil) is not a documented way to clear one and
+-- left it drawing, so both of its colours are zeroed instead -- the verified
+-- way to silence native backdrop art on this client (knowledge:
+-- rendering.setbackdrop_keeps_native_edge_art). Re-applied on every layout
+-- pass in case the client repaints it; the housing's own bed is the only
+-- background left.
+function wowMenu.ClearNativeBackdrop(frame)
+  pcall(frame.SetBackdropColor, frame, 0, 0, 0, 0)
+  pcall(frame.SetBackdropBorderColor, frame, 0, 0, 0, 0)
+end
+
+function wowMenu.BuildChrome(frame)
+  U.StripStockTextures(frame)
+  wowMenu.ClearNativeBackdrop(frame)
+
+  local token = M.modernWow.gameMenu
+  chrome = CreateFrame("Frame", "UnrealUIGameMenuChrome", frame)
+  chrome:SetPoint("TOPLEFT", frame, "TOPLEFT", 0, 0)
+  chrome:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", 0, 0)
+  pcall(chrome.EnableMouse, chrome, false)
+  RaiseAbove(chrome, frame, 5)
+
+  title = U.CreateLabel(chrome, {
+    size = M.fontSize.large,
+    color = token.titleColor,
+    inherits = "GameFontNormal",
+  })
+  if title then
+    title:SetText(U.L("GAMEMENU_OPTIONS"))
+    title:SetPoint("TOP", chrome, "TOP", 0, token.titleY)
+  end
+end
+
+-- The housing is placed from the size Layout just gave the menu; the chrome
+-- is anchored to it and may not report that size yet.
+function wowMenu.AfterLayout(frame, width, height)
+  wowMenu.ClearNativeBackdrop(frame)
+  if chrome then U.ModernWowMetalFrame(chrome, width, height) end
+end
+
+function wowMenu.Select()
+  local token = M.modernWow.gameMenu
+  if not token or type(U.ModernWowMetalFrame) ~= "function" then return false end
+
+  metrics.frameWidth = token.width
+  metrics.buttonWidth = token.buttonWidth
+  metrics.buttonHeight = token.buttonHeight
+  metrics.top = token.top
+  metrics.bottom = token.bottom
+  metrics.spacing = token.spacing
+  metrics.groupSpacing = token.groupSpacing
+
+  skin.StyleRow = wowMenu.StyleRow
+  skin.OwnButton = wowMenu.OwnButton
+  skin.BuildChrome = wowMenu.BuildChrome
+  skin.AfterLayout = wowMenu.AfterLayout
+  return true
+end
+
 
 -- Classic WoW keeps the client's own menu chrome, so none of the restyling
 -- above runs there. The UnrealUI and Quick Binding rows are addon access
@@ -718,11 +904,11 @@ function classicMenu.Ensure(frame)
 
   classicMenu.settings = classicMenu.settings or classicMenu.CreateButton(
     frame, "UnrealUIGameMenuButton", "|cffffffffUnreal|cfff5ae0aUI|r",
-    function() OpenSettingsPanel(frame) end)
+      function() OpenSettingsPanel(frame) end)
 
   classicMenu.bind = classicMenu.bind or classicMenu.CreateButton(
     frame, "UnrealUIGameMenuQuickBindButton", "Quick Binding",
-    function() OpenQuickBinding(frame) end)
+      function() OpenQuickBinding(frame) end)
 end
 
 -- Native rows, top to bottom, excluding the two UnrealUI adds.
@@ -956,7 +1142,7 @@ local function OnMenuShow()
 
   if not styled then
     styled = true
-    BuildChrome(frame)
+    skin.BuildChrome(frame)
   end
 
   -- The client can repaint stock regions when the menu opens. The opaque
@@ -971,7 +1157,10 @@ function G:OnEnable()
   local frame = U.G("GameMenuFrame")
   if not frame then return end
 
-  if not U.ThemeStyleUsesNativeChrome() then
+  -- Modern WoW is the `modern` menu with its own skin (wowMenu above).
+  local modernWow = U.GetActiveThemeStyle() == "modern-wow" and wowMenu.Select()
+
+  if modernWow or not U.ThemeStyleUsesNativeChrome() then
     U.PostHookScript(frame, "OnShow", OnMenuShow)
     if classicMenu.Shown(frame) then OnMenuShow() end
     return

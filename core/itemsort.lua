@@ -11,8 +11,8 @@
 -- sortable container is laid end to end and the sorted items are packed into
 -- that run from its first slot, so an item moves between bags freely and the
 -- free space collects at the end of the last bag. Which containers make up
--- that pool is the one thing this file has to get right -- see the fail-open
--- reasoning under "Which bags may be sorted".
+-- that pool is the one thing this file has to get right -- see the
+-- classification boundary under "Which bags may be sorted".
 --
 -- EVIDENCE -- read this before changing anything here.
 --
@@ -114,46 +114,23 @@ end
 -- bag. A container dropped here is a container the player's items never leave
 -- and never enter, so this test decides how much of that pool actually exists.
 --
--- It is deliberately fail-OPEN: a bag is sorted into unless it is positively
--- identified as a specialty container. That is the opposite of the first
--- version, which required GetItemInfo to answer "Container"/"Bag" and dropped
--- the bag on anything else -- an unresolved inventory id, an item not in the
--- local cache, or class names this client words differently. Every one of
--- those silently reduced a five-bag sort to the backpack alone, because the
--- backpack is the one container that never goes through this test. Nothing in
--- the compact DB verifies any of the three calls below on this client:
--- ContainerIDToInventoryID, GetInventoryItemLink and GetItemInfo are all
--- OFFICIAL_CLIENT_DOCUMENTATION / DOCUMENTED_NOT_RUNTIME_VERIFIED, so a test
--- that needs all three to agree before it will sort a bag is a test that
--- fails closed on unverified ground.
+-- Equipped containers are deliberately fail-CLOSED: only a positively
+-- identified ordinary bag joins the pool. A specialty container can accept
+-- some of the items already inside it, so waiting for a refused drop is too
+-- late -- the sort may already have rearranged that quiver, soul bag or
+-- profession bag. The user-confirmed French "Carquois" case demonstrated that
+-- an English specialty-name deny-list cannot enforce this boundary.
 --
--- Fail-open is only safe because the run below verifies every swap against the
--- containers and can drop a container mid-run: a bag that refuses a drop is
--- taken out of the pool by IS.Replan and the sort carries on without it. The
--- cost of guessing wrong is therefore a few items rearranged in a bag that
--- turned out to be special, not a stalled run.
---
--- Two positive tests still exclude the specialty bags that can be recognised:
---
---   * equipLoc is an INVTYPE_* token (documentation.json /
---     global:Item:GetItemInfo), so it does not change with client language. A
---     quiver or ammo pouch equips into its own inventory type, and anything
---     that is not the bag token is left alone whatever it is called here.
---   * subType names the container subclass, which does read as client text.
---     The known specialty names are excluded when they match; when they do
---     not, the run's own verification is what covers it.
+-- GetItemInfo's equipLoc is a language-independent INVTYPE_* token, but soul
+-- and profession bags can share INVTYPE_BAG with ordinary bags. Its subType is
+-- localized, so compare it with the client's localized INVTYPE_BAG display
+-- string instead of naming every specialty subtype in every locale. If the
+-- inventory item, item info, or localized ordinary-bag label is unavailable,
+-- leave that equipped container untouched. Sorting fewer bags is safer than
+-- moving items inside a container the sorter cannot prove is general-purpose.
 --
 -- The backpack (0) is always general-purpose and has no inventory item at all,
 -- and the main bank pane (-1) is the same case.
-IS.SPECIAL_SUBTYPE = {
-  ["Soul Bag"] = true,
-  ["Herb Bag"] = true,
-  ["Enchanting Bag"] = true,
-  ["Engineering Bag"] = true,
-  ["Quiver"] = true,
-  ["Ammo Pouch"] = true,
-}
-
 -- Inventory slot of an equipped bag's own equipment button.
 --
 -- ContainerIDToInventoryID is the documented converter, but the client
@@ -179,34 +156,20 @@ function IS.IsGeneralBag(bag)
   if bag == 0 or bag == IS.BANK_CONTAINER then return true end
 
   local inventoryId = IS.BagInventoryId(bag)
-  if not inventoryId then return true end
+  if not inventoryId then return false end
 
   local linkOk, link = pcall(GetInventoryItemLink, "player", inventoryId)
-  if not linkOk or type(link) ~= "string" or link == "" then return true end
+  if not linkOk or type(link) ~= "string" or link == "" then return false end
 
   -- GetItemInfo returns nine values on this client -- name, link, quality,
   -- minLevel, type, subType, stackCount, equipLoc, texture -- and no values at
   -- all for an item outside the local cache.
-  local infoOk, _, _, _, _, itemType, subType, _, equipLoc =
+  local infoOk, _, _, _, _, _, subType, _, equipLoc =
     pcall(GetItemInfo, link)
-  if not infoOk then return true end
+  if not infoOk or equipLoc ~= "INVTYPE_BAG" then return false end
 
-  if type(equipLoc) == "string" and equipLoc ~= "" and
-     equipLoc ~= "INVTYPE_BAG" then
-    return false
-  end
-
-  if type(subType) == "string" then
-    if IS.SPECIAL_SUBTYPE[subType] then return false end
-    -- A container class whose subclass is not the plain bag one: the enUS
-    -- reading of the same specialty case, kept for subclass names not listed
-    -- above.
-    if itemType == "Container" and subType ~= "" and subType ~= "Bag" then
-      return false
-    end
-  end
-
-  return true
+  local ordinarySubtype = type(INVTYPE_BAG) == "string" and INVTYPE_BAG or nil
+  return ordinarySubtype ~= nil and subType == ordinarySubtype
 end
 
 -- ---------------------------------------------------------------------------
@@ -367,12 +330,11 @@ end
 -- Rebuild the plan against the containers as they are now, optionally dropping
 -- one container from the pool.
 --
--- This is the self-correcting half of the fail-open bag test above. A bag whose
--- kind could not be read is sorted into; if a drop into it does not land, the
--- bag is dropped here and the run finishes with the remaining containers
--- instead of stopping on the refusal. The same path absorbs an ordinary plan
--- going stale -- a looted item, or two partial stacks merging on a drop
--- instead of swapping -- which used to end a run outright.
+-- If a drop does not land, its container is removed here and the run finishes
+-- with the remaining containers instead of stopping on the refusal. This is a
+-- second line of defence after the positive ordinary-bag test above, and also
+-- absorbs an ordinary plan going stale -- a looted item, or two partial stacks
+-- merging on a drop instead of swapping -- which used to end a run outright.
 --
 -- Bounded, because a run that cannot make progress must stop rather than
 -- rearrange the bags indefinitely. The backpack and the main bank pane are
@@ -416,12 +378,11 @@ end
 -- Each stage is checked against the cursor rather than assumed.
 --
 -- The second return is the container to suspect when a stage did not work, so
--- the caller can take that container out of the pool. A refused *drop* is the
--- case worth naming: it is what a specialty bag the fail-open test let through
--- looks like from here. The last branch cannot tell a destination that refused
--- the drop from a source that refused the displaced item back, and names the
--- destination, because the first is by far the likelier of the two -- source
--- had an item taken out of it a moment earlier.
+-- the caller can take that container out of the pool. The last branch cannot
+-- tell a destination that refused the drop from a source that refused the
+-- displaced item back, and names the destination, because the first is by far
+-- the likelier of the two -- source had an item taken out of it a moment
+-- earlier.
 -- ---------------------------------------------------------------------------
 function IS.Swap(run, src, dst)
   if U.CursorHasItem() then return false end

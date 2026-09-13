@@ -39,7 +39,7 @@ The bank uses the same window: the bank container and every purchased bank bag a
 
 ### Modern where it helps, familiar where it matters
 
-The Quest Log, Character window, Spellbook, Social panels, merchants, trainers, quest dialogue, Game Menu, and other frequently used windows share the same compact modern style. The native minimap and loot experience remain familiar and untouched.
+The Quest Log, Character window, Spellbook, Social panels, merchants, trainers, quest dialogue, Game Menu, and other frequently used windows share the same compact modern style. The minimap surface and behavior remain native, while the Modern WoW theme gives its surrounding chrome matching artwork; the loot experience remains familiar and untouched.
 
 ## See how UnrealUI improves the moment-to-moment experience
 
@@ -91,7 +91,7 @@ Use `/uui` to open the settings, `/uui unlock` to arrange supported elements, an
 
 ## Version
 
-Current release: **0.6.0**
+Current release: **0.7.0**
 
 ## Acknowledgements
 

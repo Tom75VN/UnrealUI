@@ -1,9 +1,10 @@
 -- unrealUI :: modules/actionbar.lua
 --
--- Up to ten action bars. Modern uses UnrealUI's flat button treatment; Classic
--- copies the live client's own action-button faces onto the same UnrealUI
--- buttons. Layout, paging, movers, bindings, cooldowns and interaction remain
--- owned by this module in both themes.
+-- Up to ten action bars. Modern uses UnrealUI's flat button treatment, Classic
+-- copies the live client's own action-button faces, and modern-wow dresses the
+-- same UnrealUI buttons with DragonflightUI-derived art. Layout, paging,
+-- movers, bindings, cooldowns and interaction remain owned by this module in
+-- every theme.
 --
 -- Only the look and the call shapes are taken from pfUI. None of its bar
 -- architecture is reproduced: no config schema, no secure/TBC state driver, no
@@ -312,6 +313,175 @@ local classicAction = {
   active = false,
   ready = false,
 }
+
+-- DragonflightUI visual layer for the modern-wow theme. This is deliberately
+-- one table rather than another run of top-level locals: this module is close
+-- enough to Lua's 200-local chunk limit that a separate namespace is the safe
+-- way to add a complete drawing path (rules/unreal-ui.md).
+--
+-- WORKING_SOURCE: DragonflightUI-Reforged modules/bars/bars.lua draws a 5px
+-- oversized HDActionBarBtn below each icon, the matching border above it and a
+-- full-button highlight. Only that button geometry and art are reproduced
+-- here, together with bar 1's faction ornaments. Its main-bar frame,
+-- stock-button ownership, reparenting, paging, config, and update machinery
+-- are intentionally not copied, so the bar itself matches the other bars.
+local modernWowAction = {
+  active = false,
+  buttonGrow = 5,
+  -- Tuned from DF's 180px / 45px overlap: 80% size and 15px farther out.
+  ornamentSize = 144,
+  ornamentInset = 30,
+  ornamentY = 10,
+}
+
+function modernWowAction.Texture(parent, layer, path)
+  if not parent or type(parent.CreateTexture) ~= "function" then return nil end
+  local ok, texture = pcall(parent.CreateTexture, parent, nil, layer)
+  if not ok or not texture then return nil end
+  pcall(texture.SetTexture, texture, path)
+  return texture
+end
+
+function modernWowAction.SetShown(region, shown)
+  if not region then return end
+  if shown then pcall(region.Show, region) else pcall(region.Hide, region) end
+end
+
+function modernWowAction.RefreshState(button)
+  local state = button and button.uuiModernWow
+  if not state or not state.highlight then return end
+
+  if not state.backgroundShown or button.uuiPressedShown then
+    modernWowAction.SetShown(state.highlight, false)
+  elseif button.uuiHover then
+    pcall(state.highlight.SetAlpha, state.highlight, 0.80)
+    modernWowAction.SetShown(state.highlight, true)
+  elseif button.uuiActive then
+    pcall(state.highlight.SetAlpha, state.highlight, 0.38)
+    modernWowAction.SetShown(state.highlight, true)
+  else
+    modernWowAction.SetShown(state.highlight, false)
+  end
+end
+
+function modernWowAction.StyleButton(button)
+  if not modernWowAction.active or not button or button.uuiModernWow then return end
+
+  local face = modernWowAction.Texture(
+    button, "BACKGROUND", M.modernWow.texture.actionButton)
+  local border = modernWowAction.Texture(
+    button, "OVERLAY", M.modernWow.texture.actionButtonBorder)
+  local highlight = modernWowAction.Texture(
+    button, "OVERLAY", M.modernWow.texture.actionButtonHover)
+
+  -- A partial ornamental button is worse than the established flat fallback.
+  -- Leave the backdrop alone unless the two structural pieces both exist;
+  -- hover is optional and can safely degrade on its own.
+  if not face or not border then
+    modernWowAction.SetShown(face, false)
+    modernWowAction.SetShown(border, false)
+    modernWowAction.SetShown(highlight, false)
+    button.uuiModernWow = { failed = true }
+    U.CreateBackdrop(button, {})
+    return
+  end
+
+  U.SetBackdropShown(button, false)
+  if button.uuiPressed then
+    pcall(button.uuiPressed.SetTexture, button.uuiPressed,
+          M.modernWow.texture.actionButtonHover)
+    U.SetColor(button.uuiPressed, 1, 1, 1, 0.95)
+  end
+
+  if face then face:SetPoint("CENTER", button, "CENTER", 0, 0) end
+  if border then
+    border:SetPoint("CENTER", button, "CENTER", 0, 0)
+    U.SetColor(border, 0.9, 0.9, 0.9, 1)
+  end
+  if highlight then
+    highlight:SetAllPoints(button)
+    highlight:Hide()
+  end
+
+  button.uuiModernWow = {
+    face = face,
+    border = border,
+    highlight = highlight,
+    backgroundShown = true,
+  }
+end
+
+function modernWowAction.SizeButton(button, size)
+  local state = button and button.uuiModernWow
+  if not state then return end
+  local chromeSize = size + modernWowAction.buttonGrow
+  if state.face then
+    state.face:SetWidth(chromeSize)
+    state.face:SetHeight(chromeSize)
+  end
+  if state.border then
+    state.border:SetWidth(chromeSize)
+    state.border:SetHeight(chromeSize)
+  end
+end
+
+function modernWowAction.SetButtonBackground(button, shown)
+  local state = button and button.uuiModernWow
+  if not state or state.failed then return false end
+  U.SetBackdropShown(button, false)
+  state.backgroundShown = shown and true or false
+  modernWowAction.SetShown(state.face, state.backgroundShown)
+  modernWowAction.SetShown(state.border, state.backgroundShown)
+  modernWowAction.RefreshState(button)
+  return true
+end
+
+function modernWowAction.HideButton(button)
+  local state = button and button.uuiModernWow
+  if not state then return end
+  modernWowAction.SetShown(state.face, false)
+  modernWowAction.SetShown(state.border, false)
+  modernWowAction.SetShown(state.highlight, false)
+end
+
+function modernWowAction.StyleBarOrnaments(entry, bar)
+  if not modernWowAction.active or not entry or bar ~= 1 then return end
+  if entry.modernWowOrnaments then return end
+
+  local faction = nil
+  local factionFn = U.G("UnitFactionGroup")
+  if type(factionFn) == "function" then
+    local ok, value = pcall(factionFn, "player")
+    if ok then faction = value end
+  end
+  local ornamentPath = faction == "Horde" and
+    M.modernWow.texture.actionWyvern or M.modernWow.texture.actionGryphon
+  local left = modernWowAction.Texture(entry.frame, "BORDER", ornamentPath)
+  local right = modernWowAction.Texture(entry.frame, "BORDER", ornamentPath)
+
+  if left then
+    left:SetWidth(modernWowAction.ornamentSize)
+    left:SetHeight(modernWowAction.ornamentSize)
+    left:SetPoint("RIGHT", entry.frame, "LEFT",
+      modernWowAction.ornamentInset, modernWowAction.ornamentY)
+  end
+  if right then
+    right:SetWidth(modernWowAction.ornamentSize)
+    right:SetHeight(modernWowAction.ornamentSize)
+    right:SetPoint("LEFT", entry.frame, "RIGHT",
+      -modernWowAction.ornamentInset, modernWowAction.ornamentY)
+    pcall(right.SetTexCoord, right, 1, 0, 0, 1)
+  end
+
+  entry.modernWowOrnaments = { left = left, right = right }
+end
+
+function modernWowAction.SetBarOrnamentsShown(entry, shown)
+  local state = entry and entry.modernWowOrnaments
+  if not state then return end
+  modernWowAction.SetShown(state.left, shown)
+  modernWowAction.SetShown(state.right, shown)
+end
 
 function classicAction.Dimension(region, method)
   local fn = region and region[method]
@@ -1015,6 +1185,10 @@ end
 
 local function ApplyButtonBorder(button)
   if button.uuiClassic then return end
+  if button.uuiModernWow then
+    modernWowAction.RefreshState(button)
+    return
+  end
   if button.uuiPressedShown then
     U.SetBorderColor(button, 1, 1, 1, 1)
   elseif button.uuiActive then
@@ -1441,7 +1615,11 @@ local function CreateButton(bar, index)
   button.uuiIndex = index
   button.uuiName = name
 
-  U.CreateBackdrop(button, {})
+  -- The DF face supplies both fill and edge. Avoid constructing the flat
+  -- theme's four border regions underneath it: action-bar frame cost is known
+  -- to scale with region count on this client. StyleButton builds a flat
+  -- fallback only if either structural DF texture cannot be created.
+  if not modernWowAction.active then U.CreateBackdrop(button, {}) end
   pcall(button.EnableMouse, button, true)
   pcall(button.RegisterForClicks, button, "LeftButtonUp", "RightButtonUp")
   pcall(button.RegisterForDrag, button, "LeftButton", "RightButton")
@@ -1494,6 +1672,7 @@ local function CreateButton(bar, index)
   pressed:Hide()
   button.uuiPressed = pressed
 
+  modernWowAction.StyleButton(button)
   classicAction.StyleButton(button, textLayer)
 
   -- scripts.handler_arguments_direct: handlers close over `button` instead of
@@ -1546,6 +1725,7 @@ local function SizeButton(button, size)
   if button.uuiGcdShade then button.uuiGcdShadeWidth = nil end
 
   classicAction.SizeButton(button, size)
+  modernWowAction.SizeButton(button, size)
 end
 
 local function HideButton(button)
@@ -1558,6 +1738,7 @@ local function HideButton(button)
   ShowRegion(button.uuiCooldownText, false)
   ShowRegion(button.uuiPressed, false)
   ShowRegion(button.uuiClassicNormal, false)
+  modernWowAction.HideButton(button)
   -- A locked highlight would otherwise still be held when this button is
   -- recycled into a slot whose action is not active. Clearing the cached flag
   -- with it keeps UpdateActive from short-circuiting and leaving a button that
@@ -1879,6 +2060,13 @@ end
 -- would show, and restored once gridActive drops.
 local function ApplyButtonBackground(button)
   local shown = gridActive or not (HidesBackground(button.uuiBar) and button.uuiEmpty)
+  if modernWowAction.SetButtonBackground(button, shown) then
+    if button.uuiKeybind then
+      ShowRegion(button.uuiKeybind,
+                 shown and button.uuiKeybindText ~= "")
+    end
+    return
+  end
   if button.uuiClassic then
     U.SetBackdropShown(button, false)
     ShowRegion(button.uuiClassicNormal, shown)
@@ -2167,6 +2355,8 @@ local function CreateBar(bar)
     bars[bar].buttons[i] = CreateButton(bar, i)
   end
 
+  modernWowAction.StyleBarOrnaments(bars[bar], bar)
+
   U.RegisterMover("actionbar.bar" .. bar, frame, {
     label = U.L("MOVER_LABEL_ACTION_BAR", bar),
     default = DefaultPosition(bar),
@@ -2245,6 +2435,7 @@ local function LayoutBar(bar, previewName, previewValue)
   end
 
   entry.shown = enabled
+  modernWowAction.SetBarOrnamentsShown(entry, enabled)
   if enabled then entry.frame:Show() else entry.frame:Hide() end
 end
 
@@ -2260,6 +2451,33 @@ end
 local function ApplyAll()
   local i
   for i = 1, BAR_COUNT do ApplyBar(i) end
+end
+
+-- Called by modules/modernwow.lua's surface registry after all action-bar
+-- modules have enabled. It is idempotent, so it also covers a load order where
+-- the bars were created before the theme surface was applied.
+function U.BuildModernWowActionBars()
+  if type(U.GetActiveThemeStyle) ~= "function" or
+     U.GetActiveThemeStyle() ~= "modern-wow" then return false end
+  if type(U.ModernWowSurfaceEnabled) == "function" and
+     not U.ModernWowSurfaceEnabled("actionbar") then return false end
+
+  modernWowAction.active = true
+  local bar, i
+  for bar = 1, BAR_COUNT do
+    local entry = bars[bar]
+    if entry then
+      modernWowAction.StyleBarOrnaments(entry, bar)
+      for i = 1, table.getn(entry.buttons) do
+        local button = entry.buttons[i]
+        modernWowAction.StyleButton(button)
+        modernWowAction.SizeButton(button, button.uuiSize or Number(bar, "Size"))
+        ApplyButtonBackground(button)
+      end
+      modernWowAction.SetBarOrnamentsShown(entry, entry.shown)
+    end
+  end
+  return true
 end
 
 -- ---------------------------------------------------------------------------
@@ -2656,6 +2874,21 @@ local function MigrateBarNumbering()
   end
 end
 
+-- Remove the short-lived per-theme layout experiment. All themes once again
+-- read and write the same bar geometry and mover positions, and the obsolete
+-- flat keys should not linger in SavedVariables after the next reload.
+local function RemoveThemedLayoutData()
+  local stale, key = {}, nil
+  for key in pairs(cfg or {}) do
+    if key == "actionbarLayoutLastTheme" or
+       (type(key) == "string" and string.find(key, "^theme_")) then
+      table.insert(stale, key)
+    end
+  end
+  local i
+  for i = 1, table.getn(stale) do cfg[stale[i]] = nil end
+end
+
 function AB:OnInit()
   ConfigureBarOwnership()
   cfg = U.ModuleConfig("actionbar", BuildDefaults())
@@ -2677,6 +2910,8 @@ function AB:OnInit()
     MigrateBarNumbering()
     cfg.layout = 3
   end
+
+  RemoveThemedLayoutData()
 end
 
 function AB:OnEnable()
@@ -2685,6 +2920,11 @@ function AB:OnEnable()
   local _, class = Call("UnitClass", "player")
   local r, g, b = M.ClassColor(class)
   if r then classColor = { r, g, b } end
+
+  modernWowAction.active = type(U.GetActiveThemeStyle) == "function" and
+                           U.GetActiveThemeStyle() == "modern-wow" and
+                           type(U.ModernWowSurfaceEnabled) == "function" and
+                           U.ModernWowSurfaceEnabled("actionbar") or false
 
   -- Read the client's own button faces before the suppression pass makes the
   -- stock action bars invisible. Modern records no template and follows its
@@ -2732,6 +2972,8 @@ function U.ActionBarReport()
                       entry.buttons[1].uuiCooldownText) and true or false,
       nativeCooldown = (entry and entry.buttons[1] and
                         entry.buttons[1].uuiNativeCd) and true or false,
+      modernWow = entry and entry.buttons[1] and
+                  entry.buttons[1].uuiModernWow and true or false,
     })
   end
   return report

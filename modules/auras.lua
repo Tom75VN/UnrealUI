@@ -614,6 +614,14 @@ local PARTY_COUNT = 4
 local PARTY_SIZE = 18
 local PARTY_MAX = 6
 
+-- The player's own row inside the party block. It is the one case where a row's
+-- id, the unit token its icons are read from, and the unit-frame it hangs on
+-- are three different strings: there is no party token for yourself, so the
+-- auras come from "player" while the row rides the party block's player frame
+-- (modules/unitframes.lua, U.PartyPlayerFrameId). The other four collapse all
+-- three into "partyN".
+local PARTY_PLAYER_ROW = "partyPlayer"
+
 -- Gap between a row and whatever it sits against, on either side.
 local ROW_GAP = 4
 
@@ -848,15 +856,35 @@ local function PositionRow(row, below, offset)
   end
 
   if below then
-    -- Target-of-target hangs directly below the target frame. When it is
-    -- visible, target auras must clear that frame rather than claiming the
-    -- same edge. Rows for every other unit, and target auras without a
-    -- target-of-target, retain their usual close-to-frame position.
-    local anchor = row.belowAnchor
-    if not anchor or not anchor:IsShown() then anchor = row.anchor end
-    local bottomOffset = tonumber(anchor.uuiAuraBottomOffset) or 0
-    row:SetPoint("TOPLEFT", anchor, "BOTTOMLEFT", 0,
-                 -(ROW_GAP + offset + bottomOffset))
+    -- A theme that publishes its own below-frame position wins outright, and
+    -- the target-of-target frame is never consulted: a row anchored under that
+    -- frame reads as the target-of-target's own auras and drifts away from the
+    -- frame the auras actually describe. Whether the target draws auras at all
+    -- is the mover panel's showOnTargetFrame switch
+    -- (modules/unitframeconfig.lua), never the presence of a
+    -- target-of-target.
+    --
+    -- The below-frame left edge, when the theme publishes one: it carries this
+    -- position's own horizontal shift, which the above-frame `left` must not
+    -- pick up. A layout with only `left` behaves exactly as before.
+    local layout = row.anchor.uuiAuraLayout
+    local leftOffset = tonumber(layout and
+                                (layout.belowLeft or layout.left)) or 0
+    local belowTop = tonumber(layout and layout.belowTop)
+    if belowTop then
+      row:SetPoint("TOPLEFT", row.anchor, "TOPLEFT", leftOffset,
+                   belowTop - offset)
+    else
+      -- An undressed theme publishes no position, so `modern` and
+      -- `classic-wow` keep the original target-of-target clearance rather than
+      -- landing the row on the frame docked at the target's bottom edge. Both
+      -- themes are frozen; only the dressed path above changed.
+      local anchor = row.belowAnchor
+      if not anchor or not anchor:IsShown() then anchor = row.anchor end
+      local bottomOffset = tonumber(anchor.uuiAuraBottomOffset) or 0
+      row:SetPoint("TOPLEFT", anchor, "BOTTOMLEFT", leftOffset,
+                   -(ROW_GAP + offset + bottomOffset))
+    end
   else
     local topOffset = tonumber(row.anchor.uuiAuraTopOffset) or 0
     -- Rogue and Cat Form druid frames carry the combo strip on the very edge
@@ -865,8 +893,13 @@ local function PositionRow(row, below, offset)
     -- strip is hidden, so the row lifts clear of the pips only while they are
     -- actually there.
     local comboOffset = tonumber(row.anchor.uuiAuraComboOffset) or 0
-    row:SetPoint("BOTTOMLEFT", row.anchor, "TOPLEFT", 0,
-                 ROW_GAP + offset + topOffset + comboOffset)
+    local leftOffset = tonumber(row.anchor.uuiAuraLayout and
+                                row.anchor.uuiAuraLayout.left) or 0
+    local y = tonumber(row.anchor.uuiAuraLayout and
+                       row.anchor.uuiAuraLayout.top)
+    if not y then y = ROW_GAP + topOffset end
+    row:SetPoint("BOTTOMLEFT", row.anchor, "TOPLEFT", leftOffset,
+                 y + offset + comboOffset)
   end
 end
 
@@ -1044,10 +1077,12 @@ end
 -- Party buff rows sit beside the frame; modules/hots.lua draws the player's own
 -- HoTs and Power Word: Shield inside it. Requested: never both.
 --
--- Only the party buff rows defer. The player and target rows have no indicator
--- to duplicate, so suppressing there would hide an aura outright instead of
--- relocating it -- and a shield the player put on themselves is only ever
--- visible on the player row.
+-- Only rows drawn beside a party frame defer, which now includes the player's
+-- own row in the party block: modules/hots.lua draws there too, so the aura and
+-- the indicator would otherwise both appear. The standalone player and target
+-- rows have no indicator to duplicate, so suppressing there would hide an aura
+-- outright instead of relocating it -- which is also why the test is `beside`
+-- and not the unit token.
 local function HotIndicatorOwns(row, texture)
   if row.harmful or not row.beside then return false end
   if type(U.HotIndicatorOwnsTexture) ~= "function" then return false end
@@ -1063,6 +1098,30 @@ local function BreakContinuity(row)
   if not row then return end
   row.primedKey = nil
   row.scanDepth = nil
+end
+
+-- Resolves the grid once per refresh. A dressed theme may publish a bounded
+-- addon-owned layout on the unit frame; modern-wow uses that seam to scale the
+-- icons and keep primary rows within the art's bar opening. Other themes have
+-- no layout table and therefore retain the existing settings unchanged.
+local function RowGeometry(row)
+  local size = row.size or U.GetAuraSetting("size")
+  local spacing = row.spacing or U.GetAuraSetting("spacing")
+  local perRow = row.perRow or U.GetAuraSetting("perRow")
+  local layout = row.anchor and row.anchor.uuiAuraLayout
+
+  if layout then
+    local scale = tonumber(layout.iconScale)
+    if scale and scale > 0 then size = size * scale end
+
+    local width = not row.beside and tonumber(layout.width) or nil
+    if width and width > 0 then
+      perRow = math.floor((width + spacing) / (size + spacing))
+      if perRow < 1 then perRow = 1 end
+    end
+  end
+
+  return size, spacing, perRow
 end
 
 -- ---------------------------------------------------------------------------
@@ -1083,8 +1142,13 @@ end
 -- ---------------------------------------------------------------------------
 local SAMPLE_COUNT = 3
 
-local function SampleMoverId(unit)
-  if unit == "player" or unit == "target" then return "unitframes." .. unit end
+-- Asked of the ROW rather than of its unit token: the party block's player row
+-- reads "player" auras but belongs to the party mover, so the token alone would
+-- send its sample to the standalone player frame.
+local function SampleMoverId(row)
+  if not row.beside and (row.unit == "player" or row.unit == "target") then
+    return "unitframes." .. row.unit
+  end
   -- Every party row rides the one party-block anchor, the same way its frame
   -- does. modules/unitframes.lua already shows empty party shells while the UI
   -- is unlocked, so a sample beside one is standing next to a real rectangle.
@@ -1094,7 +1158,7 @@ end
 local function SampleWanted(row)
   if type(U.MoverSampleShown) ~= "function" then return false end
   if type(U.CreateMoverSampleCell) ~= "function" then return false end
-  return U.MoverSampleShown(SampleMoverId(row.unit)) and true or false
+  return U.MoverSampleShown(SampleMoverId(row)) and true or false
 end
 
 local function HideSample(row)
@@ -1114,9 +1178,7 @@ local function ShowSample(row, offset)
     return 0
   end
 
-  local size = row.size or U.GetAuraSetting("size")
-  local spacing = row.spacing or U.GetAuraSetting("spacing")
-  local perRow = row.perRow or U.GetAuraSetting("perRow")
+  local size, spacing, perRow = RowGeometry(row)
   local below = not row.beside and U.GetAuraSetting("belowFrame")
   local maxIcons = row.maxIcons or
                    U.GetAuraSetting(row.harmful and "maxIcons" or "maxBuffs")
@@ -1185,9 +1247,7 @@ local function RefreshRow(row, offset)
     return ShowSample(row, offset)
   end
 
-  local size = row.size or U.GetAuraSetting("size")
-  local spacing = row.spacing or U.GetAuraSetting("spacing")
-  local perRow = row.perRow or U.GetAuraSetting("perRow")
+  local size, spacing, perRow = RowGeometry(row)
   local maxIcons = row.maxIcons or
                    U.GetAuraSetting(row.harmful and "maxIcons" or "maxBuffs")
   local below = not row.beside and U.GetAuraSetting("belowFrame")
@@ -1364,6 +1424,8 @@ end
 local function RefreshParty(clearNames)
   if U.PerfDisabled and U.PerfDisabled("partyaura") then return end
 
+  RefreshPartyUnit(PARTY_PLAYER_ROW, clearNames)
+
   local i
   for i = 1, PARTY_COUNT do
     RefreshPartyUnit("party" .. i, clearNames)
@@ -1381,6 +1443,9 @@ local function RefreshUnitToken(token)
     RefreshTarget()
   elseif token == "player" then
     RefreshPlayer()
+    -- The same auras are drawn twice from one token now: once on the standalone
+    -- player frame and once on the player's row in the party block.
+    RefreshPartyUnit(PARTY_PLAYER_ROW, false)
   elseif type(token) == "string" and rows[token] and rows[token].beside then
     RefreshPartyUnit(token, false)
   else
@@ -1416,6 +1481,14 @@ end
 -- immediate one.
 function U.ApplyAuras()
   RefreshAll()
+  -- Modern WoW combo points mirror this module's above/below setting: they
+  -- occupy the matching aura origin on the opposite edge of the selected
+  -- player or target frame. Re-apply after any aura setting changes so the
+  -- swap is immediate and the circles follow a saved aura-size change too.
+  if type(U.ApplyComboPointAnchor) == "function" and
+     type(U.GetComboPointAnchor) == "function" then
+    U.ApplyComboPointAnchor(U.GetComboPointAnchor())
+  end
 end
 
 -- ---------------------------------------------------------------------------
@@ -1568,7 +1641,11 @@ local function RaiseAboveNativeFrame(row, anchor)
 end
 
 local function BuildRow(id, unit, harmful, setting, options)
-  local anchor = U.GetUnitFrame(unit)
+  -- The frame the row hangs on is normally the unit's own, but a row may name
+  -- another: the party block's player row reads "player" and hangs on the party
+  -- frame that shows the player.
+  local frameId = (options and options.frameId) or unit
+  local anchor = U.GetUnitFrame(frameId)
   if not anchor then
     U.Debug("no unit frame to anchor auras to: " .. id)
     return nil
@@ -1816,6 +1893,26 @@ function A:OnEnable()
            { master = "showOnTargetFrame" })
   BuildRow("targetBuff", "target", false, "targetBuffEnabled",
            { master = "showOnTargetFrame" })
+
+  -- One shape for all five rows in the block, so the player's row is identical
+  -- to the four beside it apart from where it reads and what it hangs on.
+  local function PartyOptions(harmful, frameId)
+    return {
+      beside = true, besideY = harmful and 10 or -10,
+      size = PARTY_SIZE, spacing = 2,
+      perRow = PARTY_MAX, maxIcons = PARTY_MAX, stopAtCap = true,
+      radialOnly = true, frameId = frameId,
+    }
+  end
+
+  local playerFrameId = type(U.PartyPlayerFrameId) == "function" and
+                        U.PartyPlayerFrameId() or nil
+  if playerFrameId then
+    BuildRow(PARTY_PLAYER_ROW, "player", true, "partyEnabled",
+             PartyOptions(true, playerFrameId))
+    BuildRow(PARTY_PLAYER_ROW .. "Buff", "player", false, "partyBuffEnabled",
+             PartyOptions(false, playerFrameId))
+  end
 
   local i
   for i = 1, PARTY_COUNT do

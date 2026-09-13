@@ -398,7 +398,7 @@ local function TryBuild()
 end
 
 function ML:OnEnable()
-  if U.ThemeStyleUsesNativeChrome() then return end
+  if U.ThemeStyleUsesClassicInteractionChrome() then return end
   if TryBuild() then return end
 
   U.RegisterEvent("ADDON_LOADED", TryBuild)

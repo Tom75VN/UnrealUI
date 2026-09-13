@@ -30,6 +30,7 @@ local GS = U.RegisterModule("gossip")
 local WHITE = { 1.00, 1.00, 1.00, 1 }
 
 local frame, panel
+local useModernWow = false
 
 local function G(name)
   return U.G(name)
@@ -103,10 +104,60 @@ local function StyleTitleRows()
   end
 end
 
+-- Theme-only row finish: warm readable option text at rest and quest gold on
+-- hover.  Installed after the common white-text hooks so native enter/leave
+-- refreshes cannot leave the Modern WoW row black or flatten its state.
+local function StyleModernWowTitleRows()
+  if not useModernWow then return end
+
+  local token = M.modernWow.npcDialog
+  if not token then return end
+
+  local rows = tonumber(G("NUMGOSSIPBUTTONS")) or 10
+  local i
+  for i = 1, rows do
+    local button = G("GossipTitleButton" .. i)
+    if button then
+      local function PaintRow(color)
+        if button.SetTextColor then
+          pcall(button.SetTextColor, button, color[1], color[2], color[3])
+        end
+        if button.GetFontString then
+          local ok, fontstring = pcall(button.GetFontString, button)
+          if ok and fontstring then
+            SetGossipFont(fontstring, M.fontSize.normal, color)
+          end
+        end
+      end
+
+      PaintRow(token.optionText)
+      if not button.uuiModernWowOptionHooks then
+        button.uuiModernWowOptionHooks = true
+        U.PostHookScript(button, "OnEnter", function()
+          PaintRow(token.optionHover)
+        end)
+        U.PostHookScript(button, "OnLeave", function()
+          PaintRow(token.optionText)
+        end)
+      end
+    end
+  end
+end
+
 local function StyleHeader()
   local portrait = G("GossipFramePortrait")
   if portrait then
     pcall(portrait.SetTexCoord, portrait, 0.08, 0.92, 0.08, 0.92)
+  end
+end
+
+local function ApplyModernWowDialog()
+  if useModernWow and type(U.ModernWowNpcDialog) == "function" then
+    U.ModernWowNpcDialog(frame, panel, G("GossipFramePortrait"),
+                         "GossipFrameCloseButton")
+  end
+  if useModernWow and type(U.ModernWowNpcActionButton) == "function" then
+    U.ModernWowNpcActionButton(G("GossipFrameGreetingGoodbyeButton"))
   end
 end
 
@@ -115,6 +166,17 @@ end
 -- the walker is shared rather than duplicated per module.
 local function ForceWhiteText(object)
   U.ForceStockTextWhite(object, WHITE, M.fontSize.normal)
+end
+
+-- Keep the live NPC portrait out of the destructive stock-art strip.  It is
+-- content, and the Modern WoW path places this same region in its gold ring.
+local function StripFrameChrome()
+  local portrait = G("GossipFramePortrait")
+  if portrait then
+    U.StripStockTextures(frame, { keep = { [portrait] = true } })
+  else
+    U.StripStockTextures(frame)
+  end
 end
 
 -- Use the same explicit stock-string treatment as questlog.lua in addition to
@@ -131,7 +193,7 @@ end
 -- rather than stripped once in BuildFrame. Reapply is now the single place
 -- that re-strips the greeting panel/scroll chrome too.
 local function Reapply()
-  U.StripStockTextures(frame)
+  StripFrameChrome()
   U.StripStockTextures(G("GossipFrameGreetingPanel"))
   U.StripStockTextures(G("GossipGreetingScrollFrame"))
   StyleHeader()
@@ -139,6 +201,8 @@ local function Reapply()
   ApplyNamedWhiteText()
   SetGossipFont(G("GossipFrameNpcNameText"), M.fontSize.large, WHITE)
   StyleTitleRows()
+  StyleModernWowTitleRows()
+  ApplyModernWowDialog()
 end
 
 local function BuildFrame()
@@ -148,7 +212,7 @@ local function BuildFrame()
     return false
   end
 
-  U.StripStockTextures(frame)
+  StripFrameChrome()
 
   -- Content backdrop inset from the real frame bounds, same shape as
   -- modules/trainer.lua's panel: leaves the bottom strip clear for the
@@ -178,15 +242,19 @@ local function BuildFrame()
   U.StyleStockCloseButton(G("GossipFrameCloseButton"), panel, -6, -6)
 
   U.StripStockTextures(G("GossipGreetingScrollFrame"))
-  U.StyleStockScrollbar(G("GossipGreetingScrollFrameScrollBar"))
+  if not useModernWow then
+    U.StyleStockScrollbar(G("GossipGreetingScrollFrameScrollBar"))
+  end
   U.StripStockTextures(G("GossipFrameGreetingPanel"))
 
   ForceWhiteText(frame)
   ApplyNamedWhiteText()
   SetGossipFont(G("GossipFrameNpcNameText"), M.fontSize.large, WHITE)
   StyleTitleRows()
+  StyleModernWowTitleRows()
 
   U.StyleStockButton(G("GossipFrameGreetingGoodbyeButton"))
+  ApplyModernWowDialog()
 
   -- No compact-DB record of a documented "gossip list changed" hook (no
   -- UpdateGossipFrame/GossipFrame_Update entry either). Reapply drives off
@@ -234,7 +302,9 @@ local function TryBuild()
 end
 
 function GS:OnEnable()
-  if U.ThemeStyleUsesNativeChrome() then return end
+  useModernWow = type(U.GetActiveThemeStyle) == "function" and
+                 U.GetActiveThemeStyle() == "modern-wow"
+  if U.ThemeStyleUsesClassicInteractionChrome() then return end
   if TryBuild() then return end
 
   U.RegisterEvent("ADDON_LOADED", TryBuild)

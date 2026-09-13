@@ -598,6 +598,14 @@ end
 -- Returned as a multiple value so each builder can feed it straight into the
 -- SetPoint shape its own control uses.
 function rank.AnchorArgs()
+  -- modern-wow draws a dark band under its header for these instead; the
+  -- strip above the first row is the book's cover edge there.
+  if type(U.ModernWowSpellBookToggleAnchor) == "function" then
+    local point, relative, relativePoint, x, y =
+      U.ModernWowSpellBookToggleAnchor()
+    if point then return point, relative, relativePoint, x, y end
+  end
+
   local first = G("SpellButton1")
   if first then return "BOTTOMLEFT", first, "TOPLEFT", -2, 2 end
   return "TOPLEFT", panel or BookFrame(), "TOPLEFT", 12, -34
@@ -722,11 +730,20 @@ end
 -- variant). Native-chrome themes keep the client's own CheckButton, because
 -- there the whole window is stock art and a flat unrealUI square would be the
 -- one foreign element on it.
+-- The modern-wow book is a textured window too, so it takes the client's
+-- checkbox rather than a flat square (rules/unreal-ui-design.md, Modern WoW
+-- interface-media contract).
+function rank.NativeControls()
+  if U.ThemeStyleUsesNativeChrome() then return true end
+  return type(U.ModernWowSpellBookActive) == "function" and
+         U.ModernWowSpellBookActive() and true or false
+end
+
 function rank.BuildToggle()
   local book = BookFrame()
   if not book or rank.box then return end
 
-  if U.ThemeStyleUsesNativeChrome() then
+  if rank.NativeControls() then
     rank.box = rank.BuildNativeToggle(book)
   else
     rank.box = rank.BuildModernToggle(book)
@@ -1547,8 +1564,14 @@ function missing.Apply(index)
   local ok, value = pcall(missing.Wanted, spellIndex)
   if ok then wanted = value and true or false end
 
+  -- modern-wow draws its own pulsing glow for the same verdict
+  -- (modules/spellbookmodernwow.lua); the flat outline stays clear there and
+  -- only returns if that path is not drawn or its glow could not be built.
+  local themed = type(U.ModernWowSpellBookBarGlow) == "function" and
+                 U.ModernWowSpellBookBarGlow(button, wanted)
   U.SetBorderColor(overlay,
-                   M.Unpack(wanted and M.color.accent or missing.CLEAR))
+                   M.Unpack((wanted and not themed) and M.color.accent or
+                            missing.CLEAR))
   -- GetVertexColor cannot read the border tint back on this client. Preserve
   -- the verdict that was actually painted so the diagnostic can compare it to
   -- both the current calculation and the native rendered button.
@@ -1654,7 +1677,7 @@ function missing.BuildToggle()
   -- rank.BuildToggle already returns early once it has built.
   if rank.active then rank.BuildToggle() end
 
-  if U.ThemeStyleUsesNativeChrome() then
+  if rank.NativeControls() then
     missing.box = missing.BuildNativeToggle(book)
   else
     missing.box = missing.BuildModernToggle(book)
@@ -2915,7 +2938,21 @@ function SB:OnEnable()
   -- The native themes keep the client's own Spellbook chrome, so only the skin
   -- is skipped. The highest-rank filter is behaviour rather than chrome and is
   -- installed for every theme.
-  if not U.ThemeStyleUsesNativeChrome() then BuildFrame() end
+  --
+  -- modern-wow is chosen before any flat styling and replaces the Modern skin
+  -- outright (modules/spellbookmodernwow.lua). A failure there is reported and
+  -- not papered over with the flat skin, which would leave a mixed window.
+  if U.ThemeStyleUsesNativeChrome() then
+    -- Native chrome: behaviour only.
+  elseif type(U.ModernWowSpellBookWanted) == "function" and
+         U.ModernWowSpellBookWanted() then
+    local ok, err = pcall(U.BuildModernWowSpellBook)
+    if not ok then
+      U.Error("spellbook: modern-wow drawing path: " .. tostring(err))
+    end
+  else
+    BuildFrame()
+  end
   booktab.Install()
   rank.Install()
   missing.Install()

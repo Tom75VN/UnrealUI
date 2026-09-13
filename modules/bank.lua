@@ -239,7 +239,7 @@ end
 -- Whether ContainerIDToInventoryID resolves for containers 5..10 here is still
 -- not measured, but it no longer decides anything: IS.IsGeneralBag falls back to
 -- the inventory ids the client documents for bank bag buttons (64..69) and, past
--- that, sorts a bag it cannot classify rather than skipping it.
+-- that, skips a bag it cannot positively identify as an ordinary bag.
 --
 -- One run exists at a time for the whole addon, because there is one cursor,
 -- so the desaturated look here reports the engine being busy rather than this

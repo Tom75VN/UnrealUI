@@ -13,7 +13,7 @@ local GOLD  = { 0.96, 0.68, 0.04, 1.00 }
 local WHITE = { 0.90, 0.90, 0.90, 1.00 }
 local DIM   = { 0.60, 0.60, 0.60, 1.00 }
 
-local frame, panel
+local frame, panel, modernWowTabMode, toggleCharacterOriginal
 
 local SLOTS = {
   "HeadSlot", "NeckSlot", "ShoulderSlot", "BackSlot", "ChestSlot",
@@ -541,10 +541,31 @@ end
 -- so the tabs get tighter rather than the strip getting longer.
 local function LayoutTabs()
   local tabs = TabStrip()
+
+  -- Focused runtime probe character.tabs.click_geometry.v1 measured the
+  -- client's selected-tab pass changing every visible label from its stable
+  -- small FontObject to a larger one for several rendered frames. The native
+  -- tab widths followed those transient metrics (64/70/47/52 became
+  -- 74/81/52/59), and the internal writes bypassed the Lua SetWidth methods.
+  -- Restore the shared component's font state before measuring, otherwise the
+  -- fit faithfully turns that native transition into a visibly resizing strip.
+  if modernWowTabMode then
+    local i
+    for i = 1, table.getn(tabs) do
+      local tab = tabs[i]
+      if tab and type(tab.uuiTabRefreshFont) == "function" then
+        tab.uuiTabRefreshFont()
+      end
+    end
+  end
   U.ChainStockTabs(tabs, TAB_GAP)
 
   local padding = TAB_PADDING
   if HasPetTab() then padding = padding + TAB_PET_PADDING end
+  -- The Dragonflight tab art needs more room inside its end caps.
+  if modernWowTabMode then
+    padding = M.modernWow.tab.padding
+  end
 
   -- Hung off the panel rather than the frame: the panel is the visible window
   -- surface, and CharacterFrame extends well past its bottom edge, so a strip
@@ -558,7 +579,7 @@ local function LayoutTabs()
       frame = panel,
       point = "TOPLEFT",
       relativePoint = "BOTTOMLEFT",
-      x = 0,
+      x = modernWowTabMode and 5 or 0,
       y = -TAB_DROP,
     } or nil,
   })
@@ -575,11 +596,38 @@ end
 -- click in between. Rather than hunt every native resize path, the applied
 -- widths are re-asserted whenever one drifts from its target, and only while
 -- the sheet is open. A pass that is already correct writes nothing.
+--
+-- The targets themselves can also be stale: the pass on open runs before the
+-- client has settled which tabs are shown and what their labels measure, so
+-- the correct sizes only appeared after the first click re-measured. The shown
+-- run and each label width are compared too, and any change re-measures.
 local function TabFitDrifted()
   local info = tabFit
-  if not info or not info.rows then return false end
+  if not info or not info.rows then return true end
 
+  local tabs = TabStrip()
+  local shown = 0
   local i
+  for i = 1, table.getn(tabs) do
+    local tab = tabs[i]
+    local ok, visible = false, false
+    if tab and tab.IsShown then ok, visible = pcall(tab.IsShown, tab) end
+    if ok and visible then
+      shown = shown + 1
+      local row = info.rows[shown]
+      if not row or row.name ~= tab:GetName() then return true end
+      local fsOk, fontstring = pcall(tab.GetFontString, tab)
+      if fsOk and fontstring and fontstring.GetStringWidth then
+        local wOk, width = pcall(fontstring.GetStringWidth, fontstring)
+        if wOk and tonumber(width) and width > 0
+           and math.abs(width - row.label) > 0.5 then
+          return true
+        end
+      end
+    end
+  end
+  if shown ~= table.getn(info.rows) then return true end
+
   for i = 1, table.getn(info.rows) do
     local row = info.rows[i]
     local tab = G(row.name)
@@ -653,6 +701,64 @@ local function StyleTabs()
   end
 
   LayoutTabs()
+end
+
+-- The shared tab component owns the visible active state, while the client
+-- owns which Character page is actually shown. Mouse clicks normally update
+-- both, but ToggleCharacter("PaperDollFrame") changes selectedTab directly.
+-- Keep the owned state aligned with the measured native field instead of
+-- assuming the last clicked tab is still the selected one.
+local function SyncTabSelection()
+  if not frame then return end
+  local selected = tonumber(frame.selectedTab)
+  if not selected or selected < 1 or selected > TAB_COUNT then return end
+
+  local tabs = TabStrip()
+  local i
+  for i = 1, table.getn(tabs) do
+    local tab = tabs[i]
+    local active = i == selected
+    if tab and type(tab.SetActive) == "function"
+       and tab.uuiTabActive ~= active then
+      tab.SetActive(active)
+    end
+  end
+end
+
+-- Focused probe character.tabs.click_geometry.v1 captured the C binding's
+-- exact fixed-arity call: ToggleCharacter("PaperDollFrame"). With the window
+-- open on Honor, the first call changed selectedTab 5 -> 1 and left the frame
+-- visible; the second identical call hid it. Reproduce that verified native
+-- sequence inside one binding call, but only for modern-wow and only when the
+-- request began on another Character page. Calling the original twice avoids
+-- introducing an unverified HideUIPanel/CharacterFrame:Hide path.
+local function InstallModernWowCharacterToggle()
+  if not modernWowTabMode or toggleCharacterOriginal then return end
+  local original = G("ToggleCharacter")
+  if type(original) ~= "function" then
+    U.Debug("character: ToggleCharacter unavailable")
+    return
+  end
+
+  local wrapper = function(request)
+    local closeAfterSwitch = false
+    if request == "PaperDollFrame" and frame and frame.IsShown then
+      local ok, shown = pcall(frame.IsShown, frame)
+      local selected = tonumber(frame.selectedTab)
+      closeAfterSwitch = ok and shown and selected and selected ~= 1
+    end
+
+    local r1, r2, r3, r4, r5 = original(request)
+    if closeAfterSwitch then original(request) end
+    SyncTabSelection()
+    return r1, r2, r3, r4, r5
+  end
+
+  if U.SetG("ToggleCharacter", wrapper) and G("ToggleCharacter") == wrapper then
+    toggleCharacterOriginal = original
+  else
+    U.Debug("character: ToggleCharacter wrapper assignment was refused")
+  end
 end
 
 -- ---------------------------------------------------------------------------
@@ -846,6 +952,9 @@ local function StyleReputationTab()
     if header then
       header.uuiCollapseClick = ToggleReputationHeader
       U.StyleStockCollapseButton(header)
+      if modernWowTabMode and type(U.ModernWowCollapseFace) == "function" then
+        pcall(U.ModernWowCollapseFace, header)
+      end
       U.PostHookScript(header, "OnClick", UpdateReputationRows)
       SetTextFont(header, M.fontSize.normal, GOLD)
     end
@@ -978,6 +1087,9 @@ local function BuildSkillRows()
     if header then
       header.uuiCollapseClick = ToggleSkillHeader
       U.StyleStockCollapseButton(header)
+      if modernWowTabMode and type(U.ModernWowCollapseFace) == "function" then
+        pcall(U.ModernWowCollapseFace, header)
+      end
     end
   end
 end
@@ -1055,6 +1167,9 @@ local function StyleSkillsTab()
   if collapseAll then
     U.StripStockTextures(collapseAll)
     U.StyleStockCollapseButton(collapseAll, true)
+    if modernWowTabMode and type(U.ModernWowCollapseFace) == "function" then
+      pcall(U.ModernWowCollapseFace, collapseAll)
+    end
     U.SetStockCollapseState(collapseAll, true, false)
 
     -- Unlike a header row, there is no CollapseSkillHeader(index)-style API
@@ -1435,6 +1550,8 @@ local function BuildFrame()
 end
 
 function CH:OnEnable()
+  modernWowTabMode = U.GetActiveThemeStyle() == "modern-wow"
+
   -- The native theme keeps CharacterFrame's own chrome. windowmove.lua still
   -- supplies its mover. Only the semantic rarity outlines are layered above
   -- the stock item slots.
@@ -1449,11 +1566,18 @@ function CH:OnEnable()
     return
   end
   if not BuildFrame() then return end
+  InstallModernWowCharacterToggle()
 
-  U.RegisterUpdate("character.tab-fit", 0.2, function()
+  -- modern-wow's art follows the live tab geometry, so its watcher runs on
+  -- every rendered frame and repairs the client's delayed native selection
+  -- pass before it can be drawn. Other themes keep the existing low-rate
+  -- watcher; this theme-specific race must not alter their drawing path.
+  local tabFitInterval = modernWowTabMode and 0 or 0.2
+  U.RegisterUpdate("character.tab-fit", tabFitInterval, function()
     if not frame or not frame.IsShown then return end
     local ok, shown = pcall(frame.IsShown, frame)
     if not ok or not shown then return end
+    SyncTabSelection()
     if TabFitDrifted() then LayoutTabs() end
   end)
 

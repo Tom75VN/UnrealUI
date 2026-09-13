@@ -21,6 +21,7 @@ local WHITE = { 0.90, 0.90, 0.90, 1.00 }
 local DIM   = { 0.60, 0.60, 0.60, 1.00 }
 
 local frame, panel
+local useModernWow = false
 
 -- Vanilla's MERCHANT_ITEMS_PER_PAGE is documented as 10, but the number of
 -- MerchantItem<n> buttons the stock template actually instantiates has no
@@ -197,8 +198,13 @@ local function StyleRepairButtons()
 end
 
 local function StylePageControls()
-  U.StyleStockArrowButton(G("MerchantPrevPageButton"), "left", 18)
-  U.StyleStockArrowButton(G("MerchantNextPageButton"), "right", 18)
+  -- The Modern WoW media set has no authored left/right utility cells in
+  -- either red-button atlas. Preserve the native stateful arrow art there;
+  -- flat themes continue to use UnrealUI's shared arrow component.
+  if not useModernWow then
+    U.StyleStockArrowButton(G("MerchantPrevPageButton"), "left", 18)
+    U.StyleStockArrowButton(G("MerchantNextPageButton"), "right", 18)
+  end
   SetTextFont(G("MerchantPageText"), M.fontSize.small, DIM)
 end
 
@@ -209,6 +215,9 @@ local function StyleTabs()
   end
   U.ChainStockTabs(tabs, 3)
   U.StyleStockTabGroup(tabs, 1)
+  if useModernWow and type(U.ModernWowNpcTab) == "function" then
+    for i = 1, TAB_COUNT do U.ModernWowNpcTab(tabs[i]) end
+  end
 end
 
 -- The NPC portrait/name header is UNVERIFIED against this client's compact
@@ -224,13 +233,30 @@ local function StyleHeader()
   end
 end
 
+local function StripFrameChrome()
+  local portrait = G("MerchantFramePortrait")
+  if portrait then
+    U.StripStockTextures(frame, { keep = { [portrait] = true } })
+  else
+    U.StripStockTextures(frame)
+  end
+end
+
+local function ApplyModernWowDialog()
+  if useModernWow and type(U.ModernWowNpcDialog) == "function" then
+    U.ModernWowNpcDialog(frame, panel, G("MerchantFramePortrait"),
+                         "MerchantFrameCloseButton")
+  end
+end
+
 local function Reapply()
-  U.StripStockTextures(frame)
+  StripFrameChrome()
   if panel then panel:Show() end
 
   StyleHeader()
   StyleItemRows()
   StyleBuyBackSlot()
+  ApplyModernWowDialog()
 end
 
 local function BuildFrame()
@@ -240,7 +266,12 @@ local function BuildFrame()
     return false
   end
 
-  U.StripStockTextures(frame)
+  -- Also run here for a load-on-demand MerchantFrame. OnEnable's early
+  -- behavior-only pass cannot see item buttons that do not exist yet; the
+  -- per-button guard makes this harmless when the frame was already loaded.
+  HookItemTooltips()
+
+  StripFrameChrome()
 
   panel = U.CreatePanel(frame, {
     name = "UnrealUIMerchantPanel",
@@ -268,6 +299,7 @@ local function BuildFrame()
   StylePageControls()
   StyleBuyBackSlot()
   StyleRepairButtons()
+  ApplyModernWowDialog()
 
   U.PostHookScript(frame, "OnShow", Reapply)
   U.PostHookScript(frame, "OnHide", function()
@@ -301,11 +333,33 @@ local function BuildFrame()
   return true
 end
 
+-- MerchantFrame is commonly load-on-demand. UnrealPfUI's working source
+-- confirms MERCHANT_SHOW on this client family; ADDON_LOADED catches the
+-- corresponding UI package first when one exists. Stop listening as soon as
+-- the guarded frame lookup succeeds.
+local pendingEvents = { "ADDON_LOADED", "MERCHANT_SHOW" }
+
+local function TryBuild()
+  if BuildFrame() then
+    local i
+    for i = 1, table.getn(pendingEvents) do
+      U.UnregisterEvent(pendingEvents[i], TryBuild)
+    end
+    return true
+  end
+  return false
+end
+
 function MER:OnEnable()
   -- Ahead of the theme gate: the tooltip hooks change no artwork, so Classic
   -- gets them on its untouched vendor window too.
   HookItemTooltips()
 
-  if U.ThemeStyleUsesNativeChrome() then return end
-  BuildFrame()
+  useModernWow = type(U.GetActiveThemeStyle) == "function" and
+                 U.GetActiveThemeStyle() == "modern-wow"
+  if U.ThemeStyleUsesClassicInteractionChrome() then return end
+  if TryBuild() then return end
+
+  U.RegisterEvent("ADDON_LOADED", TryBuild)
+  U.RegisterEvent("MERCHANT_SHOW", TryBuild)
 end

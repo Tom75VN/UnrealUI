@@ -73,6 +73,15 @@ function U.ThemeStyleUsesNativeChrome()
   return style and style.nativeChrome or false
 end
 
+-- Modern WoW deliberately keeps stock interaction windows on the same path
+-- as classic-wow. Character, Quest Log and HUD surfaces still use the Modern
+-- WoW theme, but NPC/service dialogs and the mailbox retain the client's own
+-- complete chrome, controls and layout.
+function U.ThemeStyleUsesClassicInteractionChrome()
+  return U.ThemeStyleUsesNativeChrome() or
+         U.GetActiveThemeStyle() == "modern-wow"
+end
+
 function U.ThemeStyleRequiresReload()
   return U.GetThemeStyle() ~= U.GetActiveThemeStyle()
 end

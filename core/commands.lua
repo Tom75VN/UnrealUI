@@ -160,6 +160,7 @@ local DIAGNOSTIC_HELP = {
   "  |cffffff00/uui abcd|r - dump why an action button shows no cooldown number",
   "  |cffffff00/uui cb|r - arm a placement dump for the native cast bar",
   "  |cffffff00/uui movertest|r - foundation mover smoke test",
+  "  |cffffff00/uui movesnap|r - record mover snapping into UnrealUIDiagDB",
   "  |cffffff00/uui perf start|r - the stutter scan: frame-time distribution, " ..
     "group size, network and an addon-off control. |cffffff00stop|r ends it.",
   "  |cffffff00/uui perf party|r - party freeze bisect: roster-event marks, " ..
@@ -680,10 +681,26 @@ local function ShowSelfCheck()
   if type(U.MicroBarReport) == "function" then
     local micro = U.MicroBarReport()
     U.Print("  micro bar: enabled " .. tostring(micro.enabled) ..
+            ", skin " .. tostring(micro.skin) ..
             ", found " .. table.getn(micro.found) .. "/" ..
             (table.getn(micro.found) + table.getn(micro.missing)))
     if table.getn(micro.missing) > 0 then
       U.Print("    missing: " .. table.concat(micro.missing, ", "))
+    end
+    -- Real edge-to-edge spacing per pair. The skinned row wants every gap to
+    -- equal micro.gap; one odd value names the button something re-anchored
+    -- or resized after the bar laid itself out.
+    local g
+    for g = 1, table.getn(micro.geom or {}) do
+      local b = micro.geom[g]
+      U.Print("    " .. b.name .. ": w " .. tostring(b.width) ..
+              " scale " .. tostring(b.scale) ..
+              " points " .. tostring(b.points) ..
+              " gap " .. tostring(b.gap or "-") ..
+              " (want " .. tostring(micro.gap) .. ")")
+      U.Print("      anchor " .. tostring(b.point) .. " -> " ..
+              tostring(b.relative) .. " " .. tostring(b.relativePoint) ..
+              " x " .. tostring(b.x))
     end
   end
 
@@ -749,6 +766,17 @@ local function ShowSelfCheck()
     local t = U.QuestLogTrackReport()
     U.Print("  quest tracking: source " .. tostring(t.source) ..
             ", rows marked " .. tostring(t.marked))
+  end
+
+  -- The extended (classic-wow) Quest Log is a one-shot layout over native widgets
+  -- under the Classic WoW theme, so nothing on screen says whether it landed
+  -- or how many rows the left page took.
+  if type(U.QuestLogExtendedReport) == "function" then
+    local e = U.QuestLogExtendedReport()
+    U.Print("  quest log extended: mode " .. tostring(e.mode) ..
+            ", applied " .. tostring(e.applied) ..
+            ", rows " .. tostring(e.rows) ..
+            ", row pitch " .. tostring(e.pitch))
   end
 
   ShowUnitFrameCheck()
@@ -1159,6 +1187,75 @@ handlers["check"]  = function() ShowSelfCheck() end
 handlers["help"]   = function(rest) ShowHelp(rest) end
 handlers["movertest"] = function() ShowMoverTest() end
 handlers["np"] = function() ShowNameplateDump() end
+
+-- Mover snap trace.
+--
+-- Records what the snapper decides on every drag tick -- the requested
+-- position, the grid pass, each overlap correction with both rectangles, and
+-- the result -- plus a before/after table of every mover holding the rect
+-- MoverBounds computes AND the rect the client draws. That pair is the point:
+-- where a theme scales a mover's frame the two can disagree, and a magnet
+-- barrier in the wrong place is what throws an anchor across the screen.
+--
+-- Armed here rather than inside edit mode because the overlay takes the
+-- keyboard: no slash command can be typed while it is open. U.LockUI stops the
+-- run and writes it, so the sequence is arm, open edit mode, reproduce, close
+-- edit mode, /reload.
+handlers["movesnap"] = function()
+  if type(U.MoverSnapTrace) ~= "function" then return end
+
+  if U.MoverSnapTraceOn() then
+    U.MoverSnapTrace(false)
+    U.Print("mover snap trace: stopped, saved to UnrealUIDiagDB.moveSnap")
+    return
+  end
+
+  U.MoverSnapTrace(true)
+  U.Print("mover snap trace |cff55ff55armed|r")
+  U.Print("  1. |cffffff00/uui|r to open edit mode")
+  U.Print("  2. drag the element that misbehaves, slowly, into the anchor " ..
+          "that throws it")
+  U.Print("  3. close edit mode - the trace stops and saves itself")
+  U.Print("  4. |cffffff00/reload|r, then read UnrealUIDiagDB.moveSnap in " ..
+          U.SavedVariablesHint())
+end
+-- themes/modern-wow.lua. Bare `/uui mw` measures what the theme actually
+-- built and writes it to UnrealUIDiagDB.modernWow; the sub-commands switch one
+-- surface on or off. Each surface builds its art once at PLAYER_LOGIN, so a
+-- change needs a reload -- the same reason a theme change does.
+handlers["mw"] = function(rest)
+  local args = Trim(rest or "")
+  -- string.find with captures, not string.match: this client's Lua has no
+  -- string.match at all (see modules/spellbook.lua and modules/petbar.lua,
+  -- both of which record it).
+  local _, _, verb, id = string.find(args, "^(%a+)%s*(.*)$")
+  verb = verb and string.lower(verb) or ""
+  id = id and Trim(id) or ""
+
+  if type(U.ModernWowReport) ~= "function" then
+    U.Print("mw: modules/modernwow.lua is not loaded")
+  elseif verb == "list" then
+    U.ModernWowSurfaces()
+  elseif verb == "powertext" then
+    -- Text size on the power bar only, for trying sizes against the art. Live
+    -- when raising it; 0 needs a reload, since restoring the original size
+    -- means rebuilding the label the unit-frame module owns.
+    U.ModernWowSetPowerTextSize(id)
+  elseif verb == "cast" then
+    -- The cast bar's scale remains a separate live control: it does not affect
+    -- the now-fixed unit-frame geometry.
+    U.ModernWowSetCastScale(id)
+  elseif verb == "on" or verb == "off" then
+    if id == "" then
+      U.Print("mw: /uui mw " .. verb .. " <surface>")
+      U.ModernWowSurfaces()
+    else
+      U.ModernWowSetSurface(id, verb == "on")
+    end
+  else
+    U.ModernWowReport()
+  end
+end
 handlers["bagcat"] = function() ShowItemCategoryDump() end
 
 -- Why a derived main-bank stack quantity vanished. modules/bankcount.lua works
@@ -1248,6 +1345,16 @@ handlers["sb"] = function(rest)
   -- The highest-rank filter is a separate question from the bar hint: it turns
   -- on the layout of the spell list itself, so it gets the layout dump rather
   -- than the action-slot one. Run it with the Spellbook open.
+  -- The modern-wow window's own drawing state (modules/spellbookmodernwow.lua).
+  if mode == "look" then
+    if type(U.ModernWowSpellBookReport) ~= "function" then
+      U.Print("spellbook look unavailable - modules/spellbookmodernwow.lua did not load")
+      return
+    end
+    U.ModernWowSpellBookReport()
+    return
+  end
+
   if mode == "ranks" or mode == "rank" then
     if type(U.SpellBookRankDump) ~= "function" then
       U.Print("spellbook rank dump unavailable - modules/spellbook.lua did not load")
@@ -1524,6 +1631,20 @@ local function ShowQuestTextCheck()
 end
 
 handlers["questtext"] = function() ShowQuestTextCheck() end
+
+-- Quest Log details-page alignment readout (modules/questlog.lua
+-- U.QuestLogAlignReport). Open the Quest Log on a quest first; the dump is
+-- written to UnrealUIDiagDB.questLogAlign and reaches disk on /reload.
+handlers["qlalign"] = function()
+  if type(U.QuestLogAlignReport) ~= "function" then
+    U.Print("quest log module is not loaded (it only builds under modern themes)")
+    return
+  end
+  local report = U.QuestLogAlignReport()
+  SaveDiagnostic("questLogAlign", report)
+  U.Print("quest log alignment: " .. tostring(table.getn(report)) ..
+          " strings saved to UnrealUIDiagDB.questLogAlign - /reload to write it")
+end
 
 -- ---------------------------------------------------------------------------
 -- Keyboard capture test

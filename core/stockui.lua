@@ -616,12 +616,7 @@ local function StyleGroupTab(button, options)
 
   button.uuiTabActive = false
 
-  local function Refresh()
-    -- Selection is intentionally communicated through the label alone: every
-    -- tab retains the same neutral surface and border in both states.
-    U.SetBackgroundColor(button, M.Unpack(inactiveBg))
-    U.SetBorderColor(button, M.Unpack(M.color.border))
-
+  local function RefreshFont()
     local ok, fontstring = false, nil
     if button.GetFontString then
       ok, fontstring = pcall(button.GetFontString, button)
@@ -630,6 +625,15 @@ local function StyleGroupTab(button, options)
       U.SetStockFont(fontstring, options.fontSize or M.fontSize.small,
         button.uuiTabActive and M.color.textAccent or M.color.text)
     end
+  end
+  button.uuiTabRefreshFont = RefreshFont
+
+  local function Refresh()
+    -- Selection is intentionally communicated through the label alone: every
+    -- tab retains the same neutral surface and border in both states.
+    U.SetBackgroundColor(button, M.Unpack(inactiveBg))
+    U.SetBorderColor(button, M.Unpack(M.color.border))
+    RefreshFont()
   end
   button.uuiTabRefresh = Refresh
 
