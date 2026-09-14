@@ -495,6 +495,52 @@ local function StyleModernWowTitleRows()
   end
 end
 
+-- Requested (modern-wow only): the native greeting keeps its chrome but shows
+-- the same three quest-state glyphs as the `modern` path instead of the stock
+-- bullet. Per knowledge.json ui.gossip_quest_row_icon_stripped_permanently the
+-- bullet has no global name. An alpha-only fade left it visible in game, so it
+-- gets the full U.HideRegion suppression the `modern` strip uses. Regions are
+-- told apart by texture path (a reader, never walk identity): unrealUI's own
+-- glyph and the native hover highlight are left alone, and StyleQuestRowIcon
+-- runs last, the verified recovery order from StyleTitleRows.
+local function StyleNativeQuestRowIcons()
+  local rows = tonumber(G("MAX_NUM_QUESTS")) or 32
+  local i
+  for i = 1, rows do
+    local button = G("QuestTitleButton" .. i)
+    if button then
+      if button.GetRegions then
+        local ok, regions = pcall(function() return { button:GetRegions() } end)
+        if ok and type(regions) == "table" then
+          local r
+          for r = 1, table.getn(regions) do
+            local region = regions[r]
+            local typeOk, objectType = false, nil
+            if region and region.GetObjectType then
+              typeOk, objectType = pcall(region.GetObjectType, region)
+            end
+            if typeOk and objectType == "Texture" then
+              local pathOk, path = pcall(region.GetTexture, region)
+              local lower = pathOk and type(path) == "string" and
+                            string.lower(path) or ""
+              if not string.find(lower, "unrealui", 1, true) and
+                 not string.find(lower, "highlight", 1, true) then
+                U.HideRegion(region)
+              end
+            end
+          end
+        end
+      end
+
+      local fontOk, fontstring = false, nil
+      if button.GetFontString then
+        fontOk, fontstring = pcall(button.GetFontString, button)
+      end
+      StyleQuestRowIcon(button, nil, fontOk and fontstring or nil)
+    end
+  end
+end
+
 -- The client marks the chosen reward with QuestRewardItemHighlight, a stock
 -- gold UI-QuestItemHighlight box sized for the untouched native reward row
 -- (WORKING_SOURCE: UnrealPfUI's skins/blizzard/gossipquest.lua replaces the
@@ -1137,13 +1183,49 @@ local function ColorNativeRewardNames()
   end
 end
 
+-- Requested (modern-wow only): the native quest window's title and section
+-- headings use the Quest Log details page's heading typography -- the shared
+-- font at `large`, parchment heading ink, no shadow -- instead of the stock
+-- QuestTitleFont. Typography only; the native chrome, anchors and sizes of the
+-- window stay untouched per the NPC interaction-window rule.
+local NATIVE_HEADINGS = {
+  "QuestTitleText",
+  "QuestProgressTitleText",
+  "QuestRewardTitleText",
+  "QuestProgressRequiredItemsText",
+  "QuestDetailObjectiveTitleText",
+  "QuestDetailRewardTitleText",
+  "QuestRewardRewardTitleText",
+  -- Greeting (turn-in list) section headings, same names the modern path's
+  -- ApplySectionHeadingColors already addresses.
+  "CurrentQuestsText",
+  "AvailableQuestsText",
+}
+
+local function ApplyNativeHeadingFonts()
+  local ink = M.modernWow.parchmentInk.heading
+  local i
+  for i = 1, table.getn(NATIVE_HEADINGS) do
+    local object = G(NATIVE_HEADINGS[i])
+    if object then
+      -- Same sequence as modules/questlog.lua's SetQuestFont under modern-wow.
+      U.SetStockFont(object, M.fontSize.large, ink)
+      U.SetFont(object, M.fontSize.large, nil, nil, true)
+      U.ClearTextShadow(object)
+      -- Left edge last: the font rebinds above reset justification.
+      U.FitLineToText(object)
+    end
+  end
+end
+
 function QF:OnEnable()
   useModernWow = type(U.GetActiveThemeStyle) == "function" and
                  U.GetActiveThemeStyle() == "modern-wow"
   if U.ThemeStyleUsesClassicInteractionChrome() then
     -- The stock quest frame is left exactly as the client draws it. Only the
     -- reward price and equipped-item comparison are added, matching what the
-    -- modern themes get from StyleItemSlots, plus reward rarity colour.
+    -- modern themes get from StyleItemSlots, plus reward rarity colour, and
+    -- under modern-wow the Quest Log heading typography (see above).
     HookQuestRewards()
     local i
     for i = 1, table.getn(pendingEvents) do
@@ -1152,12 +1234,26 @@ function QF:OnEnable()
 
     -- Same post-native timing as ReapplyAfterNative: immediately, then once
     -- more after the native refresh has settled.
-    local function colorAfterNative()
+    local function nativeTextPass()
       ColorNativeRewardNames()
-      U.DeferOnce("quest-reward-colors", ColorNativeRewardNames)
+      if useModernWow then
+        ApplyNativeHeadingFonts()
+        StyleNativeQuestRowIcons()
+      end
+    end
+    local function colorAfterNative()
+      nativeTextPass()
+      U.DeferOnce("quest-reward-colors", nativeTextPass)
     end
     U.PostHookGlobal("QuestFrameItems_Update", colorAfterNative)
     U.PostHookGlobal("QuestFrameRewardItems_Update", colorAfterNative)
+    if useModernWow then
+      U.PostHookGlobal("QuestFrameProgressItems_Update", colorAfterNative)
+      local greeting = G("QuestFrameGreetingPanel")
+      if greeting then
+        U.PostHookScript(greeting, "OnShow", colorAfterNative)
+      end
+    end
     for i = 1, table.getn(pendingEvents) do
       U.RegisterEvent(pendingEvents[i], colorAfterNative)
     end

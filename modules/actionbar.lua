@@ -479,6 +479,9 @@ end
 function modernWowAction.SetBarOrnamentsShown(entry, shown)
   local state = entry and entry.modernWowOrnaments
   if not state then return end
+  -- The bar 1 "Gryphons" option; missing (older saved data) means shown.
+  -- Literal key: Key() is declared further down this file.
+  if shown and cfg and cfg.bar1Gryphons == false then shown = false end
   modernWowAction.SetShown(state.left, shown)
   modernWowAction.SetShown(state.right, shown)
 end
@@ -777,6 +780,8 @@ local function BuildDefaults()
     -- settings panel; enabling ten bars nobody asked for is not a default.
     defaults[Key(i, "Enabled")] = (i == 1)
     defaults[Key(i, "HideBackground")] = false
+    -- modern-wow gryphon/wyvern ornaments; only bar 1 draws them.
+    if i == 1 then defaults[Key(i, "Gryphons")] = true end
     defaults[Key(i, "Buttons")] = 12
     defaults[Key(i, "PerRow")]  = 12
     defaults[Key(i, "Size")]    = 30
@@ -2537,7 +2542,14 @@ function U.GetActionBarSetting(bar, name)
      not cfg then return nil end
   if name == "Enabled" then return IsEnabled(bar) end
   if name == "HideBackground" then return HidesBackground(bar) end
+  if name == "Gryphons" then return Get(bar, "Gryphons") ~= false end
   return Number(bar, name)
+end
+
+-- The gryphon option exists only for bar 1 while its modern-wow ornaments are
+-- drawn; the theme is fixed for the session, so the views ask once per refresh.
+function U.ActionBarHasGryphons(bar)
+  return tonumber(bar) == 1 and modernWowAction.active and true or false
 end
 
 -- Applies a numeric edit-mode value to the live bar without storing it or
@@ -2564,6 +2576,9 @@ function U.SetActionBarSetting(bar, name, value)
     cfg[Key(bar, "Enabled")] = value and true or false
   elseif name == "HideBackground" then
     cfg[Key(bar, "HideBackground")] = value and true or false
+  elseif name == "Gryphons" then
+    if bar ~= 1 then return nil end
+    cfg[Key(bar, "Gryphons")] = value and true or false
   else
     if not LIMITS[name] then return nil end
     cfg[Key(bar, name)] = Clamp(name, value)

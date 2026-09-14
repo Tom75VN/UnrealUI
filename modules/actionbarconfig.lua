@@ -99,6 +99,21 @@ local function BuildBarPage(parent, bar)
   hideBackground.SetPoint("TOPLEFT", parent, "TOPLEFT", COLUMN_X, -34)
   table.insert(widgets, hideBackground)
 
+  -- modern-wow only: the gryphon/wyvern ornaments either side of bar 1.
+  local gryphons = nil
+  if type(U.ActionBarHasGryphons) == "function" and U.ActionBarHasGryphons(bar) then
+    gryphons = U.CreateCheckbox(parent, {
+      name = "UnrealUIActionBarConfigGryphons" .. bar,
+      text = U.L("ABC_SHOW_GRYPHONS"),
+      value = U.GetActionBarSetting(bar, "Gryphons"),
+      onChange = function(value)
+        U.SetActionBarSetting(bar, "Gryphons", value)
+      end,
+    })
+    gryphons.SetPoint("TOPLEFT", parent, "TOPLEFT", COLUMN_X, -56)
+    table.insert(widgets, gryphons)
+  end
+
   local hint = U.CreateSettingsLabel(parent, {
     size = M.fontSize.tiny,
     color = M.color.textDim,
@@ -138,6 +153,7 @@ local function BuildBarPage(parent, bar)
   local function Refresh()
     enable.SetValue(U.GetActionBarSetting(bar, "Enabled"))
     hideBackground.SetValue(U.GetActionBarSetting(bar, "HideBackground"))
+    if gryphons then gryphons.SetValue(U.GetActionBarSetting(bar, "Gryphons")) end
 
     local j
     for j = 1, table.getn(SLIDERS) do
@@ -195,6 +211,32 @@ local function BuildMoverPanel(frame, contentTop, contentWidth)
   controls.hideBackground = hideBackground
   table.insert(widgets, hideBackground)
 
+  -- Beside Enable, and only while the panel points at bar 1 under modern-wow.
+  -- The panel shows every widget it holds, so this one filters that request.
+  local gryphons = U.CreateCheckbox(frame, {
+    name = "UnrealUIActionBarMoverGryphons",
+    text = U.L("ABC_SHOW_GRYPHONS"),
+    textWidth = MOVER_SLIDER_WIDTH - 20,
+    value = true,
+    onChange = function(value)
+      U.SetActionBarSetting(moverBar, "Gryphons", value)
+    end,
+  })
+  gryphons.SetPoint("TOPLEFT", frame, "TOPLEFT", pad + MOVER_COLUMN_X, contentTop)
+  local gryphonParts = gryphons.uuiParts
+  gryphons.uuiParts = nil
+  gryphons.uuiSetShown = function(shown)
+    shown = shown and type(U.ActionBarHasGryphons) == "function" and
+            U.ActionBarHasGryphons(moverBar)
+    local k
+    for k = 1, table.getn(gryphonParts or {}) do
+      local part = gryphonParts[k]
+      if shown then part:Show() else part:Hide() end
+    end
+  end
+  controls.gryphons = gryphons
+  table.insert(widgets, gryphons)
+
   local hint = U.CreateSettingsLabel(frame, {
     size = M.fontSize.tiny,
     color = M.color.textDim,
@@ -249,6 +291,10 @@ local function BuildMoverPanel(frame, contentTop, contentWidth)
 
     controls.enable.SetValue(U.GetActionBarSetting(bar, "Enabled"))
     controls.hideBackground.SetValue(U.GetActionBarSetting(bar, "HideBackground"))
+    controls.gryphons.uuiSetShown(true)
+    if U.ActionBarHasGryphons and U.ActionBarHasGryphons(bar) then
+      controls.gryphons.SetValue(U.GetActionBarSetting(bar, "Gryphons"))
+    end
     if controls.hint then controls.hint:SetText(MoverHint(bar)) end
 
     local j

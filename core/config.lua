@@ -15,7 +15,7 @@
 
 local U = UnrealUI
 
-local CONFIG_VERSION = 5
+local CONFIG_VERSION = 7
 local PROFILE_STORE_VERSION = 1
 local MAX_PROFILE_NAME = 64
 
@@ -31,7 +31,7 @@ local VALID_POINTS = {
 local defaults = {
   version   = CONFIG_VERSION,
   debug     = false,
-  themeStyle = "modern",
+  themeStyle = "modern-wow",
   -- Stable media ids only. core/media.lua reconstructs the bundled paths so
   -- the client's unsafe SavedVariables backslash handling never sees them.
   defaultFont = U.media.defaultFontId,
@@ -56,6 +56,23 @@ local defaults = {
   -- A number, not a string: knowledge.json / config.savedvariables_backslash
   -- _corruption means only numbers and booleans are safe to persist here.
   suppressLevel = 4,
+  -- Diagnostic coverage ceiling for 3D unit-frame portraits under modern and
+  -- modern-wow;
+  -- /uui portrait3d keeps the in-between steps for a crash bisect
+  -- (knowledge.json / unitframes.portrait_model_crash):
+  --   0  off, 2D only
+  --   1  player frame only
+  --   2  + other player characters
+  --   3  + NPCs and pets (default; user-confirmed without a crash 2026-09-14)
+  -- A number for the same SavedVariables-safety reason as suppressLevel.
+  portrait3d = 3,
+  -- Each mover-facing switch owns only its unit-frame family. Pet follows the
+  -- player frame and party pets follow the party frames; target and
+  -- target-of-target remain independently configurable.
+  portrait3dPlayer = true,
+  portrait3dTarget = true,
+  portrait3dTargetTarget = true,
+  portrait3dParty = true,
   locked    = true,     -- mover mode state; see core/mover.lua
   positions = {},       -- mover id -> { point, relativePoint, x, y }
   modules   = {},       -- module name -> { enabled = true }
@@ -252,6 +269,22 @@ local function PrepareConfig(stored)
   if storedVersion < 5 and type(db.modules) == "table" and
      type(db.modules.tooltip) == "table" then
     db.modules.tooltip.fadeHold = 0.25
+  end
+  -- Version 6 split the original all-frames 3D portrait switch into the
+  -- player, target and party frame families. Preserve the old choice for all
+  -- three on the one-time migration instead of silently turning portraits
+  -- back on for a profile that had disabled them.
+  if storedVersion < 6 then
+    local enabled = type(db.portrait3d) == "number" and db.portrait3d > 0
+    db.portrait3dPlayer = enabled
+    db.portrait3dTarget = enabled
+    db.portrait3dParty = enabled
+  end
+  -- Version 7 separated target-of-target from the target family. Its initial
+  -- value follows the target switch so the migration does not change what an
+  -- existing profile draws.
+  if storedVersion < 7 then
+    db.portrait3dTargetTarget = db.portrait3dTarget and true or false
   end
 
   if db.version ~= CONFIG_VERSION then

@@ -115,6 +115,33 @@ function U.SetStockFont(fontstring, size, color, fontObject)
   return applied
 end
 
+-- Left-aligns a single-line stock FontString by shrinking its box to its own
+-- text. SetJustifyH is not reliable after a SetFontObject rebind: /uui qlalign
+-- (2026-09-13, UnrealUIDiagDB.questLogAlign) measured fixed-width TOPLEFT boxes
+-- still drawing their text centred. The native width is remembered once and is
+-- the ceiling, so a long line still wraps where it did before.
+--
+-- Failed approach (USER_CONFIRMED_INGAME 2026-09-13): adding a second TOPRIGHT
+-- point derived from GetPoint broke the Quest Log details layout.
+function U.FitLineToText(object)
+  if not object then return end
+  pcall(object.SetJustifyH, object, "LEFT")
+  if not object.uuiNativeWidth then
+    local ok, width = pcall(object.GetWidth, object)
+    if not ok or not tonumber(width) or width <= 0 then return end
+    object.uuiNativeWidth = width
+  end
+  local width = object.uuiNativeWidth
+  -- Back to full width BEFORE measuring (USER_CONFIRMED_INGAME 2026-09-13): a
+  -- box shrunk for a previous, shorter text reports only its wrapped width.
+  pcall(object.SetWidth, object, width)
+  local ok, textWidth = pcall(object.GetStringWidth, object)
+  textWidth = ok and tonumber(textWidth) or 0
+  -- +2 absorbs rounding so a line that fits is not wrapped by its own box.
+  if textWidth > 0 and textWidth + 2 < width then width = textWidth + 2 end
+  pcall(object.SetWidth, object, width)
+end
+
 function U.StockRegionKeep(frame, extra)
   local keep = {}
   if frame and frame.uuiFill then keep[frame.uuiFill] = true end

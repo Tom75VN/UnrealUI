@@ -2,7 +2,7 @@
 ## Title: |cffffffffUnreal |cfff5ae0aUI
 ## Notes: Unreal Azeroth native UI addon.
 ## Author: unrealUI
-## Version: 0.7.0
+## Version: 0.7.1
 ## X-License: MIT
 ## SavedVariables: UnrealUIDB, UnrealUIProfiles, UnrealUIDiagDB, UnrealUIPriceDB
 ## SavedVariablesPerCharacter: UnrealUIProfileDB, UnrealUIFavoriteDB, UnrealUIBankCountDB
@@ -132,7 +132,20 @@ modules\spellbook.lua
 # modules\spellbook.lua decides in its own OnEnable whether to call them, so
 # nothing here runs under any other theme.
 modules\spellbookmodernwow.lua
+# Its Professions tab and page. Built only by that drawing path.
+modules\spellbookprofessions.lua
+
+# The Talent window's modern-wow drawing path (DF-main's three-panel frame).
+# Entry points only; modules\talents.lua decides whether to call them.
+modules\talentsmodernwow.lua
 modules\talents.lua
+
+# The profession (TradeSkill / Craft) window's modern-wow drawing path
+# (DF-main's profession frame). Builds nothing under any other theme. After
+# spellbookprofessions.lua and talentsmodernwow.lua, whose shared profession
+# lookup and panel rim it calls, and before modules\modernwow.lua, which
+# checks that it built.
+modules\professions.lua
 modules\character.lua
 modules\friends.lua
 modules\merchant.lua

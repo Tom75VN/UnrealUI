@@ -248,6 +248,8 @@ M.modernWow.texture = {
   partyFrame      = M.modernWow.path .. "unitframes\\party-frame",
   playerStatus    = M.modernWow.path .. "unitframes\\player-status-large",
   restingFlipbook = M.modernWow.path .. "unitframes\\resting-flipbook",
+  portraitBackground = M.modernWow.path ..
+                       "unitframes\\unit-frame-portrait-background",
   healthFill      = M.modernWow.path .. "unitframes\\health-fill",
   healthFillMinus = M.modernWow.path .. "unitframes\\health-fill-minus",
   powerFill       = M.modernWow.path .. "unitframes\\power-fill-player",
@@ -663,6 +665,535 @@ M.modernWow.spellBook = {
   spellHighlight = "Interface\\Buttons\\ButtonHilight-Square",
 }
 
+-- Professions page (modules/spellbookprofessions.lua), drawn in place of the
+-- spell pages when the Spellbook's bottom Professions tab is selected.
+--
+-- professions-book-left/-right share the spell pages' canvas exactly (512x512
+-- plus a 32-wide edge; art in rows 0-493, edge columns 0-20), so they are
+-- swapped into the same page regions and every number below is in the same
+-- page-art texels that M.modernWow.spellBook.grid uses.
+--
+-- Row geometry is WORKING_SOURCE: WoW-DragonflightUI XML/ProfessionSpellbook.xml
+-- places its rows at page texel x 73 with y 42/135 (primary, 81 tall) and
+-- 238/295/352/409 (secondary, 46 tall), which match the bands measured off
+-- the left page (dark row rules at y ~40, ~133, ~234, ~292, ~349, ~406).
+-- The name/rank/bar offsets inside a row are compacted from that template so
+-- all three fit the scaled row.
+--
+-- `parts` cells are that XML's own TexCoords on ProfessionsBook (256x128),
+-- converted to texels and checked against the file's alpha: the ring's
+-- centre is transparent and its rim opaque, so the profession icon is drawn
+-- beneath it at `ring.icon` (at most the ring's inscribed square, 52).
+M.modernWow.spellBook.professions = {
+  texture = {
+    pageLeft  = M.modernWow.path .. "ui\\profession\\professions-book-left",
+    pageRight = M.modernWow.path .. "ui\\profession\\professions-book-right",
+    parts     = M.modernWow.path .. "ui\\profession\\professions-book",
+    fill      = M.modernWow.path .. "ui\\profession\\professions-progress-fill",
+    -- The client's own glyph, as modules/character.lua draws it.
+    unlearn   = "Interface\\Buttons\\UI-GroupLoot-Pass-Up",
+  },
+  parts = {
+    width = 256, height = 128,
+    ring      = { left = 111, top = 19,  right = 185, bottom = 93 },
+    barLeft   = { left = 1,   top = 62,  right = 17,  bottom = 78 },
+    barRight  = { left = 1,   top = 80,  right = 17,  bottom = 96 },
+    barMiddle = { left = 0,   top = 1,   right = 256, bottom = 17 },
+    capLeft   = { left = 1,   top = 112, right = 13,  bottom = 124 },
+    capRight  = { left = 1,   top = 98,  right = 13,  bottom = 110 },
+    -- DFProfessionButtonTemplate's $parentNameFrame: the soft plate behind
+    -- each profession spell's name (alpha bounds fill the whole cell).
+    nameFrame = { left = 1,   top = 19,  right = 109, bottom = 60 },
+  },
+
+  rowLeft = 73,
+  primaryTop = { 42, 135 },
+  secondaryTop = { 238, 295, 352, 409 },
+
+  ring = { x = 7, y = 7, size = 72, icon = 50 },
+  primary = { nameY = 10, rankY = 32, barX = 114, barY = 54,
+              missingX = 100, missingY = 18,
+              missingWidth = 250 },
+  secondary = { nameY = 4, rankY = 18, barX = 16, barY = 31,
+                missingX = 4, missingY = 16,
+                missingTextX = 255, missingWidth = 245 },
+  -- The bar's end pieces sit outside its 95x16 run, lifted `capLift`.
+  -- `textInset` is the skill value's left inset inside the bar; `textDrop`
+  -- lowers it from the caps' lift, in window units (user request, 2026-09-15).
+  bar = { width = 95, height = 16, cap = 16, capLift = 2, endCap = 12,
+          textInset = 5, textDrop = 2 },
+  -- Primary-row unlearn button: DragonflightUI's 26-unit glyph at scale .7,
+  -- its right edge 30 * .7 left of the bar and lifted 1 (page texels).
+  unlearn = { size = 18, gap = 21, lift = 1, alpha = 0.75, hoverAlpha = 1,
+              pressShift = 1 },
+  -- Native spell buttons. Primary rows put the first spell on the row's
+  -- lower slot (`primaryY`, DragonflightUI's SpellButtonBottom at y 43) and a
+  -- second one above it at `y`; secondary rows put the second one left of
+  -- the first at `leftX`. `textWidth` is the name column right of each button.
+  button = { size = 40, x = 361, y = 3, primaryY = 43, leftX = 212,
+             textWidth = 100,
+             -- `parts.nameFrame` replaces the spell page's name shadow on
+             -- these buttons: 108x41 at the template's 40-unit button, its
+             -- LEFT `x` right of the icon's RIGHT, drawn at `alpha`.
+             nameFrame = { width = 108, height = 41, x = 1, alpha = 0.8 } },
+
+  -- The client's Quest Log book, shown in the window's gold ring while this
+  -- page is open (the same verified path M.modernWow.questLog.bookIcon draws).
+  portrait = M.modernWow.questLog.bookIcon.path,
+
+  nameColor = { 1.00, 0.82, 0.00, 1.00 },
+  -- Rank line (Apprentice...) under each native spell button's name.
+  subSpellColor = { 1.00, 1.00, 1.00, 1.00 },
+  rankColor = { 1.00, 1.00, 1.00, 1.00 },
+  barTextColor = { 1.00, 1.00, 1.00, 1.00 },
+  missingHeaderColor = { 0.15, 0.10, 0.10, 1.00 },
+  missingTextColor = { 0.10, 0.05, 0.05, 1.00 },
+  missingIcon = "Interface\\Icons\\INV_Scroll_04",
+  missingIconAlpha = 0.6,
+  -- Maximum skill of each training rank, lowest first.
+  ranks = { 75, 150, 225, 300 },
+}
+
+-- Talent window (modules/talentsmodernwow.lua): WoW-DragonflightUI's
+-- three-panel frame. Every number is WORKING_SOURCE from DF-main --
+-- Mixin/UI.mixin.lua ChangeTalentsEra (window 646x468, inset 4/60/6/26),
+-- XML/Talents.xml DFPlayerTalentFramePanelTemplate (panel 208x376, background
+-- pieces, header, icon, name) and Mixin/Talents.mixin.lua Refresh (grid
+-- 20/52 with a 46 pitch, 37-unit buttons scaled to 30, branch/arrow cells).
+--
+-- The tree background is the client's own Interface\TalentFrame art
+-- (knowledge.json / talent.tab_info_background_textures, BEHAVIOR_VERIFIED).
+-- The branch, arrow, slot and rank-border paths are the stock files DF-main's
+-- templates name; they are not runtime-verified here, and a missing texture
+-- is invisible rather than an error (textures.gettexture_echoes_missing_path).
+M.modernWow.talents = {
+  texture = {
+    backgroundBase = "Interface\\TalentFrame\\",
+    branches   = M.modernWow.path .. "ui\\talents\\talent-branches",
+    iconBorder = M.modernWow.path .. "ui\\golden-square-border",
+    pointsBackground = M.modernWow.texture.portraitBackground,
+    roleIcons  = M.modernWow.path .. "ui\\talents\\role-icons",
+    arrows     = M.modernWow.path .. "ui\\talents\\talent-arrows",
+    talentFrameParts = M.modernWow.path .. "ui\\talents\\talent-frame-parts",
+    slot       = "Interface\\Buttons\\UI-EmptySlot-White",
+    rankBorder = "Interface\\TalentFrame\\TalentFrame-RankBorder",
+    highlight  = "Interface\\Buttons\\ButtonHilight-Square",
+    metalCorners    = M.modernWow.path .. "ui\\frame\\metal-corners",
+    metalHorizontal = M.modernWow.path .. "ui\\frame\\metal-horizontal",
+    metalVertical   = M.modernWow.path .. "ui\\frame\\metal-vertical",
+    backgroundRock  = M.modernWow.path .. "ui\\frame\\background-rock",
+    topStreak       = M.modernWow.path .. "ui\\frame\\top-streak",
+    portraitRing    = M.modernWow.path .. "ui\\frame\\portrait-ring",
+    panelBorder = {
+      topLeft    = M.modernWow.path .. "ui\\borders\\thin-border-top-left",
+      top        = M.modernWow.path .. "ui\\borders\\thin-border-top",
+      topRight   = M.modernWow.path .. "ui\\borders\\thin-border-top-right",
+      left       = M.modernWow.path .. "ui\\borders\\thin-border-left",
+      right      = M.modernWow.path .. "ui\\borders\\thin-border-right",
+      bottomLeft = M.modernWow.path .. "ui\\borders\\thin-border-bottom-left",
+      bottom     = M.modernWow.path .. "ui\\borders\\thin-border-bottom",
+    },
+  },
+  design = { width = 646, height = 468 },
+  inset = { left = 4, top = 60, right = 6, bottom = 26 },
+  insetColor = { 0.02, 0.02, 0.02, 0.85 },
+  -- DF-main window chrome, all offsets from the window's own corners:
+  -- ButtonFrameTemplateNoPortrait (nine-slice metal), FrameBackgroundSolid
+  -- (rock body and title streak) and ChangeTalentsEra (portrait ring).
+  -- `x`/`y` follow SetPoint sign (positive y is up).
+  frame = {
+    body = { left = 3, top = 18, right = 3, bottom = 3 },
+    streak = { left = 6, top = 21, right = 2, height = 43,
+               texCoord = { 0, 1, 0.0078125, 0.34375 } },
+    cornerTopLeft     = { width = 75, height = 74, x = -12, y = 16,
+                          texCoord = { 0.00195312, 0.294922, 0.00195312, 0.294922 } },
+    cornerTopRight    = { width = 75, height = 74, x = 4, y = 16,
+                          texCoord = { 0.298828, 0.591797, 0.00195312, 0.294922 } },
+    cornerBottomLeft  = { width = 32, height = 32, x = -12, y = -3,
+                          texCoord = { 0.298828, 0.423828, 0.298828, 0.423828 } },
+    cornerBottomRight = { width = 32, height = 32, x = 4, y = -3,
+                          texCoord = { 0.427734, 0.552734, 0.298828, 0.423828 } },
+    edgeTop    = { height = 74, texCoord = { 0, 1, 0.00390625, 0.589844 } },
+    edgeBottom = { height = 32, texCoord = { 0, 0.5, 0.597656, 0.847656 } },
+    edgeLeft   = { width = 75, texCoord = { 0.00195312, 0.294922, 0, 1 } },
+    edgeRight  = { width = 75, texCoord = { 0.298828, 0.591797, 0, 1 } },
+    -- 62x62 portrait at (-5, 7) in an 84x84 ring; the ring's 8-argument
+    -- SetTexCoord in DF-main is this plain square crop.
+    portrait = { size = 62, x = -5, y = 7, ring = 84,
+                 ringTexCoord = { 0.0078125, 0.6171875, 0.0078125, 0.6171875 } },
+  },
+  trees = 3,
+  panel = {
+    width = 208, height = 376, x = 5, y = 3, gap = 1,
+    -- DFPlayerTalentFramePanelTemplate inherits InsetFrameTemplate2. That
+    -- retail-only template supplies the textured rim around every tree;
+    -- without it the parent inset shows through as a black separator. The
+    -- ThinBorder sources are 32px canvases authored to draw at 16 units.
+    border = { size = 16 },
+  },
+  -- BgTopLeft 198x256 and BgBottomLeft 198x75, cropped to the tree art's
+  -- painted columns; the TopRight/BottomRight pieces stay unused as in DF-main.
+  background = {
+    x = 5, y = 40, width = 198, topHeight = 256, bottomHeight = 75,
+    topTexCoord = { 0.19921875, 0.97265625, 0, 1 },
+    bottomTexCoord = { 0.19921875, 0.97265625, 0, 0.4140625 },
+    ruleAlpha = 0.25,
+    -- Optional lift: an identical copy of the art drawn over it with ADD
+    -- blending at this alpha (0 = off, 1 = double brightness). Off: the dark
+    -- look came from the inset bed covering the art, not the art itself, and
+    -- the user preferred the plain art (2026-09-14).
+    brighten = 0,
+  },
+  -- Blizzard TalentHeader templates inherited by DF-main. The parchment, rim and
+  -- point-circle cells come from the shipped 256x512 TalentFrame-Parts atlas;
+  -- DF-main applies the exact TALENT_INFO colour directly to the parchment cell.
+  --
+  -- LOCKED (user-approved in game, 2026-09-14, matched against a DF-main
+  -- screenshot): the band is the dark parchment cell (`texCoord`) vertex
+  -- coloured with the tree's exact `treeColor` value at full strength, under
+  -- the uncoloured gold rim (`borderTexCoord`) and portrait-ring points ring. There is
+  -- deliberately no tint/alpha multiplier. Both a flat fill at full colour and a
+  -- flat fill dimmed to 0.45 / 0.9 were rejected as not looking like DF-main.
+  -- The icon frame is the user-supplied ui/golden-square-border instead of
+  -- DF-main's PrimaryIconBorder cell (user request, 2026-09-14).
+  header = {
+    x = 5, y = 5, width = 198, height = 33,
+    texCoord = { 0.00390625, 0.77734375, 0.546875, 0.61132813 },
+    borderTexCoord = { 0.00390625, 0.77734375, 0.61523438, 0.67968750 },
+    iconX = 1, iconY = 1, iconSize = 32,
+    -- golden-square-border.tga: 256x256 canvas whose transparent opening
+    -- (alpha > 128) spans x 32-223, y 30-220. The frame is scaled so that
+    -- opening exactly fits the icon, then offset by the scaled ring.
+    iconBorder = { canvas = 256, left = 32, top = 30, right = 224, bottom = 221 },
+    -- Spent-points ring: ui/frame/portrait-ring (texture.portraitRing) with the
+    -- window portrait's measured square crop (frame.portrait.ringTexCoord),
+    -- in DF-main's PointCircle-Gold slot, 23x23 at icon BOTTOMRIGHT (10, -6).
+    -- Replaces the atlas point circle (user request, 2026-09-14).
+    pointsSize = 23, pointsX = 10, pointsY = -6,
+    -- Stone disc (texture.pointsBackground) inside that ring, in pixels of the
+    -- 156px ring crop. The ring's opaque band runs 14-24 and 128-134 (alpha >
+    -- 128); the disc spans band middle to band middle so no gap shows.
+    pointsDisc = { crop = 156, left = 19, top = 19, right = 131, bottom = 131 },
+    -- Count text offset from the disc centre, SetPoint sign; lowered 2 (user
+    -- request, 2026-09-14).
+    pointsTextY = -2,
+    nameX = 47, nameY = 9, nameRight = 32,
+    -- DFPlayerTalentFrameRoleIconTemplate: 16x16, the first at header TOPRIGHT
+    -- (-6, -9), the next 1 unit to its left. Cells of ui/talents/role-icons
+    -- (64x16 strip: leader, damage, tank, healer).
+    roleIcon = {
+      size = 16, x = -6, y = -9, gap = 1,
+      cells = {
+        DAMAGER = { 0.25, 0.5, 0, 1 },
+        TANK    = { 0.5, 0.75, 0, 1 },
+        HEALER  = { 0.75, 1, 0, 1 },
+      },
+    },
+  },
+  grid = { left = 20, top = 52, pitch = 46, button = 30, designButton = 37,
+           rows = 11, columns = 4 },
+  slot = { size = 64 },
+  rankBorder = { size = 32, x = 0, y = 0 },
+  pointsPerTier = 5,
+  firstTalentLevel = 10,
+  maxLevel = 60,
+  -- DF-main's -5, lowered 2 to sit centred in the header bar (user request,
+  -- 2026-09-14).
+  title = { y = 7 },
+  status = { y = 36 },
+  -- UIPanelCloseButton: 24x24 at TOPRIGHT (1, 0).
+  close = { size = 24, x = -1, y = 0 },
+  dragInset = 40,
+
+  titleColor = { 1.00, 0.82, 0.00, 1.00 },
+  statusColor = { 1.00, 1.00, 1.00, 1.00 },
+  nameColor = { 1.00, 0.82, 0.00, 1.00 },
+  pointsColor = { 1.00, 1.00, 1.00, 1.00 },
+  -- Rank text and slot tint: green while learnable and not maxed, gold at max,
+  -- grey when locked (DF-main GREEN/NORMAL/GRAY_FONT_COLOR).
+  rankColor = {
+    normal    = { 1.00, 0.82, 0.00, 1.00 },
+    available = { 0.10, 1.00, 0.10, 1.00 },
+    maxed     = { 1.00, 0.82, 0.00, 1.00 },
+    disabled  = { 0.50, 0.50, 0.50, 1.00 },
+  },
+
+  -- DF-main TALENT_BRANCH_TEXTURECOORDS / TALENT_ARROW_TEXTURECOORDS, keyed
+  -- 1 = requirements met, -1 = not met.
+  branchCoords = {
+    up = { [1] = { 0.12890625, 0.25390625, 0, 0.484375 }, [-1] = { 0.12890625, 0.25390625, 0.515625, 1.0 } },
+    down = { [1] = { 0, 0.125, 0, 0.484375 }, [-1] = { 0, 0.125, 0.515625, 1.0 } },
+    left = { [1] = { 0.2578125, 0.3828125, 0, 0.5 }, [-1] = { 0.2578125, 0.3828125, 0.5, 1.0 } },
+    right = { [1] = { 0.2578125, 0.3828125, 0, 0.5 }, [-1] = { 0.2578125, 0.3828125, 0.5, 1.0 } },
+    topright = { [1] = { 0.515625, 0.640625, 0, 0.5 }, [-1] = { 0.515625, 0.640625, 0.5, 1.0 } },
+    topleft = { [1] = { 0.640625, 0.515625, 0, 0.5 }, [-1] = { 0.640625, 0.515625, 0.5, 1.0 } },
+    bottomright = { [1] = { 0.38671875, 0.51171875, 0, 0.5 }, [-1] = { 0.38671875, 0.51171875, 0.5, 1.0 } },
+    bottomleft = { [1] = { 0.51171875, 0.38671875, 0, 0.5 }, [-1] = { 0.51171875, 0.38671875, 0.5, 1.0 } },
+    tdown = { [1] = { 0.64453125, 0.76953125, 0, 0.5 }, [-1] = { 0.64453125, 0.76953125, 0.5, 1.0 } },
+    tup = { [1] = { 0.7734375, 0.8984375, 0, 0.5 }, [-1] = { 0.7734375, 0.8984375, 0.5, 1.0 } },
+  },
+  arrowCoords = {
+    top = { [1] = { 0, 0.5, 0, 0.5 }, [-1] = { 0, 0.5, 0.5, 1.0 } },
+    right = { [1] = { 1.0, 0.5, 0, 0.5 }, [-1] = { 1.0, 0.5, 0.5, 1.0 } },
+    left = { [1] = { 0.5, 1.0, 0, 0.5 }, [-1] = { 0.5, 1.0, 0.5, 1.0 } },
+  },
+
+  -- DF-main TALENT_INFO colours (Mixin/Talents.mixin.lua), copied verbatim for
+  -- every class and tree; keep them identical to that table. Keyed by the
+  -- tree's background file because
+  -- this client's tab order differs from DF-main's (MageFire is tab 1). Mage
+  -- and Priest names are seen in game; the rest are the stock 1.12 file names.
+  -- Matching ignores case, any path and any -TopLeft/extension suffix; only a
+  -- name matching nothing falls back to `defaultColor` by tab index.
+  defaultColor = {
+    { 1.0, 0.72, 0.1 },
+    { 1.0, 0.0, 0.0 },
+    { 0.3, 0.5, 1.0 },
+  },
+  treeColor = {
+    DruidBalance = { 0.8, 0.3, 0.8 },
+    DruidFeralCombat = { 1.0, 0.0, 0.0 },
+    DruidRestoration = { 0.4, 0.8, 0.2 },
+    HunterBeastMastery = { 1.0, 0.0, 0.3 },
+    HunterMarksmanship = { 0.3, 0.6, 1.0 },
+    HunterSurvival = { 1.0, 0.6, 0.0 },
+    MageArcane = { 0.7, 0.2, 1.0 },
+    MageFire = { 1.0, 0.5, 0.0 },
+    MageFrost = { 0.3, 0.6, 1.0 },
+    PaladinHoly = { 1.0, 0.5, 0.0 },
+    PaladinProtection = { 0.3, 0.5, 1.0 },
+    PaladinCombat = { 1.0, 0.0, 0.0 },
+    PriestDiscipline = { 1.0, 0.5, 0.0 },
+    PriestHoly = { 0.6, 0.6, 1.0 },
+    PriestShadow = { 0.7, 0.4, 0.8 },
+    RogueAssassination = { 0.5, 0.8, 0.5 },
+    RogueCombat = { 1.0, 0.5, 0.0 },
+    RogueSubtlety = { 0.3, 0.5, 1.0 },
+    ShamanElementalCombat = { 0.8, 0.2, 0.8 },
+    ShamanEnhancement = { 0.3, 0.5, 1.0 },
+    ShamanRestoration = { 0.2, 0.8, 0.4 },
+    WarlockCurses = { 0.0, 1.0, 0.6 },
+    WarlockSummoning = { 1.0, 0.0, 0.0 },
+    WarlockDestruction = { 1.0, 0.5, 0.0 },
+    WarriorArms = { 1.0, 0.72, 0.1 },
+    WarriorFury = { 1.0, 0.0, 0.0 },
+    WarriorProtection = { 0.3, 0.5, 1.0 },
+    -- The same DF-main colours under the other file names a tree's art is
+    -- known by, so a client that renamed a background still resolves to its
+    -- own tree colour rather than the by-index default.
+    DruidFeral = { 1.0, 0.0, 0.0 },
+    PaladinRetribution = { 1.0, 0.0, 0.0 },
+    ShamanElemental = { 0.8, 0.2, 0.8 },
+    WarlockAffliction = { 0.0, 1.0, 0.6 },
+    WarlockDemonology = { 1.0, 0.0, 0.0 },
+  },
+
+  -- DF-main PlayerClassRoleTable (Mixin/Talents.mixin.lua), non-SoD values,
+  -- keyed by background file like `treeColor` and matched the same way. List
+  -- order is DF-main's: with two roles it swaps them, so the first entry is
+  -- drawn left of the second (Feral: damage, then tank at the far right).
+  treeRoles = {
+    DruidBalance = { "DAMAGER" },
+    DruidFeralCombat = { "DAMAGER", "TANK" },
+    DruidRestoration = { "HEALER" },
+    HunterBeastMastery = { "DAMAGER" },
+    HunterMarksmanship = { "DAMAGER" },
+    HunterSurvival = { "DAMAGER" },
+    MageArcane = { "DAMAGER" },
+    MageFire = { "DAMAGER" },
+    MageFrost = { "DAMAGER" },
+    PaladinHoly = { "HEALER" },
+    PaladinProtection = { "TANK" },
+    PaladinCombat = { "DAMAGER" },
+    PriestDiscipline = { "HEALER" },
+    PriestHoly = { "HEALER" },
+    PriestShadow = { "DAMAGER" },
+    RogueAssassination = { "DAMAGER" },
+    RogueCombat = { "DAMAGER" },
+    RogueSubtlety = { "DAMAGER" },
+    ShamanElementalCombat = { "DAMAGER" },
+    ShamanEnhancement = { "DAMAGER" },
+    ShamanRestoration = { "HEALER" },
+    WarlockCurses = { "DAMAGER" },
+    WarlockSummoning = { "DAMAGER" },
+    WarlockDestruction = { "DAMAGER" },
+    WarriorArms = { "DAMAGER" },
+    WarriorFury = { "DAMAGER" },
+    WarriorProtection = { "TANK" },
+    DruidFeral = { "DAMAGER", "TANK" },
+    PaladinRetribution = { "DAMAGER" },
+    ShamanElemental = { "DAMAGER" },
+    WarlockAffliction = { "DAMAGER" },
+    WarlockDemonology = { "DAMAGER" },
+  },
+}
+
+-- Profession window (modules/professions.lua): WoW-DragonflightUI's
+-- DFProfessionFrame rebuilt over the client's TradeSkillFrame and CraftFrame.
+-- Every number is WORKING_SOURCE from DF-main XML/ProfessionFrame.xml and
+-- Mixin/ProfessionFrame.mixin.lua (window 778x525, recipe list 274 wide at
+-- (5, -72), schematic form from the list's right edge +2 to (-5, 33), rank
+-- frame 453x18 at (280, -40), 80x22 create buttons at (-9, 7)). The window
+-- chrome is the talent window's, which is the same DF-main
+-- ButtonFrameTemplateNoPortrait.
+--
+-- `cells` are DF-main's own TexCoords on professions.tga converted to texels
+-- ({ left, top, right, bottom } on the 2048x1024 atlas) and checked against a
+-- composite of the file; `slot` was measured off its alpha: the silver frame's
+-- opaque rim surrounds a transparent opening at `slotOpening`.
+M.modernWow.professions = {
+  texture = {
+    atlas = M.modernWow.path .. "ui\\profession\\professions",
+    thinBorder = M.modernWow.talents.texture.panelBorder,
+    metalCorners = M.modernWow.talents.texture.metalCorners,
+    metalHorizontal = M.modernWow.talents.texture.metalHorizontal,
+    metalVertical = M.modernWow.talents.texture.metalVertical,
+    backgroundRock = M.modernWow.talents.texture.backgroundRock,
+    topStreak = M.modernWow.talents.texture.topStreak,
+    portraitRing = M.modernWow.talents.texture.portraitRing,
+    portraitBackground = M.modernWow.texture.portraitBackground,
+    -- Stock UIPanelScrollBarTemplate faces. The Modern WoW design contract
+    -- keeps the client's own scrollbar art; these are the 1.12 FrameXML file
+    -- names, not runtime-verified here, and a missing file is invisible
+    -- rather than an error (textures.gettexture_echoes_missing_path).
+    scrollUp = {
+      normal   = "Interface\\Buttons\\UI-ScrollBar-ScrollUpButton-Up",
+      pushed   = "Interface\\Buttons\\UI-ScrollBar-ScrollUpButton-Down",
+      disabled = "Interface\\Buttons\\UI-ScrollBar-ScrollUpButton-Disabled",
+      highlight = "Interface\\Buttons\\UI-ScrollBar-ScrollUpButton-Highlight",
+    },
+    scrollDown = {
+      normal   = "Interface\\Buttons\\UI-ScrollBar-ScrollDownButton-Up",
+      pushed   = "Interface\\Buttons\\UI-ScrollBar-ScrollDownButton-Down",
+      disabled = "Interface\\Buttons\\UI-ScrollBar-ScrollDownButton-Disabled",
+      highlight = "Interface\\Buttons\\UI-ScrollBar-ScrollDownButton-Highlight",
+    },
+    scrollKnob = "Interface\\Buttons\\UI-ScrollBar-Knob",
+    missingIcon = "Interface\\Icons\\INV_Misc_QuestionMark",
+    beastTrainingIcon = "Interface\\Icons\\Ability_Hunter_BeastCall02",
+  },
+  -- Recipe-detail backgrounds and rank-bar fills by profession key (the keys
+  -- modules/spellbookprofessions.lua resolves skill-line names to). DF-main's
+  -- professionDataTable: First Aid draws the generic art with the alchemy
+  -- fill, Poisons the alchemy pair, Beast Training the generic art with the
+  -- skinning fill.
+  art = {
+    default = M.modernWow.path .. "ui\\profession\\background-art",
+    alchemy = M.modernWow.path .. "ui\\profession\\background-art-alchemy",
+    blacksmithing = M.modernWow.path .. "ui\\profession\\background-art-blacksmithing",
+    cooking = M.modernWow.path .. "ui\\profession\\background-art-cooking",
+    enchanting = M.modernWow.path .. "ui\\profession\\background-art-enchanting",
+    engineering = M.modernWow.path .. "ui\\profession\\background-art-engineering",
+    leatherworking = M.modernWow.path .. "ui\\profession\\background-art-leatherworking",
+    mining = M.modernWow.path .. "ui\\profession\\background-art-mining",
+    tailoring = M.modernWow.path .. "ui\\profession\\background-art-tailoring",
+    poisons = M.modernWow.path .. "ui\\profession\\background-art-alchemy",
+  },
+  fx = {
+    default = M.modernWow.path .. "ui\\profession\\fx-alchemy",
+    alchemy = M.modernWow.path .. "ui\\profession\\fx-alchemy",
+    blacksmithing = M.modernWow.path .. "ui\\profession\\fx-blacksmithing",
+    cooking = M.modernWow.path .. "ui\\profession\\fx-cooking",
+    enchanting = M.modernWow.path .. "ui\\profession\\fx-enchanting",
+    engineering = M.modernWow.path .. "ui\\profession\\fx-engineering",
+    leatherworking = M.modernWow.path .. "ui\\profession\\fx-leatherworking",
+    mining = M.modernWow.path .. "ui\\profession\\fx-mining",
+    tailoring = M.modernWow.path .. "ui\\profession\\fx-tailoring",
+    poisons = M.modernWow.path .. "ui\\profession\\fx-alchemy",
+    beasttraining = M.modernWow.path .. "ui\\profession\\fx-skinning",
+  },
+  -- The painted part of each 1024x1024 background (DF-main's TexCoords
+  -- 0.000976562-0.660156 x 0.000976562-0.536133). It is cropped, never
+  -- squeezed, to the schematic form's aspect, keeping its right edge where
+  -- DF-main's art carries the profession emblem.
+  artCanvas = 1024,
+  artRect = { left = 1, top = 1, right = 676, bottom = 549 },
+
+  atlas = { width = 2048, height = 1024 },
+  cells = {
+    listBackground = { left = 1,    top = 79,  right = 269,  bottom = 651 },
+    rankBackground = { left = 611,  top = 769, right = 1062, bottom = 798 },
+    rankBorder     = { left = 1359, top = 133, right = 1810, bottom = 162 },
+    headerLeft     = { left = 885,  top = 28,  right = 899,  bottom = 54 },
+    headerMiddle   = { left = 709,  top = 43,  right = 710,  bottom = 69 },
+    headerRight    = { left = 932,  top = 46,  right = 946,  bottom = 72 },
+    collapsed      = { left = 619,  top = 55,  right = 641,  bottom = 71 },
+    expanded       = { left = 554,  top = 55,  right = 576,  bottom = 71 },
+    skillEasy      = { left = 524,  top = 55,  right = 537,  bottom = 70 },
+    skillMedium    = { left = 604,  top = 55,  right = 617,  bottom = 70 },
+    skillOptimal   = { left = 539,  top = 55,  right = 552,  bottom = 70 },
+    selected       = { left = 1614, top = 39,  right = 1881, bottom = 58 },
+    highlight      = { left = 1275, top = 39,  right = 1584, bottom = 60 },
+    slot           = { left = 272,  top = 420, right = 370,  bottom = 518 },
+  },
+  slotOpening = { left = 288, top = 436, right = 356, bottom = 503 },
+
+  design = { width = 778, height = 525 },
+  frame = M.modernWow.talents.frame,
+  -- Profession icon in DF-main's 62x62 portrait slot. This client has no
+  -- circular mask, so a square icon sits inside the ring's opening over the
+  -- stone disc, small enough that its corners stay under the gold band.
+  portrait = { iconSize = 44, discSize = 56 },
+  title = { y = 7 },
+  close = { size = 24, x = -1, y = 0 },
+  drag = { headerHeight = 60, headerInset = 40 },
+  -- Frame levels above the host window: the cover hides every native child
+  -- of the host, the rim draws the metal over the panels, and the drag handle
+  -- and close button stay above both.
+  levels = { cover = 10, panel = 1, rim = 6, handle = 10 },
+
+  rank = { x = 280, y = 40, width = 451, height = 29,
+           fillX = 5, fillY = 3, fillWidth = 441, fillHeight = 18 },
+
+  list = { x = 5, y = 72, width = 274, bottom = 5,
+           rowLeft = 8, rowTop = 10, rowRight = 20, rowBottom = 8 },
+  header = { height = 25, pieceWidth = 14, pieceHeight = 26, lift = 2,
+             labelX = 10,
+             -- Label offset from the row centre (SetPoint sign). DF-main's +2
+             -- lift sat the text on the bar's top edge here (user screenshot,
+             -- 2026-09-15), so it is lowered onto the bar.
+             labelY = -3, collapseWidth = 11, collapseHeight = 8,
+             collapseRight = 10 },
+  recipe = { height = 20, iconX = 4, iconWidth = 13, iconHeight = 15,
+             labelX = 21, countGap = 2, padding = 10,
+             selectedWidth = 267, selectedHeight = 19,
+             highlightWidth = 309, highlightHeight = 21, highlightAlpha = 0.5 },
+  scroll = { width = 16, button = 16, knobWidth = 18, knobHeight = 24,
+             right = 3, trackAlpha = 0.35,
+             buttonTexCoord = { 0.25, 0.75, 0.25, 0.75 },
+             knobTexCoord = { 0.20, 0.80, 0.125, 0.875 } },
+
+  schematic = { gap = 2, right = 5, bottom = 33, inset = 28,
+                icon = 37, nameGap = 14, lineGap = 4, sectionGap = 12,
+                reagentTop = 23, reagentPitch = 60, reagentGap = 6,
+                reagentWidth = 180, reagentHeight = 50, reagentIcon = 37,
+                reagentTextX = 46, reagentTextWidth = 136,
+                reagentColumn = 6, maxReagents = 8 },
+  -- The ThinBorder rim DF-main's InsetFrameTemplate draws round both panels.
+  border = { size = 16 },
+
+  button = { width = 80, height = 22, right = 9, bottom = 7,
+             createAllGap = 86, stepWidth = 23, stepGap = 3,
+             countWidth = 30, countGap = 4, capWidth = 12,
+             glyphWidth = 11, glyphHeight = 8,
+             hoverAlpha = 0.5, disabledAlpha = 0.4, maxCount = 99 },
+
+  titleColor = { 1.00, 0.82, 0.00, 1.00 },
+  rankTextColor = { 1.00, 1.00, 1.00, 1.00 },
+  headerColor = { 1.00, 0.82, 0.00, 1.00 },
+  headerHoverColor = { 1.00, 1.00, 1.00, 1.00 },
+  -- DF-main PROFESSION_RECIPE_COLOR; hover is HIGHLIGHT_FONT_COLOR.
+  recipeColor = { 0.886, 0.863, 0.839, 1.00 },
+  recipeHoverColor = { 1.00, 1.00, 1.00, 1.00 },
+  nameColor = { 1.00, 0.82, 0.00, 1.00 },
+  labelColor = { 1.00, 0.82, 0.00, 1.00 },
+  bodyColor = { 1.00, 1.00, 1.00, 1.00 },
+  missingColor = { 0.50, 0.50, 0.50, 1.00 },
+  cooldownColor = { 1.00, 0.13, 0.13, 1.00 },
+  buttonTextColor = { 1.00, 0.82, 0.00, 1.00 },
+  buttonDisabledColor = { 0.50, 0.50, 0.50, 1.00 },
+}
+
 -- UnrealQuest-measured three-slice action-button cells in ui/128RedButton.tga
 -- (512x2048). Each state combines the left bevel from a short 114x125 button
 -- with the middle and right bevel from a 291x125 bar. At runtime the caps keep
@@ -812,14 +1343,11 @@ M.modernWow.statValues = {
 -- 2026-08-16 global dump, so a missing frame is skipped.
 M.modernWow.titleDropDown = { name = "PlayerTitleDropDown", x = -15, y = -15 }
 
--- "<class> Level <n>" under the header name, above that dropdown. Centred on
--- CharacterNameText and midway between its bottom and the dropdown's top
--- (read once after the shift); `offsetY` nudges that midpoint (positive is
--- up). With no dropdown it sits `gap` units under the name. `fallbackTop`
--- (units below the window top) is used when the name cannot be read.
+-- "<class> Level <n>" centred across the Character interface, immediately
+-- below the header name. `top` is its distance below the window's top edge;
 -- `levelAbove` lifts its holder frame over the window's own content.
 M.modernWow.characterLevelLine = {
-  offsetY = 0, gap = 6, fallbackTop = 62, levelAbove = 10,
+  top = 46, levelAbove = 10,
 }
 
 -- Character gear slots: the four diamond-stud corners of the user-supplied
@@ -910,6 +1438,32 @@ M.modernWow.gameMenu = {
   titleY = -17,
   titleColor = { 1, 0.82, 0, 1 },
   labelY = -2,
+}
+
+-- Red-button size on the Modern WoW "Resurrect now?" popup, also used by the
+-- logout/quit popups so both match (modules/logout.lua).
+-- The native popup button is too small for the 128RedButton face; this is the
+-- size the owned resurrect dialog used, kept by user request (2026-09-14).
+-- A pair of buttons is narrowed to fit: `sideInset` keeps each clear of the
+-- metal frame's side, `pairGap` is the client's spacing between the two.
+M.modernWow.corpsePopupButton = {
+  width = 150,
+  height = 30,
+  sideInset = 18,
+  pairGap = 19,
+}
+
+-- The shared confirm dialog's Modern WoW instance (core/widgets.lua,
+-- U.ShowConfirm with options.modernWow): metalFrame housing, corpsePopupButton
+-- pair. Wider and taller than the flat 280x100 panel so the detail line and
+-- the 30-unit red buttons stay inside the metal sides.
+-- `width` is 15% over the first 320 (user request, 2026-09-15: the buttons ran
+-- past the metal sides); `buttonWidth` keeps the buttons at the size they had.
+M.modernWow.confirmDialog = {
+  width = 368,
+  height = 110,
+  buttonWidth = 132,
+  buttonBottom = 16,
 }
 
 -- DragonflightUI-Reforged's XP/reputation bar recipe. The source uses the
@@ -1246,6 +1800,14 @@ M.modernWow.text = {
   powerPercentY = -3,
 }
 
+-- Ink for text set on parchment art: the Quest Log's details page and the
+-- native NPC quest window's titles. Near-white text and the chrome accent are
+-- both illegible there.
+M.modernWow.parchmentInk = {
+  heading = { 0.30, 0.13, 0.02, 1 },
+  body = { 0.16, 0.12, 0.08, 1 },
+}
+
 M.modernWow.ring = {
   -- 65 and 63: three pixels over DragonflightUI's 62, and the same step for the
   -- target's proportional 60. The portrait draws UNDER the ring overlay, so
@@ -1253,16 +1815,29 @@ M.modernWow.ring = {
   -- 51-pixel opening either way -- but how much of the portrait image falls
   -- inside it. A larger portrait fills the opening with a slightly closer
   -- crop.
-  playerFrame    = { size = 65, x = 74, y = 43.0 },
-  targetFrame    = { size = 63, x = 71, y = 43.5 },
+  --
+  -- `model` is the side of the experimental 3D portrait (/uui portrait3d).
+  -- A Model viewport is a rectangle and this client has no mask for it, so
+  -- the model is the largest square whose corners stay under the gold rim:
+  -- sqrt(2) x the rim's outer radius, measured at its thinnest point (alpha >
+  -- 128, rays from the centre, ornaments excluded) -- player 31.0, target
+  -- 30.9, party 19.2. The circular stone portrait background stays drawn
+  -- beneath it and fills the crescents between that square and the opening.
+  -- backgroundTrim: the 3D portrait's stone background is drawn this many
+  -- pixels smaller than the portrait (centred), so it no longer shows under
+  -- the player rim's bottom edge; backgroundY then raises it that many pixels
+  -- so the bottom clears the rim without cropping the top.
+  playerFrame    = { size = 65, x = 74, y = 43.0, model = 43,
+                     backgroundTrim = 2, backgroundY = 1 },
+  targetFrame    = { size = 63, x = 71, y = 43.5, model = 43 },
   -- The classification tiers share the target's ornament, so they carry the
   -- same numbers. Nothing sizes from them today -- the target entry's art is
   -- "targetFrame" and a tier change only swaps the texture, never the portrait
   -- -- but a stale value here would be a trap the day one does.
-  frameRare      = { size = 63, x = 71, y = 43.5 },
-  frameElite     = { size = 63, x = 71, y = 43.5 },
-  frameRareElite = { size = 63, x = 71, y = 43.5 },
-  frameBoss      = { size = 63, x = 71, y = 43.5 },
+  frameRare      = { size = 63, x = 71, y = 43.5, model = 43 },
+  frameElite     = { size = 63, x = 71, y = 43.5, model = 43 },
+  frameRareElite = { size = 63, x = 71, y = 43.5, model = 43 },
+  frameBoss      = { size = 63, x = 71, y = 43.5, model = 43 },
 
   -- The small canvas, in ITS 128x64 pixels rather than the large layout's.
   -- Measured rim: 3 pixels thick, inner opening x7..40 and y8..39, so the hole
@@ -1270,8 +1845,16 @@ M.modernWow.ring = {
   -- rings use -- a portrait a little wider than the opening, so the rim crops
   -- it instead of leaving a gap at the edge. DragonflightUI's own value is the
   -- opening's 35.
-  partyFrame     = { size = 38, x = 23.5, y = 23.5 },
+  -- `modelScale` overrides M.modernWow.portraitModelScale for this ring only:
+  -- the thin 3-pixel party rim showed the 3D portrait's corners at 1.1.
+  partyFrame     = { size = 38, x = 23.5, y = 23.5, model = 27,
+                     modelScale = 1.05 },
 }
+
+-- Multiplier on every ring's measured `model` side. The measured square is
+-- the corner-safe fit. 1.2 was tried in game and its corners showed outside
+-- the gold rim; 1.1 is the reduced step between that and the safe fit.
+M.modernWow.portraitModelScale = 1.1
 
 -- ---------------------------------------------------------------------------
 -- Player combat and rest effects

@@ -220,8 +220,8 @@ IMPORTS = [
 
 
 # Textures under media/Textures/modern-wow that did NOT come from
-# DragonflightUI-Reforged. They are supplied directly by the user, because the
-# surface they serve has no importable counterpart in the source addon.
+# DragonflightUI-Reforged. Most are supplied directly by the user; explicitly
+# sourced Blizzard UI atlases record their origin in the individual note.
 #
 # These have no source path, so each is re-encoded IN PLACE by default: the
 # destination file is its own input. That keeps the run idempotent, keeps them
@@ -235,6 +235,11 @@ IMPORTS = [
 #
 # (destination name, the filename it was supplied as, note[, on-disk input])
 USER_SUPPLIED = [
+    ("ui/golden-square-border", "golden-square-border.png",
+     "Gold square icon frame at 256x256 with a transparent opening at "
+     "x 32-223, y 30-220. Drawn around each talent tree's header icon in the "
+     "modern-wow Talent window; geometry is tokenised in core/media.lua.",
+     "golden-square-border.png"),
     ("ui/combo-points", "combo-points.png",
      "Rogue and Cat Form combo-point atlas at 128x56: the left 57x56 "
      "circle is inactive and the right 57x56 circle is active. Drawn on "
@@ -268,6 +273,12 @@ USER_SUPPLIED = [
      "file its shape is in the alpha channel over near-white RGB. Supersedes "
      "`player-status.tga`, which is kept beside it but no longer referenced.",
      "player-status-large.png"),
+    ("unitframes/unit-frame-portrait-background",
+     "unit-frame-portrait-background.png",
+     "Circular stone background shown beneath enabled 3D unit-frame "
+     "portraits. Its transparent corners keep the background inside the "
+     "Modern WoW portrait ring.",
+     "unit-frame-portrait-background.png"),
     ("ui/frame-tabs", "uiframetabs.png",
      "Dragonflight bottom window-tab atlas, 64x256: active middle (rows "
      "0-41) and inactive middle (44-79) span the full width; below them the "
@@ -305,6 +316,142 @@ USER_SUPPLIED = [
      "Gold selected / hover face of `skillline-tab`, same canvas and "
      "placement.",
      "spellbook-skilllinetab-glow.png"),
+    # Spellbook Professions page, supplied as the PNGs WoW-DragonflightUI ships
+    # in Textures/UI. Only the four files that page draws are shipped; measured
+    # geometry lives in core/media.lua M.modernWow.spellBook.professions.
+    ("ui/profession/professions-book-left", "Professions-Book-Left.png",
+     "Professions page at 512x512: cover, ribbon and six profession rows; the "
+     "art occupies rows 0-493. Swapped into the spell page's region when the "
+     "Spellbook's Professions tab is selected.",
+     "Professions-Book-Left.png"),
+    ("ui/profession/professions-book-right", "Professions-Book-Right.png",
+     "Right cover edge of `professions-book-left` at 32x512; the art occupies "
+     "columns 0-20 and rows 0-493.",
+     "Professions-Book-Right.png"),
+    ("ui/profession/professions-book", "ProfessionsBook.png",
+     "Professions atlas at 256x128: profession icon ring and skill bar end "
+     "pieces and middle; cells are tokenised in core/media.lua.",
+     "ProfessionsBook.png"),
+    ("ui/profession/professions-progress-fill", "Professions-Progress-Fill.png",
+     "Skill bar fill at 256x16; the fill occupies rows 0-11.",
+     "Professions-Progress-Fill.png"),
+    # Profession (TradeSkill / Craft) window, supplied as the PNGs
+    # WoW-DragonflightUI (DF-main) ships in Textures/UI and draws from
+    # Mixin/ProfessionFrame.mixin.lua. Only the backgrounds of professions that
+    # open a crafting window on this client are shipped (no Herbalism, Fishing,
+    # Skinning, Jewelcrafting or Inscription art); cells live in core/media.lua
+    # M.modernWow.professions.
+    ("ui/profession/professions", "professions.png",
+     "DF-main professions atlas at 2048x1024: recipe-list panel, rank-bar "
+     "track and rim, category header pieces, collapse and skill-up glyphs, "
+     "recipe selection and hover bars, reagent slot frame. Cells are "
+     "tokenised in core/media.lua.",
+     "professions.png"),
+    ("ui/profession/background-art", "professionbackgroundart.png",
+     "DF-main generic recipe-detail background at 1024x1024 (art in 677x550); "
+     "First Aid, Beast Training and unknown professions.",
+     "professionbackgroundart.png"),
+    ("ui/profession/background-art-alchemy", "professionbackgroundartalchemy.png",
+     "DF-main Alchemy (and Poisons) recipe-detail background at 1024x1024.",
+     "professionbackgroundartalchemy.png"),
+    ("ui/profession/background-art-blacksmithing",
+     "professionbackgroundartblacksmithing.png",
+     "DF-main Blacksmithing recipe-detail background at 1024x1024.",
+     "professionbackgroundartblacksmithing.png"),
+    ("ui/profession/background-art-cooking", "professionbackgroundartcooking.png",
+     "DF-main Cooking recipe-detail background at 1024x1024.",
+     "professionbackgroundartcooking.png"),
+    ("ui/profession/background-art-enchanting",
+     "professionbackgroundartenchanting.png",
+     "DF-main Enchanting recipe-detail background at 1024x1024.",
+     "professionbackgroundartenchanting.png"),
+    ("ui/profession/background-art-engineering",
+     "professionbackgroundartengineering.png",
+     "DF-main Engineering recipe-detail background at 1024x1024.",
+     "professionbackgroundartengineering.png"),
+    ("ui/profession/background-art-leatherworking",
+     "professionbackgroundartleatherworking.png",
+     "DF-main Leatherworking recipe-detail background at 1024x1024.",
+     "professionbackgroundartleatherworking.png"),
+    ("ui/profession/background-art-mining", "professionbackgroundartmining.png",
+     "DF-main Mining (Smelting) recipe-detail background at 1024x1024.",
+     "professionbackgroundartmining.png"),
+    ("ui/profession/background-art-tailoring",
+     "professionbackgroundarttailoring.png",
+     "DF-main Tailoring recipe-detail background at 1024x1024.",
+     "professionbackgroundarttailoring.png"),
+    # Talent window chrome, supplied as the PNGs WoW-DragonflightUI (DF-main)
+    # ships in Textures/UI. Drawn exactly as its ButtonFrameTemplateNoPortrait,
+    # FrameBackgroundSolid and ChangeTalentsEra do; texcoords and sizes live in
+    # core/media.lua M.modernWow.talents.
+    ("ui/frame/metal-corners", "uiframemetal2x.png",
+     "WoW-DragonflightUI (DF-main) metal frame corner atlas at 512x512: top "
+     "corners 75x74, bottom corners 32x32.",
+     "uiframemetal2x.png"),
+    ("ui/frame/metal-horizontal", "uiframemetalhorizontal2x.png",
+     "DF-main metal top and bottom edge strips at 64x256, tiled horizontally "
+     "between the corners.",
+     "uiframemetalhorizontal2x.png"),
+    ("ui/frame/metal-vertical", "uiframemetalvertical2x.png",
+     "DF-main metal left and right edge strips at 512x32, stretched "
+     "vertically between the corners.",
+     "uiframemetalvertical2x.png"),
+    ("ui/frame/background-rock", "ui-background-rock.png",
+     "DF-main dark rock window background at 1024x1024, stretched over the "
+     "window body.",
+     "ui-background-rock.png"),
+    ("ui/frame/top-streak", "uiframehorizontal.png",
+     "DF-main horizontal streak under the window title at 256x128; rows "
+     "2-88 are drawn.",
+     "uiframehorizontal.png"),
+    ("ui/frame/portrait-ring", "UI-Frame-PortraitMetal-CornerTopLeft.png",
+     "DF-main metal portrait ring at 256x256, drawn 84x84 around the "
+     "window portrait.",
+     "UI-Frame-PortraitMetal-CornerTopLeft.png"),
+    ("ui/talents/talent-arrows", "UI-TalentArrows.png",
+     "DF-main talent prerequisite arrow atlas at 64x64 (lit and unlit rows).",
+     "UI-TalentArrows.png"),
+    ("ui/talents/talent-branches", "UI-TalentBranches.png",
+     "DF-main talent prerequisite branch atlas at 256x64 (lit and unlit rows).",
+     "UI-TalentBranches.png"),
+    ("ui/talents/talent-frame-parts", "TalentFrame-Parts.PNG",
+     "Blizzard TalentFrame-Parts atlas referenced by DF-main's inherited "
+     "TalentHeader templates. Sourced from Gethe/wow-ui-textures at "
+     "`TALENTFRAME/TalentFrame-Parts.PNG` (SHA-256 "
+     "A4E1A68CDD422E45FF21B32968FEE320F51259641AB702EA34410856789FC979). "
+     "The Modern WoW talents surface draws its parchment header, gold header "
+     "rim, primary icon border and gold point circle cells.",
+     "TalentFrame-Parts.PNG"),
+    ("ui/talents/role-icons", "lfgrole.png",
+     "WoW-DragonflightUI (DF-main) `Textures/lfgrole.png`, its copy of the "
+     "LFGRole strip: four 16x16 cells at 64x16 -- leader, damage, tank, "
+     "healer. Drawn as the role icons on each Modern WoW talent tree header.",
+     "lfgrole.png"),
+    # ThinBorder is the authored modern inset used around the three talent
+    # trees. Its 32px source canvases are drawn at 16 units; the opaque rim is
+    # roughly 5 units at that scale, matching the panel's content inset.
+    ("ui/borders/thin-border-top-left", "ThinBorder-TopLeft.PNG",
+     "Top-left corner of the textured thin panel border, drawn at 16x16.",
+     "ThinBorder-TopLeft.PNG"),
+    ("ui/borders/thin-border-top", "ThinBorder-Top.PNG",
+     "Stretchable top edge of the textured thin panel border, drawn 16 high.",
+     "ThinBorder-Top.PNG"),
+    ("ui/borders/thin-border-top-right", "ThinBorder-TopRight.PNG",
+     "Top-right corner of the textured thin panel border, drawn at 16x16.",
+     "ThinBorder-TopRight.PNG"),
+    ("ui/borders/thin-border-left", "ThinBorder-Left.PNG",
+     "Stretchable left edge of the textured thin panel border, drawn 16 wide.",
+     "ThinBorder-Left.PNG"),
+    ("ui/borders/thin-border-right", "ThinBorder-Right.PNG",
+     "Stretchable right edge of the textured thin panel border, drawn 16 wide.",
+     "ThinBorder-Right.PNG"),
+    ("ui/borders/thin-border-bottom-left", "ThinBorder-BottomLeft.PNG",
+     "Bottom-left corner of the textured thin panel border; mirrored for the "
+     "bottom-right corner, drawn at 16x16.",
+     "ThinBorder-BottomLeft.PNG"),
+    ("ui/borders/thin-border-bottom", "ThinBorder-Bottom.PNG",
+     "Stretchable bottom edge of the textured thin panel border, drawn 16 high.",
+     "ThinBorder-Bottom.PNG"),
 ]
 
 
@@ -333,6 +480,28 @@ MASKED = [
      "Trade-skill / craft cast fill."),
     ("castbar/fill-interrupted", "CastingBarInterrupted2.png",
      "CastingBarMask.png", "Failed / interrupted cast fill."),
+    # DF-main's profession rank-bar fills (Textures/UI/professionsfx*.png),
+    # which it clips with profbarmask through a MaskTexture. Same bake as the
+    # cast fills; modules/professions.lua crops the fill with SetTexCoord in
+    # step with its width so the baked rounded ends stay on the bar.
+    ("ui/profession/fx-alchemy", "professionsfxalchemy.png", "profbarmask.png",
+     "DF-main Alchemy (also First Aid and Poisons) profession rank-bar fill."),
+    ("ui/profession/fx-blacksmithing", "professionsfxblacksmithing.png",
+     "profbarmask.png", "DF-main Blacksmithing profession rank-bar fill."),
+    ("ui/profession/fx-cooking", "professionsfxcooking.png", "profbarmask.png",
+     "DF-main Cooking profession rank-bar fill."),
+    ("ui/profession/fx-enchanting", "professionsfxenchanting.png",
+     "profbarmask.png", "DF-main Enchanting profession rank-bar fill."),
+    ("ui/profession/fx-engineering", "professionsfxengineering.png",
+     "profbarmask.png", "DF-main Engineering profession rank-bar fill."),
+    ("ui/profession/fx-leatherworking", "professionsfxleatherworking.png",
+     "profbarmask.png", "DF-main Leatherworking profession rank-bar fill."),
+    ("ui/profession/fx-mining", "professionsfxmining.png", "profbarmask.png",
+     "DF-main Mining (Smelting) profession rank-bar fill."),
+    ("ui/profession/fx-skinning", "professionsfxskinning.png", "profbarmask.png",
+     "DF-main Beast Training rank-bar fill (DF-main draws its skinning fill)."),
+    ("ui/profession/fx-tailoring", "professionsfxtailoring.png",
+     "profbarmask.png", "DF-main Tailoring profession rank-bar fill."),
 ]
 
 
@@ -496,10 +665,10 @@ def write_attribution(dest_root, rows, user_rows):
         lines.extend([
             "## Not from DragonflightUI-Reforged",
             "",
-            "The files below are **user-supplied**, not imported art, and the",
-            "credit above does not apply to them. They are re-encoded under the",
-            "same RLE-TGA contract as everything else here -- in place, or from",
-            "the file named in `supplied as` when that is kept beside them.",
+            "The files below are **not imported from DragonflightUI-Reforged**,",
+            "and the credit above does not apply to them. They are user-supplied",
+            "or explicitly sourced as recorded in each note, then re-encoded",
+            "under the same RLE-TGA contract as everything else here.",
             "",
             "| unrealUI file | size | supplied as | note |",
             "| --- | --- | --- | --- |",

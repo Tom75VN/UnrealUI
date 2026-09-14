@@ -171,6 +171,7 @@ local DIAGNOSTIC_HELP = {
   "  |cffffff00/uui perf clear|r - empty the stored run log",
   "  |cffffff00/uui nosuppress|r - skip native frame suppression (needs /reload)",
   "  |cffffff00/uui suppress <0-4>|r - bisect the suppression recipe (needs /reload)",
+  "  |cffffff00/uui portrait3d <0-3>|r - 3D portrait coverage bisect, modern/modern-wow (needs /reload)",
 }
 
 local function ShowHelp(rest)
@@ -1973,6 +1974,46 @@ handlers["suppress"] = function(rest)
   if level > 0 then U.db.noSuppress = false end
 
   U.Print("suppression level |cffffff00" .. tostring(level) .. "|r - " ..
+          "|cffffff00/reload|r to apply")
+end
+
+-- Crash bisect for the 3D unit-frame portrait (knowledge.json /
+-- unitframes.portrait_model_crash). Steps widen by unit kind because
+-- UnrealPfUI (WORKING_SOURCE) forces 2D with the note that PlayerModel:SetUnit
+-- can end the client when an NPC is targeted. A reload is required so a crash
+-- cannot leave a half-built model on a live frame; the model is only created
+-- on frames built after the flag is read.
+local PORTRAIT3D_LEVELS = {
+  "0 - off globally, 2D portraits only (family switches unchanged)",
+  "1 - 3D on the player frame only",
+  "2 - + other player characters (target, party, target of target)",
+  "3 - + NPCs and pets (default coverage ceiling)",
+}
+
+handlers["portrait3d"] = function(rest)
+  if not U.db then
+    U.Print("config not loaded yet")
+    return
+  end
+
+  local level = tonumber(rest)
+  if not level then
+    U.Print("3D portrait level: |cffffff00" ..
+            tostring(U.db.portrait3d or 0) .. "|r  (Modern and Modern WoW themes)")
+    local i
+    for i = 1, table.getn(PORTRAIT3D_LEVELS) do
+      U.Print("  |cffffff00/uui portrait3d " .. PORTRAIT3D_LEVELS[i])
+    end
+    U.Print("  player, target and party family switches apply within this ceiling")
+    U.Print("  units the level excludes, or that are out of sight, keep the 2D portrait")
+    return
+  end
+
+  level = math.floor(level)
+  if level < 0 then level = 0 end
+  if level > 3 then level = 3 end
+  U.db.portrait3d = level
+  U.Print("3D portrait level |cffffff00" .. tostring(level) .. "|r - " ..
           "|cffffff00/reload|r to apply")
 end
 

@@ -2629,11 +2629,19 @@ end
 -- rules list "modal dialogs" as a missing shared component, so the second
 -- caller (modules/bank.lua) added it centrally instead of copying it again.
 -- ---------------------------------------------------------------------------
-local confirmDialog
+--
+-- Modern WoW callers pass options.modernWow and get a second instance dressed
+-- as the Modern WoW logout/resurrect popups are (modules/logout.lua): the
+-- diamond-metal housing and the 128RedButton faces. It is a separate frame, so
+-- no caller's flat dialog ever has to undo that art; U.ModernWowMetalFrame and
+-- U.ModernWowRedButtonFace return false outside the theme, which falls back to
+-- the flat instance.
+local confirmDialog, confirmDialogWow
 
-local function BuildConfirmDialog()
+local function BuildConfirmDialog(wow)
+  local suffix = wow and "ModernWow" or ""
   local dialog = U.CreatePanel(UIParent, {
-    name = "UnrealUIConfirm",
+    name = "UnrealUIConfirm" .. suffix,
     width = 280,
     height = 100,
   })
@@ -2685,7 +2693,7 @@ local function BuildConfirmDialog()
   dialog.priceRow:Hide()
 
   dialog.cancel = U.CreateButton(dialog, {
-    name = "UnrealUIConfirmCancel",
+    name = "UnrealUIConfirm" .. suffix .. "Cancel",
     text = U.L("COMMON_CANCEL"),
     width = 110,
     height = 24,
@@ -2694,7 +2702,7 @@ local function BuildConfirmDialog()
   dialog.cancel:SetPoint("BOTTOMRIGHT", dialog, "BOTTOMRIGHT", -16, 14)
 
   dialog.accept = U.CreateButton(dialog, {
-    name = "UnrealUIConfirmAccept",
+    name = "UnrealUIConfirm" .. suffix .. "Accept",
     text = U.L("COMMON_ACCEPT"),
     width = 110,
     height = 24,
@@ -2702,6 +2710,74 @@ local function BuildConfirmDialog()
   dialog.accept:SetPoint("BOTTOMLEFT", dialog, "BOTTOMLEFT", 16, 14)
 
   dialog:Hide()
+  return dialog
+end
+
+-- Modern WoW face for one confirm button: flat backdrop off, the red
+-- three-slice on, hover painted from the button's own enter/leave.
+local function DressConfirmWowButton(button, width, height)
+  pcall(button.SetWidth, button, width)
+  pcall(button.SetHeight, button, height)
+  if not U.ModernWowRedButtonFace(button, height) then return false end
+  U.SetBackdropShown(button, false)
+
+  -- A texture created on a button can stay hidden until shown explicitly
+  -- (modules/character.lua, skillunlearn.icon_field.v1).
+  local face = button.uuiModernWowAction
+  pcall(face.left.Show, face.left)
+  pcall(face.middle.Show, face.middle)
+  pcall(face.right.Show, face.right)
+
+  U.PostHookScript(button, "OnEnter", function()
+    U.ModernWowPaintRedButton(button, true)
+  end)
+  U.PostHookScript(button, "OnLeave", function()
+    U.ModernWowPaintRedButton(button, false)
+  end)
+  if button.label then
+    U.SetStockFont(button.label, M.fontSize.normal, M.color.text)
+    U.CenterButtonLabel(button.label, button)
+  end
+  return true
+end
+
+-- Returns the dressed dialog, or nil when the theme's art is unavailable.
+local function BuildConfirmDialogWow()
+  if type(U.ModernWowMetalFrame) ~= "function" or
+     type(U.ModernWowRedButtonFace) ~= "function" then
+    return nil
+  end
+  local token = M.modernWow and M.modernWow.confirmDialog
+  if not token then return nil end
+
+  local dialog = BuildConfirmDialog(true)
+  -- The metal frame follows the dialog's own anchors; its width/height
+  -- arguments only size the corner arms, so the panel itself is resized.
+  pcall(dialog.SetWidth, dialog, token.width)
+  pcall(dialog.SetHeight, dialog, token.height)
+  if not U.ModernWowMetalFrame(dialog, token.width, token.height) then
+    return nil
+  end
+  U.SetBackdropShown(dialog, false)
+  if dialog.text then
+    U.SetStockFont(dialog.text, M.fontSize.normal, M.color.text)
+  end
+
+  -- The pair shares the width inside the metal sides, as the logout popups'
+  -- buttons do (M.modernWow.corpsePopupButton).
+  local button = M.modernWow.corpsePopupButton
+  local width = math.min(token.buttonWidth,
+    (token.width - 2 * button.sideInset - button.pairGap) / 2)
+  if not DressConfirmWowButton(dialog.accept, width, button.height) or
+     not DressConfirmWowButton(dialog.cancel, width, button.height) then
+    return nil
+  end
+  dialog.accept:ClearAllPoints()
+  dialog.accept:SetPoint("BOTTOMRIGHT", dialog, "BOTTOM", -button.pairGap / 2,
+                         token.buttonBottom)
+  dialog.cancel:ClearAllPoints()
+  dialog.cancel:SetPoint("BOTTOMLEFT", dialog, "BOTTOM", button.pairGap / 2,
+                         token.buttonBottom)
   return dialog
 end
 
@@ -2714,9 +2790,23 @@ end
 -- row instead of plain detail text; leave it nil for a normal confirm.
 function U.ShowConfirm(options)
   options = options or {}
-  if not confirmDialog then confirmDialog = BuildConfirmDialog() end
-
-  local dialog = confirmDialog
+  local dialog
+  if options.modernWow and U.GetActiveThemeStyle() == "modern-wow" then
+    if confirmDialogWow == nil then
+      local ok, built = pcall(BuildConfirmDialogWow)
+      confirmDialogWow = ok and built or false
+    end
+    dialog = confirmDialogWow or nil
+  end
+  if not dialog then
+    if not confirmDialog then confirmDialog = BuildConfirmDialog() end
+    dialog = confirmDialog
+  end
+  -- One confirmation at a time, whichever instance put it up.
+  if confirmDialog and confirmDialog ~= dialog then confirmDialog:Hide() end
+  if confirmDialogWow and confirmDialogWow ~= dialog then
+    confirmDialogWow:Hide()
+  end
   dialog.uuiOwner = options.owner
   dialog:ClearAllPoints()
   if options.centered then
@@ -2782,7 +2872,10 @@ function U.ShowConfirm(options)
 end
 
 function U.HideConfirm(owner)
-  if not confirmDialog then return end
-  if owner and confirmDialog.uuiOwner ~= owner then return end
-  confirmDialog:Hide()
+  local dialogs = { confirmDialog, confirmDialogWow }
+  local i
+  for i = 1, 2 do
+    local dialog = dialogs[i]
+    if dialog and (not owner or dialog.uuiOwner == owner) then dialog:Hide() end
+  end
 end

@@ -129,6 +129,12 @@ local function RepaintSpellButtons()
   return true
 end
 
+-- For modules/spellbookprofessions.lua, which changes what every slot
+-- resolves to the same way the book tabs do.
+function U.SpellBookRepaintButtons()
+  return RepaintSpellButtons()
+end
+
 local function StyleSpellButton(index, refreshOnly)
   local button = G("SpellButton" .. index)
   local icon = G("SpellButton" .. index .. "IconTexture")
@@ -291,6 +297,12 @@ function booktab.Select(wanted)
   rank.Invalidate()
   RepaintSpellButtons()
   rank.UpdatePaging()
+end
+
+-- For modules/spellbookprofessions.lua's own Spellbook tab, which replaces
+-- the client's under modern-wow.
+function U.SpellBookSelectBook(bookType)
+  booktab.Select(bookType)
 end
 
 function booktab.Install()
@@ -766,6 +778,13 @@ function rank.Install()
   end
 
   local wrapper = function(index)
+    -- The modern-wow Professions page shows profession spells on these same
+    -- native buttons, so their click still casts through the client's own
+    -- path (CastSpell is protected for addons). Nil unless that page is open.
+    if type(U.ModernWowProfessionSlot) == "function" then
+      local slot = U.ModernWowProfessionSlot(index)
+      if slot then return slot end
+    end
     local filtered = rank.Resolve(index)
     if filtered then return filtered end
     return native(index)
@@ -2956,4 +2975,8 @@ function SB:OnEnable()
   booktab.Install()
   rank.Install()
   missing.Install()
+  -- The Professions page has no casting path without the slot mapping.
+  if type(U.ModernWowProfessionsSetAvailable) == "function" then
+    U.ModernWowProfessionsSetAvailable(rank.active)
+  end
 end

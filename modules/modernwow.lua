@@ -987,10 +987,52 @@ function mw.ApplyPortraitSize(portrait)
   portrait:SetHeight(size)
   portrait:ClearAllPoints()
   portrait:SetPoint("CENTER", geometry.frame, "TOPLEFT", geometry.x, geometry.y)
-  if portrait.icon then
-    portrait.icon:ClearAllPoints()
-    portrait.icon:SetAllPoints(portrait)
+  mw.AnchorPortraitIcon(portrait)
+  mw.FitPortraitModel(portrait)
+end
+
+-- The icon fills the portrait, except while it carries the 3D portrait's
+-- stone background (modules/unitframes.lua sets uuiPortraitBackground) on a
+-- ring with a measured backgroundTrim.
+function mw.AnchorPortraitIcon(portrait)
+  local icon = portrait and portrait.icon
+  if not icon then return end
+  local geometry = portrait.uuiModernWowGeometry
+  local size = geometry and geometry.backgroundSize
+  icon:ClearAllPoints()
+  if size and portrait.uuiPortraitBackground then
+    icon:SetWidth(size)
+    icon:SetHeight(size)
+    icon:SetPoint("CENTER", portrait, "CENTER", 0, geometry.backgroundY or 0)
+  else
+    icon:SetAllPoints(portrait)
   end
+end
+
+function U.ModernWowAnchorPortraitIcon(portrait)
+  mw.AnchorPortraitIcon(portrait)
+end
+
+-- Fits the optional 3D portrait (modules/unitframes.lua model3d) inside
+-- the ring. A Model viewport is rectangular and this client offers no mask
+-- for it, so the square is sized from M.modernWow.ring[art].model -- the
+-- largest square whose corners stay under the gold rim -- and centred on the
+-- portrait. No geometry means no size, so the model stays invisible rather
+-- than spilling past the ring until the housing has been built.
+function mw.FitPortraitModel(portrait)
+  local model = portrait and portrait.uuiModel
+  if not model then return end
+  local geometry = portrait.uuiModernWowGeometry
+  local size = geometry and geometry.modelSize
+  if not size then return end
+  pcall(model.ClearAllPoints, model)
+  pcall(model.SetWidth, model, size)
+  pcall(model.SetHeight, model, size)
+  pcall(model.SetPoint, model, "CENTER", portrait, "CENTER", 0, 0)
+end
+
+function U.ModernWowFitPortraitModel(portrait)
+  mw.FitPortraitModel(portrait)
 end
 
 -- Applies the fixed Malgus frame scale to one unit frame.
@@ -1305,6 +1347,13 @@ function mw.BuildHousing(frame, entry)
     -- path and cannot diverge between the initial build and later reuse.
     portrait.uuiModernWowGeometry = {
       size = ring.size * s,
+      backgroundSize = ring.backgroundTrim
+        and (ring.size - ring.backgroundTrim) * s or nil,
+      backgroundY = (ring.backgroundY or 0) * s,
+      modelSize = ring.model
+        and ring.model
+          * (ring.modelScale or M.modernWow.portraitModelScale or 1) * s
+        or nil,
       x = FlipX((ring.x - L.contentLeft) * s, 0),
       y = -(ring.y - L.contentTop) * s,
       frame = frame,
@@ -3247,46 +3296,20 @@ function mw.RefreshCharacterLevelLine(level)
   pcall(text.SetText, text, U.L("CHARACTER_CLASS_LEVEL", name, level))
 end
 
--- Placed on the first show that has readable bounds: before the window has
--- been shown, the panel manager has not positioned it and the reads are 0.
--- Until then (or with no dropdown) the fallback point is used. Once placed,
--- only the captured numbers are kept.
+-- The class/level line belongs to the themed housing, not to the native name
+-- or title-dropdown geometry. Anchoring it directly to the window keeps it
+-- horizontally centred even when the panel manager or UI scale moves the
+-- native regions.
 function mw.PlaceCharacterLevelLine(frame)
   local text = mw.characterLevelText
   if not text or mw.characterLevelPlaced then return end
 
-  -- Between the header's name and the title dropdown: centred on the name
-  -- horizontally, and vertically midway between the name's bottom and the
-  -- dropdown's top, so it follows the dropdown offset. With no dropdown it
-  -- hangs `gap` units under the name. Both are client-owned regions read as
-  -- numbers once, never anchored to.
   local token = M.modernWow.characterLevelLine
-  local name = U.G("CharacterNameText")
-  local dropdown = U.G(M.modernWow.titleDropDown.name)
-  local frameLeft = mw.Dimension(frame, "GetLeft")
-  local frameTop = mw.Dimension(frame, "GetTop")
-  local nameLeft = mw.Dimension(name, "GetLeft")
-  local nameRight = mw.Dimension(name, "GetRight")
-  local nameBottom = mw.Dimension(name, "GetBottom")
-  local top = mw.Dimension(dropdown, "GetTop")
-  local measured = frameLeft ~= 0 and frameTop ~= 0 and nameLeft ~= 0
-                   and nameRight > nameLeft and nameBottom ~= 0
   pcall(function()
     text:ClearAllPoints()
-    if not measured then
-      text:SetPoint("TOP", frame, "TOP", 0, -token.fallbackTop)
-      return
-    end
-    local x = (nameLeft + nameRight) / 2 - frameLeft
-    if top ~= 0 and top < nameBottom then
-      text:SetPoint("CENTER", frame, "TOPLEFT", x,
-                    (nameBottom + top) / 2 - frameTop + token.offsetY)
-    else
-      text:SetPoint("TOP", frame, "TOPLEFT", x,
-                    nameBottom - frameTop - token.gap)
-    end
+    text:SetPoint("TOP", frame, "TOP", 0, -token.top)
   end)
-  if measured then mw.characterLevelPlaced = true end
+  mw.characterLevelPlaced = true
 end
 
 function mw.CharacterLevelLine(frame)
@@ -3474,9 +3497,11 @@ function mw.BuildHeaders()
     local entry = mw.windows[i]
     local frame = U.G(entry.name)
     -- The Spellbook's housing already carries its header bar
-    -- (modules/spellbookmodernwow.lua).
+    -- (modules/spellbookmodernwow.lua), and the Talent window draws its own
+    -- (modules/talentsmodernwow.lua).
     local ownHeader = frame and frame.uuiModernWowWindow and
-                      frame.uuiModernWowWindow.spellBook
+                      (frame.uuiModernWowWindow.spellBook or
+                       frame.uuiModernWowWindow.talents)
     if frame and not entry.classicInteraction and not ownHeader then
       mw.DressHeader(frame)
     end
@@ -3775,6 +3800,29 @@ function mw.BuildSpellBook()
   end
 end
 mw.RegisterSurface("spellbook", "Spellbook", true, mw.BuildSpellBook)
+
+-- modules/talents.lua draws this itself (modules/talentsmodernwow.lua). The
+-- talent UI can load after login, so a window that does not exist yet is not
+-- a failure; one that exists without the drawing path is.
+function mw.BuildTalents()
+  if U.G("TalentFrame") and
+     (type(U.ModernWowTalentsActive) ~= "function" or
+      not U.ModernWowTalentsActive()) then
+    error("modern-wow talents drawing path did not activate")
+  end
+end
+mw.RegisterSurface("talents", "Talent window", true, mw.BuildTalents)
+
+-- modules/professions.lua draws this itself. The TradeSkill and Craft windows
+-- can load on demand after login, so a window that does not exist yet is not
+-- a failure; one that exists without the drawing path is.
+function mw.BuildProfessions()
+  if type(U.ModernWowProfessionsHealthy) ~= "function" or
+     not U.ModernWowProfessionsHealthy() then
+    error("modern-wow profession window drawing path did not activate")
+  end
+end
+mw.RegisterSurface("professions", "Profession window", true, mw.BuildProfessions)
 
 -- Planned surfaces: art imported and tokenised in core/media.lua, no drawing
 -- path yet. Registered with no build function so `/uui mw list` states the

@@ -501,6 +501,16 @@ local function StyleFrame()
   local tooltip = U.G("GameTooltip")
   if not tooltip then return end
 
+  -- Item tooltips (quest rewards, 2026-09-14 user screenshot) kept a grey
+  -- divider above Durability that GameTooltipTexture1-3 suppression did not
+  -- remove, while ShoppingTooltip1/2 -- same item builder -- showed none.
+  -- The only styling difference was this SetBackdrop(nil) reset, so the item
+  -- tooltip now takes the same sequence (WORKING_SOURCE, see
+  -- U.StyleCompareTooltip; not yet runtime-verified on GameTooltip).
+  if tooltip.SetBackdrop then
+    pcall(tooltip.SetBackdrop, tooltip, nil)
+  end
+
   -- Fill only, no edgeFile: the stock bevel lives on the backdrop's edge, and
   -- rendering.backdrop_edge_fractional_not_rasterized means unrealUI draws its
   -- own outline from plain textures instead (core/style.lua).

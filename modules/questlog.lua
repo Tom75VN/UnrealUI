@@ -20,8 +20,8 @@ local QUEST_WHITE = { 1.00, 1.00, 1.00, 1 }
 -- parchment, so near-white body text and the chrome accent are both illegible
 -- on it; these are the two colours used there instead. The quest LIST keeps
 -- its bright text, because the same art draws that page dark.
-local QUEST_INK_HEADING = { 0.30, 0.13, 0.02, 1 }
-local QUEST_INK_BODY = { 0.16, 0.12, 0.08, 1 }
+local QUEST_INK_HEADING = M.modernWow.parchmentInk.heading
+local QUEST_INK_BODY = M.modernWow.parchmentInk.body
 
 local config
 local frame, detail, listScroll, detailPanel, collapseAllButton
@@ -151,24 +151,10 @@ end
 -- Failed approach (USER_CONFIRMED_INGAME 2026-09-13, reverted): adding a
 -- second TOPRIGHT point derived from the live GetPoint tuple plus
 -- SetJustifyH("LEFT") broke the whole details page layout.
+-- The measuring itself is shared with modules/quest.lua in core/stockui.lua.
 local function FitLineToText(object)
   if not object or not ModernWow() then return end
-  if not object.uuiNativeWidth then
-    local ok, width = pcall(object.GetWidth, object)
-    if not ok or not tonumber(width) or width <= 0 then return end
-    object.uuiNativeWidth = width
-  end
-  local width = object.uuiNativeWidth
-  -- Back to full width BEFORE measuring (USER_CONFIRMED_INGAME 2026-09-13):
-  -- measured inside the box the previous quest shrank it to, a longer line is
-  -- already wrapped and reports only its wrapped width, so it stayed narrow
-  -- and broke onto several lines.
-  pcall(object.SetWidth, object, width)
-  local ok, textWidth = pcall(object.GetStringWidth, object)
-  textWidth = ok and tonumber(textWidth) or 0
-  -- +2 absorbs rounding so a line that fits is not wrapped by its own box.
-  if textWidth > 0 and textWidth + 2 < width then width = textWidth + 2 end
-  pcall(object.SetWidth, object, width)
+  U.FitLineToText(object)
 end
 
 local function ApplyQuestFonts()

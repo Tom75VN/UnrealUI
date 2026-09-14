@@ -153,13 +153,15 @@ function book.BuildChrome(frame)
 
   -- Pages above the housing: BORDER over BACKGROUND, so the order does not
   -- depend on creation order within one layer.
+  -- Kept, so the Professions page can swap its own art into the same two
+  -- regions (U.ModernWowSpellBookSetPageArt).
   local vBottom = t.page.height / t.page.canvas
   local page1Width = t.page.width * L.kx
-  book.Place(book.Texture(chrome, "BORDER", t.texture.page1, 0, 1, 0, vBottom),
-             L.pageLeft, L.pageTop, page1Width, L.pageHeight)
-  book.Place(book.Texture(chrome, "BORDER", t.texture.page2,
-                          0, t.page.edgeWidth / t.page.edgeCanvas, 0, vBottom),
-             L.pageLeft + page1Width, L.pageTop,
+  book.page1 = book.Texture(chrome, "BORDER", t.texture.page1, 0, 1, 0, vBottom)
+  book.Place(book.page1, L.pageLeft, L.pageTop, page1Width, L.pageHeight)
+  book.page2 = book.Texture(chrome, "BORDER", t.texture.page2,
+                            0, t.page.edgeWidth / t.page.edgeCanvas, 0, vBottom)
+  book.Place(book.page2, L.pageLeft + page1Width, L.pageTop,
              t.page.edgeWidth * L.kx, L.pageHeight)
 
   -- The class portrait in the housing's gold ring, as on the Character
@@ -168,9 +170,9 @@ function book.BuildChrome(frame)
   local cell = ok and class and M.modernWow.classCell[class]
   if cell then
     local ring = t.ring
-    book.Place(book.Texture(chrome, "ARTWORK", tex.classPortraits,
-                            cell[1], cell[2], cell[3], cell[4]),
-               ring.left + ring.inset, ring.top + ring.inset,
+    book.portrait = book.Texture(chrome, "ARTWORK", tex.classPortraits,
+                                 cell[1], cell[2], cell[3], cell[4])
+    book.Place(book.portrait, ring.left + ring.inset, ring.top + ring.inset,
                ring.size - 2 * ring.inset, ring.size - 2 * ring.inset)
   end
 
@@ -406,14 +408,51 @@ function book.DressSpellButton(index)
     state.regions = { state.background, state.frame, state.shadow }
     book.buttons[index] = state
   end
-  -- The not-on-bar pulse uses this addon-owned texture as its horizontal
-  -- geometry reference. It must cover exactly the same name-shadow run.
-  button.uuiModernWowNameShadow = state.shadow
 
   local column = index - 1 - math.floor((index - 1) / grid.columns) * grid.columns
   local row = math.floor((index - 1) / grid.columns)
   local x, y = book.PagePoint(grid.left + column * grid.columnPitch,
                               grid.top + row * grid.rowPitch)
+  -- The Professions page places the same native buttons in its own rows
+  -- while it is shown; nil means the spell grid.
+  local placed = book.placer and book.placer(index)
+  if placed then x, y = placed.x, placed.y end
+
+  -- The Professions page seats the name on its own plate
+  -- (placed.nameFrame) instead of the spell page's name shadow; the one not
+  -- in use is hidden and left out of the regions SyncSpellButton shows.
+  local plate = placed and placed.nameFrame
+  if plate and not state.nameFrame then
+    state.nameFrame = book.Texture(button, "BACKGROUND", plate.path,
+                                   plate.u1, plate.u2, plate.v1, plate.v2)
+  end
+  local seat = state.shadow
+  if plate and state.nameFrame then
+    seat = state.nameFrame
+    pcall(function()
+      seat:ClearAllPoints()
+      seat:SetWidth(plate.width)
+      seat:SetHeight(plate.height)
+      seat:SetPoint("LEFT", button, "RIGHT", plate.x, 0)
+      seat:SetAlpha(plate.alpha)
+    end)
+    pcall(state.shadow.Hide, state.shadow)
+  elseif state.nameFrame then
+    pcall(state.nameFrame.Hide, state.nameFrame)
+  end
+  -- The Professions page (placed.plainSlot) draws no slot art: as
+  -- DragonflightUI's DFProfessionButtonTemplate does, the uncropped icon's
+  -- own edge is the border.
+  if placed and placed.plainSlot then
+    pcall(state.background.Hide, state.background)
+    pcall(state.frame.Hide, state.frame)
+    state.regions = { seat }
+  else
+    state.regions = { state.background, state.frame, seat }
+  end
+  -- The not-on-bar pulse uses this addon-owned texture as its horizontal
+  -- geometry reference. It must cover exactly the name run it sits behind.
+  button.uuiModernWowNameShadow = seat
   pcall(function()
     button:ClearAllPoints()
     button:SetPoint("TOPLEFT", book.frame, "TOPLEFT", x, -y)
@@ -443,6 +482,8 @@ function book.DressSpellButton(index)
   end
 
   local size = state.native.size * grid.buttonScale
+  if placed then size = placed.size end
+  local childScale = size / state.native.size
   pcall(function()
     button:SetWidth(size)
     button:SetHeight(size)
@@ -452,14 +493,15 @@ function book.DressSpellButton(index)
     local entry = state.native.children[c]
     local child = U.G("SpellButton" .. index .. entry.name)
     if child then
-      pcall(child.SetWidth, child, entry.w * grid.buttonScale)
-      pcall(child.SetHeight, child, entry.h * grid.buttonScale)
+      pcall(child.SetWidth, child, entry.w * childScale)
+      pcall(child.SetHeight, child, entry.h * childScale)
     end
   end
 
   local k = size / t.parts.designButton
   local textWidth = grid.columnPitch * L.kx - size - grid.textGap -
                     grid.textInset
+  if placed then textWidth = placed.textWidth end
 
   local slot = t.parts.slotBackground
   pcall(function()
@@ -541,6 +583,12 @@ function book.SyncSpellButton(index)
   local t = book.Token()
   if name then
     pcall(name.SetTextColor, name, M.Unpack(t.spellNameColor))
+  end
+  -- The Professions page draws the rank line in its own colour; the client's
+  -- update restores its own once that page gives the button back.
+  local placed = book.placer and book.placer(index)
+  if sub and placed and placed.subColor then
+    pcall(sub.SetTextColor, sub, M.Unpack(placed.subColor))
   end
   local highlight = U.G("SpellButton" .. index .. "Highlight")
   if highlight then
@@ -842,9 +890,33 @@ end
 function book.DressBottomTabs()
   local t = book.Token()
   local tabs, i = {}, nil
-  for i = 1, 3 do
-    local tab = U.G("SpellBookFrameTabButton" .. i)
-    if tab then table.insert(tabs, tab) end
+  local active = 1
+
+  -- An owned Spellbook tab, then Professions, then the client's Pet tab. The
+  -- client's own Spellbook tab is hidden whenever the player has no pet
+  -- (USER_CONFIRMED_INGAME, 2026-09-14: it vanished and the Professions tab
+  -- chained to it lost its anchor), so it is replaced rather than chained to.
+  -- Only always-shown tabs precede the conditional Pet tab.
+  local extra
+  if type(U.ModernWowSpellBookExtraTabs) == "function" then
+    local ok, value = pcall(U.ModernWowSpellBookExtraTabs, book.frame)
+    if ok and type(value) == "table" and value.professions and
+       value.spellbook then
+      extra = value
+    end
+  end
+
+  if extra then
+    tabs = { extra.spellbook, extra.professions }
+    for i = 2, 3 do
+      local tab = U.G("SpellBookFrameTabButton" .. i)
+      if tab then table.insert(tabs, tab) end
+    end
+  else
+    for i = 1, 3 do
+      local tab = U.G("SpellBookFrameTabButton" .. i)
+      if tab then table.insert(tabs, tab) end
+    end
   end
   if not tabs[1] then return end
 
@@ -854,7 +926,7 @@ function book.DressBottomTabs()
                      t.bottomTab.left, -t.bottomTab.top)
   end)
   U.ChainStockTabs(tabs, t.bottomTab.gap)
-  U.StyleStockTabGroup(tabs, 1, { height = 20 })
+  U.StyleStockTabGroup(tabs, active, { height = 20 })
 
   if type(U.ModernWowDressTab) == "function" then
     for i = 1, table.getn(tabs) do
@@ -900,6 +972,61 @@ function U.ModernWowSpellBookToggleAnchor()
   if not book.built then return nil end
   local toggle = book.Token().toggle
   return "TOPLEFT", book.frame, "TOPLEFT", toggle.left, -toggle.top
+end
+
+-- ---------------------------------------------------------------------------
+-- Page hooks for modules/spellbookprofessions.lua
+-- ---------------------------------------------------------------------------
+
+-- Swaps the art in the two page regions; nil restores the spell pages. The
+-- replacement must share the spell pages' canvas, since the regions keep
+-- their texture coordinates.
+function U.ModernWowSpellBookSetPageArt(page1, page2)
+  if not book.built then return end
+  local t = book.Token()
+  if book.page1 then
+    pcall(book.page1.SetTexture, book.page1, page1 or t.texture.page1)
+  end
+  if book.page2 then
+    pcall(book.page2.SetTexture, book.page2, page2 or t.texture.page2)
+  end
+end
+
+-- A page-art texel as a TOPLEFT offset of the window (y positive down).
+function U.ModernWowSpellBookPagePoint(x, y)
+  if not book.built then return nil end
+  return book.PagePoint(x, y)
+end
+
+function U.ModernWowSpellBookPageScale()
+  if not book.built then return nil end
+  return book.layout.kx, book.layout.ky
+end
+
+-- `placer(index)` returns { x, y, size, textWidth } in window units for
+-- SpellButton<index>, or nil for the spell grid. Applied on the next redress.
+function U.ModernWowSpellBookSetButtonPlacer(placer)
+  book.placer = placer
+end
+
+function U.ModernWowSpellBookRedress()
+  book.Reapply()
+end
+
+-- The class portrait in the gold ring; the Professions page hides it under
+-- its own icon. Returns the ring rect as TOPLEFT window units.
+function U.ModernWowSpellBookShowClassPortrait(shown)
+  if book.portrait then
+    if shown then
+      pcall(book.portrait.Show, book.portrait)
+    else
+      pcall(book.portrait.Hide, book.portrait)
+    end
+  end
+  if not book.built then return nil end
+  local ring = book.Token().ring
+  return ring.left + ring.inset, ring.top + ring.inset,
+         ring.size - 2 * ring.inset
 end
 
 -- `/uui sb look`: what the first spell button and skill tab actually draw, so

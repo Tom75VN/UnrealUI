@@ -122,13 +122,14 @@ Pixels, dimensions and colour are otherwise unchanged.
 
 ## Not from DragonflightUI-Reforged
 
-The files below are **user-supplied**, not imported art, and the
-credit above does not apply to them. They are re-encoded under the
-same RLE-TGA contract as everything else here -- in place, or from
-the file named in `supplied as` when that is kept beside them.
+The files below are **not imported from DragonflightUI-Reforged**,
+and the credit above does not apply to them. They are user-supplied
+or explicitly sourced as recorded in each note, then re-encoded
+under the same RLE-TGA contract as everything else here.
 
 | unrealUI file | size | supplied as | note |
 | --- | --- | --- | --- |
+| `ui/golden-square-border.tga` | 256x256 | `golden-square-border.png` | Gold square icon frame at 256x256 with a transparent opening at x 32-223, y 30-220. Drawn around each talent tree's header icon in the modern-wow Talent window; geometry is tokenised in core/media.lua. |
 | `ui/combo-points.tga` | 128x56 | `combo-points.png` | Rogue and Cat Form combo-point atlas at 128x56: the left 57x56 circle is inactive and the right 57x56 circle is active. Drawn on the player or target frame opposite the configured aura position. |
 | `ui/questlog-left-large-v2.tga` | 896x896 | `questlog-left-large-v2.tga` | High-resolution left and centre Quest Log chrome for modern-wow. |
 | `ui/questlog-right-large.tga` | 448x896 | `questlog-right-large.tga` | High-resolution right Quest Log chrome for modern-wow. |
@@ -136,6 +137,7 @@ the file named in `supplied as` when that is kept beside them.
 | `ui/red-button.tga` | 256x128 | `redbutton2x.blp` | Dragonflight octagonal button atlas: a 5x3 grid of 34x38 cells on a 256x128 canvas -- minimize / close / maximize / minus glyphs across, normal / disabled / pushed down. The close column is what modern-wow draws on window close buttons; DragonflightUI ships only that one glyph, as the separate `close_normal` / `close_pushed` files, and without its disabled face. |
 | `ui/128RedButton.tga` | 512x2048 | `128RedButton.tga` | Modern rectangular red-button atlas at 512x2048. NPC actions use the UnrealQuest-measured three-slice normal and hover cells: fixed-aspect left/right bevels with only the middle stretched. Their geometry is tokenised in core/media.lua. |
 | `unitframes/player-status-large.tga` | 512x256 | `player-status-large.png` | Player combat / resting halo at 512x256, the same silhouette and orientation as `player-status.tga` at twice the resolution. Unlike that file its shape is in the alpha channel over near-white RGB. Supersedes `player-status.tga`, which is kept beside it but no longer referenced. |
+| `unitframes/unit-frame-portrait-background.tga` | 256x256 | `unit-frame-portrait-background.png` | Circular stone background shown beneath enabled 3D unit-frame portraits. Its transparent corners keep the background inside the Modern WoW portrait ring. |
 | `ui/frame-tabs.tga` | 64x256 | `uiframetabs.png` | Dragonflight bottom window-tab atlas, 64x256: active middle (rows 0-41) and inactive middle (44-79) span the full width; below them the active right (82-123) and left (126-167) caps, then the inactive right (170-205) and left (208-243) caps, each 37 texels wide. Drawn on the Character window tabs; cells are tokenised in core/media.lua. |
 | `ui/character-create-diamond-metal.tga` | 512x2048 | `CharacterCreateDiamondMetal8x.PNG` | Metal frame atlas at 8x, 512x2048: two plain bars, then four 238px corner pieces with a diamond stud (bottom-left, bottom-right, top-left, top-right). modern-wow draws the four corners around each Character gear slot; cells are tokenised in core/media.lua. |
 | `ui/spellbook/spellbook-page-1.tga` | 512x512 | `Spellbook-Page-1.png` | Spellbook left cover, ribbon and page at 512x512; the art occupies rows 0-493. Drawn inside the housing recess at its authored aspect. |
@@ -143,9 +145,49 @@ the file named in `supplied as` when that is kept beside them.
 | `ui/spellbook/spellbook-parts.tga` | 256x256 | `Spellbook-Parts.png` | Spellbook atlas at 256x256: spell slot frame, slot background and the soft name shadow are drawn on each spell button; cells are tokenised in core/media.lua. |
 | `ui/spellbook/skillline-tab.tga` | 64x64 | `spellbook-skilllinetab.png` | Spellbook skill-line side tab frame at 64x64, drawn 64x64 at (-3, 11) from its 32px tab button. |
 | `ui/spellbook/skillline-tab-glow.tga` | 64x64 | `spellbook-skilllinetab-glow.png` | Gold selected / hover face of `skillline-tab`, same canvas and placement. |
+| `ui/profession/professions-book-left.tga` | 512x512 | `Professions-Book-Left.png` | Professions page at 512x512: cover, ribbon and six profession rows; the art occupies rows 0-493. Swapped into the spell page's region when the Spellbook's Professions tab is selected. |
+| `ui/profession/professions-book-right.tga` | 32x512 | `Professions-Book-Right.png` | Right cover edge of `professions-book-left` at 32x512; the art occupies columns 0-20 and rows 0-493. |
+| `ui/profession/professions-book.tga` | 256x128 | `ProfessionsBook.png` | Professions atlas at 256x128: profession icon ring and skill bar end pieces and middle; cells are tokenised in core/media.lua. |
+| `ui/profession/professions-progress-fill.tga` | 256x16 | `Professions-Progress-Fill.png` | Skill bar fill at 256x16; the fill occupies rows 0-11. |
+| `ui/profession/professions.tga` | 2048x1024 | `professions.png` | DF-main professions atlas at 2048x1024: recipe-list panel, rank-bar track and rim, category header pieces, collapse and skill-up glyphs, recipe selection and hover bars, reagent slot frame. Cells are tokenised in core/media.lua. |
+| `ui/profession/background-art.tga` | 1024x1024 | `professionbackgroundart.png` | DF-main generic recipe-detail background at 1024x1024 (art in 677x550); First Aid, Beast Training and unknown professions. |
+| `ui/profession/background-art-alchemy.tga` | 1024x1024 | `professionbackgroundartalchemy.png` | DF-main Alchemy (and Poisons) recipe-detail background at 1024x1024. |
+| `ui/profession/background-art-blacksmithing.tga` | 1024x1024 | `professionbackgroundartblacksmithing.png` | DF-main Blacksmithing recipe-detail background at 1024x1024. |
+| `ui/profession/background-art-cooking.tga` | 1024x1024 | `professionbackgroundartcooking.png` | DF-main Cooking recipe-detail background at 1024x1024. |
+| `ui/profession/background-art-enchanting.tga` | 1024x1024 | `professionbackgroundartenchanting.png` | DF-main Enchanting recipe-detail background at 1024x1024. |
+| `ui/profession/background-art-engineering.tga` | 1024x1024 | `professionbackgroundartengineering.png` | DF-main Engineering recipe-detail background at 1024x1024. |
+| `ui/profession/background-art-leatherworking.tga` | 1024x1024 | `professionbackgroundartleatherworking.png` | DF-main Leatherworking recipe-detail background at 1024x1024. |
+| `ui/profession/background-art-mining.tga` | 1024x1024 | `professionbackgroundartmining.png` | DF-main Mining (Smelting) recipe-detail background at 1024x1024. |
+| `ui/profession/background-art-tailoring.tga` | 1024x1024 | `professionbackgroundarttailoring.png` | DF-main Tailoring recipe-detail background at 1024x1024. |
+| `ui/frame/metal-corners.tga` | 512x512 | `uiframemetal2x.png` | WoW-DragonflightUI (DF-main) metal frame corner atlas at 512x512: top corners 75x74, bottom corners 32x32. |
+| `ui/frame/metal-horizontal.tga` | 64x256 | `uiframemetalhorizontal2x.png` | DF-main metal top and bottom edge strips at 64x256, tiled horizontally between the corners. |
+| `ui/frame/metal-vertical.tga` | 512x32 | `uiframemetalvertical2x.png` | DF-main metal left and right edge strips at 512x32, stretched vertically between the corners. |
+| `ui/frame/background-rock.tga` | 1024x1024 | `ui-background-rock.png` | DF-main dark rock window background at 1024x1024, stretched over the window body. |
+| `ui/frame/top-streak.tga` | 256x128 | `uiframehorizontal.png` | DF-main horizontal streak under the window title at 256x128; rows 2-88 are drawn. |
+| `ui/frame/portrait-ring.tga` | 256x256 | `UI-Frame-PortraitMetal-CornerTopLeft.png` | DF-main metal portrait ring at 256x256, drawn 84x84 around the window portrait. |
+| `ui/talents/talent-arrows.tga` | 64x64 | `UI-TalentArrows.png` | DF-main talent prerequisite arrow atlas at 64x64 (lit and unlit rows). |
+| `ui/talents/talent-branches.tga` | 256x64 | `UI-TalentBranches.png` | DF-main talent prerequisite branch atlas at 256x64 (lit and unlit rows). |
+| `ui/talents/talent-frame-parts.tga` | 256x512 | `TalentFrame-Parts.PNG` | Blizzard TalentFrame-Parts atlas referenced by DF-main's inherited TalentHeader templates. Sourced from Gethe/wow-ui-textures at `TALENTFRAME/TalentFrame-Parts.PNG` (SHA-256 A4E1A68CDD422E45FF21B32968FEE320F51259641AB702EA34410856789FC979). The Modern WoW talents surface draws its parchment header, gold header rim, primary icon border and gold point circle cells. |
+| `ui/talents/role-icons.tga` | 64x16 | `lfgrole.png` | WoW-DragonflightUI (DF-main) `Textures/lfgrole.png`, its copy of the LFGRole strip: four 16x16 cells at 64x16 -- leader, damage, tank, healer. Drawn as the role icons on each Modern WoW talent tree header. |
+| `ui/borders/thin-border-top-left.tga` | 32x32 | `ThinBorder-TopLeft.PNG` | Top-left corner of the textured thin panel border, drawn at 16x16. |
+| `ui/borders/thin-border-top.tga` | 32x32 | `ThinBorder-Top.PNG` | Stretchable top edge of the textured thin panel border, drawn 16 high. |
+| `ui/borders/thin-border-top-right.tga` | 32x32 | `ThinBorder-TopRight.PNG` | Top-right corner of the textured thin panel border, drawn at 16x16. |
+| `ui/borders/thin-border-left.tga` | 32x32 | `ThinBorder-Left.PNG` | Stretchable left edge of the textured thin panel border, drawn 16 wide. |
+| `ui/borders/thin-border-right.tga` | 32x32 | `ThinBorder-Right.PNG` | Stretchable right edge of the textured thin panel border, drawn 16 wide. |
+| `ui/borders/thin-border-bottom-left.tga` | 32x32 | `ThinBorder-BottomLeft.PNG` | Bottom-left corner of the textured thin panel border; mirrored for the bottom-right corner, drawn at 16x16. |
+| `ui/borders/thin-border-bottom.tga` | 32x32 | `ThinBorder-Bottom.PNG` | Stretchable bottom edge of the textured thin panel border, drawn 16 high. |
 | `castbar/fill-cast.tga` | 512x32 | `CastingBarStandard2.png` | Normal cast fill. Alpha multiplied by `CastingBarMask.png` (no texture mask API on this client). |
 | `castbar/fill-channel.tga` | 512x32 | `CastingBarChannel.png` | Channelled cast fill. Alpha multiplied by `CastingBarMask.png` (no texture mask API on this client). |
 | `castbar/fill-craft.tga` | 512x32 | `CastingBarCrafting2.png` | Trade-skill / craft cast fill. Alpha multiplied by `CastingBarMask.png` (no texture mask API on this client). |
 | `castbar/fill-interrupted.tga` | 512x32 | `CastingBarInterrupted2.png` | Failed / interrupted cast fill. Alpha multiplied by `CastingBarMask.png` (no texture mask API on this client). |
+| `ui/profession/fx-alchemy.tga` | 1024x64 | `professionsfxalchemy.png` | DF-main Alchemy (also First Aid and Poisons) profession rank-bar fill. Alpha multiplied by `profbarmask.png` (no texture mask API on this client). |
+| `ui/profession/fx-blacksmithing.tga` | 1024x64 | `professionsfxblacksmithing.png` | DF-main Blacksmithing profession rank-bar fill. Alpha multiplied by `profbarmask.png` (no texture mask API on this client). |
+| `ui/profession/fx-cooking.tga` | 1024x64 | `professionsfxcooking.png` | DF-main Cooking profession rank-bar fill. Alpha multiplied by `profbarmask.png` (no texture mask API on this client). |
+| `ui/profession/fx-enchanting.tga` | 1024x64 | `professionsfxenchanting.png` | DF-main Enchanting profession rank-bar fill. Alpha multiplied by `profbarmask.png` (no texture mask API on this client). |
+| `ui/profession/fx-engineering.tga` | 1024x64 | `professionsfxengineering.png` | DF-main Engineering profession rank-bar fill. Alpha multiplied by `profbarmask.png` (no texture mask API on this client). |
+| `ui/profession/fx-leatherworking.tga` | 1024x64 | `professionsfxleatherworking.png` | DF-main Leatherworking profession rank-bar fill. Alpha multiplied by `profbarmask.png` (no texture mask API on this client). |
+| `ui/profession/fx-mining.tga` | 1024x64 | `professionsfxmining.png` | DF-main Mining (Smelting) profession rank-bar fill. Alpha multiplied by `profbarmask.png` (no texture mask API on this client). |
+| `ui/profession/fx-skinning.tga` | 1024x64 | `professionsfxskinning.png` | DF-main Beast Training rank-bar fill (DF-main draws its skinning fill). Alpha multiplied by `profbarmask.png` (no texture mask API on this client). |
+| `ui/profession/fx-tailoring.tga` | 1024x64 | `professionsfxtailoring.png` | DF-main Tailoring profession rank-bar fill. Alpha multiplied by `profbarmask.png` (no texture mask API on this client). |
 | `ui/frame-border.tga` | 512x256 | `frame-border.png` | Nine-slice metal frame with a centre diamond on its top and bottom edges. Supplied at 1448x1086 (not a power of two); cut into ten slices -- four corners, a top and bottom centre, and a plain sample of each bar -- halved and packed into a 512x256 atlas. |
 | `castbar/mask.tga` | 512x32 | `CastingBarMask.png` | The cast-bar mask as a drawable texture, used to shape the status-bar pulse on the cast bar. |

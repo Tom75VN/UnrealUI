@@ -148,6 +148,19 @@ local function BuildFrame()
     return false
   end
 
+  -- modern-wow is chosen before any flat styling and replaces the Modern skin
+  -- outright (modules/talentsmodernwow.lua). A failure is reported rather than
+  -- falling back, since the window may already be partly rebuilt.
+  if type(U.ModernWowTalentsWanted) == "function" and
+     U.ModernWowTalentsWanted() then
+    local ok, err = pcall(U.BuildModernWowTalents, frame)
+    if not ok then
+      U.Error("talents: modern-wow drawing path: " .. tostring(err))
+    end
+    built = true
+    return true
+  end
+
   U.StripStockTextures(frame)
   pcall(frame.DisableDrawLayer, frame, "BACKGROUND")
 

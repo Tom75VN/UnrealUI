@@ -1,7 +1,7 @@
 -- unrealUI :: modules/unitframeconfig.lua
 --
--- The contextual settings panels for the player, target and party unit frame
--- movers.
+-- The contextual settings panels for the player, target, target-of-target and
+-- party unit frame movers.
 --
 -- Selecting one of those handles in edit mode puts its own settings beside it,
 -- the way selecting an action bar does (modules/actionbarconfig.lua). Only the
@@ -31,6 +31,7 @@ local UFC = U.RegisterModule("unitframeconfig")
 -- (modules/unitframes.lua) keeps the views in step.
 local PLAYER_MOVER_ID = "unitframes.player"
 local TARGET_MOVER_ID = "unitframes.target"
+local TARGET_TARGET_MOVER_ID = "unitframes.targettarget"
 local PARTY_MOVER_ID = "unitframes.party"
 
 -- Two columns, the same shape the settings pages use, kept narrow enough to sit
@@ -52,15 +53,17 @@ local DROPDOWN_WIDTH = 200
 -- from the Party Frames page. Its slider columns reuse the action-bar mover
 -- panel's compact proportions so the window remains narrow enough to sit next
 -- to the party block at its default left-edge position.
+-- The third layout row is the shared 3D portrait switch, so everything from the
+-- HoT caption down sits one ROW_PITCH (22) lower than the two-switch layout.
 local PARTY_LAYOUT = {
-  hotCaption = 58,
-  hotEnabled = 80,
-  cornerLabel = 110,
-  corner = 126,
-  sliders = 182,
+  hotCaption = 80,
+  hotEnabled = 102,
+  cornerLabel = 132,
+  corner = 148,
+  sliders = 204,
   sliderWidth = 150,
   sliderColumn = 168,
-  height = 270,
+  height = 292,
 }
 
 local PARTY_HOT_SLIDERS = {
@@ -166,6 +169,16 @@ local PLAYER_TOGGLES = {
         U.SetHealPredictSetting("enabled", value)
       end
     end },
+  { key = "portrait3d", textKey = "UF_MOVER_PORTRAIT_3D", column = 1, row = 1,
+    get = function()
+      return type(U.GetPortrait3D) == "function" and
+             U.GetPortrait3D("player")
+    end,
+    set = function(value)
+      if type(U.SetPortrait3D) == "function" then
+        U.SetPortrait3D("player", value)
+      end
+    end },
 }
 
 -- The target frame's own group. Exact creature health is the setting that is
@@ -189,6 +202,16 @@ local TARGET_TOGGLES = {
     set = function(value)
       if type(U.SetHealPredictSetting) == "function" then
         U.SetHealPredictSetting("enabled", value)
+      end
+    end },
+  { key = "portrait3d", textKey = "UF_MOVER_PORTRAIT_3D", column = 0, row = 1,
+    get = function()
+      return type(U.GetPortrait3D) == "function" and
+             U.GetPortrait3D("target")
+    end,
+    set = function(value)
+      if type(U.SetPortrait3D) == "function" then
+        U.SetPortrait3D("target", value)
       end
     end },
 }
@@ -375,6 +398,22 @@ local function BuildPartyPanel(frame, contentTop, contentWidth)
   controls.partyPets = pets
   table.insert(widgets, pets)
 
+  local portrait3d = U.CreateCheckbox(frame, {
+    name = "UnrealUIPartyFrameMoverPortrait3D",
+    text = U.L("UF_MOVER_PORTRAIT_3D"),
+    textWidth = contentWidth - 20,
+    value = type(U.GetPortrait3D) == "function" and
+            U.GetPortrait3D("party") or false,
+    onChange = function(value)
+      if type(U.SetPortrait3D) == "function" then
+        U.SetPortrait3D("party", value)
+      end
+    end,
+  })
+  portrait3d.SetPoint("TOPLEFT", frame, "TOPLEFT", pad, contentTop - 2 * ROW_PITCH)
+  controls.portrait3d = portrait3d
+  table.insert(widgets, portrait3d)
+
   AddCaption(frame, widgets, pad, contentTop - PARTY_LAYOUT.hotCaption,
              U.L("HOTS_HEADER"), contentWidth)
 
@@ -464,6 +503,8 @@ local function BuildPartyPanel(frame, contentTop, contentWidth)
   local function Refresh()
     controls.partyPlayer.SetValue(U.GetUnitFramePartySetting("partyPlayer"))
     controls.partyPets.SetValue(U.GetUnitFramePartySetting("partyPets"))
+    controls.portrait3d.SetValue(type(U.GetPortrait3D) == "function" and
+                                 U.GetPortrait3D("party") or false)
     controls.enabled.SetValue(U.GetHotSetting("enabled"))
     controls.corner.SetValue(U.GetHotSetting("corner"))
     local n
@@ -471,6 +512,36 @@ local function BuildPartyPanel(frame, contentTop, contentWidth)
       local key = PARTY_HOT_SLIDERS[n].key
       controls[key].SetValue(U.GetHotSetting(key))
     end
+  end
+
+  return widgets, Refresh
+end
+
+-- Target-of-target has no aura, vitals or combo-point settings of its own. Its
+-- compact contextual panel therefore contains only the portrait switch rather
+-- than borrowing the larger target panel and exposing unrelated controls.
+local function BuildTargetTargetPanel(frame, contentTop, contentWidth)
+  local pad = U.MoverPanelPad()
+  local widgets = {}
+
+  local portrait3d = U.CreateCheckbox(frame, {
+    name = "UnrealUITargetTargetFrameMoverPortrait3D",
+    text = U.L("UF_MOVER_PORTRAIT_3D"),
+    textWidth = contentWidth - 20,
+    value = type(U.GetPortrait3D) == "function" and
+            U.GetPortrait3D("targettarget") or false,
+    onChange = function(value)
+      if type(U.SetPortrait3D) == "function" then
+        U.SetPortrait3D("targettarget", value)
+      end
+    end,
+  })
+  portrait3d.SetPoint("TOPLEFT", frame, "TOPLEFT", pad, contentTop)
+  table.insert(widgets, portrait3d)
+
+  local function Refresh()
+    portrait3d.SetValue(type(U.GetPortrait3D) == "function" and
+                        U.GetPortrait3D("targettarget") or false)
   end
 
   return widgets, Refresh
@@ -515,6 +586,18 @@ function UFC:OnInit()
       end,
     })
   end
+
+  U.RegisterMoverPanel(TARGET_TARGET_MOVER_ID, {
+    name = "UnrealUITargetTargetFrameMoverSettings",
+    width = CONTENT_WIDTH + U.MoverPanelPad() * 2,
+    height = -U.MoverPanelContentTop() + 26,
+    build = BuildTargetTargetPanel,
+    title = function() return U.L("MOVER_LABEL_TARGET_TARGET") end,
+    available = function()
+      return type(U.GetPortrait3D) == "function" and
+             type(U.SetPortrait3D) == "function"
+    end,
+  })
 
   U.RegisterMoverPanel(PARTY_MOVER_ID, {
     name = "UnrealUIPartyFrameMoverSettings",

@@ -1427,14 +1427,14 @@ local function CreateValuesStrip(parent, width, height, border, tokens)
 end
 
 -- ---------------------------------------------------------------------------
--- Portrait (pet frame only)
+-- Portraits
 --
--- knowledge.json / unitframes.portrait_model_crash (RUNTIME_FAILURE_CONFIRMED):
--- a live 3D PlayerModel portrait crashed this client. The confirmed-working
--- replacement is a 2D Texture painted through SetPortraitTexture(texture,
--- unit) -- no PlayerModel frame is ever created here. Per that record's
--- solution, the call is guarded on existing at all; a client without it drops
--- the portrait rather than guessing at an alternative.
+-- knowledge.json / unitframes.portrait_model_crash: the original live-model
+-- sequence crashed this client, while the narrower sequence below was later
+-- user-confirmed at full coverage. The supplied stone texture sits under an
+-- enabled model; the 2D unit portrait is used only when that frame family's
+-- 3D option is off or outside modern-wow. The call is guarded on existing at
+-- all; a client without it drops that 2D path rather than guessing.
 -- ---------------------------------------------------------------------------
 local function BuildPortraitBox(parent, size, border)
   local box = CreateFrame("Frame", nil, parent)
@@ -1447,6 +1447,7 @@ local function BuildPortraitBox(parent, size, border)
   icon:SetPoint("BOTTOMRIGHT", box, "BOTTOMRIGHT", -border, border)
 
   box.icon = icon
+  box.uuiInnerSize = size - 2 * border
   return box
 end
 
@@ -1462,10 +1463,230 @@ local function UsesClassPortrait()
          U.GetActiveThemeStyle() == "modern-wow"
 end
 
+-- ---------------------------------------------------------------------------
+-- Optional 3D portrait (modern and modern-wow, enabled by default)
+--
+-- The crash record above never isolated the failing call. UnrealPfUI
+-- (api/unitframes.lua, WORKING_SOURCE) forces 2D with the note that
+-- PlayerModel:SetUnit can terminate the client when an NPC is targeted, so
+-- U.db.portrait3d widens by unit kind: 1 player, 2 + player characters,
+-- 3 + NPCs/pets. Anything the level excludes, or that has no world visual
+-- (SetUnit is documented as a no-op then), keeps the stone portrait background
+-- while its family's 3D option is enabled. pcall cannot catch a native crash --
+-- this is a user-directed bisect, not a shipped path; level 0 never creates a
+-- PlayerModel.
+--
+-- 2026-09-14, USER_CONFIRMED_INGAME: level 3 showed a 3D model on every frame,
+-- NPC targets included, with no crash. The original crash is still not
+-- isolated, so the 2D-only switch and diagnostic coverage levels remain
+-- available (knowledge.json record above).
+--
+-- Differs from UnrealPfUI's model path on purpose: no hidden second model
+-- probed with SetUnit on every refresh, and SetUnit runs only when the unit
+-- behind the frame changes, with a two-call budget for a model not yet loaded.
+-- ---------------------------------------------------------------------------
+local model3d = {}
+
+model3d.settingKeys = {
+  player = "portrait3dPlayer",
+  target = "portrait3dTarget",
+  targettarget = "portrait3dTargetTarget",
+  party = "portrait3dParty",
+}
+
+-- Pet belongs to the player frame family, while target and target-of-target
+-- are independent. Both party members and party pets share the party family.
+function model3d.Family(frame)
+  local id = frame and frame.spec and frame.spec.id
+  if id == "player" or id == "pet" then return "player" end
+  if id == "target" then return "target" end
+  if id == "targettarget" then return "targettarget" end
+  if type(id) == "string" and string.find(id, "^party") then return "party" end
+  return nil
+end
+
+-- `modern` draws the 3D portrait in a flat square; modern-wow fits it inside
+-- its gold ring (modules/modernwow.lua). classic-wow hands the frames to the
+-- client and has no 3D portrait.
+function model3d.SquareTheme()
+  return type(U.GetActiveThemeStyle) == "function" and
+         U.GetActiveThemeStyle() == "modern"
+end
+
+function model3d.Level(frame)
+  local level = U.db and U.db.portrait3d
+  level = type(level) == "number" and level or 0
+  if level <= 0 then return 0 end
+  local key = model3d.settingKeys[model3d.Family(frame)]
+  if not key or not U.db or not U.db[key] then return 0 end
+  if type(U.GetActiveThemeStyle) ~= "function" then return 0 end
+  local style = U.GetActiveThemeStyle()
+  if style ~= "modern-wow" and style ~= "modern" then return 0 end
+  return level
+end
+
+-- The square box has no rim to hide corners under, so the model simply fills
+-- the box's inner area inside its 1-unit outline.
+function model3d.FitSquare(box)
+  local model = box and box.uuiModel
+  local size = box and box.uuiInnerSize
+  if not model or not size then return end
+  pcall(model.ClearAllPoints, model)
+  pcall(model.SetWidth, model, size)
+  pcall(model.SetHeight, model, size)
+  pcall(model.SetPoint, model, "CENTER", box, "CENTER", 0, 0)
+end
+
+-- Only the real party-member rows carry rangeCheck. When one leaves object
+-- range, its configured 3D portrait deliberately falls back to the 2D unit
+-- portrait instead of leaving the static stone bed behind.
+function model3d.Use2DOutOfRange(frame)
+  return frame and frame.spec and frame.spec.rangeCheck and frame.data and
+         frame.data.outOfRange and true or false
+end
+
+function model3d.Eligible(frame, level)
+  local unit = frame.unit
+  if not unit or not ApiTruth("UnitExists", unit) then return false end
+  if model3d.Use2DOutOfRange(frame) then return false end
+  if not ApiTruth("UnitIsVisible", unit) then return false end
+  if unit == "player" then return true end
+  if ApiTruth("UnitIsPlayer", unit) then
+    return level >= 2 and ApiTruth("UnitIsConnected", unit)
+  end
+  return level >= 3
+end
+
+-- Shows or hides the 3D model. The model is a square viewport this client
+-- cannot mask, so modules/modernwow.lua fits it inside the gold rim
+-- (U.ModernWowFitPortraitModel); the circular stone background beneath fills
+-- the crescents between that square and the opening.
+-- A Model draws over its parent's textures (knowledge.json /
+-- rendering.model_m2_spell_fx_in_ui), so that background stays under it.
+function model3d.Refresh(frame, box)
+  local model = box.uuiModel
+  local level = model3d.Level(frame)
+  if level == 0 and not model then return end
+
+  if level == 0 or not model3d.Eligible(frame, level) then
+    if model then
+      pcall(model.Hide, model)
+      model.uuiKey = nil
+    end
+    return
+  end
+
+  if not model then
+    local fit = model3d.SquareTheme() and model3d.FitSquare or
+                U.ModernWowFitPortraitModel
+    if type(fit) ~= "function" then return end
+    local ok, created = pcall(CreateFrame, "PlayerModel", nil, box)
+    if not ok or not created then return end
+    model = created
+    box.uuiModel = model
+    fit(box)
+  end
+
+  pcall(model.Show, model)
+
+  local key = (frame.data and frame.data.name) or ""
+  local calls = model.uuiCalls or 0
+  if key ~= model.uuiKey then
+    calls = 0
+    model.uuiKey = key
+  elseif calls >= 2 then
+    return true
+  end
+  model.uuiCalls = calls + 1
+  pcall(model.SetUnit, model, frame.unit)
+  pcall(model.SetCamera, model, 0)
+  return true
+end
+
+-- Empty mover shells and disabled frames do not reach RefreshPortrait. Hide
+-- their model explicitly so a unit that left the slot cannot remain visible
+-- when edit mode deliberately keeps the otherwise-empty frame on screen.
+function model3d.Hide(frame)
+  local box = frame and frame.portrait
+  local model = box and box.uuiModel
+  if not model then return end
+  pcall(model.Hide, model)
+  model.uuiKey = nil
+  model.uuiCalls = nil
+end
+
+-- The `modern` path. A box built only for the 3D portrait (uuiSquare3D) sits
+-- outside the frame's left edge and is shown only while its family's option is
+-- on, so toggling it never moves the bars, auras, combo strip or mover rect.
+-- The pet's own 2D portrait box hosts the model in place. While the model is
+-- shown the flat backdrop is the bed beneath it -- no stone art under this
+-- theme. A unit the model cannot show (coverage level, not visible, distant
+-- party member) falls through to the 2D snapshot in the same square.
+-- Returns true when this refresh is finished.
+function model3d.RefreshSquare(frame, box)
+  local enabled = model3d.Level(frame) > 0
+  if box.uuiSquare3D then
+    if enabled then pcall(box.Show, box) else pcall(box.Hide, box) end
+  end
+
+  if model3d.Refresh(frame, box) then
+    if not box.uuiPortraitCleared then
+      pcall(box.icon.SetTexture, box.icon, "")
+      box.uuiPortraitCleared = true
+    end
+    frame.uuiPortraitKey = nil
+    frame.uuiPortraitPaints = nil
+    return true
+  end
+
+  if box.uuiPortraitCleared then
+    box.uuiPortraitCleared = nil
+    frame.uuiPortraitKey = nil
+    frame.uuiPortraitPaints = nil
+  end
+  return box.uuiSquare3D and not enabled
+end
+
 local function RefreshPortrait(frame)
   if frame.classicNative then return end
   local box = frame.portrait
   if not box or not box.icon then return end
+  -- `modern` owns its square path; the ring/stone block below is modern-wow's.
+  local square = model3d.SquareTheme()
+  if square and model3d.RefreshSquare(frame, box) then return end
+  local portrait3d = not square and model3d.Level(frame) > 0
+  local party2d = portrait3d and model3d.Use2DOutOfRange(frame)
+  if not square then model3d.Refresh(frame, box) end
+
+  -- A configured 3D portrait normally owns the whole portrait bed. The
+  -- supplied stone circle replaces the unit snapshot beneath the model;
+  -- returning here guarantees SetPortraitTexture cannot put the 2D unit
+  -- portrait under it. A distant party member is the deliberate exception and
+  -- continues into the 2D path below. Reset the snapshot cache so either that
+  -- range transition or switching the family back to 2D repaints immediately
+  -- even when the unit identity has not changed.
+  if portrait3d and not party2d then
+    if not box.uuiPortraitBackground then
+      pcall(box.icon.SetTexture, box.icon,
+            M.modernWow.texture.portraitBackground)
+      pcall(box.icon.SetTexCoord, box.icon, 0, 1, 0, 1)
+      box.uuiPortraitBackground = true
+      if type(U.ModernWowAnchorPortraitIcon) == "function" then
+        U.ModernWowAnchorPortraitIcon(box)
+      end
+    end
+    frame.uuiPortraitKey = nil
+    frame.uuiPortraitPaints = nil
+    return
+  elseif box.uuiPortraitBackground then
+    box.uuiPortraitBackground = nil
+    frame.uuiPortraitKey = nil
+    frame.uuiPortraitPaints = nil
+    pcall(box.icon.SetTexCoord, box.icon, 0, 1, 0, 1)
+    if type(U.ModernWowAnchorPortraitIcon) == "function" then
+      U.ModernWowAnchorPortraitIcon(box)
+    end
+  end
 
   local setPortrait = ResolveApiFn("SetPortraitTexture")
   if setPortrait then
@@ -2147,6 +2368,17 @@ local function BuildFrame(spec, parent)
     -- circle, so the box's outline and fill would draw a square behind it.
     frame.portrait.uuiClassPortrait = classPortrait or nil
     if spec.happiness then BuildHappinessIndicator(frame, border) end
+  elseif model3d.SquareTheme() and model3d.Family(frame) then
+    -- `modern`'s optional 3D portrait for a frame with no portrait of its own:
+    -- a square of the bar stack's height hung outside the left edge, sharing
+    -- one border unit with it. Outside rather than widening the frame, so the
+    -- per-family switch can show or hide it live (model3d.RefreshSquare)
+    -- without re-laying out bars, auras, the combo strip or the mover rect.
+    local box = BuildPortraitBox(frame, portraitSize, border)
+    box:SetPoint("TOPRIGHT", frame, "TOPLEFT", border, 0)
+    box.uuiSquare3D = true
+    box:Hide()
+    frame.portrait = box
   end
 
   -- Each bar starts on the colour it will normally carry, so a frame is never
@@ -3410,6 +3642,7 @@ local function RefreshFrame(frame, mode)
   -- less shell on screen for a frame the user has turned off.
   if frame.uuiDisabled then
     frame.data.initialised = false
+    model3d.Hide(frame)
     SetFrameShown(frame, false)
     return false
   end
@@ -3423,6 +3656,7 @@ local function RefreshFrame(frame, mode)
 
   if not exists then
     frame.data.initialised = false
+    model3d.Hide(frame)
     -- Drop the cached portrait identity with the unit. The next unit to take
     -- this frame repaints, even if it happens to share a name with the one
     -- that just left.
@@ -3984,6 +4218,77 @@ local function ShowUnitMenu(frame, unit)
   pcall(toggle, 1, nil, dropdown, "cursor")
 end
 
+-- Whisper entry for the party member popup, under every theme: the modern
+-- frames open PartyMemberFrameNDropDown above, and classic-wow's native party
+-- frames open the same menu, so both read UnitPopupMenus.PARTY.
+--
+-- The user reported this client's PARTY menu has no whisper. query_compat.py
+-- has no record for UnitPopupMenus/UnitPopupButtons/UnitPopup_OnClick or
+-- ChatFrame_SendTell; this follows UnrealPfUI's modules/chat.lua, which adds
+-- IGNORE_PLAYER to the FRIEND menu the same way on this client (WORKING_SOURCE,
+-- not runtime-verified). An own key is used, never the native "WHISPER" one,
+-- because the native click branch for it may be the part this client removed.
+-- The action goes through the client's own chat-open path (the same edit box
+-- Enter/Reply opens); UnrealUI never creates or focuses an EditBox itself.
+unitMouse.WHISPER_KEY = "UNREALUI_WHISPER"
+
+function unitMouse.WhisperTargetName()
+  local init = U.G("UIDROPDOWNMENU_INIT_MENU")
+  local dropdown = type(init) == "string" and U.G(init) or init
+  if type(dropdown) ~= "table" then return nil end
+  if type(dropdown.name) == "string" and dropdown.name ~= "" then
+    return dropdown.name
+  end
+  local name = dropdown.unit and ApiString("UnitName", dropdown.unit)
+  if name and name ~= "" then return name end
+  return nil
+end
+
+function unitMouse.OpenWhisper(name)
+  local sendTell = U.G("ChatFrame_SendTell")
+  if type(sendTell) == "function" and pcall(sendTell, name) then return end
+  local openChat = U.G("ChatFrame_OpenChat")
+  if type(openChat) == "function" then
+    pcall(openChat, "/w " .. name .. " ")
+    return
+  end
+  U.Debug("party whisper: no native chat-open function on this client")
+end
+
+function unitMouse.AddPartyWhisper()
+  if unitMouse.whisperAdded then return end
+  local buttons = U.G("UnitPopupButtons")
+  local menus = U.G("UnitPopupMenus")
+  local party = type(menus) == "table" and menus.PARTY or nil
+  if type(buttons) ~= "table" or type(party) ~= "table" then
+    U.Debug("party whisper: UnitPopupMenus.PARTY unavailable")
+    return
+  end
+  unitMouse.whisperAdded = true
+
+  local i
+  for i = 1, table.getn(party) do
+    if party[i] == "WHISPER" or party[i] == unitMouse.WHISPER_KEY then
+      U.Debug("party whisper: PARTY menu already lists " .. party[i])
+      return
+    end
+  end
+
+  local text = U.G("WHISPER")
+  if type(text) ~= "string" or text == "" then text = U.L("UF_MENU_WHISPER") end
+  buttons[unitMouse.WHISPER_KEY] = { text = text, dist = 0 }
+  table.insert(party, 1, unitMouse.WHISPER_KEY)
+
+  if not U.PostHookGlobal("UnitPopup_OnClick", function()
+    local button = U.G("this")
+    if not button or button.value ~= unitMouse.WHISPER_KEY then return end
+    local name = unitMouse.WhisperTargetName()
+    if name then unitMouse.OpenWhisper(name) end
+  end) then
+    U.Debug("party whisper: UnitPopup_OnClick unavailable")
+  end
+end
+
 -- Widget OnClick argument shape is not covered by
 -- scripts.handler_arguments_direct (that record is about RegisterEvent
 -- handlers), but the same ambiguity applies to SetScript callbacks: try direct
@@ -4392,6 +4697,7 @@ local PAGE_WIDTH = 484
 -- re-reads, so listing all three ids costs nothing.
 local PLAYER_MOVER_ID = "unitframes.player"
 local TARGET_MOVER_ID = "unitframes.target"
+local TARGET_TARGET_MOVER_ID = "unitframes.targettarget"
 local PARTY_MOVER_ID = "unitframes.party"
 
 -- The pages in this group and the contextual panels beside the player and
@@ -4407,6 +4713,7 @@ function U.RefreshUnitFrameSettingsViews()
   if type(U.RefreshMoverPanel) == "function" then
     U.RefreshMoverPanel(PLAYER_MOVER_ID)
     U.RefreshMoverPanel(TARGET_MOVER_ID)
+    U.RefreshMoverPanel(TARGET_TARGET_MOVER_ID)
     U.RefreshMoverPanel(PARTY_MOVER_ID)
   end
   if type(U.RefreshSettingsPage) == "function" then
@@ -4568,6 +4875,25 @@ function U.SetExactVitals(value)
   return true
 end
 
+-- The settings page and the mover panels each write only their own frame
+-- family. The numeric portrait3d value remains the global diagnostic coverage
+-- ceiling used by /uui portrait3d; ordinary checkboxes do not couple families.
+function U.GetPortrait3D(family)
+  local key = model3d.settingKeys[family]
+  return key and U.db and U.db[key] and true or false
+end
+
+function U.SetPortrait3D(family, value)
+  local key = model3d.settingKeys[family]
+  if not key or not U.db then return false end
+  U.db[key] = value and true or false
+  RefreshAll()
+  if type(U.RefreshUnitFrameSettingsViews) == "function" then
+    U.RefreshUnitFrameSettingsViews()
+  end
+  return true
+end
+
 -- What the exact-vitals section occupies from its own heading down to the next
 -- one: heading, the checkbox 26 below it, and the description five below that.
 -- The description has no fixed height -- this client centres a font string's
@@ -4578,6 +4904,78 @@ local EXACT_VITALS_SECTION_HEIGHT = 96
 local function BuildUnitFrameGeneralSettings(parent, y, width)
   y = y or -4
   local widgets = {}
+
+  -- Portraits: one independent switch for each mover-owned frame family. Pet
+  -- follows player and party pets follow party; target and target-of-target
+  -- are independent, matching model3d.Family above.
+  local portraitHeader = U.CreateSectionHeader(parent, {
+    text = U.L("UF_PORTRAIT_HEADER"),
+    width = width or 496,
+    y = y,
+  })
+  table.insert(widgets, portraitHeader)
+
+  local portrait3dPlayer = U.CreateCheckbox(parent, {
+    name = "UnrealUISettingsPortrait3DPlayer",
+    text = U.L("UF_PORTRAIT_3D_PLAYER"),
+    textWidth = 214,
+    value = U.GetPortrait3D("player"),
+    onChange = function(value)
+      U.SetPortrait3D("player", value)
+    end,
+  })
+  portrait3dPlayer.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, y - 26)
+  table.insert(widgets, portrait3dPlayer)
+
+  local portrait3dTarget = U.CreateCheckbox(parent, {
+    name = "UnrealUISettingsPortrait3DTarget",
+    text = U.L("UF_PORTRAIT_3D_TARGET"),
+    textWidth = 214,
+    value = U.GetPortrait3D("target"),
+    onChange = function(value)
+      U.SetPortrait3D("target", value)
+    end,
+  })
+  portrait3dTarget.SetPoint("TOPLEFT", parent, "TOPLEFT", 240, y - 26)
+  table.insert(widgets, portrait3dTarget)
+
+  local portrait3dTargetTarget = U.CreateCheckbox(parent, {
+    name = "UnrealUISettingsPortrait3DTargetTarget",
+    text = U.L("UF_PORTRAIT_3D_TARGET_TARGET"),
+    textWidth = 214,
+    value = U.GetPortrait3D("targettarget"),
+    onChange = function(value)
+      U.SetPortrait3D("targettarget", value)
+    end,
+  })
+  portrait3dTargetTarget.SetPoint("TOPLEFT", parent, "TOPLEFT", 240, y - 50)
+  table.insert(widgets, portrait3dTargetTarget)
+
+  local portrait3dParty = U.CreateCheckbox(parent, {
+    name = "UnrealUISettingsPortrait3DParty",
+    text = U.L("UF_PORTRAIT_3D_PARTY"),
+    value = U.GetPortrait3D("party"),
+    onChange = function(value)
+      U.SetPortrait3D("party", value)
+    end,
+  })
+  portrait3dParty.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, y - 50)
+  table.insert(widgets, portrait3dParty)
+
+  local portraitHint = U.CreateSettingsLabel(parent, {
+    size = M.fontSize.small,
+    color = M.color.textDim,
+    inherits = "GameFontNormalSmall",
+    justify = "LEFT",
+    width = width or 496,
+  })
+  if portraitHint then
+    U.AnchorSettingsDescription(portraitHint, portrait3dParty.box)
+    portraitHint:SetText(U.L("UF_PORTRAIT_3D_HINT"))
+    table.insert(widgets, portraitHint)
+  end
+
+  y = y - EXACT_VITALS_SECTION_HEIGHT - 24
 
   local vitalsHeader = U.CreateSectionHeader(parent, {
     text = U.L("UF_EXACT_VITALS_HEADER"),
@@ -4699,6 +5097,10 @@ local function BuildUnitFrameGeneralSettings(parent, y, width)
   end
 
   local function Refresh()
+    portrait3dPlayer.SetValue(U.GetPortrait3D("player"))
+    portrait3dTarget.SetValue(U.GetPortrait3D("target"))
+    portrait3dTargetTarget.SetValue(U.GetPortrait3D("targettarget"))
+    portrait3dParty.SetValue(U.GetPortrait3D("party"))
     exactVitals.SetValue(U.GetExactVitals())
     manaTick.SetValue(U.GetUnitFramePowerTick("manaTick"))
     energyTick.SetValue(U.GetUnitFramePowerTick("energyTick"))
@@ -4934,6 +5336,7 @@ function UF:OnEnable()
 
   local nativeChrome = classicNative.Enabled()
   if not nativeChrome then SuppressStockFrames() end
+  unitMouse.AddPartyWhisper()
 
   frames[PARTY_ANCHOR] = BuildPartyAnchor()
 

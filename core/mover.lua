@@ -144,7 +144,8 @@ local function MoverConfig()
     magnet = true,
     -- Anchors that touch travel as one block. Off moves the anchor under the
     -- cursor and nothing else, for placing a single element out of a stack.
-    groupTouching = true,
+    -- Off by default.
+    groupTouching = false,
     anchorEnabled = {},
   })
 end
