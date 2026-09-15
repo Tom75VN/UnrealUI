@@ -2081,7 +2081,9 @@ end
 -- A gold/silver/copper row with a single :SetAmount(copper) entry point.
 -- row.contentWidth is kept current after every call, so a caller can centre
 -- or resize around it without re-measuring the three coins itself.
-function U.CreateMoneyReadout(parent)
+function U.CreateMoneyReadout(parent, options)
+  options = options or {}
+  local gap = tonumber(options.gap) or 3
   local row = CreateFrame("Frame", nil, parent)
   row:SetHeight(14)
 
@@ -2116,8 +2118,8 @@ function U.CreateMoneyReadout(parent)
           U.SetMoneyCoin(entry.coin, tostring(entry.value))
           entry.coin:ClearAllPoints()
           if previous then
-            entry.coin:SetPoint("LEFT", previous, "RIGHT", 3, 0)
-            width = width + 3
+            entry.coin:SetPoint("LEFT", previous, "RIGHT", gap, 0)
+            width = width + gap
           else
             entry.coin:SetPoint("LEFT", row, "LEFT", 0, 0)
           end

@@ -119,7 +119,7 @@ SETTINGS_THEMES_AVAILABLE = "可用主题：",
 SETTINGS_QUICKBIND        = "快速绑定",
 SETTINGS_QUICKBIND_HINT   = "将鼠标悬停在动作条或姿态条按钮上并按下按键即可绑定。在按钮上按 Esc 可清除绑定。",
 SETTINGS_AUTO_ATTACK      = "选中目标时自动攻击",
-SETTINGS_AUTO_ATTACK_HINT = "点击或按 Tab 选中目标即可攻击。将自动射击（猎人）或射击放到动作条上，即可根据距离切换弓枪射击与近战攻击。手动停止后不会自动重启。潜行者或德鲁伊潜行时会停止攻击，并且不会发起攻击。",
+SETTINGS_AUTO_ATTACK_HINT = "点击或按 Tab 选中目标即可攻击。根据距离切换弓枪射击与近战攻击；动作条上没有自动射击的猎人会自动获得一个放在空栏位的自动射击。手动停止后不会自动重启。潜行者或德鲁伊潜行时会停止攻击，并且不会发起攻击。",
 SETTINGS_SWING_BAR        = "显示自动攻击计时条",
 SETTINGS_SWING_BAR_HINT   = "在目标处于攻击距离内时显示主手、副手以及弓或远程武器的攻击计时。可在“移动界面”中调整位置。",
 SETTINGS_MICROBAR         = "启用微型菜单条",
@@ -425,7 +425,6 @@ TOOLTIP_COMPARE_SUMMARY   = "如果替换此物品：",
 STATUS_FPS                = "帧数：",
 STATUS_LATENCY            = "延迟：",
 STATUS_DURABILITY         = "耐久度：",
-STATUS_TIME               = "时间：",
 STATUS_ONLINE             = "在线玩家",
 
 WORLDMAP_CURSOR           = "光标：--, --",
@@ -509,6 +508,10 @@ CMD_PROFILE_UNAVAILABLE   = "此版本中配置文件管理不可用",
 CMD_PROFILE_EXISTS        = "名为 |cffffff00%s|r 的配置文件已存在",
 CMD_PROFILE_NAME_RULES    = "配置文件名称可包含字母、数字、空格、连字符和下划线（最多 64 个字符）",
 CMD_PROFILE_CREATED       = "已创建并选择配置文件 |cffffff00%s|r - 输入 |cffffff00/reload|r 以应用",
+
+-- Quest Log count boxes (modern-wow theme).
+QUESTLOG_COUNT            = "任务：|cffffffff%d/%d|r",
+QUESTLOG_COMPLETED        = "已完成：|cffffffff%d/%d|r",
 
 })
 

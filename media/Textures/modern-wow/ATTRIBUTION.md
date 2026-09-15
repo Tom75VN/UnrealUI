@@ -24,7 +24,7 @@ Pixels, dimensions and colour are otherwise unchanged.
 | `unitframes/frame-elite.tga` | 256x128 | `media/tex/unitframes/UI-TargetingFrame-Elite.blp` | BLP raw-BGRA |
 | `unitframes/frame-rare-elite.tga` | 256x128 | `media/tex/unitframes/UI-TargetingFrame-RareElite.blp` | BLP raw-BGRA |
 | `unitframes/frame-boss.tga` | 256x128 | `media/tex/unitframes/UI-TargetingFrame-Boss.blp` | BLP raw-BGRA |
-| `unitframes/pet-frame.tga` | 128x64 | `media/tex/unitframes/pet.blp` | BLP |
+| `unitframes/party-frame.tga` | 128x64 | `media/tex/unitframes/pet.blp` | BLP |
 | `unitframes/player-status.tga` | 256x128 | `media/tex/unitframes/UI-Player-Status.blp` | BLP |
 | `unitframes/health-fill.tga` | 128x32 | `media/tex/unitframes/healthDF2.tga` | TGA RGBA |
 | `unitframes/health-fill-minus.tga` | 128x16 | `media/tex/unitframes/UI-HUD-UnitFrame-Target-MinusMob-PortraitOn-Bar-Health-Status.tga` | TGA RGB |
@@ -131,6 +131,8 @@ under the same RLE-TGA contract as everything else here.
 | --- | --- | --- | --- |
 | `ui/golden-square-border.tga` | 256x256 | `golden-square-border.png` | Gold square icon frame at 256x256 with a transparent opening at x 32-223, y 30-220. Drawn around each talent tree's header icon in the modern-wow Talent window; geometry is tokenised in core/media.lua. |
 | `ui/combo-points.tga` | 128x56 | `combo-points.png` | Rogue and Cat Form combo-point atlas at 128x56: the left 57x56 circle is inactive and the right 57x56 circle is active. Drawn on the player or target frame opposite the configured aura position. |
+| `ui/minimal-scrollbar-proportional.tga` | 64x64 | `MinimalScrollbarProportional.PNG` | Blizzard MinimalScrollBar proportional atlas at 64x64: up/down arrow states plus the track and thumb caps. The Modern WoW Skills scrollbar uses its measured atlas cells without changing their pixels. |
+| `ui/minimal-scrollbar-vertical.tga` | 64x1024 | `MinimalScrollbarVertical.PNG` | Blizzard MinimalScrollBar vertical atlas at 64x1024: the stretchable track and normal, hover and pushed thumb bodies. The Modern WoW Skills scrollbar uses its measured atlas cells without changing their pixels. |
 | `ui/questlog-left-large-v2.tga` | 896x896 | `questlog-left-large-v2.tga` | High-resolution left and centre Quest Log chrome for modern-wow. |
 | `ui/questlog-right-large.tga` | 448x896 | `questlog-right-large.tga` | High-resolution right Quest Log chrome for modern-wow. |
 | `unitframes/resting-flipbook.tga` | 512x512 | `UIUnitFrameRestingFlipbook.tga` | Resting `Z` animation, 6x7 grid of 60px cells on a 512x512 canvas. DragonflightUI has the script for this animation (modules/unit/player.lua Setup:RestingZZZ) but ships no such texture, so there was nothing to import. |

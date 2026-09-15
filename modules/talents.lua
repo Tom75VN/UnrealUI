@@ -56,7 +56,18 @@ local function StyleTalent(index)
   U.RefreshStockButtonArtwork(button, icon)
   -- Rank colour is native talent state (available, learned, maxed), not addon
   -- chrome. Normalize the font while preserving that semantic colour.
-  U.SetStockFont(Named("Talent" .. index .. "Rank"), M.fontSize.small)
+  local rank = Named("Talent" .. index .. "Rank")
+  U.SetStockFont(rank, M.fontSize.small)
+  -- Natively the rank text is anchored to the RankBorder texture, which the
+  -- strip above hides; that anchor stopped following the scroll child
+  -- (USER_REPORTED 2026-09-16, fix not yet confirmed in game). Anchor the text
+  -- to its own button instead so it moves with the talent.
+  if rank then
+    pcall(function()
+      rank:ClearAllPoints()
+      rank:SetPoint("CENTER", button, "BOTTOMRIGHT", -2, 2)
+    end)
+  end
 end
 
 local function StyleTalents()

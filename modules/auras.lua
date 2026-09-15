@@ -317,7 +317,9 @@ local function PlayerBuffBase()
   return playerBuffBase
 end
 
--- Returns the same leading tuple as ReadAura, plus the client's remaining time.
+-- Returns the same leading tuple as ReadAura, plus the client's remaining time
+-- and the internal buffIndex (0-47), which is what tells two auras apart when
+-- they share an icon -- see the native key in RefreshRow.
 local function ReadPlayerAura(index, harmful)
   local get = Fn("GetPlayerBuff")
   if not get then return nil end
@@ -336,7 +338,8 @@ local function ReadPlayerAura(index, harmful)
   return texture,
          tonumber(Call("GetPlayerBuffApplications", buffIndex)) or 0,
          (type(dispel) == "string" and dispel ~= "") and dispel or nil,
-         timeLeft > 0 and timeLeft or nil
+         timeLeft > 0 and timeLeft or nil,
+         buffIndex
 end
 
 -- "player" is the player without asking; a target can be too. UnitIsUnit is
@@ -1300,9 +1303,10 @@ local function RefreshRow(row, offset)
   local shown = 0
   for i = 1, ScanLimit(row.harmful) do
     statScans = statScans + 1
-    local texture, count, debuffType, timeLeft
+    local texture, count, debuffType, timeLeft, buffIndex
     if native then
-      texture, count, debuffType, timeLeft = ReadPlayerAura(i, row.harmful)
+      texture, count, debuffType, timeLeft, buffIndex =
+        ReadPlayerAura(i, row.harmful)
     else
       texture, count, debuffType = ReadAura(row.unit, i, row.harmful)
     end
@@ -1322,9 +1326,20 @@ local function RefreshRow(row, offset)
       -- the moment its filter was switched back on, and one past the icon cap
       -- would restart every time the auras ahead of it changed.
       -- The tooltip scan exists only to feed the duration table. On the native
-      -- path the client already gave a remaining time, so the aura is keyed by
-      -- its texture and no tooltip is armed at all.
-      local key = native and texture or AuraName(row, i, texture)
+      -- path the client already gave a remaining time, so no tooltip is armed
+      -- at all and the aura is keyed by its client slot plus texture.
+      --
+      -- Texture alone is not an identity: two auras sharing an icon (ranks,
+      -- scrolls, food/elixir families) collapsed onto one entry, so both icons
+      -- drew whichever timeLeft was read last and the wipe total took the
+      -- larger of the two. The texture stays in the key so a slot reused by a
+      -- different aura between passes starts a fresh entry.
+      local key
+      if native then
+        key = tostring(buffIndex) .. ":" .. texture
+      else
+        key = AuraName(row, i, texture)
+      end
       local entry = TrackAura(bucket, key, count, pass, timeLeft, witnessed)
 
       if row.harmful and not PassesFilter(debuffType) then
@@ -1418,6 +1433,19 @@ local function RefreshPartyUnit(token, clearNames)
   RefreshRow(buffs, 0)
 end
 
+-- A member's pet row draws auras only while its frame is on screen AND
+-- modern-wow has dressed it: the dressed row is tall enough for the two
+-- beside-the-frame lines, the flat 16-unit pet row is not, and a pet row the
+-- Party Frames option hides is not worth a scan. Otherwise its rows are hidden.
+local function PetAurasShown(token)
+  local row = rows[token]
+  local frame = row and row.anchor
+  if frame and frame.uuiModernWow and not frame.uuiDisabled then return true end
+  if row then row:Hide() end
+  if rows[token .. "Buff"] then rows[token .. "Buff"]:Hide() end
+  return false
+end
+
 -- The party half of this module, gated separately from "auras": core/perf.lua
 -- bisects the work that scales with the roster, and the player/target rows do
 -- not.
@@ -1429,6 +1457,9 @@ local function RefreshParty(clearNames)
   local i
   for i = 1, PARTY_COUNT do
     RefreshPartyUnit("party" .. i, clearNames)
+    if PetAurasShown("partypet" .. i) then
+      RefreshPartyUnit("partypet" .. i, clearNames)
+    end
   end
 end
 
@@ -1447,7 +1478,9 @@ local function RefreshUnitToken(token)
     -- player frame and once on the player's row in the party block.
     RefreshPartyUnit(PARTY_PLAYER_ROW, false)
   elseif type(token) == "string" and rows[token] and rows[token].beside then
-    RefreshPartyUnit(token, false)
+    if not string.find(token, "^partypet") or PetAurasShown(token) then
+      RefreshPartyUnit(token, false)
+    end
   else
     -- UNIT_AURA may carry a token for which this module has no row (pet,
     -- target-of-target, raid). Do not turn that into an eleven-row rescan.
@@ -1568,9 +1601,10 @@ function U.AuraDebugDump()
       -- Walks every slot the display path walks, so a hole in the list reads
       -- the same here as it draws on the frame.
       for i = 1, ScanLimit(row.harmful) do
-        local texture, count, debuffType, timeLeft
+        local texture, count, debuffType, timeLeft, buffIndex
         if native then
-          texture, count, debuffType, timeLeft = ReadPlayerAura(i, row.harmful)
+          texture, count, debuffType, timeLeft, buffIndex =
+            ReadPlayerAura(i, row.harmful)
         else
           texture, count, debuffType = ReadAura(row.unit, i, row.harmful)
         end
@@ -1579,8 +1613,10 @@ function U.AuraDebugDump()
           local name = nil
           if not native then name = ScanName(row.unit, i, row.harmful) end
 
-          local tracked = dumpBucket and
-                          dumpBucket[native and texture or name] or nil
+          -- Same key RefreshRow tracks under.
+          local dumpKey = name
+          if native then dumpKey = tostring(buffIndex) .. ":" .. texture end
+          local tracked = dumpBucket and dumpBucket[dumpKey] or nil
 
           local seconds = timeLeft
           if not seconds and name then seconds = U.AuraDuration(name) end
@@ -1927,6 +1963,21 @@ function A:OnEnable()
       perRow = PARTY_MAX, maxIcons = PARTY_MAX, stopAtCap = true,
       radialOnly = true,
     })
+
+    -- The member's pet row, same shape and same Party debuff/buff switches.
+    -- Built for every theme but drawn only where PetAurasShown allows.
+    -- Lifted on the pet row, by request: the top (debuff) line 2 units, the
+    -- bottom (buff) line 6.
+    local pet = "partypet" .. i
+    local petDebuffs, petBuffs = PartyOptions(true), PartyOptions(false)
+    petDebuffs.besideY = petDebuffs.besideY + 2
+    -- Icons 15 units, by request (a member's are PARTY_SIZE). RowGeometry
+    -- still applies a dressed theme's iconScale on top of this.
+    petDebuffs.size = 15
+    petBuffs.size = 15
+    petBuffs.besideY = petBuffs.besideY + 6
+    BuildRow(pet, pet, true, "partyEnabled", petDebuffs)
+    BuildRow(pet .. "Buff", pet, false, "partyBuffEnabled", petBuffs)
   end
 
   if table.getn(rowOrder) == 0 then

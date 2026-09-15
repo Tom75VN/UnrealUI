@@ -167,6 +167,37 @@ local UNCONFIRMED_ATTACK_SECONDS = 3
 -- delayed by it.
 local REACTIVATE_COOLDOWN = 0.5
 
+-- fleeshot.v1 (hunter, target fleeing melee): Auto Shot's IsActionInRange read
+-- 0 through the minimum-range gap and then turned true, but the server refused
+-- the shot "Target too close" 0.26s after that first true read -- with the
+-- client read still true -- and the target was cleared in the same batch. So
+-- leaving melee, or shooting again after a refusal on this target, waits for
+-- the ranged read to hold; every refusal on the target lengthens the wait.
+-- A 1.5s settle (fourth capture) avoided the refusal but not the lost target,
+-- and made the handoff slower, so the first try stays at 0.5s and the restore
+-- below recovers a refusal.
+local RANGED_SETTLE_SECONDS = 0.5
+local RANGED_SETTLE_MAX = 2
+local rangedReadySince
+local rangedFailures = 0
+local rangedFailedAt = -1
+
+-- In all four fleeshot captures, switching a running melee attack to Auto Shot
+-- was followed 0.27-0.33s later by PLAYER_LEAVE_COMBAT and a cleared target,
+-- with or without a 'Target too close' refusal (1.5s settle: none). Auto Shot
+-- started with no melee running never lost it. UnrealUI never clears a
+-- target, so one lost within SWITCH_RESTORE_WINDOW of that switch, or within
+-- RESTORE_WINDOW of a refusal, is brought back with TargetLastTarget (verified
+-- in the third capture: the same unit returned 0.01s later). A refusal count
+-- carried across the restore makes the retry wait longer.
+local RESTORE_WINDOW = 0.25
+local SWITCH_RESTORE_WINDOW = 1
+local RESTORE_LIMIT = 3
+local rangedRestores = 0
+local restoringTarget = false
+local refusedTargetName
+local rangedSwitchAt = -1
+
 -- Nothing reports a distance change, so an out-of-range target is polled on the
 -- shared updater at the same rate the swing bar refreshes its own range state.
 local RANGE_INTERVAL = 0.15
@@ -547,6 +578,19 @@ local function ConfirmAttack(epoch)
   end)
 end
 
+-- true while a switch into Auto Shot must keep waiting for the ranged read to
+-- hold. Only leaving melee and a refusal on this target need it: a first shot
+-- at a distant target, or one resuming at range, starts as before.
+local function RangedSettling(now, melee)
+  if not melee and followMode ~= "melee" and rangedFailures == 0 then return false end
+  -- 0.5s leaving melee, then 1s, 1.5s, 2s after each refusal on the target.
+  local wait = RANGED_SETTLE_SECONDS * (1 + rangedFailures)
+  if wait > RANGED_SETTLE_MAX then wait = RANGED_SETTLE_MAX end
+  local from = rangedReadySince or now
+  if rangedFailedAt > from then from = rangedFailedAt end
+  return now - from < wait
+end
+
 function TryStartAttack(epoch)
   if epoch ~= targetEpoch then return end
   if not config or not config.enabled then
@@ -567,9 +611,20 @@ function TryStartAttack(epoch)
   if stopPending then return end
 
   local ranged, rangedInRange, rangedSlot, autoShot = U.RangedAttackState()
+  -- A hunter with Auto Shot on no bar has nothing UseAction can start, so
+  -- core/weapons.lua places it on an empty slot first (part of this option,
+  -- as the settings description says).
+  if not rangedSlot and U.EnsureAutoShotAction() then
+    ranged, rangedInRange, rangedSlot, autoShot = U.RangedAttackState()
+  end
   local melee = IsAttacking()
   local now = Now() or 0
   local canShoot = rangedSlot ~= nil and (autoShot or U.HasBowOrGun())
+  if rangedInRange == true then
+    rangedReadySince = rangedReadySince or now
+  else
+    rangedReadySince = nil
+  end
 
   if followMode then
     local active = (followMode == "ranged" and ranged) or
@@ -609,6 +664,10 @@ function TryStartAttack(epoch)
   local closed = ConfirmedMeleeRange()
   local mode
   if rangedInRange == true and (canShoot or ranged) then
+    if not ranged and RangedSettling(now, melee) then
+      WatchAttackRange(epoch)
+      return
+    end
     mode = "ranged"
   elseif TargetInMeleeRange() then
     -- An unreadable Shoot range must not cancel an active ranged attack.
@@ -654,6 +713,12 @@ function TryStartAttack(epoch)
   local fn = U.G(mode == "ranged" and "UseAction" or "AttackTarget")
   if type(fn) ~= "function" then StopRangeWatch() return end
 
+  -- Leaving a running melee attack for Auto Shot: the client clears the target
+  -- at the first shot (SWITCH_RESTORE_WINDOW), so remember what to restore.
+  if mode == "ranged" and (melee or followMode == "melee") then
+    rangedSwitchAt = now
+    refusedTargetName = Call("UnitName", "target")
+  end
   lastAttempt.mode = mode
   lastAttempt.at = now
   followMode = mode
@@ -693,14 +758,56 @@ local function QueueTargetAttack(epoch)
   end)
 end
 
+-- true when a target just lost right after this module's refused shot will be
+-- brought back. Deferred, so TargetLastTarget runs outside the target-change
+-- handler that reported the loss.
+local function RestoreRefusedTarget(now)
+  if not config or not config.enabled then return false end
+  if not now then return false end
+  local afterRefusal = rangedFailedAt >= 0 and now - rangedFailedAt <= RESTORE_WINDOW
+  local afterSwitch = rangedSwitchAt >= 0 and now - rangedSwitchAt <= SWITCH_RESTORE_WINDOW
+  if not afterRefusal and not afterSwitch then return false end
+  if rangedRestores >= RESTORE_LIMIT or ApiTruth("UnitExists", "target") then
+    return false
+  end
+  local targetLastTarget = U.G("TargetLastTarget")
+  if type(targetLastTarget) ~= "function" then return false end
+
+  rangedRestores = rangedRestores + 1
+  U.DeferOnce("autoattack.restore-target", function()
+    if ApiTruth("UnitExists", "target") then return end
+    restoringTarget = true
+    pcall(targetLastTarget)
+    -- Consumed by OnTargetChanged if the call re-targeted synchronously; a call
+    -- that brought nothing back must not mark a later manual target.
+    if not ApiTruth("UnitExists", "target") then restoringTarget = false end
+  end)
+  return true
+end
+
 local function OnTargetChanged()
   stopPending = false
   StopRangeWatch()
   targetEpoch = targetEpoch + 1
   recentTargetEpoch = targetEpoch
   recentRetryUsed = false
+  rangedReadySince = nil
   local now = Now()
   recentTargetUntil = now and now + TARGET_SETTLE_SECONDS or 0
+
+  -- The refusal count survives the loss and the restore of the same unit, so
+  -- the retry waits longer; any other target change starts fresh.
+  local restored = restoringTarget
+  restoringTarget = false
+  if restored and Call("UnitName", "target") ~= refusedTargetName then
+    restored = false
+  end
+  if not restored and not RestoreRefusedTarget(now) then
+    rangedFailures = 0
+    rangedFailedAt = -1
+    rangedRestores = 0
+    rangedSwitchAt = -1
+  end
 
   -- Let the native left-click target transition finish before consulting the
   -- attack-toggle state. Tab targeting also follows this harmless one-tick
@@ -745,6 +852,24 @@ function AA:OnEnable()
   end)
   U.RegisterEvent("SPELLCAST_INTERRUPTED", function()
     rangedInterruptAt = Now() or -1
+  end)
+  -- A refused Auto Shot ("Target too close" in fleeshot.v1) ends the repeat
+  -- with SPELLCAST_FAILED and no interruption. It is the client's decision,
+  -- so the stop classifier must not read it as the player retiring the shot.
+  -- Only failures during a ranged follow, or just after this module issued
+  -- one, count; a player's own failed cast elsewhere changes nothing.
+  U.RegisterEvent("SPELLCAST_FAILED", function()
+    local now = Now()
+    if not now then return end
+    if followMode ~= "ranged" and
+       not (lastAttempt.mode == "ranged" and now - lastAttempt.at < 1) then
+      return
+    end
+    rangedInterruptAt = now
+    rangedFailedAt = now
+    rangedFailures = rangedFailures + 1
+    -- The target is still selected here; its loss arrives a moment later.
+    refusedTargetName = Call("UnitName", "target")
   end)
   U.RegisterEvent("START_AUTOREPEAT_SPELL", function()
     if not config or not config.enabled then return end

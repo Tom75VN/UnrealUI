@@ -340,6 +340,71 @@ M.modernWow.texture = {
   chatArrowDown = M.modernWow.path .. "chat\\arrow-down",
 }
 
+-- Blizzard's Dragonflight MinimalScrollBar art, supplied as the original
+-- 64x64 proportional sheet and 64x1024 vertical sheet. The pixel rectangles
+-- are the UiTextureAtlasMember bounds for build 10.0.2.46801; the client this
+-- addon runs on has no SetAtlas route, so core/stockui.lua applies these cells
+-- to the existing Slider and arrow-button state regions with SetTexCoord.
+-- Native range, value, scripts, hit areas and thumb movement remain owned by
+-- the stock scrollbar.
+--
+-- MinimalScrollBar (the template DF-main's lists inherit) keeps its steppers
+-- inside the bar and starts its Track 19 below the top: an 11-high stepper plus
+-- an 8 gap. The legacy Slider is the reverse -- its arrows hang outside it and
+-- the thumb travels its whole height -- so the Slider itself is the Track here
+-- and each stepper sits `arrow.gap` beyond the Slider's end. The arrow faces
+-- and the thumb are addon-owned textures (see U.StyleModernWowScrollbar); the
+-- atlas has no disabled stepper cell, so a disabled arrow is its normal cell
+-- at `disabledAlpha`.
+M.modernWow.scrollbar = {
+  proportional = M.modernWow.path .. "ui\\minimal-scrollbar-proportional",
+  vertical = M.modernWow.path .. "ui\\minimal-scrollbar-vertical",
+  arrow = {
+    width = 17,
+    height = 11,
+    gap = 8,
+    disabledAlpha = 0.35,
+    up = {
+      normal = { 1 / 64, 18 / 64, 1 / 64, 12 / 64 },
+      pushed = { 1 / 64, 18 / 64, 14 / 64, 25 / 64 },
+      hover  = { 1 / 64, 18 / 64, 27 / 64, 38 / 64 },
+    },
+    down = {
+      normal = { 20 / 64, 37 / 64, 1 / 64, 12 / 64 },
+      pushed = { 1 / 64, 18 / 64, 40 / 64, 51 / 64 },
+      hover  = { 20 / 64, 37 / 64, 14 / 64, 25 / 64 },
+    },
+  },
+  track = {
+    width = 8,
+    cap = 8,
+    top   = { 39 / 64, 47 / 64, 14 / 64, 22 / 64 },
+    middle = { 1 / 64, 9 / 64, 0, 1 / 1024 },
+    bottom = { 49 / 64, 57 / 64, 1 / 64, 9 / 64 },
+  },
+  thumb = {
+    width = 8,
+    minExtent = 44,
+    topExtent = 8,
+    bottomExtent = 36,
+    normal = {
+      top    = { 39 / 64, 47 / 64, 1 / 64, 9 / 64 },
+      middle = { 31 / 64, 39 / 64, 1 / 1024, 716 / 1024 },
+      bottom = { 40 / 64, 48 / 64, 27 / 64, 63 / 64 },
+    },
+    hover = {
+      top    = { 1 / 64, 9 / 64, 53 / 64, 61 / 64 },
+      middle = { 21 / 64, 29 / 64, 1 / 1024, 716 / 1024 },
+      bottom = { 20 / 64, 28 / 64, 27 / 64, 63 / 64 },
+    },
+    pushed = {
+      top    = { 49 / 64, 57 / 64, 14 / 64, 22 / 64 },
+      middle = { 11 / 64, 19 / 64, 1 / 1024, 716 / 1024 },
+      bottom = { 30 / 64, 38 / 64, 27 / 64, 63 / 64 },
+    },
+  },
+}
+
 -- Minimap chrome, measured from the 140-unit round-map layout the imported
 -- art was authored around. The panel follows the live map width so the native
 -- minimap remains the geometry authority; only its ornamental chrome changes.
@@ -422,6 +487,15 @@ M.modernWow.characterRing = {
   top = 4,
   size = 64,
   inset = 5,
+}
+
+-- Shared placement of the collapse-all control beside a window's authored
+-- portrait ring. Character Skills and Quest Log use the same gap.
+M.modernWow.collapseAll = {
+  ringGap = 6,
+  -- Quest Log's normal 676-wide layout has a 507-wide left page; its ring
+  -- ends at x=69, so the shared 6px gap puts the control at x=75.
+  questLogX = 75,
 }
 
 -- Standard NPC dialogs use the same 384x512 paperdoll quadrants as the other
@@ -531,6 +605,37 @@ M.modernWow.questLog.bookIcon = {
   x     = 2,
   y     = -2,
   grow  = 4,
+}
+
+-- The Quests / Completed count boxes across the top of the list page, laid out
+-- as DF-main's DFQuestLogCount. The rim is the theme's ThinBorder pieces
+-- (`border`, set after the talents table that owns those paths) at `edge`
+-- units per corner, with a see-through dark `fillColor` inset `fillInset`
+-- from each side. The stock Common-Input-Border DF-main names draws nothing
+-- here (USER_CONFIRMED_INGAME 2026-09-16), and the client's own QuestLogCount
+-- pieces do not come back once stripped.
+-- `x` starts at the gold ring's right edge, `y` is from the window top.
+M.modernWow.questLog.countBox = {
+  edge       = 10,
+  height     = 24,
+  fillInset  = 3,
+  fillColor  = { 0.00, 0.00, 0.00, 0.65 },
+  -- Frame levels above the Quest Log window, clear of its page-art chrome.
+  levelAbove = 2,
+  -- The boxes sit on the collapse-all control's row, `collapseGap` right of
+  -- it. The control's size is read once at build; the fallback is the
+  -- QuestLogCollapseAllButton size in the interface snapshot (40x22).
+  collapseGap    = 23,
+  -- Lifts the boxes above the control's centre line (positive is up).
+  rowOffsetY     = 4,
+  collapseWidth  = 40,
+  collapseHeight = 22,
+  minWidth   = 40,
+  padding    = 8,
+  gap        = 6,
+  y          = -24,
+  maxQuests  = 20,
+  labelColor = { 1.00, 0.82, 0.00, 1.00 },
 }
 
 -- Spellbook window (modules/spellbookmodernwow.lua). The housing is the same
@@ -1041,6 +1146,9 @@ M.modernWow.talents = {
 -- ({ left, top, right, bottom } on the 2048x1024 atlas) and checked against a
 -- composite of the file; `slot` was measured off its alpha: the silver frame's
 -- opaque rim surrounds a transparent opening at `slotOpening`.
+-- The Quest Log count boxes share the talent panels' ThinBorder rim.
+M.modernWow.questLog.countBox.border = M.modernWow.talents.texture.panelBorder
+
 M.modernWow.professions = {
   texture = {
     atlas = M.modernWow.path .. "ui\\profession\\professions",

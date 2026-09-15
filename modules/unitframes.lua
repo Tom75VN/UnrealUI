@@ -137,7 +137,7 @@ end
 -- ---------------------------------------------------------------------------
 -- Target-of-target shares PRIMARY_WIDTH with target rather than carrying its
 -- own literal, so the two can never drift apart again.
-local PRIMARY_WIDTH = 180
+local PRIMARY_WIDTH = 153 -- 180 less 15%, by request
 
 local SPECS = {
   {
@@ -201,7 +201,7 @@ local PARTY_COUNT = 4
 local PARTY_GAP = 5
 -- Shared by a member frame and the pet row that hangs off it, so the two can
 -- never be built at different widths.
-local PARTY_WIDTH = 164
+local PARTY_WIDTH = 139 -- 164 less 15%, by request
 
 -- Frame id of the player's own row inside the party block. Not a unit token:
 -- the row's unit is "player" (see the spec below), and nothing may hand
@@ -2145,6 +2145,10 @@ classSkin.texture = {
 -- bars, which the ornament does not replace.
 classSkin.healthEdges = { 1, 3, 4 }
 classSkin.powerEdges = { 2, 3, 4 }
+-- The 3D portrait square keeps the edge facing the bars: it overlays the bars'
+-- hidden edge and becomes the one separator between portrait and bars.
+classSkin.portraitEdges = { 1, 2, 3 }
+classSkin.portraitEdgesRight = { 1, 2, 4 }
 
 function classSkin.Dimension(frame, method)
   local ok, value = pcall(frame[method], frame)
@@ -2155,6 +2159,46 @@ function classSkin.Slice(skin, layer, u1, u2, v1, v2)
   local slice = skin:CreateTexture(nil, layer or "ARTWORK")
   pcall(slice.SetTexCoord, slice, u1, u2, v1, v2)
   return slice
+end
+
+-- Explicit size as well as the two-corner anchoring, the way every other box
+-- in this module is built: the frame it wraps is a fixed 182x47 that nothing
+-- resizes, so 212x73 is not an approximation, and the slices then have a real
+-- size to lay out against whether or not two-corner sizing carries here.
+--
+-- withPortrait: `modern`'s 3D portrait square (model3d.RefreshSquare) hangs
+-- outside the frame's left edge, sharing one border unit with the bars. While
+-- it is shown the skin's left edge moves out to the square's left edge, so the
+-- ornament frames portrait and bars as one unit. Corners keep their authored
+-- size; only the top/bottom edge pieces stretch further.
+function classSkin.Layout(frame, skin, withPortrait)
+  local extra = 0
+  local box = frame.portrait
+  if withPortrait and box then
+    extra = classSkin.Dimension(box, "GetWidth") - U.BorderSize()
+    if extra < 0 then extra = 0 end
+  end
+  -- A right-hand square (the target's) extends the skin rightwards instead.
+  local extraLeft, extraRight = extra, 0
+  if box and box.uuiSquareRight then extraLeft, extraRight = 0, extra end
+  pcall(skin.ClearAllPoints, skin)
+  skin:SetWidth(classSkin.Dimension(frame, "GetWidth") + extra +
+                classSkin.left + classSkin.right)
+  skin:SetHeight(classSkin.Dimension(frame, "GetHeight") +
+                 classSkin.top + classSkin.bottom)
+  skin:SetPoint("TOPLEFT", frame, "TOPLEFT", -classSkin.left - extraLeft,
+                classSkin.top)
+  skin:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT",
+                classSkin.right + extraRight, -classSkin.bottom)
+end
+
+-- Whether the 3D portrait square is on screen beside the frame. Mirrors the
+-- exact condition model3d.RefreshSquare shows the box under, read from
+-- settings rather than from the box, because classSkin.Apply runs before
+-- RefreshPortrait in the same refresh.
+function classSkin.PortraitShown(frame)
+  local box = frame.portrait
+  return box and box.uuiSquare3D and model3d.Level(frame) > 0 and true or false
 end
 
 -- Builds the eight slices once. Nothing here is rebuilt on a classification
@@ -2174,18 +2218,9 @@ function classSkin.Build(frame)
   local skin = CreateFrame("Frame", "UnrealUIUnitTargetSkin", frame)
   -- No SetFrameStrata: it inherits the unit frame's "LOW". Parented straight
   -- to the frame, so it follows the mover with no position storage of its own.
-  --
-  -- Explicit size as well as the two-corner anchoring, the way every other box
-  -- in this module is built: the frame it wraps is a fixed 182x47 that nothing
-  -- resizes, so 212x73 is not an approximation, and the slices then have a real
-  -- size to lay out against whether or not two-corner sizing carries here.
-  skin:SetWidth(classSkin.Dimension(frame, "GetWidth") +
-                classSkin.left + classSkin.right)
-  skin:SetHeight(classSkin.Dimension(frame, "GetHeight") +
-                 classSkin.top + classSkin.bottom)
-  skin:SetPoint("TOPLEFT", frame, "TOPLEFT", -classSkin.left, classSkin.top)
-  skin:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT",
-                classSkin.right, -classSkin.bottom)
+  -- Size and anchors come from classSkin.Layout, which also widens the skin
+  -- over the optional 3D portrait square.
+  classSkin.Layout(frame, skin, false)
 
   -- +20 is the same clearance the classification icon, the leader star and the
   -- combo pips use to get above this frame's raised text/icon child layers.
@@ -2258,6 +2293,11 @@ function classSkin.SetOuterBordersShown(frame, shown)
 
   local boxes = { { frame.health, classSkin.healthEdges },
                   { frame.power, classSkin.powerEdges } }
+  if frame.portrait and frame.portrait.uuiSquare3D then
+    table.insert(boxes, { frame.portrait, frame.portrait.uuiSquareRight and
+                          classSkin.portraitEdgesRight or
+                          classSkin.portraitEdges })
+  end
   local i
   for i = 1, table.getn(boxes) do
     local box, list = boxes[i][1], boxes[i][2]
@@ -2282,7 +2322,10 @@ function classSkin.Apply(frame)
 
   local class = frame.data.classification or ""
   local path = classSkin.texture[class]
-  local state = path and class or false
+  local withPortrait = classSkin.PortraitShown(frame)
+  -- The portrait flag is part of the state so toggling the 3D option re-lays
+  -- out the skin even when the tier is unchanged.
+  local state = path and (class .. (withPortrait and ":portrait" or "")) or false
   if frame.uuiClassSkinState == state then return end
   frame.uuiClassSkinState = state
 
@@ -2290,6 +2333,11 @@ function classSkin.Apply(frame)
     pcall(skin.Hide, skin)
     classSkin.SetOuterBordersShown(frame, true)
     return
+  end
+
+  if skin.uuiWithPortrait ~= withPortrait then
+    skin.uuiWithPortrait = withPortrait
+    classSkin.Layout(frame, skin, withPortrait)
   end
 
   local i
@@ -2375,7 +2423,14 @@ local function BuildFrame(spec, parent)
     -- per-family switch can show or hide it live (model3d.RefreshSquare)
     -- without re-laying out bars, auras, the combo strip or the mover rect.
     local box = BuildPortraitBox(frame, portraitSize, border)
-    box:SetPoint("TOPRIGHT", frame, "TOPLEFT", border, 0)
+    -- The target faces the player frame, so its portrait mirrors to the
+    -- outer (right) side of the bars; every other family keeps the left.
+    if spec.id == "target" then
+      box:SetPoint("TOPLEFT", frame, "TOPRIGHT", -border, 0)
+      box.uuiSquareRight = true
+    else
+      box:SetPoint("TOPRIGHT", frame, "TOPLEFT", border, 0)
+    end
     box.uuiSquare3D = true
     box:Hide()
     frame.portrait = box
@@ -4532,20 +4587,44 @@ LayoutParty = function(force)
   partyLayoutShape = shape
 
   -- `lastHeight` is the declared height of the row that ends the block, kept
-  -- so the anchor can be given the block's DRAWN extent below.
-  local offset, width, lastHeight = 0, 0, 0
+  -- so the anchor can be given the block's DRAWN extent below. `lastDrawn` is
+  -- set when that height is already a drawn extent and must not be scaled.
+  local offset, width, lastHeight, lastDrawn = 0, 0, 0, false
+
+  local playerRow = frames[PARTY_PLAYER_ID]
+
+  -- A theme may draw the rows at a scale of their own. `modern-wow` gives each
+  -- one a pixel-perfect own-scale times its 1.15 size trim (modules/
+  -- modernwow.lua, mw.units), and a frame's own scale resizes it about its
+  -- anchor point without touching the offsets around it (core/mover.lua,
+  -- EntryScale, records the measurement). So each row is drawn `ratio` times
+  -- its declared size while the stacking offsets below are not, and the block
+  -- ends `ratio` times the last row's height below where that row starts.
+  --
+  -- The ratio is 1 in every theme that draws the rows at the anchor's own
+  -- scale, which leaves this arithmetic exactly as it was.
+  local reference = (player and playerRow) or frames["party1"]
+  local ratio = 1
+  if reference then
+    local rowOk, rowScale = pcall(reference.GetEffectiveScale, reference)
+    local anchorOk, anchorScale = pcall(anchor.GetEffectiveScale, anchor)
+    rowScale, anchorScale = tonumber(rowScale), tonumber(anchorScale)
+    if rowOk and anchorOk and rowScale and anchorScale and
+       rowScale > 0 and anchorScale > 0 then
+      ratio = rowScale / anchorScale
+    end
+  end
 
   -- The player's row first, so the members below it keep their own order. It
   -- carries no pet row of its own: the player's pet already has a frame and a
   -- mover of its own.
-  local playerRow = frames[PARTY_PLAYER_ID]
   if playerRow then
     playerRow.uuiDisabled = not player
     if player then
       playerRow:ClearAllPoints()
       playerRow:SetPoint("TOPLEFT", anchor, "TOPLEFT", 0, 0)
       offset = FrameHeight(playerRow.spec)
-      lastHeight = FrameHeight(playerRow.spec)
+      lastHeight, lastDrawn = FrameHeight(playerRow.spec), false
       if FrameWidth(playerRow.spec) > width then
         width = FrameWidth(playerRow.spec)
       end
@@ -4565,20 +4644,31 @@ LayoutParty = function(force)
       member:ClearAllPoints()
       member:SetPoint("TOPLEFT", anchor, "TOPLEFT", 0, -offset)
       offset = offset + FrameHeight(member.spec)
-      lastHeight = FrameHeight(member.spec)
+      lastHeight, lastDrawn = FrameHeight(member.spec), false
       if FrameWidth(member.spec) > width then width = FrameWidth(member.spec) end
     end
 
     if pet then
       pet.uuiDisabled = not shown[i]
-      if shown[i] then
+      local dressed = pet.uuiModernWow and tonumber(pet.uuiModernWow.height)
+      if shown[i] and dressed then
+        -- modern-wow dresses the pet row in its own small canvas, whose drawn
+        -- height has nothing to do with the flat spec's 14-unit bar. Stacked
+        -- by what is drawn, flush under the member's art (no flat outline to
+        -- overlap), so it cannot run into the next member.
+        pet:ClearAllPoints()
+        pet:SetPoint("TOPLEFT", anchor, "TOPLEFT", 0, -offset)
+        offset = offset + dressed * ratio
+        lastHeight, lastDrawn = dressed * ratio, true
+        if FrameWidth(pet.spec) > width then width = FrameWidth(pet.spec) end
+      elseif shown[i] then
         -- Overlapped by one border unit, the same trick the stacked bars
         -- inside a single frame use: without it the member's bottom outline
         -- and the pet's top outline draw as one 2-unit band.
         pet:ClearAllPoints()
         pet:SetPoint("TOPLEFT", anchor, "TOPLEFT", 0, -(offset - border))
         offset = offset + FrameHeight(pet.spec) - border
-        lastHeight = FrameHeight(pet.spec)
+        lastHeight, lastDrawn = FrameHeight(pet.spec), false
         if FrameWidth(pet.spec) > width then width = FrameWidth(pet.spec) end
       else
         SetFrameShown(pet, false)
@@ -4589,32 +4679,10 @@ LayoutParty = function(force)
   -- The anchor carries the party mover, so its rect has to be the block as
   -- DRAWN: edit mode's handle and the magnet barrier are that rectangle, and a
   -- rect that does not cover the block puts both somewhere the player cannot
-  -- see.
-  --
-  -- A theme may draw the rows at a scale of their own. `modern-wow` gives each
-  -- one a pixel-perfect own-scale times its 1.15 size trim (modules/
-  -- modernwow.lua, mw.units), and a frame's own scale resizes it about its
-  -- anchor point without touching the offsets around it (core/mover.lua,
-  -- EntryScale, records the measurement). So each row is drawn `ratio` times
-  -- its declared size while the stacking offsets above are not, and the block
-  -- ends `ratio` times the last row's height below where that row starts.
-  --
-  -- The ratio is 1 in every theme that draws the rows at the anchor's own
-  -- scale, which leaves this arithmetic exactly as it was.
-  local reference = (player and playerRow) or frames["party1"]
-  local ratio = 1
-  if reference then
-    local rowOk, rowScale = pcall(reference.GetEffectiveScale, reference)
-    local anchorOk, anchorScale = pcall(anchor.GetEffectiveScale, anchor)
-    rowScale, anchorScale = tonumber(rowScale), tonumber(anchorScale)
-    if rowOk and anchorOk and rowScale and anchorScale and
-       rowScale > 0 and anchorScale > 0 then
-      ratio = rowScale / anchorScale
-    end
-  end
-
+  -- see. `ratio` (computed above) is how much larger than declared each row
+  -- is drawn; a last row already stacked by its drawn height needs no scaling.
   local height = offset
-  if height > 0 and lastHeight > 0 and ratio ~= 1 then
+  if height > 0 and lastHeight > 0 and ratio ~= 1 and not lastDrawn then
     height = height - lastHeight + lastHeight * ratio
   end
 

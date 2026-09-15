@@ -121,16 +121,28 @@ end
 -- profession bag. The user-confirmed French "Carquois" case demonstrated that
 -- an English specialty-name deny-list cannot enforce this boundary.
 --
--- GetItemInfo's equipLoc is a language-independent INVTYPE_* token, but soul
--- and profession bags can share INVTYPE_BAG with ordinary bags. Its subType is
--- localized, so compare it with the client's localized INVTYPE_BAG display
--- string instead of naming every specialty subtype in every locale. If the
--- inventory item, item info, or localized ordinary-bag label is unavailable,
--- leave that equipped container untouched. Sorting fewer bags is safer than
--- moving items inside a container the sorter cannot prove is general-purpose.
+-- The bag's type is read from its tooltip, not from its item link. Probe
+-- bagtype (1.53.0/1.54.0, 2026-09-15) measured that GetInventoryItemLink
+-- returns nothing for equipped bag slots on this client -- weapon slots do
+-- answer -- and that GetItemInfo(GetBagName(bag)) returns nothing either. The
+-- 0.7.0 link -> GetItemInfo test therefore rejected every bag and left the
+-- backpack as the whole pool. A private GameTooltipTemplate scanner armed with
+-- SetInventoryItem (the modules/status.lua durability sequence) does carry the
+-- CONTAINER_SLOTS line, "6 Slot Bag" / "6 Slot Ammo Pouch" in that run.
+--
+-- The subtype on that line is localized, so it is compared by position, not
+-- by word: it must be subclass 1 of auction class 3 (Container), which the
+-- same probe measured as Bag, followed by Soul Bag, Herb Bag and Enchanting
+-- Bag, with quivers and ammo pouches under class 7. Any unreadable step leaves
+-- that equipped container untouched. Sorting fewer bags is safer than moving
+-- items inside a container the sorter cannot prove is general-purpose.
 --
 -- The backpack (0) is always general-purpose and has no inventory item at all,
 -- and the main bank pane (-1) is the same case.
+IS.SCANNER_NAME = "UnrealUIBagTypeScanner"
+IS.CONTAINER_AUCTION_CLASS = 3
+IS.MAX_TOOLTIP_LINES = 12
+IS.scanner = nil
 -- Inventory slot of an equipped bag's own equipment button.
 --
 -- ContainerIDToInventoryID is the documented converter, but the client
@@ -152,24 +164,91 @@ function IS.BagInventoryId(bag)
   return nil
 end
 
+-- CONTAINER_SLOTS ("%d Slot %s" on enUS) as an anchored Lua pattern. Format
+-- tokens become placeholders before the literal text is escaped, so the
+-- escaping cannot corrupt them, and a positional %1$d form is accepted too.
+function IS.SlotPattern()
+  local template = U.G("CONTAINER_SLOTS")
+  if type(template) ~= "string" or template == "" then return nil end
+
+  local p = string.gsub(template, "%%%d*%$?d", "\001")
+  p = string.gsub(p, "%%%d*%$?s", "\002")
+  p = string.gsub(p, "([%^%$%(%)%.%[%]%*%+%-%?%%])", "%%%1")
+  p = string.gsub(p, "\001", function() return "(%d+)" end)
+  p = string.gsub(p, "\002", function() return "(.+)" end)
+  return "^" .. p .. "$"
+end
+
+-- The localized name of the plain bag subclass: the first subclass of the
+-- Container auction class.
+function IS.OrdinaryBagSubtype()
+  local getSubClasses = U.G("GetAuctionItemSubClasses")
+  if type(getSubClasses) ~= "function" then return nil end
+
+  local ok, first = pcall(getSubClasses, IS.CONTAINER_AUCTION_CLASS)
+  if not ok or type(first) ~= "string" or first == "" then return nil end
+  return first
+end
+
+function IS.Scanner()
+  if IS.scanner then return IS.scanner end
+
+  local ok, tip = pcall(CreateFrame, "GameTooltip", IS.SCANNER_NAME, nil,
+                        "GameTooltipTemplate")
+  if ok and tip then IS.scanner = tip end
+  return IS.scanner
+end
+
+-- The subtype printed on an equipped bag's CONTAINER_SLOTS tooltip line, or
+-- nil when any step of the scan does not answer.
+function IS.TooltipBagSubtype(inventoryId)
+  local pattern = IS.SlotPattern()
+  local tip = IS.Scanner()
+  if not pattern or not tip then return nil end
+
+  pcall(tip.ClearLines, tip)
+  pcall(tip.SetOwner, tip, U.G("WorldFrame") or UIParent, "ANCHOR_NONE")
+  if not pcall(tip.SetInventoryItem, tip, "player", inventoryId) then
+    return nil
+  end
+
+  local countOk, count = pcall(tip.NumLines, tip)
+  count = countOk and tonumber(count) or 0
+  if count > IS.MAX_TOOLTIP_LINES then count = IS.MAX_TOOLTIP_LINES end
+
+  local line
+  for line = 1, count do
+    local region = U.G(IS.SCANNER_NAME .. "TextLeft" .. line)
+    local text
+    if region and type(region.GetText) == "function" then
+      local textOk, value = pcall(region.GetText, region)
+      if textOk then text = value end
+    end
+
+    if type(text) == "string" then
+      local _, _, a, b = string.find(text, pattern)
+      if a and b then
+        -- Whichever capture is the number is the slot count, so a locale that
+        -- puts the subtype first still reads correctly.
+        if tonumber(a) then return b end
+        return a
+      end
+    end
+  end
+
+  return nil
+end
+
 function IS.IsGeneralBag(bag)
   if bag == 0 or bag == IS.BANK_CONTAINER then return true end
 
   local inventoryId = IS.BagInventoryId(bag)
   if not inventoryId then return false end
 
-  local linkOk, link = pcall(GetInventoryItemLink, "player", inventoryId)
-  if not linkOk or type(link) ~= "string" or link == "" then return false end
+  local ordinary = IS.OrdinaryBagSubtype()
+  if not ordinary then return false end
 
-  -- GetItemInfo returns nine values on this client -- name, link, quality,
-  -- minLevel, type, subType, stackCount, equipLoc, texture -- and no values at
-  -- all for an item outside the local cache.
-  local infoOk, _, _, _, _, _, subType, _, equipLoc =
-    pcall(GetItemInfo, link)
-  if not infoOk or equipLoc ~= "INVTYPE_BAG" then return false end
-
-  local ordinarySubtype = type(INVTYPE_BAG) == "string" and INVTYPE_BAG or nil
-  return ordinarySubtype ~= nil and subType == ordinarySubtype
+  return IS.TooltipBagSubtype(inventoryId) == ordinary
 end
 
 -- ---------------------------------------------------------------------------

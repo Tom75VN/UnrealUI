@@ -127,10 +127,11 @@ local CB = U.RegisterModule("castbar")
 -- separate cell for the timer, which is drawn on top of the bar instead.
 local HEIGHT = 24
 local WIDTH = 230
--- The target frame is a 180px status bar plus its 1px outline on each side.
--- Keep the target castbar's complete icon-and-progress footprint aligned to
--- that outer width, rather than merely matching the progress cell.
-local TARGET_WIDTH = 180 + 2 * U.BorderSize()
+-- The target frame is a 153px status bar plus its 1px outline on each side
+-- (PRIMARY_WIDTH in modules/unitframes.lua). Keep the target castbar's complete
+-- icon-and-progress footprint aligned to that outer width, rather than merely
+-- matching the progress cell.
+local TARGET_WIDTH = 153 + 2 * U.BorderSize()
 local ICON_SIZE = HEIGHT
 local BAR_WIDTH = WIDTH - ICON_SIZE
 local PUSHBACK_WIDTH = 35

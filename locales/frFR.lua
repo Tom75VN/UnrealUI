@@ -118,7 +118,7 @@ SETTINGS_THEMES_AVAILABLE = "themes disponibles :",
 SETTINGS_QUICKBIND        = "Raccourcis rapides",
 SETTINGS_QUICKBIND_HINT   = "Survolez un emplacement de barre d'action ou de barre de posture et appuyez sur une touche pour l'assigner. Echap sur un emplacement l'efface.",
 SETTINGS_AUTO_ATTACK      = "Demarrer l'attaque automatique au ciblage",
-SETTINGS_AUTO_ATTACK_HINT = "Cliquez ou appuyez sur Tab pour attaquer. Placez Tir automatique (chasseur) ou Tir sur une barre d'actions pour alterner entre arc/fusil et melee selon la distance. Respecte l'arret manuel. Arrete l'attaque et n'en lance aucune pendant le camouflage du voleur ou du druide.",
+SETTINGS_AUTO_ATTACK_HINT = "Cliquez ou appuyez sur Tab pour attaquer. Alterne arc/fusil et melee selon la distance ; un chasseur sans Tir automatique sur une barre le recoit sur un emplacement vide. Respecte l'arret manuel. Arrete l'attaque et n'en lance aucune pendant le camouflage du voleur ou du druide.",
 SETTINGS_SWING_BAR        = "Afficher la barre d'attaque automatique",
 SETTINGS_SWING_BAR_HINT   = "Affiche le rythme de la main droite, de la main gauche et de l'arc ou arme a distance tant que la cible est a portee. Se deplace via le mode interface.",
 SETTINGS_MICROBAR         = "Activer la micro-barre",
@@ -427,7 +427,6 @@ TOOLTIP_COMPARE_SUMMARY   = "Si vous remplacez cet objet :",
 STATUS_FPS                = "IPS :",
 STATUS_LATENCY            = "MS :",
 STATUS_DURABILITY         = "Durabilite :",
-STATUS_TIME               = "Heure :",
 STATUS_ONLINE             = "joueurs en ligne",
 
 WORLDMAP_CURSOR           = "Curseur : --, --",
@@ -511,5 +510,9 @@ CMD_PROFILE_UNAVAILABLE   = "la gestion des profils n'est pas disponible dans ce
 CMD_PROFILE_EXISTS        = "un profil nomme |cffffff00%s|r existe deja",
 CMD_PROFILE_NAME_RULES    = "les noms de profil peuvent contenir des lettres, des chiffres, des espaces, des tirets et des traits de soulignement (64 caracteres maximum)",
 CMD_PROFILE_CREATED       = "profil |cffffff00%s|r cree et selectionne - |cffffff00/reload|r pour l'appliquer",
+
+-- Quest Log count boxes (modern-wow theme).
+QUESTLOG_COUNT            = "Quetes : |cffffffff%d/%d|r",
+QUESTLOG_COMPLETED        = "Terminees : |cffffffff%d/%d|r",
 
 })

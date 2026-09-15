@@ -205,18 +205,11 @@ local function Build()
   })
   display.durabilityValue:SetPoint("LEFT", display.durabilityCaption, "RIGHT", 2, 0)
 
-  display.timeCaption = U.CreateLabel(anchor, {
-    shadow = false, privateFont = true,
-    size = M.fontSize.normal, inherits = "GameFontNormal", color = M.color.text,
-  })
-  display.timeCaption:SetPoint("LEFT", display.durabilityValue, "RIGHT", MODULE_GAP, 0)
-  display.timeCaption:SetText(U.L("STATUS_TIME"))
-
   display.timeValue = U.CreateLabel(anchor, {
     shadow = false, privateFont = true,
     size = M.fontSize.normal, inherits = "GameFontNormal", color = M.color.text,
   })
-  display.timeValue:SetPoint("LEFT", display.timeCaption, "RIGHT", 2, 0)
+  display.timeValue:SetPoint("LEFT", display.durabilityValue, "RIGHT", MODULE_GAP, 0)
 
   -- Chain the denominations directly after the clock. Their widths follow
   -- the rendered values, so short values do not leave empty columns.

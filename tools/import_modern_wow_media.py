@@ -62,7 +62,7 @@ IMPORTS = [
      "unitframes/frame-rare-elite"),
     ("media/tex/unitframes/UI-TargetingFrame-Boss.blp",
      "unitframes/frame-boss"),
-    ("media/tex/unitframes/pet.blp", "unitframes/pet-frame"),
+    ("media/tex/unitframes/pet.blp", "unitframes/party-frame"),
     ("media/tex/unitframes/UI-Player-Status.blp", "unitframes/player-status"),
     ("media/tex/unitframes/healthDF2.tga", "unitframes/health-fill"),
     ("media/tex/unitframes/"
@@ -245,6 +245,16 @@ USER_SUPPLIED = [
      "circle is inactive and the right 57x56 circle is active. Drawn on "
      "the player or target frame opposite the configured aura position.",
      "combo-points.png"),
+    ("ui/minimal-scrollbar-proportional", "MinimalScrollbarProportional.PNG",
+     "Blizzard MinimalScrollBar proportional atlas at 64x64: up/down arrow "
+     "states plus the track and thumb caps. The Modern WoW Skills scrollbar "
+     "uses its measured atlas cells without changing their pixels.",
+     "MinimalScrollbarProportional.PNG"),
+    ("ui/minimal-scrollbar-vertical", "MinimalScrollbarVertical.PNG",
+     "Blizzard MinimalScrollBar vertical atlas at 64x1024: the stretchable "
+     "track and normal, hover and pushed thumb bodies. The Modern WoW Skills "
+     "scrollbar uses its measured atlas cells without changing their pixels.",
+     "MinimalScrollbarVertical.PNG"),
     ("ui/questlog-left-large-v2", "questlog-left-large-v2.tga",
      "High-resolution left and centre Quest Log chrome for modern-wow."),
     ("ui/questlog-right-large", "questlog-right-large.tga",

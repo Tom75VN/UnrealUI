@@ -1102,6 +1102,28 @@ UpdateSkillRows = function()
   local ok, numEntries = pcall(getCount)
   if not ok or not tonumber(numEntries) then return end
 
+  -- FOCUSED_RUNTIME_PROBE (skillscroll.first_open_range.v1, 2026-09-16): on
+  -- the first opening the list bar is shown with min/max 0/0 although the
+  -- native update already sized the scroll child (13 lines x 15 = 195). The
+  -- modern-wow pane is 220 high, so the client's own overflow recalculation
+  -- (UpdateScrollChildRect) yields 0 as well. A header collapse re-runs the
+  -- native update, which sets 0..(lines - SKILLS_TO_DISPLAY) *
+  -- SKILLFRAME_SKILL_HEIGHT; that same range is applied here when missing.
+  -- GetVerticalScrollRange followed the Slider's max in the same capture.
+  local listBar = G("SkillListScrollFrameScrollBar")
+  local display = G("SKILLS_TO_DISPLAY")
+  local rowHeight = G("SKILLFRAME_SKILL_HEIGHT")
+  if listBar and type(display) == "number" and type(rowHeight) == "number" and
+     numEntries > display then
+    local rangeOk, low, high = pcall(function()
+      return listBar:GetMinMaxValues()
+    end)
+    if rangeOk and type(low) == "number" and type(high) == "number" and
+       high <= low then
+      pcall(listBar.SetMinMaxValues, listBar, 0, (numEntries - display) * rowHeight)
+    end
+  end
+
   local offset = 0
   local offsetFn = G("FauxScrollFrame_GetOffset")
   local scroll = G("SkillListScrollFrame")
@@ -1110,11 +1132,13 @@ UpdateSkillRows = function()
     if offsetOk and tonumber(value) then offset = value end
   end
 
-  local i, headers, collapsedHeaders = nil, 0, 0
+  local i, headers, collapsedHeaders, visibleRows = nil, 0, 0, 0
   for i = 1, SKILL_ROWS do
     local header = G("SkillTypeLabel" .. i)
     local bar = G("SkillRankFrame" .. i)
     local index = i + offset
+
+    if bar then visibleRows = visibleRows + 1 end
 
     local infoOk, name, isHeader, isExpanded
     if index <= numEntries then
@@ -1144,7 +1168,15 @@ UpdateSkillRows = function()
   local collapseAll = G("SkillFrameCollapseAllButton")
   U.SetStockCollapseState(collapseAll, true,
                           headers > 0 and collapsedHeaders == headers)
+  if modernWowTabMode and type(U.SetModernWowScrollbarProportion) == "function" then
+    U.SetModernWowScrollbarProportion(G("SkillListScrollFrameScrollBar"),
+                                      visibleRows, numEntries)
+  end
 end
+
+-- modern-wow only: the Skills collapse-all plate and its button sit this much
+-- higher, by request.
+local SKILLS_COLLAPSE_RISE = 4
 
 local function StyleSkillsTab()
   local skill = G("SkillFrame")
@@ -1156,8 +1188,31 @@ local function StyleSkillsTab()
   -- skins/blizzard/character.lua) -- StripStockTextures on the button alone
   -- left it in place.
   local expandBackground = G("SkillFrameExpandButtonFrame")
-  if expandBackground then
-    pcall(expandBackground.DisableDrawLayer, expandBackground, "BACKGROUND")
+  if expandBackground and not modernWowTabMode then
+    -- Unlike Quest Log, where the plate stays with the collapse button, the
+    -- Skills plate is this frame's own art, so modern-wow must not strip it.
+    -- U.HideRegion is permanent, so stripping first and restoring later is not
+    -- an option. Flat modern still strips it.
+    U.StripStockTextures(expandBackground)
+  end
+  if expandBackground and modernWowTabMode and frame then
+    -- By request the plate rises 4px with its button (SKILLS_COLLAPSE_RISE
+    -- below). Its native anchor is not known here and GetPoint is not read
+    -- back (knowledge.json / frames.getpoint_relative_name_y_inverted), so
+    -- its bounded numeric geometry is captured once and re-applied against
+    -- the addon's window.
+    pcall(function()
+      local left, top = expandBackground:GetLeft(), expandBackground:GetTop()
+      local width, height = expandBackground:GetWidth(), expandBackground:GetHeight()
+      local frameLeft, frameTop = frame:GetLeft(), frame:GetTop()
+      if not (tonumber(left) and tonumber(top) and tonumber(frameLeft) and
+              tonumber(frameTop)) then return end
+      expandBackground:ClearAllPoints()
+      expandBackground:SetPoint("TOPLEFT", frame, "TOPLEFT", left - frameLeft,
+                                top - frameTop + SKILLS_COLLAPSE_RISE)
+      if tonumber(width) and width > 0 then expandBackground:SetWidth(width) end
+      if tonumber(height) and height > 0 then expandBackground:SetHeight(height) end
+    end)
   end
 
   local cancel = G("SkillFrameCancelButton")
@@ -1165,7 +1220,9 @@ local function StyleSkillsTab()
 
   local collapseAll = G("SkillFrameCollapseAllButton")
   if collapseAll then
-    U.StripStockTextures(collapseAll)
+    -- The SortTab plate is not on this button (see SkillFrameExpandButtonFrame
+    -- above); this strip only removes the button's own leftover art.
+    if not modernWowTabMode then U.StripStockTextures(collapseAll) end
     U.StyleStockCollapseButton(collapseAll, true)
     if modernWowTabMode and type(U.ModernWowCollapseFace) == "function" then
       pcall(U.ModernWowCollapseFace, collapseAll)
@@ -1201,15 +1258,43 @@ local function StyleSkillsTab()
     local anchor = scroll or skill
     pcall(function()
       collapseAll:ClearAllPoints()
-      collapseAll:SetPoint("BOTTOMLEFT", anchor, "TOPLEFT", -6, 4)
+      local placed = false
+      if modernWowTabMode then
+        local frameTopOk, frameTop = pcall(frame.GetTop, frame)
+        local anchorTopOk, anchorTop = pcall(anchor.GetTop, anchor)
+        if frameTopOk and anchorTopOk and
+           tonumber(frameTop) and tonumber(anchorTop) then
+          -- Use Quest Log's exact normal-layout X while preserving the Skills
+          -- control's existing Y relative to its own list.
+          collapseAll:SetPoint(
+            "BOTTOMLEFT", frame, "TOPLEFT",
+            M.modernWow.collapseAll.questLogX,
+            anchorTop - frameTop + 4 + SKILLS_COLLAPSE_RISE)
+          placed = true
+        end
+      end
+      if not placed then
+        collapseAll:SetPoint("BOTTOMLEFT", anchor, "TOPLEFT", -6, 4)
+      end
     end)
+  end
+
+  -- Styled before the first row update, which sizes the modern-wow thumb.
+  local skillListScroll = G("SkillListScrollFrame")
+  local skillListBar = G("SkillListScrollFrameScrollBar")
+  U.StripStockTextures(skillListScroll)
+  if modernWowTabMode and type(U.StyleModernWowScrollbar) == "function" then
+    -- USER_CONFIRMED_INGAME: scrolling left header rows without their collapse
+    -- icon, because the SkillFrame_Update post-hook below never fires on a
+    -- scroll here. The scrollbar reports every value/range change instead,
+    -- which also runs the empty-range repair in UpdateSkillRows on first open.
+    U.StyleModernWowScrollbar(skillListBar, { onChange = UpdateSkillRows })
+  else
+    U.StyleStockScrollbar(skillListBar)
   end
 
   BuildSkillRows()
   UpdateSkillRows()
-
-  U.StripStockTextures(G("SkillListScrollFrame"))
-  U.StyleStockScrollbar(G("SkillListScrollFrameScrollBar"))
 
   U.StripStockTextures(G("SkillDetailScrollFrame"))
   SetTextFont(G("SkillDetailCostText"), M.fontSize.small, WHITE)

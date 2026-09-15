@@ -758,6 +758,22 @@ do
       -- DragonflightUI fills the party mana bar with the TARGET mana art
       -- (mini.lua PartyFramesSetup), not the player's, so this matches it.
       power = "powerFillTarget",
+      -- The player's party row stays 1 unit taller; the four other member rows
+      -- gain another unit. Kept per entry rather than in partyLayout: pet rows
+      -- derive their health bar from that layout's power rectangle and must not
+      -- grow with it.
+      powerHeightExtra = i == 1 and 1 or 2,
+      -- Leave the player's party row in place and lift the four other member
+      -- rows by 1 unit. Negative is upward because PlaceBar receives a
+      -- top-relative distance.
+      powerY = i == 1 and 0 or -1,
+      -- Power bar 4 units left and 6 wider (growing rightward), health bar 2
+      -- units left and 3 wider to the right, by request. Positive x is
+      -- rightward in screen units.
+      powerX = -4,
+      powerWidthExtra = 6,
+      healthX = -2,
+      healthWidthExtra = 3,
       -- Portrait left, which is also how this canvas is authored, so
       -- BuildHousing draws it without flipping the texture.
       mirror = true,
@@ -771,6 +787,30 @@ do
       -- 15% over the authored size, by request. DragonflightUI's party rows
       -- are deliberately half the linear size of its player and target frames;
       -- this keeps that relationship but makes the block easier to read.
+      scale = 1.15,
+    })
+  end
+
+  -- Each member's pet row (the Party Frames "pets" option) wears the same
+  -- small canvas, so it reads as part of the block rather than a flat strip
+  -- between Dragonflight rows. Its spec asks for a 14-unit health bar against
+  -- the canvas's 18, so mw.ArtScale draws it at 14/18 of a member row -- a
+  -- subordinate row under the member it belongs to. No power bar: BuildHousing
+  -- gives the health bar both openings. The option itself is untouched: a row
+  -- the option hides is dressed but never shown.
+  for i = 1, 4 do
+    table.insert(mw.units, {
+      id = "partypet" .. i,
+      art = "partyFrame",
+      layout = "partyLayout",
+      mirror = true,
+      header = { name = -2, level = -2 },
+      -- Health value up 1 unit, by request (was 2, then down 1).
+      healthLabelY = 1,
+      -- Health bar 2 units shorter, off its bottom edge, by request.
+      healthTrim = 2,
+      -- Same trim as the member rows, so the pet keeps its 14/18 proportion
+      -- to the row above it instead of shrinking relative to it.
       scale = 1.15,
     })
   end
@@ -1290,15 +1330,19 @@ function mw.BuildHousing(frame, entry)
   local healthLeftInset = tonumber(entry.healthLeftInset) or 0
   local healthRightInset = tonumber(entry.healthRightInset) or 0
   mw.PlaceBar(frame.health, frame, s,
-              FlipX(barX, barW) + healthLeftInset, healthY,
-              barW - healthLeftInset - healthRightInset, healthH)
+              FlipX(barX, barW) + healthLeftInset +
+                (tonumber(entry.healthX) or 0), healthY,
+              barW - healthLeftInset - healthRightInset +
+                (tonumber(entry.healthWidthExtra) or 0), healthH)
   if frame.power then
     local powerInset = tonumber(entry.powerInset) or 0
     mw.PlaceBar(frame.power, frame, s,
                 FlipX(barX, barW) + powerInset +
                   (tonumber(entry.powerX) or 0),
-                (L.powerY - L.contentTop) * s, barW - powerInset * 2,
-                L.powerHeight * s)
+                (L.powerY - L.contentTop) * s +
+                  (tonumber(entry.powerY) or 0),
+                barW - powerInset * 2 + (tonumber(entry.powerWidthExtra) or 0),
+                L.powerHeight * s + (tonumber(entry.powerHeightExtra) or 0))
   end
 
   -- -2 and -1 are modules/unitframes.lua's own BAR_LABEL_Y_OFFSET and
@@ -1307,9 +1351,11 @@ function mw.BuildHousing(frame, entry)
   -- opening is 18 units against the large housing's 30, so a nudge tuned on
   -- one does not read the same on the other. Same precedence as headerY
   -- above. The horizontal shift stays on the frames that ask for it.
+  -- `healthLabelY` is a per-entry nudge on top of that, positive upward.
   mw.ShiftBarLabel(frame.health,
                    -2 + (tonumber(L.barLabelY) or
-                         tonumber(M.modernWow.text.barLabelY) or 0),
+                         tonumber(M.modernWow.text.barLabelY) or 0) +
+                   (tonumber(entry.healthLabelY) or 0),
                    entry.shiftLabels, entry.percentX, entry.healthValueX)
   mw.ShiftBarLabel(frame.power, -1, entry.shiftLabels, entry.percentX)
   -- Centred single-label bars (target-of-target) take their own vertical nudge.
@@ -1422,8 +1468,13 @@ function mw.BuildHousing(frame, entry)
 
   mw.ApplyFrameScale(frame, entry)
 
+  -- `height` is the dressed frame's own height before its frame scale, for
+  -- modules/unitframes.lua LayoutParty: a party pet row is far taller dressed
+  -- than its declared spec height, and stacking it by the spec overlaps the
+  -- next member.
   frame.uuiModernWow = { housing = housing, overlay = overlay,
-                         frameArt = frameArt, art = art, scale = s }
+                         frameArt = frameArt, art = art, scale = s,
+                         height = contentH }
   return frame.uuiModernWow
 end
 

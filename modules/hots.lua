@@ -496,6 +496,12 @@ local DRAWN_UNITS = { "player" }
 for i = 1, PARTY_COUNT do
   table.insert(DRAWN_UNITS, "party" .. i)
 end
+-- Each member's pet row too (ScanUnit gates them to a shown, modern-wow dressed
+-- row). Listed after the members so PartyUnitFor prefers a player's token when
+-- a pet happens to share that character's name.
+for i = 1, PARTY_COUNT do
+  table.insert(DRAWN_UNITS, "partypet" .. i)
+end
 
 local function FrameIdFor(unit)
   if unit ~= "player" then return unit end
@@ -817,6 +823,19 @@ end
 local function ScanUnit(unit)
   local holder = Holder(unit)
   if not holder then return end
+
+  -- A party pet row is drawn on only while shown and dressed by modern-wow,
+  -- the same gate modules/auras.lua uses for its pet rows. Checked before any
+  -- client read, and without the edit-mode sample, so a flat or hidden pet row
+  -- costs nothing and shows nothing.
+  local spec = holder.anchor.spec
+  if spec and spec.partyPet and
+     (holder.anchor.uuiDisabled or not holder.anchor.uuiModernWow) then
+    holder.active = nil
+    HideFrom(holder, 1)
+    HideSample(holder)
+    return
+  end
 
   if not Tracking() or not Call("UnitExists", unit) or
      U.UnitObjectVisible(unit) == false then
@@ -1296,7 +1315,8 @@ function H:OnEnable()
 
   U.RegisterEvent("UNIT_AURA", function(event, unit)
     if type(unit) ~= "string" then return end
-    if unit == "player" or string.find(unit, "^party%d") then
+    if unit == "player" or string.find(unit, "^party%d") or
+       string.find(unit, "^partypet%d") then
       ScanUnit(unit)
     end
   end)

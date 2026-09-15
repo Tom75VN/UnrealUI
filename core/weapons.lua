@@ -146,6 +146,7 @@ local function FindRangedSlot()
   end
   W.slot = activeSlot or autoShotSlot or shootSlot
   W.autoShot = W.slot ~= nil and W.slot == autoShotSlot
+  W.autoShotSlot = autoShotSlot
   return W.slot
 end
 
@@ -159,4 +160,92 @@ function U.RangedAttackState()
   local range, read = Call("IsActionInRange", slot)
   if not read or range == nil then return active, nil, slot, W.autoShot end
   return active, Truthy(range), slot, W.autoShot
+end
+
+-- Hunter Auto Shot placement. UseAction is the only unprotected way to start
+-- Auto Shot (CastSpell and CastSpellByName are protected), so a hunter with the
+-- action on no bar cannot shoot from target selection. autoshotslot.v2
+-- measured PickupSpell + PlaceAction filling an empty slot in 1-72 at once,
+-- firing ACTIONBAR_SLOT_CHANGED, surviving /reload, and UseAction starting
+-- Auto Shot from it. v1 aimed the same sequence at slot 120: the cursor was
+-- consumed and the slot stayed empty, hence the 72 ceiling.
+-- See knowledge.json / actionbars.addon_place_autoshot_empty_slot.
+W.PLACE_LAST_SLOT = 72
+W.PLACE_RETRY_SECONDS = 10
+W.nextPlaceAt = 0
+
+function W.SpellbookAutoShot()
+  local getTab = U.G("GetSpellTabInfo")
+  local getName = U.G("GetSpellName")
+  if type(getTab) ~= "function" or type(getName) ~= "function" then return nil end
+  local bookType = U.G("BOOKTYPE_SPELL")
+  if type(bookType) ~= "string" then bookType = "spell" end
+
+  local total = 0
+  local tabs = tonumber((Call("GetNumSpellTabs"))) or 0
+  local tab
+  for tab = 1, tabs do
+    local ok, _, _, offset, count = pcall(getTab, tab)
+    if ok and type(offset) == "number" and type(count) == "number" and
+       offset + count > total then
+      total = offset + count
+    end
+  end
+  local index
+  for index = 1, total do
+    local ok, name = pcall(getName, index, bookType)
+    if ok and type(name) == "string" and W.autoShotNames[name] then
+      return index, bookType
+    end
+  end
+  return nil
+end
+
+-- Returns the slot holding Auto Shot, placing it first when no bar has one.
+-- Never overwrites an action or takes over a busy cursor, never leaves the
+-- picked-up spell on the cursor, and waits PLACE_RETRY_SECONDS after an attempt
+-- that did not end with Auto Shot on a bar, so a refusal is not re-asked on
+-- every target change.
+function U.EnsureAutoShotAction()
+  local unitClass = U.G("UnitClass")
+  if type(unitClass) ~= "function" then return nil end
+  local okClass, _, class = pcall(unitClass, "player")
+  if not okClass or class ~= "HUNTER" or not U.HasRangedWeapon() then return nil end
+
+  local now = tonumber((Call("GetTime"))) or 0
+  U.InvalidateRangedAttack()
+  FindRangedSlot()
+  if W.autoShotSlot then return W.autoShotSlot end
+  if now < W.nextPlaceAt then return nil end
+  W.nextPlaceAt = now + W.PLACE_RETRY_SECONDS
+
+  if Truthy((Call("CursorHasSpell"))) or Truthy((Call("CursorHasItem"))) then
+    return nil
+  end
+  local index, bookType = W.SpellbookAutoShot()
+  if not index then return nil end
+
+  local target
+  local slot
+  for slot = W.PLACE_LAST_SLOT, 1, -1 do
+    local has, read = Call("HasAction", slot)
+    if read and not Truthy(has) then
+      target = slot
+      break
+    end
+  end
+  if not target then return nil end
+
+  local pickup = U.G("PickupSpell")
+  local place = U.G("PlaceAction")
+  if type(pickup) ~= "function" or type(place) ~= "function" then return nil end
+  if not pcall(pickup, index, bookType) then return nil end
+  if not Truthy((Call("CursorHasSpell"))) then return nil end
+  pcall(place, target)
+  if Truthy((Call("CursorHasSpell"))) then Call("ClearCursor") end
+
+  U.InvalidateRangedAttack()
+  FindRangedSlot()
+  if W.autoShotSlot then W.nextPlaceAt = 0 end
+  return W.autoShotSlot
 end

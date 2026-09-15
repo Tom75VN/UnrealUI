@@ -50,7 +50,8 @@ local M = U.media
 
 local SB = U.RegisterModule("swingbar")
 
-local WIDTH = 180
+-- Thirty percent narrower than the previous 180-unit lane.
+local WIDTH = 126
 local TEXT_SIZE = 6
 -- Twenty percent thinner than the previous 8-unit lane. The compact text is
 -- taller than the bar, so stacked lanes retain enough separation for their

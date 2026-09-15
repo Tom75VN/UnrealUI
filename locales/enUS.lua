@@ -129,7 +129,7 @@ SETTINGS_THEMES_AVAILABLE = "available themes:",
 SETTINGS_QUICKBIND        = "Quick Binding",
 SETTINGS_QUICKBIND_HINT   = "Hover an action bar or stance bar slot and press a key to bind it. Escape over a slot clears it.",
 SETTINGS_AUTO_ATTACK      = "Start auto attack when targeting",
-SETTINGS_AUTO_ATTACK_HINT = "Click or Tab to attack. Put Auto Shot (hunters) or Shoot on an action bar to switch between bow/gun and melee with distance. Stops when you stop attacking. Stops the attack, and never starts one, while a Rogue is stealthed or a Druid prowls.",
+SETTINGS_AUTO_ATTACK_HINT = "Click or Tab to attack. Switches bow/gun and melee by distance; a hunter with no Auto Shot on a bar gets it on an empty slot. Stops when you stop attacking. Stops the attack, and never starts one, while a Rogue is stealthed or a Druid prowls.",
 SETTINGS_SWING_BAR        = "Show auto attack swing bar",
 SETTINGS_SWING_BAR_HINT   = "Shows main-hand, off-hand, and bow or ranged swing timing while the target is in range. Move it with Move UI.",
 SETTINGS_MICROBAR         = "Enable micro bar",
@@ -448,7 +448,6 @@ TOOLTIP_COMPARE_SUMMARY   = "If you replace this item :",
 STATUS_FPS                = "FPS:",
 STATUS_LATENCY            = "MS:",
 STATUS_DURABILITY         = "Durability:",
-STATUS_TIME               = "Time:",
 STATUS_ONLINE             = "online players",
 
 WORLDMAP_CURSOR           = "Cursor: --, --",
@@ -538,5 +537,10 @@ CMD_PROFILE_UNAVAILABLE   = "profile management is unavailable in this build",
 CMD_PROFILE_EXISTS        = "a profile named |cffffff00%s|r already exists",
 CMD_PROFILE_NAME_RULES    = "profile names may contain letters, numbers, spaces, hyphens and underscores (maximum 64 characters)",
 CMD_PROFILE_CREATED       = "created and selected profile |cffffff00%s|r - |cffffff00/reload|r to apply it",
+
+-- Quest Log count boxes (modern-wow theme). The label draws in gold; the
+-- colour escape keeps the numbers white.
+QUESTLOG_COUNT            = "Quests: |cffffffff%d/%d|r",
+QUESTLOG_COMPLETED        = "Completed: |cffffffff%d/%d|r",
 
 })

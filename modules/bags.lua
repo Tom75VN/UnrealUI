@@ -334,7 +334,7 @@ function classicBag.StyleItemSlot(button, size)
      type(U.StyleClassicActionButtonBorder) ~= "function" then return end
   -- No layer argument: the shared helper owns the one that keeps the item icon
   -- above the slot face.
-  U.StyleClassicActionButtonBorder(button, size)
+  return U.StyleClassicActionButtonBorder(button, size)
 end
 
 -- ---------------------------------------------------------------------------
@@ -695,14 +695,77 @@ local function UpdateCooldown(bag, slot)
   U.UpdateItemSlotCooldown(bag, slots[bag] and slots[bag][slot])
 end
 
+-- Per-slot change detection. One item move fires ITEM_LOCK_CHANGED twice and
+-- BAG_UPDATE once or twice, and every one of them used to rewrite every slot in
+-- the window -- texture, count, quest lookup, border edges, favourite link and
+-- cooldown -- which froze the client for a frame on each drag. Two container
+-- reads now decide whether the slot can look any different; a pickup or drop
+-- that only flips `locked` costs one desaturation write. InvalidateSlotCache
+-- drops the cache when something outside the container data (a favourite
+-- mark) changes what a slot draws.
 local function UpdateSlotAppearance(bag, slot)
   local button = slots[bag] and slots[bag][slot]
+  if not button then return end
+
+  local texture, count, locked, quality = U.ContainerSlotInfo(bag, slot)
+  local link = texture and U.ContainerSlotLink(bag, slot) or nil
+  locked = locked and true or false
+
+  if button.uuiSlotCached and button.uuiSlotLink == link and
+     button.uuiSlotTexture == texture and button.uuiSlotCount == count and
+     button.uuiSlotQuality == quality then
+    if button.uuiSlotLocked ~= locked then
+      button.uuiSlotLocked = locked
+      pcall(SetItemButtonDesaturated, button, locked, 0.5, 0.5, 0.5)
+    end
+    return
+  end
+
   U.UpdateItemSlot(button, bag, slot)
   -- The single funnel every layout and refresh path already goes through, so
   -- the favourite star follows item movement, sorting and stack changes with
   -- nothing else to keep in step.
   if type(U.RefreshBagSlotFavorite) == "function" then
     U.RefreshBagSlotFavorite(button, bag, slot)
+  end
+
+  button.uuiSlotCached = true
+  button.uuiSlotLink, button.uuiSlotTexture = link, texture
+  button.uuiSlotCount, button.uuiSlotQuality = count, quality
+  button.uuiSlotLocked = locked
+end
+
+local function InvalidateSlotCache()
+  local bag, bagSlots
+  for bag, bagSlots in pairs(slots) do
+    local slot
+    for slot = 1, table.getn(bagSlots) do
+      if bagSlots[slot] then bagSlots[slot].uuiSlotCached = nil end
+    end
+  end
+end
+
+-- Anchor, size and slot-face styling only when they actually change. Both
+-- layouts run on every bag change, and re-anchoring plus re-sizing the classic
+-- face of every slot each pass was native work with nothing to show for it.
+local function PlaceSlot(button, relative, x, y)
+  if button.uuiPlacedTo ~= relative or button.uuiPlacedX ~= x or
+     button.uuiPlacedY ~= y then
+    button:ClearAllPoints()
+    button:SetPoint("TOPLEFT", relative, "TOPLEFT", x, y)
+    button.uuiPlacedTo, button.uuiPlacedX, button.uuiPlacedY = relative, x, y
+  end
+  if button.uuiPlacedSize ~= SLOT_SIZE then
+    button:SetWidth(SLOT_SIZE)
+    button:SetHeight(SLOT_SIZE)
+    button.uuiPlacedSize = SLOT_SIZE
+    button.uuiSlotStyled = nil
+  end
+  -- Retried until the shared classic face exists: modules/actionbar.lua may
+  -- not have captured it yet on the first layout.
+  if not button.uuiSlotStyled then
+    button.uuiSlotStyled = classicBag.StyleItemSlot(button, SLOT_SIZE) and true
+                           or not classicBag.ready
   end
 end
 
@@ -1076,13 +1139,9 @@ function LayoutCategories()
           if button then
             local col = math.mod(j - 1, COLUMNS)
             local row = math.floor((j - 1) / COLUMNS)
-            button:ClearAllPoints()
-            button:SetPoint("TOPLEFT", section.box, "TOPLEFT",
-                            SECTION_INSET + col * (SLOT_SIZE + slotGap),
-                            -(SECTION_INSET + row * (SLOT_SIZE + slotGap)))
-            button:SetWidth(SLOT_SIZE)
-            button:SetHeight(SLOT_SIZE)
-            classicBag.StyleItemSlot(button, SLOT_SIZE)
+            PlaceSlot(button, section.box,
+                      SECTION_INSET + col * (SLOT_SIZE + slotGap),
+                      -(SECTION_INSET + row * (SLOT_SIZE + slotGap)))
             UpdateSlotAppearance(entry.bag, entry.slot)
             button:Show()
             live[entry.bag .. ":" .. entry.slot] = true
@@ -1150,13 +1209,8 @@ local function LayoutSlots()
     for slot = 1, n do
       local button = EnsureSlot(bag, slot, grid)
       if button then
-        button:ClearAllPoints()
-        button:SetPoint("TOPLEFT", grid, "TOPLEFT",
-                        x * (SLOT_SIZE + slotGap),
-                        -(y * (SLOT_SIZE + slotGap)))
-        button:SetWidth(SLOT_SIZE)
-        button:SetHeight(SLOT_SIZE)
-        classicBag.StyleItemSlot(button, SLOT_SIZE)
+        PlaceSlot(button, grid, x * (SLOT_SIZE + slotGap),
+                  -(y * (SLOT_SIZE + slotGap)))
         UpdateSlotAppearance(bag, slot)
         button:Show()
 
@@ -1191,9 +1245,16 @@ end
 
 local function ProcessDirty()
   if U.PerfDisabled and U.PerfDisabled("bags") then return end
+  -- Closed: leave the flags pending. OnShow forces a layout pass, which reads
+  -- every slot again, so nothing drawn while hidden would survive anyway.
+  if not frame:IsShown() then return end
 
   if layoutDirty then
     layoutDirty = false
+    -- The layout below refreshes every slot it places, so the per-bag pass
+    -- queued by the same events would only repeat it.
+    local bag
+    for bag, _ in pairs(bagDirty) do bagDirty[bag] = nil end
     -- Read the setting per pass rather than latching it: toggling the category
     -- view only has to mark the layout dirty, and the next tick draws the other
     -- view over the same buttons. No reload, and no second code path to keep
@@ -1259,6 +1320,7 @@ end
 -- relayout can do. In the flat grid the extra pass is the same idempotent
 -- LayoutSlots the window already runs on any bag change.
 function U.MarkBagsDirty()
+  InvalidateSlotCache()
   MarkAllBagsDirty()
   layoutDirty = true
 end
@@ -1605,7 +1667,12 @@ local function Build()
   frame.bagslots = BuildTray("UnrealUIBagSlots")
   frame.bagslots:SetPoint("BOTTOMRIGHT", frame, "TOPRIGHT", 0, SLOT_GAP)
 
-  frame:SetScript("OnShow", function() layoutDirty = true end)
+  -- Cooldowns are not part of the slot cache, and BAG_UPDATE_COOLDOWN is not
+  -- processed while the window is closed.
+  frame:SetScript("OnShow", function()
+    layoutDirty = true
+    cooldownDirty = true
+  end)
   -- rendering.parent_alpha_not_propagated: the trays are toggled explicitly
   -- rather than left to follow the frame they hang off.
   frame:SetScript("OnHide", function()
