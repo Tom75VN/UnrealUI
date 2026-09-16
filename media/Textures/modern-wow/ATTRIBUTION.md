@@ -178,6 +178,9 @@ under the same RLE-TGA contract as everything else here.
 | `ui/borders/thin-border-right.tga` | 32x32 | `ThinBorder-Right.PNG` | Stretchable right edge of the textured thin panel border, drawn 16 wide. |
 | `ui/borders/thin-border-bottom-left.tga` | 32x32 | `ThinBorder-BottomLeft.PNG` | Bottom-left corner of the textured thin panel border; mirrored for the bottom-right corner, drawn at 16x16. |
 | `ui/borders/thin-border-bottom.tga` | 32x32 | `ThinBorder-Bottom.PNG` | Stretchable bottom edge of the textured thin panel border, drawn 16 high. |
+| `ui/borders/metal-border-joint.tga` | 32x32 | `UI-Achievement-MetalBorder-Joint.PNG` | Achievement metal border corner at 32x32: a bottom-right joint whose 7-texel bars reach texel 25; mirrored for the other three corners. |
+| `ui/borders/metal-border-left.tga` | 16x512 | `UI-Achievement-MetalBorder-Left.PNG` | Achievement metal border vertical edge at 16x512: a 9-texel bar at x 0-8 running to y 453; mirrored for the right edge. |
+| `ui/borders/metal-border-top.tga` | 512x16 | `UI-Achievement-MetalBorder-Top.PNG` | Achievement metal border horizontal edge at 512x16: a 9-texel bar at y 0-8 running to x 453; mirrored for the bottom edge. |
 | `castbar/fill-cast.tga` | 512x32 | `CastingBarStandard2.png` | Normal cast fill. Alpha multiplied by `CastingBarMask.png` (no texture mask API on this client). |
 | `castbar/fill-channel.tga` | 512x32 | `CastingBarChannel.png` | Channelled cast fill. Alpha multiplied by `CastingBarMask.png` (no texture mask API on this client). |
 | `castbar/fill-craft.tga` | 512x32 | `CastingBarCrafting2.png` | Trade-skill / craft cast fill. Alpha multiplied by `CastingBarMask.png` (no texture mask API on this client). |

@@ -8,8 +8,9 @@
 -- the profession rank bar, a recipe list with collapsible category headers on
 -- the left and the selected recipe's schematic -- icon, requirements and
 -- reagents over the profession's background art -- on the right, with Create
--- All / count / Create underneath. Nothing here runs under any other theme,
--- and no other theme draws this window at all.
+-- All / count / Create underneath. It runs for the full Modern WoW theme or
+-- Classic's explicit `professions` selection; no unselected theme draws this
+-- window.
 --
 -- Mechanism is WORKING_SOURCE from DF-main, adapted to this client:
 --
@@ -32,16 +33,17 @@
 --  * The count box is a readout between two step buttons rather than
 --    DF-main's EditBox: native text input is off limits
 --    (rules/unreal-ui-design.md). There is no search box for the same reason.
---  * There is no mouse wheel for addon frames on this client
---    (knowledge.json / scripts.addon_wheel_binding_unavailable), so the list
---    scrolls with its arrow buttons and a click on its track.
+--  * The list uses the same addon-owned MinimalScrollBar treatment as
+--    Character > Skills. Physical wheel input cannot reach addon frames on
+--    this client (knowledge.json / scripts.addon_wheel_binding_unavailable),
+--    so the supported controls remain its arrows and draggable thumb.
 --  * The rank bar is a plain texture cropped with SetTexCoord (a native
 --    StatusBar does not lay out its fill here, statusbar knowledge), and its
 --    DF-main mask is baked into the fill by tools/import_modern_wow_media.py.
 --  * DF-main's profession tabs, favourites, filter menu, link button and
 --    minimize button are omitted: switching profession casts a spell, which
---    is protected here, and the rest need an EditBox, a dropdown menu or chat
---    link insertion with no record on this client.
+--    is protected here, and the rest need an EditBox or a dropdown menu. Item
+--    icons still support the native Shift-click chat-link interaction.
 --
 -- Local budget: one table, per rules/unreal-ui.md.
 
@@ -75,6 +77,7 @@ pw.KINDS = {
     tools = "GetTradeSkillTools",
     cooldown = "GetTradeSkillCooldown",
     link = "GetTradeSkillItemLink",
+    reagentLink = "GetTradeSkillReagentItemLink",
     made = "GetTradeSkillNumMade",
     tipRecipe = "SetTradeSkillItem",
     tipReagent = "SetTradeSkillItem",
@@ -96,6 +99,8 @@ pw.KINDS = {
     reagent = "GetCraftReagentInfo",
     tools = "GetCraftSpellFocus",
     description = "GetCraftDescription",
+    link = "GetCraftItemLink",
+    reagentLink = "GetCraftReagentItemLink",
     tipRecipe = "SetCraftSpell",
     tipReagent = "SetCraftItem",
     create = "DoCraft",
@@ -112,6 +117,41 @@ function pw.Call(name, a, b)
   local fn = U.G(name)
   if type(fn) ~= "function" then return false end
   return pcall(fn, a, b)
+end
+
+-- Insert an item link only for the stock Shift-click gesture. This is the
+-- narrow same-client UnrealPfUI pattern: prefer ChatEdit_InsertLink, with the
+-- visible edit box as the Vanilla fallback.
+function pw.InsertChatLink(link)
+  if type(link) ~= "string" or link == "" then return false end
+  local shift = U.G("IsShiftKeyDown")
+  if type(shift) ~= "function" then return false end
+  local shiftOk, down = pcall(shift)
+  if not shiftOk or not down then return false end
+
+  local insert = U.G("ChatEdit_InsertLink")
+  if type(insert) == "function" then
+    local insertOk = pcall(insert, link)
+    if insertOk then return true end
+  end
+
+  local edit = U.G("ChatFrameEditBox")
+  if not edit or type(edit.IsVisible) ~= "function" or
+     type(edit.Insert) ~= "function" then
+    return false
+  end
+  local visibleOk, visible = pcall(edit.IsVisible, edit)
+  if not visibleOk or not visible then return false end
+  return pcall(edit.Insert, edit, link)
+end
+
+function pw.LinkClick(win, reagentIndex)
+  local selected = pw.Selected(win)
+  if selected <= 0 then return end
+  local getter = reagentIndex and win.kind.reagentLink or win.kind.link
+  if not getter then return end
+  local linkOk, link = pw.Call(getter, selected, reagentIndex)
+  if linkOk then pw.InsertChatLink(link) end
 end
 
 function pw.Shown(object)
@@ -288,6 +328,7 @@ function pw.Tip(owner, method, a, b)
 end
 
 function pw.HideTip()
+  if type(U.HideItemCompare) == "function" then U.HideItemCompare() end
   local tip = U.G("GameTooltip")
   if tip then pcall(tip.Hide, tip) end
 end
@@ -454,10 +495,39 @@ function pw.RowWidth()
   return l.width - l.rowLeft - l.rowRight
 end
 
-function pw.EntryHeight(entry)
+-- The drawn row's height.
+function pw.RowHeight(entry)
   local t = pw.Token()
   if entry.kind == "header" then return t.header.height end
   return t.recipe.height
+end
+
+-- The list space an entry takes: its row, plus the gap below the last recipe
+-- of a category, less the pull that draws an expanded category's first
+-- recipe up under its header (user requests, 2026-09-17). Only the list
+-- advance changes; each row keeps its own height and content.
+function pw.EntryHeight(entry)
+  local t = pw.Token()
+  local height = pw.RowHeight(entry)
+  if entry.groupEnd then height = height + t.recipe.groupGap end
+  if entry.groupStart then height = height - t.header.recipePull end
+  return height
+end
+
+-- A recipe row's difficulty tint, shared by its label and its bars.
+function pw.DifficultyColor(entry)
+  local colors = pw.Token().difficultyColor
+  return (entry and colors[entry.kind]) or colors.trivial
+end
+
+-- A recipe label is white while hovered or selected, else its difficulty.
+function pw.ApplyRecipeColor(row)
+  local color = pw.Token().recipeHoverColor
+  if not row.hovered and not row.selected then
+    color = pw.DifficultyColor(row.entry)
+  end
+  pw.SetColor(row.label, color)
+  pw.SetColor(row.count, color)
 end
 
 function pw.OnRowEnter(win, row)
@@ -467,8 +537,7 @@ function pw.OnRowEnter(win, row)
     pw.SetColor(row.headerLabel, t.headerHoverColor)
     pw.SetShown(row.collapseHover, true)
   elseif row.entry then
-    pw.SetColor(row.label, t.recipeHoverColor)
-    pw.SetColor(row.count, t.recipeHoverColor)
+    pw.ApplyRecipeColor(row)
     pw.SetShown(row.highlight, not row.selected)
   end
 end
@@ -478,8 +547,7 @@ function pw.OnRowLeave(win, row)
   row.hovered = false
   pw.SetColor(row.headerLabel, t.headerColor)
   pw.SetShown(row.collapseHover, false)
-  pw.SetColor(row.label, t.recipeColor)
-  pw.SetColor(row.count, t.recipeColor)
+  if row.entry and row.entry.kind ~= "header" then pw.ApplyRecipeColor(row) end
   pw.SetShown(row.highlight, false)
 end
 
@@ -498,6 +566,33 @@ function pw.OnRowClick(win, row)
   pw.Queue(win)
 end
 
+-- A selection/hover bar across the list panel's full width: the row sits
+-- rowLeft/rowRight inside the panel, so the bar reaches back out by those.
+function pw.PlaceRowBar(bar, row)
+  if not bar then return end
+  local l, r = pw.Token().list, pw.Token().recipe
+  pcall(function()
+    bar:ClearAllPoints()
+    bar:SetPoint("LEFT", row, "LEFT", r.barInset - l.rowLeft, -1)
+    bar:SetPoint("RIGHT", row, "RIGHT", l.rowRight - r.barInset, -1)
+    bar:SetHeight(r.selectedHeight)
+  end)
+end
+
+-- The header art's right cap. While the list scrolls, the art (and the
+-- collapse glyph inside the cap) ends clear of the scrollbar instead of
+-- running under it (user request, 2026-09-17).
+function pw.PlaceHeaderRight(row, scrollable)
+  if row.headerScrollable == scrollable then return end
+  row.headerScrollable = scrollable
+  local t = pw.Token()
+  local h, l, s = t.header, t.list, t.scroll
+  local inset = h.panelInset
+  if scrollable then inset = s.right + s.width + h.scrollGap end
+  pw.Place(row.headerRight, row, "RIGHT", l.rowRight - inset, h.lift,
+           h.pieceWidth, h.pieceHeight)
+end
+
 function pw.BuildRow(win, index)
   local t = pw.Token()
   local h, r = t.header, t.recipe
@@ -508,11 +603,16 @@ function pw.BuildRow(win, index)
   pcall(row.SetWidth, row, width)
   pcall(row.SetHeight, row, r.height)
 
-  -- Category header: three atlas pieces, label, collapse glyph.
+  -- Category header: three atlas pieces, label, collapse glyph. The pieces
+  -- span the list panel like the selection bars (pw.PlaceRowBar, user
+  -- request, 2026-09-17); the label and glyph keep their row positions, clear
+  -- of the scrollbar.
+  local l = t.list
   row.headerLeft = pw.Atlas(row, "BACKGROUND", t.cells.headerLeft)
-  pw.Place(row.headerLeft, row, "LEFT", 0, h.lift, h.pieceWidth, h.pieceHeight)
+  pw.Place(row.headerLeft, row, "LEFT", h.panelInset - l.rowLeft, h.lift,
+           h.pieceWidth, h.pieceHeight)
   row.headerRight = pw.Atlas(row, "BACKGROUND", t.cells.headerRight)
-  pw.Place(row.headerRight, row, "RIGHT", 0, h.lift, h.pieceWidth, h.pieceHeight)
+  pw.PlaceHeaderRight(row, false)
   row.headerMiddle = pw.Atlas(row, "BACKGROUND", t.cells.headerMiddle)
   if row.headerMiddle and row.headerLeft and row.headerRight then
     pcall(function()
@@ -521,7 +621,9 @@ function pw.BuildRow(win, index)
     end)
   end
   row.collapse = pw.Atlas(row, "ARTWORK", t.cells.expanded)
-  pw.Place(row.collapse, row, "RIGHT", -h.collapseRight, h.lift,
+  -- Right-aligned inside the header art's right cap (user request,
+  -- 2026-09-17); the cap already carries the lift.
+  pw.Place(row.collapse, row.headerRight, "RIGHT", -h.collapsePadding, 0,
            h.collapseWidth, h.collapseHeight)
   row.collapseHover = pw.Atlas(row, "OVERLAY", t.cells.expanded)
   if row.collapseHover and row.collapse then
@@ -535,8 +637,7 @@ function pw.BuildRow(win, index)
   if row.headerLabel then
     pcall(function()
       row.headerLabel:SetPoint("LEFT", row, "LEFT", h.labelX, h.labelY)
-      row.headerLabel:SetPoint("RIGHT", row, "RIGHT",
-                               -(h.collapseRight + h.collapseWidth + 4), h.labelY)
+      row.headerLabel:SetPoint("RIGHT", row.collapse, "LEFT", -4, h.labelY - h.lift)
       row.headerLabel:SetHeight(12)
     end)
   end
@@ -544,17 +645,18 @@ function pw.BuildRow(win, index)
                         row.collapse, row.headerLabel }
 
   -- Recipe: selection and hover bars, difficulty glyph, label and count.
-  row.selectedBar = pw.Atlas(row, "BORDER", t.cells.selected)
-  pw.Place(row.selectedBar, row, "CENTER", 0, -1, r.selectedWidth, r.selectedHeight)
+  -- The white hover cell, tinted per difficulty in pw.FillRow.
+  row.selectedBar = pw.Atlas(row, "BORDER", t.cells.highlight)
+  pw.PlaceRowBar(row.selectedBar, row)
+  -- Hover draws exactly as the selection does, tinted the same way.
   row.highlight = pw.Atlas(row, "BORDER", t.cells.highlight)
-  pw.Place(row.highlight, row, "CENTER", 0, -1, r.highlightWidth, r.highlightHeight)
-  if row.highlight then pcall(row.highlight.SetAlpha, row.highlight, r.highlightAlpha) end
+  pw.PlaceRowBar(row.highlight, row)
   row.skill = pw.Texture(row, "ARTWORK", t.texture.atlas)
   pw.Place(row.skill, row, "LEFT", r.iconX, 0, r.iconWidth, r.iconHeight)
   row.label = pw.Label(row, M.fontSize.normal, t.recipeColor, "LEFT", "GameFontHighlight")
   if row.label then
     pcall(function()
-      row.label:SetPoint("LEFT", row, "LEFT", r.labelX, 0)
+      row.label:SetPoint("LEFT", row, "LEFT", r.labelX, r.labelY)
       row.label:SetHeight(12)
     end)
   end
@@ -563,6 +665,10 @@ function pw.BuildRow(win, index)
     pcall(row.count.SetPoint, row.count, "LEFT", row.label, "RIGHT", r.countGap, 0)
   end
   row.recipeRegions = { row.skill, row.label, row.count }
+  -- Shown per entry in pw.FillRow, only while the recipe is tracked.
+  row.check = pw.Texture(row, "OVERLAY", pw.TrackCheckPath(win))
+  pw.Place(row.check, row, "RIGHT", -r.checkRight, r.checkY, r.checkSize, r.checkSize)
+  pw.SetShown(row.check, false)
 
   row:SetScript("OnEnter", function() pw.OnRowEnter(win, row) end)
   row:SetScript("OnLeave", function() pw.OnRowLeave(win, row) end)
@@ -583,12 +689,17 @@ function pw.FillRow(win, row, entry, selectedIndex)
   for i = 1, table.getn(row.recipeRegions) do
     pw.SetShown(row.recipeRegions[i], not header)
   end
-  pcall(row.SetHeight, row, pw.EntryHeight(entry))
+  pcall(row.SetHeight, row, pw.RowHeight(entry))
+
+  local tracked = not header and type(U.CraftTrackerIsTracked) == "function" and
+                  U.CraftTrackerIsTracked(entry.name)
+  pw.SetShown(row.check, tracked)
 
   if header then
     row.selected = false
     pw.SetShown(row.selectedBar, false)
     pw.SetShown(row.highlight, false)
+    pw.PlaceHeaderRight(row, win.scroll ~= nil and (win.maxOffset or 1) > 1)
     pw.SetText(row.headerLabel, entry.name)
     local cell = entry.expanded and t.cells.expanded or t.cells.collapsed
     pw.AtlasCoords(row.collapse, cell)
@@ -600,6 +711,13 @@ function pw.FillRow(win, row, entry, selectedIndex)
 
   row.selected = entry.index == selectedIndex
   pw.SetShown(row.selectedBar, row.selected)
+  local tint = pw.DifficultyColor(entry)
+  if row.selectedBar then
+    pcall(row.selectedBar.SetVertexColor, row.selectedBar, M.Unpack(tint))
+  end
+  if row.highlight then
+    pcall(row.highlight.SetVertexColor, row.highlight, M.Unpack(tint))
+  end
   pw.SetShown(row.highlight, row.hovered and not row.selected)
 
   local cell
@@ -624,14 +742,13 @@ function pw.FillRow(win, row, entry, selectedIndex)
   local r = t.recipe
   local room = pw.RowWidth() - r.labelX - r.padding
   if count ~= "" then room = room - pw.TextWidth(row.count) - r.countGap end
+  if tracked then room = room - r.checkSize - r.checkGap end
   room = math.max(1, room)
   pcall(row.label.SetWidth, row.label, room)
   pw.SetText(row.label, name)
   pcall(row.label.SetWidth, row.label, math.max(1, math.min(room, pw.TextWidth(row.label) + 1)))
 
-  local color = row.hovered and t.recipeHoverColor or t.recipeColor
-  pw.SetColor(row.label, color)
-  pw.SetColor(row.count, color)
+  pw.ApplyRecipeColor(row)
 end
 
 function pw.MaxOffset(win)
@@ -701,126 +818,103 @@ function pw.LayoutList(win, selectedIndex)
     win.rows[i].entry = nil
     pcall(win.rows[i].Hide, win.rows[i])
   end
+  win.visibleRows = used
   pw.LayoutScroll(win)
 end
 
 -- ---------------------------------------------------------------------------
--- Scroll control: the client's scrollbar faces on addon-owned buttons
+-- Scroll control: Character > Skills' shared MinimalScrollBar
 -- ---------------------------------------------------------------------------
-function pw.ScrollFace(button, faces)
-  local c = pw.Token().scroll.buttonTexCoord
-  local slots = {
-    { "SetNormalTexture", "GetNormalTexture", faces.normal },
-    { "SetPushedTexture", "GetPushedTexture", faces.pushed },
-    { "SetDisabledTexture", "GetDisabledTexture", faces.disabled },
-    { "SetHighlightTexture", "GetHighlightTexture", faces.highlight },
-  }
-  local i
-  for i = 1, table.getn(slots) do
-    local slot = slots[i]
-    if pcall(button[slot[1]], button, slot[3]) then
-      local ok, texture = pcall(button[slot[2]], button)
-      if ok and texture then
-        pcall(texture.SetTexCoord, texture, c[1], c[2], c[3], c[4])
-        if i == 4 then pcall(texture.SetBlendMode, texture, "ADD") end
-      end
-    end
-  end
-end
-
-function pw.Scroll(win, delta)
-  win.offset = win.offset + delta
+function pw.ReadScroll(win)
+  local bar = win.scroll and win.scroll.bar
+  if not bar or win.syncingScroll then return end
+  local ok, value = pcall(bar.GetValue, bar)
+  value = ok and tonumber(value) or nil
+  if not value then return end
+  value = math.floor(value + 0.5)
+  if value < 1 then value = 1 end
+  if value > win.maxOffset then value = win.maxOffset end
+  if value == win.offset then return end
+  win.offset = value
   pw.Queue(win)
 end
 
 function pw.BuildScroll(win)
   local t = pw.Token()
   local s, l = t.scroll, t.list
-  local tex = t.texture
   local capacity = pw.ListCapacity()
+  local height = capacity - s.topGap - s.bottomGap
+  if height < 1 then return end
+  local name = "UnrealUIProfessions" .. win.kind.id .. "ScrollBar"
+  local ok, bar = pcall(CreateFrame, "Slider", name, win.list,
+                         "UIPanelScrollBarTemplate")
+  if not ok or not bar then return end
 
-  local bar = pw.Frame("Frame", win.list, 3, false)
-  if not bar then return end
-  pw.Place(bar, win.list, "TOPRIGHT", -s.right, -l.rowTop, s.width, capacity)
+  -- UIPanelScrollBarTemplate's native OnValueChanged assumes its parent is a
+  -- ScrollFrame and calls parent:SetVerticalScroll(value). This custom list's
+  -- parent is an ordinary Frame, so remove that handler before the first range
+  -- write and install the recipe-offset handler below instead.
+  pcall(bar.SetScript, bar, "OnValueChanged", nil)
 
-  local up = pw.Frame("Button", bar, 1, true)
-  local down = pw.Frame("Button", bar, 1, true)
-  local track = pw.Frame("Button", bar, 0, true)
-  if not up or not down or not track then return end
-  pw.Place(up, bar, "TOP", 0, 0, s.button, s.button)
-  pw.Place(down, bar, "BOTTOM", 0, 0, s.button, s.button)
   pcall(function()
-    track:SetWidth(s.width)
-    track:SetPoint("TOP", up, "BOTTOM", 0, 0)
-    track:SetPoint("BOTTOM", down, "TOP", 0, 0)
+    bar:SetFrameLevel(pw.Level(win.list) + 3)
+    bar:SetOrientation("VERTICAL")
+    bar:SetWidth(s.width)
+    bar:SetHeight(height)
+    bar:SetPoint("TOPRIGHT", win.list, "TOPRIGHT", -s.right,
+                 -(l.rowTop + s.topGap))
+    bar:SetMinMaxValues(1, 1)
+    bar:SetValueStep(1)
+    bar:SetValue(1)
   end)
-  pw.ScrollFace(up, tex.scrollUp)
-  pw.ScrollFace(down, tex.scrollDown)
 
-  local bed = pw.Texture(track, "BACKGROUND", M.texture.plain)
-  if bed then
-    pcall(function()
-      bed:SetPoint("TOPLEFT", track, "TOPLEFT", 3, 0)
-      bed:SetPoint("BOTTOMRIGHT", track, "BOTTOMRIGHT", -3, 0)
-      bed:SetVertexColor(0, 0, 0, s.trackAlpha)
+  local up = U.G(name .. "ScrollUpButton")
+  local down = U.G(name .. "ScrollDownButton")
+  if up then
+    up:SetScript("OnClick", function()
+      local valueOk, value = pcall(bar.GetValue, bar)
+      if valueOk and tonumber(value) then pcall(bar.SetValue, bar, value - 1) end
+    end)
+  end
+  if down then
+    down:SetScript("OnClick", function()
+      local valueOk, value = pcall(bar.GetValue, bar)
+      if valueOk and tonumber(value) then pcall(bar.SetValue, bar, value + 1) end
     end)
   end
 
-  local knob = pw.Texture(track, "ARTWORK", tex.scrollKnob)
-  if knob then
-    local c = s.knobTexCoord
-    pcall(knob.SetTexCoord, knob, c[1], c[2], c[3], c[4])
-    pcall(knob.SetWidth, knob, s.knobWidth)
-    pcall(knob.SetHeight, knob, s.knobHeight)
+  win.scroll = { bar = bar, up = up, down = down }
+  -- Read-only diagnostic handle for UnrealRuntimeProbe's focused profession
+  -- scroll capture. Production code never reads it.
+  bar.uuiProfessionWindow = win
+  if type(U.StyleModernWowScrollbar) == "function" then
+    U.StyleModernWowScrollbar(bar, { onChange = function() pw.ReadScroll(win) end })
   end
-
-  up:SetScript("OnClick", function() pw.Scroll(win, -1) end)
-  down:SetScript("OnClick", function() pw.Scroll(win, 1) end)
-  -- A click on the track jumps there; GetCursorPosition is in UI pixels from
-  -- the bottom-left (documentation.json), the same read core/widgets.lua uses.
-  track:SetScript("OnClick", function()
-    if win.maxOffset <= 1 then return end
-    local ok, _, cy = pcall(GetCursorPosition)
-    local scaleOk, scale = pcall(track.GetEffectiveScale, track)
-    local topOk, top = pcall(track.GetTop, track)
-    local heightOk, height = pcall(track.GetHeight, track)
-    if not (ok and scaleOk and topOk and heightOk) then return end
-    cy, scale, top, height = tonumber(cy), tonumber(scale), tonumber(top), tonumber(height)
-    if not cy or not scale or scale <= 0 or not top or not height or height <= 0 then
-      return
-    end
-    local fraction = math.min(1, math.max(0, (top - cy / scale) / height))
-    win.offset = math.floor(fraction * (win.maxOffset - 1) + 0.5) + 1
-    pw.Queue(win)
-  end)
-
-  win.scroll = { bar = bar, up = up, down = down, track = track, knob = knob }
+  bar:SetScript("OnValueChanged", function() pw.ReadScroll(win) end)
 end
 
 function pw.LayoutScroll(win)
   local scroll = win.scroll
   if not scroll then return end
-  local s = pw.Token().scroll
   local scrollable = win.maxOffset > 1
   pw.SetShown(scroll.bar, scrollable)
+  win.syncingScroll = true
+  pcall(scroll.bar.SetMinMaxValues, scroll.bar, 1, win.maxOffset)
+  pcall(scroll.bar.SetValue, scroll.bar, win.offset)
+  win.syncingScroll = false
   if not scrollable then return end
 
-  pcall(scroll.up.SetButtonState, scroll.up, "NORMAL")
-  if win.offset > 1 then pcall(scroll.up.Enable, scroll.up) else pcall(scroll.up.Disable, scroll.up) end
-  if win.offset < win.maxOffset then
-    pcall(scroll.down.Enable, scroll.down)
-  else
-    pcall(scroll.down.Disable, scroll.down)
+  if scroll.up then
+    if win.offset > 1 then pcall(scroll.up.Enable, scroll.up)
+    else pcall(scroll.up.Disable, scroll.up) end
   end
-
-  local knob = scroll.knob
-  if knob then
-    local travel = pw.ListCapacity() - 2 * s.button - s.knobHeight
-    local fraction = (win.offset - 1) / (win.maxOffset - 1)
-    pcall(function()
-      knob:ClearAllPoints()
-      knob:SetPoint("TOP", scroll.track, "TOP", 0, -math.max(0, travel) * fraction)
-    end)
+  if scroll.down then
+    if win.offset < win.maxOffset then pcall(scroll.down.Enable, scroll.down)
+    else pcall(scroll.down.Disable, scroll.down) end
+  end
+  if type(U.SetModernWowScrollbarProportion) == "function" then
+    U.SetModernWowScrollbarProportion(scroll.bar, win.visibleRows,
+                                      table.getn(win.entries))
   end
 end
 
@@ -870,24 +964,38 @@ function pw.PlaceArt(win)
   pcall(art.SetTexCoord, art, left / canvas, right / canvas, top / canvas, bottom / canvas)
 end
 
+-- A reagent button is exactly its icon's slot frame (pw.SlotFrame's scale),
+-- so row gaps and the heading gap are measured from the visible frame edge.
+-- Returns the frame's width, height and how far it overhangs the icon's
+-- left and top edges.
+function pw.ReagentGeometry()
+  local t = pw.Token()
+  local cell, opening = t.cells.slot, t.slotOpening
+  local scale = t.schematic.reagentIcon / (opening.right - opening.left)
+  return (cell.right - cell.left) * scale, (cell.bottom - cell.top) * scale,
+         (opening.left - cell.left) * scale, (opening.top - cell.top) * scale
+end
+
 function pw.BuildReagent(win, index)
   local t = pw.Token()
   local s = t.schematic
+  local _, frameHeight, overLeft, overTop = pw.ReagentGeometry()
   local button = pw.Frame("Button", win.schematic, 2, true)
   if not button then return nil end
   pcall(button.SetWidth, button, s.reagentWidth)
-  pcall(button.SetHeight, button, s.reagentHeight)
+  pcall(button.SetHeight, button, frameHeight)
 
   button.icon = pw.Texture(button, "ARTWORK")
-  pw.Place(button.icon, button, "LEFT", 0, 0, s.reagentIcon, s.reagentIcon)
+  pw.Place(button.icon, button, "TOPLEFT", overLeft, -overTop, s.reagentIcon, s.reagentIcon)
   if button.icon then pcall(button.icon.SetTexCoord, button.icon, 0.08, 0.92, 0.08, 0.92) end
   button.slot = pw.SlotFrame(button, button.icon, s.reagentIcon)
 
+  local textX = overLeft + s.reagentIcon + s.reagentTextGap
   button.label = pw.Label(button, M.fontSize.normal, t.bodyColor, "LEFT", "GameFontHighlight")
   if button.label then
     pcall(function()
-      button.label:SetPoint("LEFT", button, "LEFT", s.reagentTextX, 0)
-      button.label:SetWidth(s.reagentTextWidth)
+      button.label:SetPoint("LEFT", button, "LEFT", textX, 0)
+      button.label:SetWidth(s.reagentWidth - textX)
     end)
   end
 
@@ -896,6 +1004,7 @@ function pw.BuildReagent(win, index)
     if selected > 0 then pw.Tip(button, win.kind.tipReagent, selected, index) end
   end)
   button:SetScript("OnLeave", pw.HideTip)
+  button:SetScript("OnClick", function() pw.LinkClick(win, index) end)
   win.reagents[index] = button
   return button
 end
@@ -935,18 +1044,29 @@ function pw.BuildSchematic(win)
     end
     icon:SetScript("OnEnter", function()
       local selected = pw.Selected(win)
-      if selected > 0 then pw.Tip(icon, win.kind.tipRecipe, selected) end
+      if selected <= 0 then return end
+      pw.Tip(icon, win.kind.tipRecipe, selected)
+      -- Gear products compare against what is worn, through the shared
+      -- renderer bag slots and quest rewards use (core/itemslot.lua); it
+      -- ignores anything that is not equippable. Craft-window enchant links
+      -- are not equippable, so the renderer leaves them alone.
+      if win.kind.link and type(U.ShowItemCompare) == "function" then
+        local linkOk, link = pw.Call(win.kind.link, selected)
+        if linkOk then U.ShowItemCompare(link) end
+      end
     end)
     icon:SetScript("OnLeave", pw.HideTip)
+    icon:SetScript("OnClick", function() pw.LinkClick(win) end)
     win.icon = icon
   end
 
   local textWidth = width - s.inset * 2
   win.name = pw.Label(form, M.fontSize.large, t.nameColor)
+  win.nameWidth = textWidth - s.icon - s.nameGap
   if win.name and icon then
     pcall(function()
       win.name:SetPoint("TOPLEFT", icon, "TOPRIGHT", s.nameGap, 0)
-      win.name:SetWidth(textWidth - s.icon - s.nameGap)
+      win.name:SetWidth(win.nameWidth)
     end)
   end
   win.requiresLabel = pw.Label(form, M.fontSize.small, t.labelColor, "LEFT",
@@ -977,6 +1097,99 @@ function pw.BuildSchematic(win)
 
   local i
   for i = 1, s.maxReagents do pw.BuildReagent(win, i) end
+  pw.BuildStats(win)
+  pw.BuildTrack(win)
+end
+
+-- ---------------------------------------------------------------------------
+-- Track this recipe (modules/crafttracker.lua)
+-- ---------------------------------------------------------------------------
+
+function pw.BuildTrack(win)
+  local tr = pw.Token().track
+  local form = win.schematic
+  local name = "UnrealUIProfessionsTrack" .. win.kind.id
+  local ok, box = pcall(CreateFrame, "CheckButton", name, form, "UICheckButtonTemplate")
+  if not ok or not box then return end
+
+  pcall(function()
+    box:SetWidth(tr.size)
+    box:SetHeight(tr.size)
+    box:SetPoint("TOPRIGHT", form, "TOPRIGHT", -tr.right, tr.y)
+    box:SetFrameLevel(pw.Level(form) + tr.levelLift)
+  end)
+  local label = U.G(name .. "Text")
+  if label then
+    pcall(function()
+      label:SetText(U.L("PROFESSIONS_TRACK_RECIPE"))
+      label:ClearAllPoints()
+      label:SetPoint("RIGHT", box, "LEFT", -tr.labelGap, 0)
+    end)
+  end
+
+  box:SetScript("OnClick", function() pw.ToggleTrack(win) end)
+  win.track = box
+end
+
+-- The selected recipe's reagents and the count one craft needs.
+function pw.RecipeReagents(win, index)
+  local list = {}
+  local countOk, n = pw.Call(win.kind.numReagents, index)
+  n = (countOk and tonumber(n)) or 0
+  local i
+  for i = 1, n do
+    local ok, rName, _, need = pw.Call(win.kind.reagent, index, i)
+    if ok and type(rName) == "string" and rName ~= "" then
+      table.insert(list, { name = rName, need = tonumber(need) or 1 })
+    end
+  end
+  return list
+end
+
+function pw.ToggleTrack(win)
+  local box = win.track
+  local index = pw.Selected(win)
+  local rName = index > 0 and pw.Info(win, index)
+  local tracked = false
+  if rName and type(U.CraftTrackerSetTracked) == "function" then
+    if U.CraftTrackerIsTracked(rName) then
+      tracked = U.CraftTrackerSetTracked(rName, nil)
+    else
+      tracked = U.CraftTrackerSetTracked(rName, pw.RecipeReagents(win, index))
+    end
+  end
+  if box then pcall(box.SetChecked, box, tracked and true or nil) end
+  -- The list's tracked checks follow the box.
+  pw.Queue(win)
+end
+
+-- The tick the "Track this recipe" box draws when checked, reused by the
+-- list rows. Read once from that addon-created CheckButton (Get*Texture on a
+-- button's own state art, not a region walk); the token's fallback covers a
+-- window whose box failed to build.
+function pw.TrackCheckPath(win)
+  if win.checkPath then return win.checkPath end
+  local path
+  local box = win.track
+  if box then
+    local ok, texture = pcall(box.GetCheckedTexture, box)
+    if ok and texture then
+      local pathOk, value = pcall(texture.GetTexture, texture)
+      if pathOk and type(value) == "string" and value ~= "" then path = value end
+    end
+  end
+  win.checkPath = path or pw.Token().recipe.checkFallback
+  return win.checkPath
+end
+
+function pw.FillTrack(win, entry)
+  local box = win.track
+  if not box then return end
+  local available = entry ~= nil and type(U.CraftTrackerIsTracked) == "function"
+  pw.SetShown(box, available)
+  if available then
+    pcall(box.SetChecked, box, U.CraftTrackerIsTracked(entry.name) and true or nil)
+  end
 end
 
 function pw.FillSchematic(win, entry)
@@ -993,8 +1206,11 @@ function pw.FillSchematic(win, entry)
   pw.SetShown(win.empty, not visible)
   if not visible then
     for i = 1, table.getn(win.reagents) do pw.SetShown(win.reagents[i], false) end
+    pw.FillStats(win, nil)
+    pw.FillTrack(win, nil)
     return false
   end
+  pw.FillTrack(win, entry)
 
   -- Icon, produced count and the name in the product's quality colour.
   local iconOk, iconPath = pw.Call(kind.icon, index)
@@ -1081,7 +1297,8 @@ function pw.FillSchematic(win, entry)
   pw.SetShown(win.reagentLabel, numReagents > 0)
   pcall(function()
     win.reagentLabel:ClearAllPoints()
-    win.reagentLabel:SetPoint("TOPLEFT", heading, "BOTTOMLEFT", headingX, headingY)
+    win.reagentLabel:SetPoint("TOPLEFT", heading, "BOTTOMLEFT", headingX,
+                              headingY - s.reagentHeadingShift)
   end)
 
   local creatable = true
@@ -1105,12 +1322,14 @@ function pw.FillSchematic(win, entry)
       pw.SetColor(button.label, enough and t.bodyColor or t.missingColor)
 
       -- DF-main's layout: one column of six, the seventh and eighth beside the
-      -- fifth and sixth.
+      -- fifth and sixth. The column starts under the heading; the icon keeps
+      -- its 1-unit indent while its frame overhangs to the left.
       pcall(function()
         button:ClearAllPoints()
         if i <= s.reagentColumn then
-          button:SetPoint("TOPLEFT", win.reagentLabel, "TOPLEFT", 1,
-                          -s.reagentTop - (i - 1) * s.reagentPitch)
+          local _, frameHeight, overLeft = pw.ReagentGeometry()
+          button:SetPoint("TOPLEFT", win.reagentLabel, "BOTTOMLEFT", 1 - overLeft,
+                          -s.reagentLabelGap - (i - 1) * (frameHeight + s.reagentSpacing))
         else
           button:SetPoint("TOPLEFT", win.reagents[i - 2], "TOPRIGHT", s.reagentGap, 0)
         end
@@ -1121,7 +1340,295 @@ function pw.FillSchematic(win, entry)
     end
   end
   if entry.raw == "used" then creatable = false end
+  pw.FillStats(win, entry)
   return creatable
+end
+
+-- ---------------------------------------------------------------------------
+-- Item stats (equippable products)
+-- ---------------------------------------------------------------------------
+
+-- A private, never-shown GameTooltipTemplate scanner, the sequence
+-- core/itemsort.lua and modules/auras.lua already read TextLeft lines through.
+-- SetTradeSkillItem and FontString:GetTextColor are only
+-- DOCUMENTED_NOT_RUNTIME_VERIFIED here: a failing call leaves the panel hidden,
+-- and an unreadable colour falls back to white.
+pw.SCANNER_NAME = "UnrealUIProfessionsScan"
+
+function pw.Scanner()
+  if pw.scanner then return pw.scanner end
+  local ok, tip = pcall(CreateFrame, "GameTooltip", pw.SCANNER_NAME, nil,
+                        "GameTooltipTemplate")
+  if ok and tip then pw.scanner = tip end
+  return pw.scanner
+end
+
+function pw.ScanRegion(name)
+  local region = U.G(name)
+  if not region or type(region.GetText) ~= "function" then return nil end
+  local ok, text = pcall(region.GetText, region)
+  if not ok or type(text) ~= "string" or text == "" then return nil end
+  if type(region.IsShown) == "function" then
+    local shownOk, shown = pcall(region.IsShown, region)
+    if shownOk and not shown then return nil end
+  end
+  local color = { 1, 1, 1, 1 }
+  if type(region.GetTextColor) == "function" then
+    local cOk, r, g, b = pcall(region.GetTextColor, region)
+    if cOk and tonumber(r) and tonumber(g) and tonumber(b) then
+      color = { r, g, b, 1 }
+    end
+  end
+  return text, color
+end
+
+-- The product tooltip's lines after its name, or nil when the product is not
+-- gear, is not cached yet, or any step of the scan does not answer. Trade
+-- skills only: a Craft window's products are enchantments, not items.
+function pw.StatLines(win, index)
+  local kind = win.kind
+  if not kind.link or index <= 0 then return nil end
+  local linkOk, link = pw.Call(kind.link, index)
+  if not linkOk or type(link) ~= "string" then return nil end
+
+  local infoOk, _, _, _, _, _, _, _, equipLoc = pcall(GetItemInfo, link)
+  if not infoOk or type(equipLoc) ~= "string" or equipLoc == "" or
+     pw.Token().statsSkipEquipLoc[equipLoc] then
+    return nil
+  end
+
+  local tip = pw.Scanner()
+  if not tip or type(tip[kind.tipRecipe]) ~= "function" then return nil end
+  pcall(tip.ClearLines, tip)
+  pcall(tip.SetOwner, tip, U.G("WorldFrame") or UIParent, "ANCHOR_NONE")
+  if not pcall(tip[kind.tipRecipe], tip, index) then return nil end
+
+  local countOk, count = pcall(tip.NumLines, tip)
+  count = countOk and tonumber(count) or 0
+  local maxLines = pw.Token().stats.maxLines + 1
+  if count > maxLines then count = maxLines end
+
+  local durability = pw.DurabilityPattern()
+  local durable = durability == nil
+  local lines = {}
+  local i
+  for i = 2, count do
+    local left, leftColor = pw.ScanRegion(pw.SCANNER_NAME .. "TextLeft" .. i)
+    local right, rightColor = pw.ScanRegion(pw.SCANNER_NAME .. "TextRight" .. i)
+    if left or right then
+      table.insert(lines, { left = left, leftColor = leftColor,
+                            right = right, rightColor = rightColor })
+      if left and durability and string.find(left, durability) then durable = true end
+    end
+  end
+  -- Gear without durability (shirts, tabards, jewellery) gets no panel (user
+  -- request, 2026-09-16). An unreadable template shows every gear panel.
+  if not durable or table.getn(lines) == 0 then return nil end
+  return lines
+end
+
+-- DURABILITY_TEMPLATE ("Durability %d / %d" on enUS), the global
+-- modules/status.lua reads worn durability through, as an anchored pattern.
+-- Format tokens become placeholders before the literal text is escaped, as in
+-- core/itemsort.lua's CONTAINER_SLOTS pattern.
+function pw.DurabilityPattern()
+  if pw.durabilityPattern ~= nil then return pw.durabilityPattern or nil end
+  local template = U.G("DURABILITY_TEMPLATE")
+  if type(template) ~= "string" or template == "" then
+    pw.durabilityPattern = false
+    return nil
+  end
+  local p = string.gsub(template, "%%%d*%$?d", "\001")
+  p = string.gsub(p, "([%^%$%(%)%.%[%]%*%+%-%?%%])", "%%%1")
+  p = string.gsub(p, "\001", function() return "%d+" end)
+  pw.durabilityPattern = "^" .. p .. "$"
+  return pw.durabilityPattern
+end
+
+function pw.BuildStats(win)
+  local t = pw.Token()
+  local st, tex = t.stats, t.texture
+  local panel = pw.Frame("Frame", win.schematic, 2, false)
+  if not panel then return end
+  -- Hangs `trackGap` under the "Track this recipe" box, so it follows the box.
+  local tr = t.track
+  pw.Place(panel, win.schematic, "TOPRIGHT", -st.right, tr.y - tr.size - st.trackGap,
+           st.width, 100)
+  win.stats = panel
+  win.statsLines = {}
+
+  local fill = pw.Texture(panel, "BACKGROUND", M.texture.plain)
+  if fill then
+    pcall(function()
+      fill:SetPoint("TOPLEFT", panel, "TOPLEFT", st.fillInset, -st.fillInset)
+      fill:SetPoint("BOTTOMRIGHT", panel, "BOTTOMRIGHT", -st.fillInset, st.fillInset)
+      fill:SetVertexColor(M.Unpack(st.fillColor))
+    end)
+  end
+
+  local g = pw.StatsBorderGeometry()
+  local out, inset = g.out, g.inset
+
+  local border = {}
+  border.left = pw.Texture(panel, "BORDER", tex.metalLeft)
+  border.right = pw.Texture(panel, "BORDER", tex.metalLeft)
+  border.top = pw.Texture(panel, "BORDER", tex.metalTop)
+  border.bottom = pw.Texture(panel, "BORDER", tex.metalTop)
+  pcall(function()
+    border.left:SetWidth(g.edge)
+    border.left:SetPoint("TOPLEFT", panel, "TOPLEFT", 0, -inset)
+    border.left:SetPoint("BOTTOMLEFT", panel, "BOTTOMLEFT", 0, inset)
+    border.right:SetWidth(g.edge)
+    border.right:SetPoint("TOPRIGHT", panel, "TOPRIGHT", 0, -inset)
+    border.right:SetPoint("BOTTOMRIGHT", panel, "BOTTOMRIGHT", 0, inset)
+    border.top:SetHeight(g.edge)
+    border.top:SetPoint("TOPLEFT", panel, "TOPLEFT", inset, 0)
+    border.top:SetPoint("TOPRIGHT", panel, "TOPRIGHT", -inset, 0)
+    border.bottom:SetHeight(g.edge)
+    border.bottom:SetPoint("BOTTOMLEFT", panel, "BOTTOMLEFT", inset, 0)
+    border.bottom:SetPoint("BOTTOMRIGHT", panel, "BOTTOMRIGHT", -inset, 0)
+  end)
+
+  -- The joint is authored as the bottom-right corner; the rest are mirrors.
+  local corners = {
+    { "TOPLEFT", -out, out, 1, 0, 1, 0 },
+    { "TOPRIGHT", out, out, 0, 1, 1, 0 },
+    { "BOTTOMLEFT", -out, -out, 1, 0, 0, 1 },
+    { "BOTTOMRIGHT", out, -out, 0, 1, 0, 1 },
+  }
+  local i
+  for i = 1, table.getn(corners) do
+    local c = corners[i]
+    local joint = pw.Texture(panel, "ARTWORK", tex.metalJoint)
+    if joint then
+      pcall(function()
+        joint:SetWidth(g.joint)
+        joint:SetHeight(g.joint)
+        joint:SetPoint(c[1], panel, c[1], c[2], c[3])
+        joint:SetTexCoord(c[4], c[5], c[6], c[7])
+      end)
+    end
+  end
+  win.statsBorder = border
+end
+
+-- The metal border's drawn sizes. `borderScale` sizes the whole border: the
+-- edges draw at that many units per texel, and the joints at the ratio that
+-- makes their bars as thick as the edges'. The edge inset scales with it, so
+-- the edges still start under the joints' straight bars.
+function pw.StatsBorderGeometry()
+  local st = pw.Token().stats
+  local e, j = st.edge, st.joint
+  local scale = st.borderScale or 1
+  local jointScale = e.thickness / j.thickness * scale
+  return {
+    scale = scale,
+    edge = e.canvas * scale,
+    joint = j.canvas * jointScale,
+    out = (j.canvas - j.extent) * jointScale,
+    reach = j.extent * jointScale,
+    inset = st.edgeInset * scale,
+  }
+end
+
+-- Crops each edge strip to its drawn length so the metal is not stretched,
+-- up to the painted part of the strip.
+function pw.CropStatsBorder(win, width, height)
+  local border = win.statsBorder
+  if not border then return end
+  local e = pw.Token().stats.edge
+  local g = pw.StatsBorderGeometry()
+  local across = math.min((width - g.inset * 2) / g.scale, e.painted) / e.length
+  local down = math.min((height - g.inset * 2) / g.scale, e.painted) / e.length
+  if across < 0 then across = 0 end
+  if down < 0 then down = 0 end
+  pcall(function()
+    border.left:SetTexCoord(0, 1, 0, down)
+    border.right:SetTexCoord(1, 0, 0, down)
+    border.top:SetTexCoord(0, across, 0, 1)
+    border.bottom:SetTexCoord(0, across, 1, 0)
+  end)
+end
+
+function pw.StatsLine(win, i)
+  local line = win.statsLines[i]
+  if line then return line end
+  local t = pw.Token()
+  line = {
+    left = pw.Label(win.stats, M.fontSize.normal, t.bodyColor, "LEFT", "GameFontHighlight"),
+    right = pw.Label(win.stats, M.fontSize.normal, t.bodyColor, "RIGHT", "GameFontHighlight"),
+  }
+  win.statsLines[i] = line
+  return line
+end
+
+-- Shows the panel for an equippable product and narrows the name beside it.
+function pw.FillStats(win, entry)
+  local panel = win.stats
+  if not panel then return end
+  local st = pw.Token().stats
+
+  local lines = entry and pw.StatLines(win, entry.index)
+  local count = lines and table.getn(lines) or 0
+  local i
+  for i = count + 1, table.getn(win.statsLines) do
+    pw.SetShown(win.statsLines[i].left, false)
+    pw.SetShown(win.statsLines[i].right, false)
+  end
+  pw.SetShown(panel, count > 0)
+
+  -- The name runs to the form's right inset; beside the panel it stops
+  -- nameGap short of the panel's left edge instead.
+  local nameWidth = win.nameWidth or 1
+  if count > 0 then
+    nameWidth = nameWidth -
+      (st.width + st.right + st.nameGap - pw.Token().schematic.inset)
+  end
+  if win.name then pcall(win.name.SetWidth, win.name, math.max(1, nameWidth)) end
+  if count == 0 then return end
+
+  local inner = st.width - st.padding * 2
+  local total = 0
+  local previous
+  for i = 1, count do
+    local data = lines[i]
+    local line = pw.StatsLine(win, i)
+    local rightWidth = 0
+    pw.SetShown(line.right, data.right ~= nil)
+    if data.right then
+      pw.SetText(line.right, data.right)
+      pw.SetColor(line.right, data.rightColor)
+      rightWidth = pw.TextWidth(line.right) + st.columnGap
+    end
+    pw.SetShown(line.left, true)
+    pw.SetText(line.left, data.left or "")
+    if data.leftColor then pw.SetColor(line.left, data.leftColor) end
+    pcall(function()
+      line.left:ClearAllPoints()
+      line.left:SetWidth(math.max(1, inner - rightWidth))
+      if previous then
+        line.left:SetPoint("TOPLEFT", previous, "BOTTOMLEFT", 0, -st.lineGap)
+      else
+        line.left:SetPoint("TOPLEFT", panel, "TOPLEFT", st.padding, -st.padding)
+      end
+      line.right:ClearAllPoints()
+      line.right:SetPoint("TOPRIGHT", line.left, "TOPLEFT", inner, 0)
+    end)
+
+    -- A wrapped line is taller than one row; an unreadable height counts as one.
+    local hOk, height = false, 0
+    if line.left then hOk, height = pcall(line.left.GetHeight, line.left) end
+    height = hOk and tonumber(height) or 0
+    if height <= 0 then height = M.fontSize.normal + 2 end
+    total = total + height
+    if previous then total = total + st.lineGap end
+    previous = line.left
+  end
+
+  local minimum = pw.StatsBorderGeometry().reach * 2
+  local height = math.max(minimum, total + st.padding * 2)
+  pcall(panel.SetHeight, panel, height)
+  pw.CropStatsBorder(win, st.width, height)
 end
 
 -- ---------------------------------------------------------------------------
@@ -1344,8 +1851,27 @@ function pw.Profession(win, name)
   return t.art[key or ""] or t.art.default, fx, icon or t.texture.missingIcon
 end
 
+-- The host's design size. Set once at build, the host came back at about the
+-- stock 512 height while the fixed-height panels kept 525 and ran out of the
+-- bottom rim (user screenshot, 2026-09-16); what resizes it natively is not
+-- identified, so every refresh -- deferred after OnShow and each native
+-- update -- puts the size back.
+function pw.ApplySize(win)
+  local d = pw.Token().design
+  local frame = win.frame
+  local wOk, width = pcall(frame.GetWidth, frame)
+  local hOk, height = pcall(frame.GetHeight, frame)
+  if not (wOk and tonumber(width) == d.width) then
+    pcall(frame.SetWidth, frame, d.width)
+  end
+  if not (hOk and tonumber(height) == d.height) then
+    pcall(frame.SetHeight, frame, d.height)
+  end
+end
+
 function pw.Refresh(win)
   if not win.built or not pw.Shown(win.frame) then return end
+  pw.ApplySize(win)
 
   local name, rank, maxRank = pw.Line(win)
   pw.SetText(win.title, name)
@@ -1380,6 +1906,13 @@ function pw.Refresh(win)
       table.insert(entries, entry)
       if kind ~= "header" and not firstRecipe then firstRecipe = entry end
     end
+  end
+  -- A recipe directly followed by a category header ends its category; a
+  -- header directly followed by a recipe starts one.
+  for i = 1, table.getn(entries) - 1 do
+    local header, nextHeader = entries[i].kind == "header", entries[i + 1].kind == "header"
+    entries[i].groupEnd = not header and nextHeader
+    entries[i].groupStart = header and not nextHeader
   end
   win.entries = entries
 
@@ -1443,8 +1976,7 @@ function pw.Build(kind)
   -- addon-owned child.
   U.StripStockTextures(frame)
   pcall(frame.DisableDrawLayer, frame, "BACKGROUND")
-  pcall(frame.SetWidth, frame, d.width)
-  pcall(frame.SetHeight, frame, d.height)
+  pw.ApplySize(win)
   pcall(frame.SetHitRectInsets, frame, 0, 0, 0, 0)
 
   -- The cover takes the mouse so nothing of the native window beneath it can
@@ -1545,12 +2077,23 @@ end
 -- Entry points
 -- ---------------------------------------------------------------------------
 function U.ModernWowProfessionsWanted()
-  if type(U.GetActiveThemeStyle) ~= "function" or
-     U.GetActiveThemeStyle() ~= pw.THEME then
-    return false
-  end
   return type(U.ModernWowSurfaceEnabled) == "function" and
          U.ModernWowSurfaceEnabled(pw.SURFACE) and true or false
+end
+
+-- For modules/castbar.lua's craft dock: the shown window's own addon-owned
+-- Create All button and the gap to keep left of it, or nil. The Craft window
+-- (Enchanting, Beast Training) has no Create All and offers nothing.
+function U.ProfessionsCastBarAnchor()
+  local i
+  for i = 1, table.getn(pw.windows) do
+    local win = pw.windows[i]
+    if win.createAll and pw.Shown(win.frame) and pw.Shown(win.createAll) then
+      local b = pw.Token().button
+      return win.createAll, b.castBarGap, b.castBarShiftX, b.castBarShiftY
+    end
+  end
+  return nil
 end
 
 -- For modules/modernwow.lua's surface check: false only when a host window

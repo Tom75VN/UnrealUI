@@ -3,10 +3,10 @@
 -- A settings button beside the minimap, and a mover anchor so the minimap
 -- cluster can be dragged in unrealUI's edit mode.
 --
--- The map surface and its behavior stay native. Under modern-wow only, the
--- stock decorative ring, zone bed, zoom-button faces and mail art are replaced
--- with that theme's authored textures, and the close button and clock are
--- removed. knowledge.json /
+-- The map surface and its behavior stay native. Under the full Modern WoW
+-- theme or Classic's explicit Minimap selection, the stock decorative ring,
+-- zone bed, zoom-button faces and mail art are replaced with that theme's
+-- authored textures, and the close button and clock are removed. knowledge.json /
 -- minimap.render_pass_under_ordinary_frames says the map surface is drawn in a
 -- special pass beneath ordinary frames, which is why the new shadow is alpha-
 -- only over the map and the settings button remains outside the ring.
@@ -33,8 +33,8 @@ local POSITION_ID = "minimapbutton"
 local modernWowMinimap = { dressed = false }
 
 local function ModernWow()
-  return U.GetActiveThemeStyle and
-         U.GetActiveThemeStyle() == "modern-wow"
+  return type(U.ModernWowModuleEnabled) == "function" and
+         U.ModernWowModuleEnabled("minimap")
 end
 
 -- The stock minimap ring on this client is not one dependable region:

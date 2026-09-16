@@ -2562,7 +2562,9 @@ end
 -- identical recipe for its purchase control.
 --
 -- options: name, texture, fallback, title, detail (function -> string or nil),
---          price (function -> copper amount or nil), onClick
+--          price (function -> copper amount or nil), onClick,
+--          uncropped (true for addon-owned art, which has no stock icon bevel
+--          to crop away)
 -- ---------------------------------------------------------------------------
 function U.CreateIconButton(parent, options)
   options = options or {}
@@ -2581,7 +2583,11 @@ function U.CreateIconButton(parent, options)
   icon:SetPoint("BOTTOMRIGHT", button, "BOTTOMRIGHT", -edge, edge)
 
   if pcall(icon.SetTexture, icon, options.texture) then
-    pcall(icon.SetTexCoord, icon, 0.08, 0.92, 0.08, 0.92)
+    if options.uncropped then
+      pcall(icon.SetTexCoord, icon, 0, 1, 0, 1)
+    else
+      pcall(icon.SetTexCoord, icon, 0.08, 0.92, 0.08, 0.92)
+    end
   else
     icon:Hide()
     if button.label then button.label:SetText(options.fallback or "?") end
@@ -2591,16 +2597,10 @@ function U.CreateIconButton(parent, options)
   button:SetScript("OnEnter", function()
     U.SetBorderColor(button, M.Unpack(M.color.moverEdge))
 
-    local tip = U.G("GameTooltip")
-    if tip then
-      pcall(tip.SetOwner, tip, button, "ANCHOR_BOTTOM")
-      pcall(tip.SetText, tip, options.title)
-      if type(options.detail) == "function" then
-        local line = options.detail()
-        if line then pcall(tip.AddLine, tip, line, 0.65, 0.65, 0.65, 1) end
-      end
-      pcall(tip.Show, tip)
-    end
+    local line
+    if type(options.detail) == "function" then line = options.detail() end
+    U.ShowWindowTooltip(button, options.tooltipFrames or parent,
+                        options.title, line)
 
     if type(options.price) == "function" then
       local copper = options.price()
@@ -2610,12 +2610,188 @@ function U.CreateIconButton(parent, options)
 
   button:SetScript("OnLeave", function()
     U.SetBorderColor(button, M.Unpack(M.color.border))
-    local tip = U.G("GameTooltip")
-    if tip then pcall(tip.Hide, tip) end
+    U.HideWindowTooltip()
     HidePricePanel()
   end)
 
   return button
+end
+
+-- ---------------------------------------------------------------------------
+-- Window tooltips
+--
+-- A window's own controls (the bag and bank headers) show their GameTooltip
+-- above the window, centred on the pointer's column, so it never covers the
+-- window being used. It only drops down over the window when there is no room
+-- above it, and it is always kept on screen.
+--
+-- Independent of the world tooltip's follow-cursor option: that option only
+-- moves the default-anchored world tooltip (modules/tooltip.lua
+-- placement.Apply), and this anchor is not one it takes over.
+--
+-- Evidence:
+--   * GetCursorPosition divided by UIParent's effective scale is the verified
+--     cursor-to-UI conversion (knowledge.json /
+--     api.getcursorposition_usable_for_hit_testing).
+--   * Width and height are read, never edge differences, and the tooltip's
+--     own scale is folded in (frames.scaled_frame_edge_coordinates_mixed_space).
+--     The windows are unscaled children of UIParent, so their GetTop is in
+--     UIParent units.
+--   * GameTooltip may report its previous size for a frame after being
+--     repopulated (see modules/tooltip.lua placement.NoteOverflow), so the
+--     placement is re-run on a short tick while the pointer stays on the
+--     control rather than measured once.
+--   * The tooltip is anchored to an addon-owned 1x1 guide, the pattern
+--     modules/tooltip.lua already uses for its cursor mode.
+-- ---------------------------------------------------------------------------
+local windowTip = {
+  GAP = 6,        -- between the window's top edge and the tooltip
+  MARGIN = 4,     -- kept clear of every screen edge
+  INTERVAL = 0.02,
+  UPDATE_ID = "widgets.windowTooltip",
+}
+
+-- Highest top edge among the shown frames, in UIParent units.
+function windowTip.Top(frames)
+  if type(frames) == "function" then frames = frames() end
+  if type(frames) ~= "table" or frames.GetTop then frames = { frames } end
+
+  local top
+  local i
+  for i = 1, table.getn(frames) do
+    local f = frames[i]
+    if f then
+      local shownOk, shown = pcall(f.IsVisible, f)
+      local topOk, value = pcall(f.GetTop, f)
+      if shownOk and shown and topOk and type(value) == "number" then
+        if not top or value > top then top = value end
+      end
+    end
+  end
+  return top
+end
+
+-- The re-placement tick must never grab a tooltip that now belongs to someone
+-- else: a control hidden under the pointer (its window closed) gets no
+-- OnLeave, and the next world tooltip would otherwise be dragged onto this
+-- guide. Ownership is judged from the anchor rather than from
+-- GameTooltip:IsOwned, which has no runtime record here: once placed, a
+-- tooltip that is no longer on this guide has been re-anchored by its new
+-- owner.
+function windowTip.StillOwned(state)
+  local tip, owner = state.tip, state.owner
+  local tipOk, tipShown = pcall(tip.IsVisible, tip)
+  if not tipOk or not tipShown then return false end
+
+  local ownerOk, ownerShown = pcall(owner.IsVisible, owner)
+  if not ownerOk or not ownerShown then return false end
+
+  if state.anchored then
+    local _, relative = U.GetFramePoint(tip)
+    if relative ~= windowTip.guide then return false end
+  end
+  return true
+end
+
+-- initial: the pass made from ShowWindowTooltip itself, before the tooltip is
+-- shown. It skips the ownership test, which needs a visible, anchored tooltip:
+-- a frame with no anchor yet may not report itself visible.
+function windowTip.Place(initial)
+  local state = windowTip.state
+  local tip = state and state.tip
+  if not tip or (not initial and not windowTip.StillOwned(state)) then
+    U.UnregisterUpdate(windowTip.UPDATE_ID)
+    windowTip.state = nil
+    return
+  end
+
+  local ok, cx, cy = pcall(GetCursorPosition)
+  local uiOk, uiScale, uiLeft, uiBottom, tipScale, width, height =
+    pcall(function()
+      return UIParent:GetEffectiveScale(), UIParent:GetLeft(),
+             UIParent:GetBottom(), tip:GetEffectiveScale(),
+             tip:GetWidth(), tip:GetHeight()
+    end)
+  if not ok or not uiOk or type(cx) ~= "number" or type(cy) ~= "number" or
+     type(uiScale) ~= "number" or uiScale <= 0 or
+     type(tipScale) ~= "number" or tipScale <= 0 or
+     type(width) ~= "number" or type(height) ~= "number" then return end
+
+  local ratio = tipScale / uiScale
+  width, height = width * ratio, height * ratio
+  cx = cx / uiScale - (tonumber(uiLeft) or 0)
+  cy = cy / uiScale - (tonumber(uiBottom) or 0)
+
+  local margin = windowTip.MARGIN
+  local screenWidth, screenHeight = U.UIWidth(), U.UIHeight()
+
+  local x = cx - width / 2
+  x = math.min(x, screenWidth - margin - width)
+  x = math.max(margin, x)
+
+  local y = (windowTip.Top(state.frames) or cy) + windowTip.GAP
+  y = math.min(y, screenHeight - margin - height)
+  y = math.max(margin, y)
+
+  if x ~= state.x or y ~= state.y then
+    if not U.ApplyFramePoint(windowTip.guide, {
+      point = "BOTTOMLEFT", relativePoint = "BOTTOMLEFT", x = x, y = y,
+    }) then return end
+    state.x, state.y = x, y
+  end
+
+  if not state.anchored then
+    state.anchored = pcall(function()
+      tip:ClearAllPoints()
+      tip:SetPoint("BOTTOMLEFT", windowTip.guide, "BOTTOMLEFT", 0, 0)
+    end)
+  end
+end
+
+-- owner: the hovered control. frames: the window above which the tooltip
+-- goes -- a frame, a list of frames, or a function returning either, so
+-- attached trays that are open above the window count as part of it.
+function U.ShowWindowTooltip(owner, frames, title, detail)
+  local tip = U.G("GameTooltip")
+  if not tip then return end
+
+  if not windowTip.guide then
+    windowTip.guide = CreateFrame("Frame", "UnrealUIWindowTooltipGuide",
+                                  UIParent)
+    windowTip.guide:SetWidth(1)
+    windowTip.guide:SetHeight(1)
+    windowTip.guide:EnableMouse(false)
+  end
+
+  pcall(tip.SetOwner, tip, owner, "ANCHOR_NONE")
+  pcall(tip.SetText, tip, title)
+  if detail then pcall(tip.AddLine, tip, detail, 0.65, 0.65, 0.65, 1) end
+
+  -- Anchored before Show, so the tooltip never appears without a position.
+  windowTip.state = { tip = tip, owner = owner, frames = frames }
+  windowTip.Place(true)
+  pcall(tip.Show, tip)
+  -- Re-measured once shown: the size read before Show may be the previous
+  -- content's.
+  windowTip.Place(true)
+
+  U.RegisterUpdate(windowTip.UPDATE_ID, windowTip.INTERVAL, function()
+    windowTip.Place()
+  end)
+end
+
+function U.HideWindowTooltip()
+  U.UnregisterUpdate(windowTip.UPDATE_ID)
+  local state = windowTip.state
+  windowTip.state = nil
+  -- Only hide a tooltip still on this guide, never one another frame has
+  -- re-anchored since. Owner visibility is irrelevant here: the pointer has
+  -- left the control, and the tooltip it opened goes with it.
+  if not state or not state.tip then return end
+  local _, relative = U.GetFramePoint(state.tip)
+  if relative == windowTip.guide or not state.anchored then
+    pcall(state.tip.Hide, state.tip)
+  end
 end
 
 -- ---------------------------------------------------------------------------
@@ -2784,7 +2960,7 @@ local function BuildConfirmDialogWow()
 end
 
 -- options: text, detail, acceptText, cancelText, onAccept, onCancel, owner,
--- centered
+-- centered, modernWow, modernWowModule
 --
 -- `owner` is an opaque tag so a caller can take its own dialog down again
 -- (U.HideConfirm(owner)) without cancelling one another window put up.
@@ -2793,7 +2969,12 @@ end
 function U.ShowConfirm(options)
   options = options or {}
   local dialog
-  if options.modernWow and U.GetActiveThemeStyle() == "modern-wow" then
+  local modernWow = options.modernWow and
+    (U.GetActiveThemeStyle() == "modern-wow" or
+     (type(options.modernWowModule) == "string" and
+      type(U.ClassicModernModuleEnabled) == "function" and
+      U.ClassicModernModuleEnabled(options.modernWowModule)))
+  if modernWow then
     if confirmDialogWow == nil then
       local ok, built = pcall(BuildConfirmDialogWow)
       confirmDialogWow = ok and built or false

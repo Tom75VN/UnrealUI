@@ -588,13 +588,14 @@ local function SizeHolder(holder)
   return true
 end
 
--- Whether the active theme draws the HoT indicators beside the unit frame
--- instead of inside its health bar. See M.modernWow.hot for why modern-wow
--- does. Read once per holder at creation: selecting a theme takes effect only
--- after a reload, so the answer cannot change while a holder lives.
+-- Whether the active frame family draws the HoT indicators beside the unit
+-- frame instead of inside its health bar. See M.modernWow.hot for why the
+-- Modern WoW party-frame path does. Read once per holder at creation: selecting
+-- a theme or Classic module takes effect only after a reload, so the answer
+-- cannot change while a holder lives.
 local function SideRow()
-  if type(U.GetActiveThemeStyle) ~= "function" then return false end
-  return U.GetActiveThemeStyle() == "modern-wow"
+  return type(U.ModernWowModuleEnabled) == "function" and
+         U.ModernWowModuleEnabled("partyframes")
 end
 
 local function SideGap()

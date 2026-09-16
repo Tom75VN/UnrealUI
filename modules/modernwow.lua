@@ -1,11 +1,10 @@
 -- unrealUI :: modules/modernwow.lua
 --
--- The complete drawing path for themes/modern-wow.lua. Nothing here runs under
--- any other theme: OnEnable returns immediately unless the theme that was
--- actually loaded this session is "modern-wow", which is the single seam
--- core/unitframestyle.lua describes for a style that is its own
--- implementation rather than a set of conditionals threaded through shared
--- code.
+-- The complete drawing path for themes/modern-wow.lua. The full theme enables
+-- its registered surfaces normally; classic-wow can also opt specific modules
+-- into those same complete paths. OnEnable returns unless either the full theme
+-- or at least one Classic override was loaded, and the surface router below
+-- still prevents an unselected Classic area from being touched.
 --
 -- What it dresses is UnrealUI's own frames and the stock windows UnrealUI has
 -- already skinned, exactly as under `modern`. It deliberately does NOT follow
@@ -103,7 +102,9 @@ end
 
 function mw.Active()
   if type(U.GetActiveThemeStyle) ~= "function" then return false end
-  return U.GetActiveThemeStyle() == mw.THEME
+  return U.GetActiveThemeStyle() == mw.THEME or
+         (type(U.ClassicModernAnyEnabled) == "function" and
+          U.ClassicModernAnyEnabled())
 end
 
 function MW:OnInit()
@@ -150,7 +151,17 @@ end
 -- keeps action-bar configuration in this registry while modules/actionbar.lua
 -- remains the only code that creates or mutates action-bar buttons.
 function U.ModernWowSurfaceEnabled(id)
-  return mw.Active() and mw.Enabled(id)
+  if type(U.GetActiveThemeStyle) ~= "function" then return false end
+  if U.GetActiveThemeStyle() == mw.THEME then return mw.Enabled(id) end
+  if U.GetActiveThemeStyle() ~= "classic-wow" or
+     type(U.ClassicModernModuleEnabled) ~= "function" then
+    return false
+  end
+  if id == "unitframes" then
+    return U.ClassicModernModuleEnabled("unitframes") or
+           U.ClassicModernModuleEnabled("partyframes")
+  end
+  return U.ClassicModernModuleEnabled(id)
 end
 
 -- ---------------------------------------------------------------------------
@@ -834,9 +845,9 @@ mw.classification = {
 -- Only the pet spec sets spec.portrait in UnrealUI's shared layout, and that
 -- layout is frozen for `modern` and `classic-wow`. This adds the portrait for
 -- the frames this theme's art is drawn around, and answers false for every
--- other theme, so nothing changes outside modern-wow.
+-- other full theme. Classic can request either unit-frame family explicitly.
 function U.ModernWowWantsPortrait(id)
-  if not mw.Active() or not mw.Enabled("unitframes") then return false end
+  if not mw.UnitModuleEnabled(id) then return false end
   if type(id) ~= "string" then return false end
 
   local i
@@ -960,8 +971,8 @@ end
 -- readout onto the health bar itself. mw.Entry decides which frames get it, so
 -- a frame this theme does not dress keeps its declared labels.
 function U.ModernWowSpecOverride(spec)
-  if not mw.Active() or not mw.Enabled("unitframes") then return end
   if type(spec) ~= "table" then return end
+  if not mw.UnitModuleEnabled(spec.id) then return end
 
   local entry = mw.Entry(spec.id)
   if not entry then return end
@@ -1013,6 +1024,21 @@ function mw.Entry(id)
     if mw.units[i].id == id then return mw.units[i] end
   end
   return nil
+end
+
+function mw.UnitModuleEnabled(id)
+  if type(id) ~= "string" or type(U.GetActiveThemeStyle) ~= "function" then
+    return false
+  end
+  if U.GetActiveThemeStyle() == mw.THEME then return mw.Enabled("unitframes") end
+  if U.GetActiveThemeStyle() ~= "classic-wow" or
+     type(U.ClassicModernModuleEnabled) ~= "function" then
+    return false
+  end
+  if string.find(id, "^party") then
+    return U.ClassicModernModuleEnabled("partyframes")
+  end
+  return U.ClassicModernModuleEnabled("unitframes")
 end
 
 -- Sizes and centres one portrait from the geometry BuildHousing recorded.
@@ -1475,6 +1501,13 @@ function mw.BuildHousing(frame, entry)
   frame.uuiModernWow = { housing = housing, overlay = overlay,
                          frameArt = frameArt, art = art, scale = s,
                          height = contentH }
+  -- Classic module mixing keeps Classic's global media tokens, so select this
+  -- surface's authored health fill directly once the frame is marked dressed.
+  -- Clearing the cache makes the next ordinary unit refresh retain that path.
+  if frame.health and frame.health.bar then
+    pcall(U.SetStatusBarTexture, frame.health.bar, M.modernWow.texture.healthFill)
+    frame.healthColorTextured = nil
+  end
   return frame.uuiModernWow
 end
 
@@ -1691,7 +1724,7 @@ function mw.BuildUnitFrames()
   local i
   for i = 1, table.getn(mw.units) do
     local entry = mw.units[i]
-    local frame = U.GetUnitFrame(entry.id)
+    local frame = mw.UnitModuleEnabled(entry.id) and U.GetUnitFrame(entry.id)
     if frame then
       mw.BuildHousing(frame, entry)
       mw.ApplyPowerFill(frame, entry)
@@ -3208,7 +3241,17 @@ function mw.DressGearSlots(frame)
   for i = 1, table.getn(slots) do
     mw.DressGearSlot(slots[i])
   end
-  U.PostHookGlobal("PaperDollItemSlotButton_Update", mw.RefreshGearSlots)
+  -- The client calls PaperDollItemSlotButton_Update once per slot button, and
+  -- its gear and bag slots all react to bag/lock events: one item moved between
+  -- bags ran this full every-slot pass hundreds of times inside one frame,
+  -- window open or not (measured 2026-09-16 with UnrealRuntimeProbe bagmove ab:
+  -- 180-260ms frames that survived switching unrealUI bags and bars off).
+  -- Closed window: nothing to draw, OnShow restyles it. Open: one deferred pass.
+  U.PostHookGlobal("PaperDollItemSlotButton_Update", function()
+    local ok, shown = pcall(frame.IsShown, frame)
+    if not (ok and shown) then return end
+    U.DeferOnce("modernwow.gear-slots", mw.RefreshGearSlots)
+  end)
   U.PostHookScript(frame, "OnShow", mw.RefreshGearSlots)
 end
 
@@ -3911,7 +3954,8 @@ function MW:OnEnable()
   local i
   for i = 1, table.getn(mw.surfaceOrder) do
     local surface = mw.surfaceOrder[i]
-    if mw.Enabled(surface.id) and type(surface.build) == "function" then
+    if U.ModernWowSurfaceEnabled(surface.id) and
+       type(surface.build) == "function" then
       local ok, err = pcall(surface.build)
       surface.built = ok
       if not ok then

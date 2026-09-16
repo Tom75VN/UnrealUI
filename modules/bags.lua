@@ -48,16 +48,19 @@ local SLOT_GAP      = M.slot.gap
 local PADDING       = M.slot.padding
 local HEADER_HEIGHT = M.slot.header
 local ICON_SIZE     = M.slot.icon
+local HEADER_ICON   = M.slot.headerIcon
 local TRAY_SLOT     = M.slot.tray   -- keyring / bag-slot button size
 
--- Category view metrics (the optional grouped layout, off by default). A
--- category is a titled box holding the same COLUMNS-wide slot rhythm as the
--- flat grid, and the boxes stack downwards, so the window keeps one width and
--- only grows taller as categories appear.
+-- Category view metrics (the optional grouped layout, off by default).
+-- Categories normally span the flat grid's width, but two adjacent categories
+-- can share a row when splitting the slot rhythm in half does not make the
+-- window taller. Only the gutter and the second box's edge insets add width.
 local SECTION_TITLE  = 18   -- heading strip above each category box
 local SECTION_TOGGLE = 16   -- the +/- collapse box in that strip
 local SECTION_INSET  = 4    -- slot inset inside a category box
 local SECTION_GAP    = 6    -- between one category box and the next heading
+local SECTION_COLUMN_GAP = 6 -- between category boxes that share a row
+local SECTION_ITEM_COLUMNS = math.floor(COLUMNS / 2)
 
 -- Centres the collapse box in its heading strip.
 local SECTION_TOGGLE_Y = math.floor((SECTION_TITLE - SECTION_TOGGLE) / 2)
@@ -70,7 +73,6 @@ local containers = {}   -- containers[bag] = per-bag parent frame, SetID(bag)
 local layoutDirty = true
 local bagDirty = {}
 local cooldownDirty = false
-local vendorDirty = false
 local keyringDirty = false
 
 local pending    -- { items, index, mode = "sell"|"delete", startGold }
@@ -298,7 +300,7 @@ function classicBag.StyleHeader(window)
   local portrait = window:CreateTexture(nil, "OVERLAY")
   portrait:SetWidth(18)
   portrait:SetHeight(18)
-  portrait:SetPoint("LEFT", window.sell, "RIGHT", 7, 0)
+  portrait:SetPoint("LEFT", window.stackBags or window.sell, "RIGHT", 7, 0)
   local setPortrait = U.G("SetBagPortaitTexture")
   if type(setPortrait) == "function" then pcall(setPortrait, portrait, 0) end
   window.uuiClassicPortrait = portrait
@@ -399,7 +401,6 @@ local function ProcessPending()
 
     pending = nil
     U.UnregisterUpdate("bags.sellDelete")
-    vendorDirty = true
     return
   end
 
@@ -489,24 +490,32 @@ local function SellOrDeleteGreys()
   RunGreyQueue(items, atVendor)
 end
 
-local function RefreshVendorButton()
-  if not frame or not frame.sell or not frame.sell.icon then return end
-  local n = table.getn(CollectGreyItems())
-  pcall(frame.sell.icon.SetDesaturated, frame.sell.icon, n == 0)
-end
-
--- The sort button's disabled look while a run is draining, matching the way the
--- vendor button above reports that it has nothing to do. core/itemsort.lua
--- calls this again when the run ends, so nothing has to poll for it.
+-- The sort and stack buttons' disabled look while a run is draining. Both
+-- engines share the one cursor, so either run greys both buttons.
+-- core/itemsort.lua and core/itemstack.lua call this again when the run ends,
+-- so nothing has to poll for it.
 local function RefreshSortButton()
-  if not frame or not frame.sortBags or not frame.sortBags.icon then return end
-  pcall(frame.sortBags.icon.SetDesaturated, frame.sortBags.icon,
-        U.BagSortActive())
+  if not frame then return end
+  local busy = U.BagSortActive() or U.BagStackActive()
+  if frame.sortBags and frame.sortBags.icon then
+    pcall(frame.sortBags.icon.SetDesaturated, frame.sortBags.icon, busy)
+  end
+  if frame.stackBags and frame.stackBags.icon then
+    pcall(frame.stackBags.icon.SetDesaturated, frame.stackBags.icon, busy)
+  end
 end
 
+-- The stack button stays in both views: merging frees slots whether or not the
+-- grid is sorted. It sits after sort when sort is shown, and takes sort's
+-- place when the category view hides it.
 local function SetSortButtonShown(shown)
   if not frame or not frame.sortBags then return end
   if shown then frame.sortBags:Show() else frame.sortBags:Hide() end
+  if frame.stackBags then
+    frame.stackBags:ClearAllPoints()
+    frame.stackBags:SetPoint("LEFT", shown and frame.sortBags or frame.sell,
+                             "RIGHT", 4, 0)
+  end
   RefreshSortButton()
 end
 
@@ -1065,22 +1074,68 @@ local function CollectCategories()
       if key ~= "empty" then
         used = used + 1
         if not buckets[key] then buckets[key] = {} end
-        table.insert(buckets[key], { bag = bag, slot = slot })
+
+        -- The grouped view is the visual form of the physical sorter: category
+        -- headings own the first level, and this shared key groups functional
+        -- kinds (healing potions, mana potions, etc.) plus identical items
+        -- inside each heading. Coordinates make equal stacks deterministic.
+        local link = U.ContainerSlotLink(bag, slot)
+        local sort = U.ItemSortKey(link) ..
+          string.format("|%02d|%04d", bag + 2, slot)
+        table.insert(buckets[key], { bag = bag, slot = slot, sort = sort })
       end
     end
+  end
+
+  -- Automatic while category view is enabled: only the slot buttons move on
+  -- screen. The player's actual container slots are left untouched.
+  local _, entries
+  for _, entries in pairs(buckets) do
+    table.sort(entries, function(a, b) return a.sort < b.sort end)
   end
 
   return buckets, used, total
 end
 
+local function CategoryBodyHeight(n, columns, collapsed, slotGap)
+  if collapsed then return 0 end
+  local rows = math.ceil(n / columns)
+  return SECTION_INSET * 2 + rows * (SLOT_SIZE + slotGap) - slotGap
+end
+
+-- Two categories share a row only when the half-width slot grids are no taller
+-- than drawing both as full-width rows. This keeps a large category beside a
+-- tiny one from making the grouped view worse merely to force a second column.
+local function CategoriesCanShareRow(left, right, slotGap)
+  if not left or not right or SECTION_ITEM_COLUMNS < 1 then return false end
+
+  local leftHalf = CategoryBodyHeight(left.n, SECTION_ITEM_COLUMNS,
+                                      left.collapsed, slotGap)
+  local rightHalf = CategoryBodyHeight(right.n, SECTION_ITEM_COLUMNS,
+                                       right.collapsed, slotGap)
+  local sharedHeight = SECTION_TITLE + math.max(leftHalf, rightHalf)
+
+  local separateHeight = SECTION_TITLE +
+    CategoryBodyHeight(left.n, COLUMNS, left.collapsed, slotGap) +
+    SECTION_GAP + SECTION_TITLE +
+    CategoryBodyHeight(right.n, COLUMNS, right.collapsed, slotGap)
+
+  return sharedHeight <= separateHeight
+end
+
 -- Assigns the local forward-declared above ToggleSection.
 function LayoutCategories()
   local slotGap = classicBag.SlotGap()
-  local contentWidth = COLUMNS * (SLOT_SIZE + slotGap) - slotGap
+  local fullContentWidth = COLUMNS * (SLOT_SIZE + slotGap) - slotGap
+  local halfContentWidth = SECTION_ITEM_COLUMNS * (SLOT_SIZE + slotGap) - slotGap
+  local fullSectionWidth = fullContentWidth + SECTION_INSET * 2
+  local halfSectionWidth = halfContentWidth + SECTION_INSET * 2
   local buckets, usedSlots, totalSlots = CollectCategories()
   local order = U.ItemCategoryOrder()
   local live = {}    -- every (bag, slot) this pass actually placed
   local drawn = {}   -- every category this pass actually drew
+  local visible = {} -- ordered non-empty categories, paired below when useful
+  local layoutWidth = fullSectionWidth
   local y = 0
   local i
 
@@ -1090,20 +1145,49 @@ function LayoutCategories()
   for i = 1, table.getn(order) do
     local key = order[i]
     local entries = buckets[key]
-
     local n = (entries and table.getn(entries)) or 0
     if n > 0 then
-      local section = EnsureSection(key, contentWidth)
-      local collapsed = EnsureConfig().collapsed[key] and true or false
-      drawn[key] = true
+      table.insert(visible, {
+        key = key,
+        entries = entries,
+        n = n,
+        collapsed = EnsureConfig().collapsed[key] and true or false,
+      })
+    end
+  end
 
-      -- Heading row: the +/- control and the category name, on screen whether
-      -- or not the box below them is.
+  i = 1
+  while i <= table.getn(visible) do
+    local left = visible[i]
+    local right = visible[i + 1]
+    local shared = CategoriesCanShareRow(left, right, slotGap)
+    local rowCount = shared and 2 or 1
+    local columns = shared and SECTION_ITEM_COLUMNS or COLUMNS
+    local contentWidth = shared and halfContentWidth or fullContentWidth
+    local sectionWidth = shared and halfSectionWidth or fullSectionWidth
+    local rowBodyHeight = 0
+
+    if shared then
+      layoutWidth = math.max(layoutWidth,
+                             halfSectionWidth * 2 + SECTION_COLUMN_GAP)
+    end
+
+    local rowIndex
+    for rowIndex = 1, rowCount do
+      local spec = visible[i + rowIndex - 1]
+      local section = EnsureSection(spec.key, contentWidth)
+      local x = (rowIndex - 1) * (sectionWidth + SECTION_COLUMN_GAP)
+      local height = CategoryBodyHeight(spec.n, columns, spec.collapsed,
+                                        slotGap)
+      drawn[spec.key] = true
+
+      -- Heading row: the +/- control and the category name remain visible even
+      -- when the category box below them is folded away.
       if section.toggle then
         section.toggle:ClearAllPoints()
-        section.toggle:SetPoint("TOPLEFT", grid, "TOPLEFT", 0,
+        section.toggle:SetPoint("TOPLEFT", grid, "TOPLEFT", x,
                                 -(y + SECTION_TOGGLE_Y))
-        section.toggle.uuiSetCollapsed(collapsed)
+        section.toggle.uuiSetCollapsed(spec.collapsed)
         section.toggle:Show()
       end
       if section.title then
@@ -1111,34 +1195,30 @@ function LayoutCategories()
         if section.toggle then
           section.title:SetPoint("LEFT", section.toggle, "RIGHT", 4, 0)
         else
-          section.title:SetPoint("TOPLEFT", grid, "TOPLEFT", 2, -y)
+          section.title:SetPoint("TOPLEFT", grid, "TOPLEFT", x + 2, -y)
         end
         section.title:Show()
       end
 
-      y = y + SECTION_TITLE
-
-      if collapsed then
+      if spec.collapsed then
         -- The slots are simply not placed. Nothing marks them live, so the
         -- sweep at the end of this function is what takes them off screen.
         section.box:Hide()
       else
-        local rows = math.ceil(n / COLUMNS)
-        local height = SECTION_INSET * 2 + rows * (SLOT_SIZE + slotGap) - slotGap
-
         section.box:SetWidth(contentWidth + SECTION_INSET * 2)
         section.box:SetHeight(height)
         section.box:ClearAllPoints()
-        section.box:SetPoint("TOPLEFT", grid, "TOPLEFT", 0, -y)
+        section.box:SetPoint("TOPLEFT", grid, "TOPLEFT", x,
+                             -(y + SECTION_TITLE))
         section.box:Show()
 
         local j
-        for j = 1, n do
-          local entry = entries[j]
+        for j = 1, spec.n do
+          local entry = spec.entries[j]
           local button = EnsureSlot(entry.bag, entry.slot, grid)
           if button then
-            local col = math.mod(j - 1, COLUMNS)
-            local row = math.floor((j - 1) / COLUMNS)
+            local col = math.mod(j - 1, columns)
+            local row = math.floor((j - 1) / columns)
             PlaceSlot(button, section.box,
                       SECTION_INSET + col * (SLOT_SIZE + slotGap),
                       -(SECTION_INSET + row * (SLOT_SIZE + slotGap)))
@@ -1147,12 +1227,13 @@ function LayoutCategories()
             live[entry.bag .. ":" .. entry.slot] = true
           end
         end
-
-        y = y + height
       end
 
-      y = y + SECTION_GAP
+      rowBodyHeight = math.max(rowBodyHeight, height)
     end
+
+    y = y + SECTION_TITLE + rowBodyHeight + SECTION_GAP
+    i = i + rowCount
   end
 
   if y > 0 then y = y - SECTION_GAP end
@@ -1182,7 +1263,7 @@ function LayoutCategories()
   -- than collapsing the frame onto its header.
   if y <= 0 then y = SLOT_SIZE end
 
-  anchor:SetWidth(contentWidth + SECTION_INSET * 2 + PADDING * 2)
+  anchor:SetWidth(layoutWidth + PADDING * 2)
   anchor:SetHeight(classicBag.HeaderHeight() + y + PADDING)
 end
 
@@ -1298,10 +1379,6 @@ local function ProcessDirty()
     end
   end
 
-  if vendorDirty then
-    vendorDirty = false
-    RefreshVendorButton()
-  end
 end
 
 local function MarkAllBagsDirty()
@@ -1401,6 +1478,12 @@ end
 
 U.RefreshRogueBagButton = RefreshRogueBagButton
 
+-- Header tooltips open above the bag window (U.ShowWindowTooltip), and above
+-- the keyring or bag-slot tray when one is open on top of it.
+local function BagTooltipFrames()
+  return { frame, frame.keyring, frame.bagslots }
+end
+
 local function BuildHeader()
   frame.close = U.CreateButton(frame, {
     name = "UnrealUIBagClose",
@@ -1422,6 +1505,8 @@ local function BuildHeader()
   -- from the money readout and close button on the right.
   frame.keyToggle = U.CreateIconButton(frame, {
     name = "UnrealUIBagKeyToggle",
+    tooltipFrames = BagTooltipFrames,
+    size = HEADER_ICON,
     texture = M.texture.keyringIcon,
     fallback = "K",
     title = U.L("BAGS_TOGGLE_KEYRING"),
@@ -1442,6 +1527,8 @@ local function BuildHeader()
 
   frame.bagsToggle = U.CreateIconButton(frame, {
     name = "UnrealUIBagBagsToggle",
+    tooltipFrames = BagTooltipFrames,
+    size = HEADER_ICON,
     texture = M.texture.bagIcon,
     fallback = "B",
     title = U.L("BAGS_TOGGLE_BAGS"),
@@ -1463,6 +1550,8 @@ local function BuildHeader()
   if type(U.IsRogue) == "function" and U.IsRogue() then
     frame.pickLock = U.CreateIconButton(frame, {
       name = "UnrealUIBagPickLock",
+      tooltipFrames = BagTooltipFrames,
+      size = HEADER_ICON,
       texture = "Interface\\Icons\\Spell_Nature_MoonKey",
       fallback = "L",
       title = U.L("BAGS_PICK_LOCK"),
@@ -1485,7 +1574,9 @@ local function BuildHeader()
 
   frame.sell = U.CreateIconButton(frame, {
     name = "UnrealUIBagSell",
-    texture = "Interface\\Icons\\INV_Misc_Coin_02",
+    tooltipFrames = BagTooltipFrames,
+    size = HEADER_ICON,
+    texture = M.texture.sellGreysIcon,
     fallback = "$",
     title = U.L("BAGS_VENDOR_GRAYS"),
     onClick = SellOrDeleteGreys,
@@ -1500,6 +1591,8 @@ local function BuildHeader()
   -- visible change. SetSortButtonShown drives that.
   frame.sortBags = U.CreateIconButton(frame, {
     name = "UnrealUIBagSort",
+    tooltipFrames = BagTooltipFrames,
+    size = HEADER_ICON,
     texture = M.texture.sortIcon,
     fallback = "S",
     title = U.L("BAGS_SORT"),
@@ -1517,12 +1610,34 @@ local function BuildHeader()
   frame.sortBags:SetPoint("LEFT", frame.sell, "RIGHT", 4, 0)
   frame.sortBags:Hide()
 
+  -- Merge partial stacks, carried bags only. SetSortButtonShown keeps it
+  -- beside sort, or beside sell when the category view hides sort.
+  frame.stackBags = U.CreateIconButton(frame, {
+    name = "UnrealUIBagStack",
+    tooltipFrames = BagTooltipFrames,
+    size = HEADER_ICON,
+    texture = M.texture.stackIcon,
+    fallback = "M",
+    title = U.L("BAGS_STACK"),
+    detail = function() return U.L("BAGS_STACK_HINT") end,
+    -- U.StackBags owns every refusal message, as U.SortBags does.
+    onClick = function()
+      if U.StackBags(BAG_IDS, { onFinish = RefreshSortButton, owner = "bags" })
+      then
+        RefreshSortButton()
+      end
+    end,
+  })
+  classicBag.StyleIconButton(frame.stackBags)
+  frame.stackBags:SetPoint("LEFT", frame.sell, "RIGHT", 4, 0)
+
   -- Slot readout, left-aligned after the header icon group. Anchored to the
-  -- sell button because that is the last icon in the group either way: the
-  -- Rogue Pick Lock shortcut is inserted before it, and RefreshRogueBagButton
-  -- re-anchors sell when the skill is missing, so following sell keeps the
-  -- readout in place without repeating that rule. Hidden until the category
-  -- view asks for it; see RefreshSlotCount.
+  -- stack button because that is the last icon in the group either way: the
+  -- Rogue Pick Lock shortcut is inserted before sell, RefreshRogueBagButton
+  -- re-anchors sell when the skill is missing, and stack follows sell or sort
+  -- (SetSortButtonShown), so following stack keeps the readout in place
+  -- without repeating either rule. Hidden until the category view asks for
+  -- it; see RefreshSlotCount.
   frame.slotCount = U.CreateLabel(frame, {
     size = M.fontSize.small,
     color = M.color.textDim,
@@ -1530,7 +1645,7 @@ local function BuildHeader()
     justify = "LEFT",
   })
   if frame.slotCount then
-    frame.slotCount:SetPoint("LEFT", frame.sell, "RIGHT", 8, 0)
+    frame.slotCount:SetPoint("LEFT", frame.stackBags, "RIGHT", 8, 0)
     frame.slotCount:Hide()
   end
 
@@ -1611,7 +1726,7 @@ end
 -- button so that click is not swallowed.
 local function BuildDragHandle()
   local handle = CreateFrame("Button", "UnrealUIBagDrag", frame)
-  handle:SetPoint("TOPLEFT", frame.sortBags, "TOPRIGHT", 4, 0)
+  handle:SetPoint("TOPLEFT", frame.stackBags, "TOPRIGHT", 4, 0)
   handle:SetPoint("TOPRIGHT", frame.close, "TOPLEFT", -4, 0)
   handle:SetHeight(classicBag.HeaderHeight() - PADDING)
   handle:RegisterForDrag("LeftButton")
@@ -1855,17 +1970,13 @@ function BG:OnEnable()
     bag = tonumber(bag)
     if bag then bagDirty[bag] = true end
     if bag == KEYRING_BAG then keyringDirty = true end
-    vendorDirty = true
   end)
 
   U.RegisterEvent("ITEM_LOCK_CHANGED", MarkAllBagsDirty)
   U.RegisterEvent("BAG_UPDATE_COOLDOWN", function() cooldownDirty = true end)
   U.RegisterEvent("PLAYER_MONEY", RefreshMoney)
-  U.RegisterEvent("MERCHANT_SHOW", function() vendorDirty = true end)
-  U.RegisterEvent("MERCHANT_CLOSED", function() vendorDirty = true end)
 
   U.RegisterUpdate("bags.refresh", 0.2, ProcessDirty)
 
   RefreshMoney()
-  RefreshVendorButton()
 end

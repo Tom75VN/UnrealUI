@@ -526,7 +526,9 @@ end
 
 function classicAction.Capture()
   classicAction.active = type(U.ThemeStyleUsesNativeChrome) == "function" and
-                         U.ThemeStyleUsesNativeChrome() or false
+                         U.ThemeStyleUsesNativeChrome() and
+                         not (type(U.ModernWowSurfaceEnabled) == "function" and
+                              U.ModernWowSurfaceEnabled("actionbar")) or false
   classicAction.ready = false
   if not classicAction.active then return end
 
@@ -2462,8 +2464,6 @@ end
 -- modules have enabled. It is idempotent, so it also covers a load order where
 -- the bars were created before the theme surface was applied.
 function U.BuildModernWowActionBars()
-  if type(U.GetActiveThemeStyle) ~= "function" or
-     U.GetActiveThemeStyle() ~= "modern-wow" then return false end
   if type(U.ModernWowSurfaceEnabled) == "function" and
      not U.ModernWowSurfaceEnabled("actionbar") then return false end
 
@@ -2937,7 +2937,6 @@ function AB:OnEnable()
   if r then classColor = { r, g, b } end
 
   modernWowAction.active = type(U.GetActiveThemeStyle) == "function" and
-                           U.GetActiveThemeStyle() == "modern-wow" and
                            type(U.ModernWowSurfaceEnabled) == "function" and
                            U.ModernWowSurfaceEnabled("actionbar") or false
 

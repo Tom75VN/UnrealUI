@@ -2961,14 +2961,14 @@ function SB:OnEnable()
   -- modern-wow is chosen before any flat styling and replaces the Modern skin
   -- outright (modules/spellbookmodernwow.lua). A failure there is reported and
   -- not papered over with the flat skin, which would leave a mixed window.
-  if U.ThemeStyleUsesNativeChrome() then
-    -- Native chrome: behaviour only.
-  elseif type(U.ModernWowSpellBookWanted) == "function" and
+  if type(U.ModernWowSpellBookWanted) == "function" and
          U.ModernWowSpellBookWanted() then
     local ok, err = pcall(U.BuildModernWowSpellBook)
     if not ok then
       U.Error("spellbook: modern-wow drawing path: " .. tostring(err))
     end
+  elseif U.ThemeStyleUsesNativeChrome() then
+    -- Native chrome: behaviour only.
   else
     BuildFrame()
   end

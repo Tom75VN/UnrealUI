@@ -117,15 +117,16 @@ M.texture = {
   -- Named separately so a later change to either marker cannot silently move
   -- the other.
   favoriteIcon = "Interface\\AddOns\\unrealUI\\media\\leader-star",
-  -- The sort button's icon, shared by the bag and bank windows. Central
-  -- because it is the same control twice, and because unlike the icon paths
-  -- already proven on screen beside it this one is *chosen*, not verified:
-  -- this client ships no readable icon inventory (there is no extracted
-  -- Interface Icons tree and the compact DB lists no textures). A path the
-  -- client does not have renders blank rather than raising, so
-  -- U.CreateIconButton's fallback letter cannot catch it -- swapping this one
-  -- line is the whole fix, and doing it here fixes both windows at once.
-  sortIcon = "Interface\\Icons\\INV_Misc_Note_01",
+  -- The bag/bank header action icons: user-supplied 64x64 art in media/icons,
+  -- drawn with the same edge crop as the stock key and bag toggles, as
+  -- uncompressed 32-bit type-2 TGA (the encoding of leader-star and
+  -- rest-icon, which draw on this client). Owned files rather than stock Interface\Icons paths, which this
+  -- client does not let us inventory and which render blank when absent.
+  -- Central because the sort and stack buttons appear in both the bag and
+  -- bank windows.
+  sellGreysIcon = "Interface\\AddOns\\unrealUI\\media\\icons\\sell-grey-items-64",
+  sortIcon = "Interface\\AddOns\\unrealUI\\media\\icons\\sort-bags-64",
+  stackIcon = "Interface\\AddOns\\unrealUI\\media\\icons\\bag-auto-stack-64",
   -- The bag and keyring pictures. Central because two surfaces draw them --
   -- the bag window's header toggles (modules/bags.lua) and the HUD bag bar
   -- (modules/bagbar.lua) -- and they have to read as the same control. Chosen
@@ -234,6 +235,12 @@ M.classicWow.layout = {
 -- drawn once and the ornament swapped per tier.
 -- ---------------------------------------------------------------------------
 M.modernWow = {}
+M.modernWow.unitFrame = {
+  -- themes/modern-wow.lua applies the same colour globally. Classic module
+  -- mixing cannot mutate that shared token without recolouring native Classic
+  -- surfaces, so the dressed unit-frame path reads this scoped copy instead.
+  healthFull = { 0.10, 0.80, 0.10, 1.00 },
+}
 M.modernWow.path = "Interface\\AddOns\\unrealUI\\media\\Textures\\modern-wow\\"
 
 M.modernWow.texture = {
@@ -1160,25 +1167,12 @@ M.modernWow.professions = {
     topStreak = M.modernWow.talents.texture.topStreak,
     portraitRing = M.modernWow.talents.texture.portraitRing,
     portraitBackground = M.modernWow.texture.portraitBackground,
-    -- Stock UIPanelScrollBarTemplate faces. The Modern WoW design contract
-    -- keeps the client's own scrollbar art; these are the 1.12 FrameXML file
-    -- names, not runtime-verified here, and a missing file is invisible
-    -- rather than an error (textures.gettexture_echoes_missing_path).
-    scrollUp = {
-      normal   = "Interface\\Buttons\\UI-ScrollBar-ScrollUpButton-Up",
-      pushed   = "Interface\\Buttons\\UI-ScrollBar-ScrollUpButton-Down",
-      disabled = "Interface\\Buttons\\UI-ScrollBar-ScrollUpButton-Disabled",
-      highlight = "Interface\\Buttons\\UI-ScrollBar-ScrollUpButton-Highlight",
-    },
-    scrollDown = {
-      normal   = "Interface\\Buttons\\UI-ScrollBar-ScrollDownButton-Up",
-      pushed   = "Interface\\Buttons\\UI-ScrollBar-ScrollDownButton-Down",
-      disabled = "Interface\\Buttons\\UI-ScrollBar-ScrollDownButton-Disabled",
-      highlight = "Interface\\Buttons\\UI-ScrollBar-ScrollDownButton-Highlight",
-    },
-    scrollKnob = "Interface\\Buttons\\UI-ScrollBar-Knob",
     missingIcon = "Interface\\Icons\\INV_Misc_QuestionMark",
     beastTrainingIcon = "Interface\\Icons\\Ability_Hunter_BeastCall02",
+    -- Achievement metal border around the item-stat panel.
+    metalJoint = M.modernWow.path .. "ui\\borders\\metal-border-joint",
+    metalLeft  = M.modernWow.path .. "ui\\borders\\metal-border-left",
+    metalTop   = M.modernWow.path .. "ui\\borders\\metal-border-top",
   },
   -- Recipe-detail backgrounds and rank-bar fills by profession key (the keys
   -- modules/spellbookprofessions.lua resolves skill-line names to). DF-main's
@@ -1231,7 +1225,10 @@ M.modernWow.professions = {
     skillMedium    = { left = 604,  top = 55,  right = 617,  bottom = 70 },
     skillOptimal   = { left = 539,  top = 55,  right = 552,  bottom = 70 },
     selected       = { left = 1614, top = 39,  right = 1881, bottom = 58 },
-    highlight      = { left = 1275, top = 39,  right = 1584, bottom = 60 },
+    -- Cropped to its painted area (alpha bbox 1,1-268,20 of DF-main's
+    -- 1275,39-1584,60 cell): the 41 transparent columns on its right made the
+    -- hover bar draw visibly shorter than the selection bar.
+    highlight      = { left = 1276, top = 40,  right = 1543, bottom = 59 },
     slot           = { left = 272,  top = 420, right = 370,  bottom = 518 },
   },
   slotOpening = { left = 288, top = 436, right = 356, bottom = 503 },
@@ -1259,40 +1256,130 @@ M.modernWow.professions = {
              labelX = 10,
              -- Label offset from the row centre (SetPoint sign). DF-main's +2
              -- lift sat the text on the bar's top edge here (user screenshot,
-             -- 2026-09-15), so it is lowered onto the bar.
-             labelY = -3, collapseWidth = 11, collapseHeight = 8,
-             collapseRight = 10 },
+             -- 2026-09-15), so it is lowered onto the bar; then raised 2 (user
+             -- request, 2026-09-17), then lowered 1 (same day).
+             labelY = -2, collapseWidth = 11, collapseHeight = 8,
+             -- Collapse glyph's gap from the header art's right edge.
+             collapsePadding = 5,
+             -- How far an expanded category's recipes are drawn up towards
+             -- its header (user request, 2026-09-17).
+             recipePull = 4,
+             -- Header art's gap from each list panel edge, equal on both
+             -- sides so it stays centred: 6px narrower than the selection
+             -- bars' 3px inset (user request, 2026-09-17).
+             panelInset = 6,
+             -- While the list scrolls, the header art ends this far left of
+             -- the scrollbar track's left edge (user request, 2026-09-17).
+             scrollGap = 4 },
   recipe = { height = 20, iconX = 4, iconWidth = 13, iconHeight = 15,
-             labelX = 21, countGap = 2, padding = 10,
-             selectedWidth = 267, selectedHeight = 19,
-             highlightWidth = 309, highlightHeight = 21, highlightAlpha = 0.5 },
-  scroll = { width = 16, button = 16, knobWidth = 18, knobHeight = 24,
-             right = 3, trackAlpha = 0.35,
-             buttonTexCoord = { 0.25, 0.75, 0.25, 0.75 },
-             knobTexCoord = { 0.20, 0.80, 0.125, 0.875 } },
+             labelX = 21, labelY = -2, countGap = 2, padding = 10,
+             -- Selection and hover bars span the list panel (user request,
+             -- 2026-09-17): `barInset` is their gap from each panel edge. 3,
+             -- not 2: at 2 the art touched the panel border (user report,
+             -- 2026-09-17). The category header art uses `header.panelInset`.
+             barInset = 3, selectedHeight = 19,
+             -- Space under the last recipe of a category, before the next
+             -- category header (user request, 2026-09-17).
+             groupGap = 6,
+             -- Tracked-recipe check at the row's right edge (user request,
+             -- 2026-09-17). Its art is read from the "Track this recipe"
+             -- CheckButton's own checked texture, so the list shows the same
+             -- tick the box does; `checkFallback` is used only if that read
+             -- fails.
+             -- checkY: SetPoint offset, negative lowers it (user request,
+             -- 2026-09-17: 2px down).
+             checkSize = 16, checkRight = 2, checkY = -2, checkGap = 2,
+             checkFallback = "Interface\\Buttons\\UI-CheckBox-Check" },
+  -- Same MinimalScrollBar geometry as Character > Skills. The Slider owns
+  -- only the track; U.StyleModernWowScrollbar hangs its 11px arrows 8px past
+  -- either end, so the two 19px gaps keep the complete control in the list.
+  scroll = { width = 8, right = 7, topGap = 19, bottomGap = 19 },
 
   schematic = { gap = 2, right = 5, bottom = 33, inset = 28,
                 icon = 37, nameGap = 14, lineGap = 4, sectionGap = 12,
-                reagentTop = 23, reagentPitch = 60, reagentGap = 6,
-                reagentWidth = 180, reagentHeight = 50, reagentIcon = 37,
-                reagentTextX = 46, reagentTextWidth = 136,
+                reagentGap = 6,
+                -- Reagent icon 20% under DF-main's 37 (user request,
+                -- 2026-09-16), then 20% under that again (2026-09-17). The
+                -- rows are measured from the silver slot frame round each
+                -- icon (pw.ReagentGeometry): `reagentLabelGap` from the
+                -- "Reagents" heading to the first frame, `reagentSpacing`
+                -- between frames, and the text `reagentTextGap` right of the
+                -- icon, taking the rest of `reagentWidth`.
+                reagentWidth = 180, reagentIcon = 24,
+                reagentLabelGap = 4, reagentSpacing = 3, reagentTextGap = 9,
+                -- Extra drop of the "Reagents" heading, and so of every
+                -- reagent under it (user request, 2026-09-17: 8, then 10
+                -- more).
+                reagentHeadingShift = 18,
                 reagentColumn = 6, maxReagents = 8 },
+  -- "Track this recipe" above the recipe icon: the client's own 20-unit
+  -- CheckButton, as the modern-wow Spellbook's toggles use, lifted above the
+  -- form's children. Right-aligned (user request, 2026-09-16): `right` is
+  -- the box's inset from the schematic's top-right corner, matching the stat
+  -- panel's right edge, with the label to its left.
+  -- labelGap 6, not 2: the label overlapped the box (user report,
+  -- 2026-09-17).
+  -- y -9, not -5: lowered 4 (user request, 2026-09-17). The stat panel
+  -- hangs from the box (stats.trackGap).
+  track = { right = 16, y = -9, size = 20, levelLift = 4, labelGap = 6 },
   -- The ThinBorder rim DF-main's InsetFrameTemplate draws round both panels.
   border = { size = 16 },
+
+  -- Item-stat panel in the schematic's top-right corner for an equippable
+  -- product (user request, 2026-09-16): the product tooltip's lines after its
+  -- name, in the tooltip's own colours. Offsets are the panel's outer edge
+  -- from the schematic's top-right corner; the name label stops `nameGap`
+  -- short of it.
+  -- `top` clears the right-aligned Track checkbox above the panel.
+  -- trackGap: space from the track box's bottom to the panel's top edge
+  -- (user request, 2026-09-17).
+  stats = { width = 210, right = 16, trackGap = 10, padding = 13, lineGap = 2,
+            columnGap = 8, nameGap = 8, maxLines = 30, fillInset = 4,
+            fillColor = { 0.00, 0.00, 0.00, 0.55 },
+            -- Measured from the achievement border art. The joint is a 32px
+            -- bottom-right corner whose 7-texel bars end at texel 25; the edge
+            -- strips carry a 9-texel bar on their outer side, painted to
+            -- texel 453 of 512. Joints are drawn at 9/7 so both bars match,
+            -- and edges start `edgeInset` in, under the joints' straight bars.
+            -- borderScale sizes the whole rim: units per edge texel (user
+            -- request, 2026-09-16: thinner than the authored 9-unit bar).
+            joint = { canvas = 32, extent = 26, thickness = 7 },
+            edge = { canvas = 16, length = 512, painted = 454, thickness = 9 },
+            edgeInset = 20, borderScale = 0.6 },
+  -- Equip locations that are not gear: they carry no stats worth a panel.
+  statsSkipEquipLoc = { INVTYPE_BAG = true, INVTYPE_QUIVER = true,
+                        INVTYPE_AMMO = true },
 
   button = { width = 80, height = 22, right = 9, bottom = 7,
              createAllGap = 86, stepWidth = 23, stepGap = 3,
              countWidth = 30, countGap = 4, capWidth = 12,
              glyphWidth = 11, glyphHeight = 8,
-             hoverAlpha = 0.5, disabledAlpha = 0.4, maxCount = 99 },
+             hoverAlpha = 0.5, disabledAlpha = 0.4, maxCount = 99,
+             -- Player cast bar docked left of Create All while crafting.
+             castBarGap = 6,
+             -- Extra nudge of the docked bar, in UI units (user request).
+             castBarShiftX = -10, castBarShiftY = 5 },
 
   titleColor = { 1.00, 0.82, 0.00, 1.00 },
   rankTextColor = { 1.00, 1.00, 1.00, 1.00 },
-  headerColor = { 1.00, 0.82, 0.00, 1.00 },
+  -- Category labels are white at rest (user request, 2026-09-17); hover is
+  -- still marked by the collapse glyph's additive glow.
+  headerColor = { 1.00, 1.00, 1.00, 1.00 },
   headerHoverColor = { 1.00, 1.00, 1.00, 1.00 },
-  -- DF-main PROFESSION_RECIPE_COLOR; hover is HIGHLIGHT_FONT_COLOR.
+  -- Recipe label before its row is filled; hovered or selected labels are
+  -- HIGHLIGHT_FONT_COLOR, every other one takes its difficulty colour.
   recipeColor = { 0.886, 0.863, 0.839, 1.00 },
   recipeHoverColor = { 1.00, 1.00, 1.00, 1.00 },
+  -- Recipe label and selection/hover bar tint by difficulty, the native
+  -- TradeSkillTypeColor values (user request, 2026-09-16). The bars draw the
+  -- white `highlight` cell: the gold `selected` cell cannot be tinted to
+  -- orange, green or grey.
+  difficultyColor = {
+    optimal = { 1.00, 0.50, 0.25, 1.00 },
+    medium  = { 1.00, 1.00, 0.00, 1.00 },
+    easy    = { 0.25, 0.75, 0.25, 1.00 },
+    trivial = { 0.50, 0.50, 0.50, 1.00 },
+  },
   nameColor = { 1.00, 0.82, 0.00, 1.00 },
   labelColor = { 1.00, 0.82, 0.00, 1.00 },
   bodyColor = { 1.00, 1.00, 1.00, 1.00 },
@@ -1300,6 +1387,17 @@ M.modernWow.professions = {
   cooldownColor = { 1.00, 0.13, 0.13, 1.00 },
   buttonTextColor = { 1.00, 0.82, 0.00, 1.00 },
   buttonDisabledColor = { 0.50, 0.50, 0.50, 1.00 },
+}
+
+-- Modern WoW tracked-recipe HUD (modules/crafttracker.lua). Keep the complete
+-- token separate from M.craftTracker so this theme's stronger missing-reagent
+-- contrast cannot alter the frozen modern or classic-wow drawing paths.
+M.modernWow.craftTracker = {
+  width = 220, minHeight = 20, indent = 8, lineGap = 2, recipeGap = 8,
+  handleLevel = 2,
+  headerColor  = { 1.00, 0.82, 0.00, 1.00 },
+  doneColor    = { 1.00, 1.00, 1.00, 1.00 },
+  pendingColor = { 0.60, 0.60, 0.60, 1.00 },
 }
 
 -- UnrealQuest-measured three-slice action-button cells in ui/128RedButton.tga
@@ -2284,6 +2382,19 @@ M.itemCompare = {
   worse  = { 1.00, 0.20, 0.20, 1.00 },   -- hovered item gives less
 }
 
+-- Tracked-recipe HUD (modules/crafttracker.lua), laid out like the native
+-- quest tracker it sits beside: gold recipe names (NORMAL_FONT_COLOR), reagent
+-- lines white once enough is carried and dimmed until then, as the tracker
+-- draws finished and unfinished objectives.
+M.craftTracker = {
+  width = 220, minHeight = 20, indent = 8, lineGap = 2, recipeGap = 8,
+  -- Direct-drag Button above the text frame (modules/crafttracker.lua).
+  handleLevel = 2,
+  headerColor  = { 1.00, 0.82, 0.00, 1.00 },
+  doneColor    = { 1.00, 1.00, 1.00, 1.00 },
+  pendingColor = { 0.80, 0.80, 0.80, 1.00 },
+}
+
 -- Power colours keyed by the numeric UnitPowerType index used by Vanilla.
 -- The unit API contract is still INCONCLUSIVE in the compact evidence
 -- (knowledge.json / unitframes.core_unit_api_contract_partial), so consumers
@@ -2416,9 +2527,10 @@ M.slot = {
   size    = 30,   -- item button
   gap     = 3,
   padding = 6,
-  header  = 28,
+  header  = 32,
   tray    = 26,   -- keyring / bag-slot button
-  icon    = 16,   -- header icon button
+  icon    = 16,   -- small header button (close)
+  headerIcon = 22, -- header icon group: key, bags, sell, sort, merge
 }
 
 -- ---------------------------------------------------------------------------

@@ -299,12 +299,13 @@ end
 -- Stock frames this module replaces. The name lists are the ones UnrealPfUI
 -- suppresses, which were built from the names actually present in this client's
 -- global table rather than from Vanilla FrameXML.
-local function SuppressStockFrames()
-  U.SuppressNativeFrame(U.NativeFrameParts("PlayerFrame",
+local function SuppressStockFrames(units, party)
+  if units then
+    U.SuppressNativeFrame(U.NativeFrameParts("PlayerFrame",
     { "Texture", "Background", "HealthBar", "HealthBarText", "ManaBar",
       "ManaBarText", "GroupIndicator", "GroupIndicatorLeft",
       "GroupIndicatorMiddle", "GroupIndicatorRight", "GroupIndicatorText" }))
-  U.SuppressNativeFrame("PlayerPortrait")
+    U.SuppressNativeFrame("PlayerPortrait")
 
   -- Tagged "target": these are the frames this client actually brings back on
   -- PLAYER_TARGET_CHANGED, so they are the only ones that event needs to sweep.
@@ -349,23 +350,26 @@ local function SuppressStockFrames()
   -- PartyMemberFrame%dPetFrame, already covered below). No event re-shows it
   -- on this client, so it stays in the default "static" group and relies on
   -- the periodic sweep alone, same as everything else in that group.
-  U.SuppressNativeFrame(U.NativeFrameParts("PetFrame",
+    U.SuppressNativeFrame(U.NativeFrameParts("PetFrame",
     { "Texture", "Background", "HealthBar", "HealthBarText", "ManaBar",
       "ManaBarText", "Portrait", "Name", "Happiness" },
     { { "Debuff", 4 } }))
+  end
 
-  local i
-  for i = 1, PARTY_COUNT do
-    local root = "PartyMemberFrame" .. i
-    U.SuppressNativeFrame(U.NativeFrameParts(root,
-      { "Texture", "Background", "HealthBar", "HealthBarText", "ManaBar",
-        "ManaBarText", "Portrait", "Name", "Status", "Disconnect",
-        "LeaderIcon", "MasterIcon", "PVPIcon",
-        "PetFrame", "PetFrameTexture", "PetFrameHealthBar",
-        "PetFramePortrait", "PetFrameName" },
-      { { "Debuff", 4 } }), "party")
-    U.SuppressNativeFrame(U.NativeFrameParts(root .. "PetFrame",
-      {}, { { "Debuff", 4 } }), "party")
+  if party then
+    local i
+    for i = 1, PARTY_COUNT do
+      local root = "PartyMemberFrame" .. i
+      U.SuppressNativeFrame(U.NativeFrameParts(root,
+        { "Texture", "Background", "HealthBar", "HealthBarText", "ManaBar",
+          "ManaBarText", "Portrait", "Name", "Status", "Disconnect",
+          "LeaderIcon", "MasterIcon", "PVPIcon",
+          "PetFrame", "PetFrameTexture", "PetFrameHealthBar",
+          "PetFramePortrait", "PetFrameName" },
+        { { "Debuff", 4 } }), "party")
+      U.SuppressNativeFrame(U.NativeFrameParts(root .. "PetFrame",
+        {}, { { "Debuff", 4 } }), "party")
+    end
   end
 end
 
@@ -885,6 +889,8 @@ local unitMouse = {}
 
 local classicNative = {
   active = false,
+  unitActive = false,
+  partyActive = false,
   roots = {
     { id = "player",       names = { "PlayerFrame" },
       auraAnchorName = "PlayerFrameHealthBar" },
@@ -906,6 +912,16 @@ local classicNative = {
 function classicNative.Enabled()
   return type(U.ThemeStyleUsesNativeChrome) == "function" and
          U.ThemeStyleUsesNativeChrome()
+end
+
+function classicNative.UsesNative(id)
+  if not classicNative.Enabled() or type(id) ~= "string" then return false end
+  if string.find(id, "^party") then
+    return not (type(U.ClassicModernModuleEnabled) == "function" and
+                U.ClassicModernModuleEnabled("partyframes"))
+  end
+  return not (type(U.ClassicModernModuleEnabled) == "function" and
+              U.ClassicModernModuleEnabled("unitframes"))
 end
 
 function classicNative.Resolve(names)
@@ -1018,7 +1034,7 @@ end
 -- the native dimensions were already copied into bounded numeric offsets by
 -- Anchor. A user-saved free position always wins over this default docking.
 function classicNative.DockTargetTarget(useNativeChild)
-  if not classicNative.active then return end
+  if not classicNative.unitActive then return end
   local frame = frames.targettarget
   local parent = frames.target
   if not frame or not parent then return end
@@ -1050,7 +1066,7 @@ end
 
 function classicNative.RefreshCustomFallback(frame, exists)
   local entry = frame and frame.uuiClassicEntry
-  if not classicNative.active or not entry or not entry.customFallback then return end
+  if not classicNative.unitActive or not entry or not entry.customFallback then return end
 
   local nativeShown = classicNative.NativeShown(frame)
   local fallbackShown = exists and not nativeShown
@@ -1193,15 +1209,17 @@ function classicNative.Reanchor()
   local i
   for i = 1, table.getn(classicNative.roots) do
     local entry = classicNative.roots[i]
-    local live = classicNative.Resolve(entry.names)
-    if live and live ~= entry.native then
-      classicNative.Bind(entry, entry.order or i)
-    elseif entry.anchor and entry.native then
-      classicNative.Anchor(entry.anchor, entry.native)
+    if classicNative.UsesNative(entry.id) then
+      local live = classicNative.Resolve(entry.names)
+      if live and live ~= entry.native then
+        classicNative.Bind(entry, entry.order or i)
+      elseif entry.anchor and entry.native then
+        classicNative.Anchor(entry.anchor, entry.native)
+      end
     end
   end
   local targettarget = frames.targettarget
-  if targettarget then
+  if classicNative.unitActive and targettarget then
     classicNative.DockTargetTarget(classicNative.NativeShown(targettarget))
   end
 end
@@ -1240,7 +1258,7 @@ end
 -- and forcing Show would take the lifecycle away from the client. The repair
 -- below is deliberately limited to binding and anchor state for a valid target.
 function classicNative.ReconcileTarget(frame, exists)
-  if not classicNative.active or not frame or frame.unit ~= "target" then
+  if not classicNative.unitActive or not frame or frame.unit ~= "target" then
     return
   end
 
@@ -1285,12 +1303,15 @@ end
 
 function classicNative.BindAll()
   classicNative.active = true
+  classicNative.unitActive = classicNative.UsesNative("player")
+  classicNative.partyActive = classicNative.UsesNative("party1")
   local i
   for i = 1, table.getn(classicNative.roots) do
-    classicNative.Bind(classicNative.roots[i], i)
+    local entry = classicNative.roots[i]
+    if classicNative.UsesNative(entry.id) then classicNative.Bind(entry, i) end
   end
   local targettarget = frames.targettarget
-  if targettarget then
+  if classicNative.unitActive and targettarget then
     classicNative.DockTargetTarget(classicNative.NativeShown(targettarget))
   end
 end
@@ -1451,16 +1472,18 @@ local function BuildPortraitBox(parent, size, border)
   return box
 end
 
--- Whether this session draws the flat class circle instead of a unit portrait.
--- True only under modern-wow AND only when the client has no
--- SetPortraitTexture: that theme's frame art is built around a portrait, and a
--- ring with an empty hole in it reads as a bug rather than as a missing
--- feature. Every other theme keeps the existing behaviour exactly -- no
--- portrait at all on a client without the API.
-local function UsesClassPortrait()
+-- Whether this frame family draws the flat class circle instead of a unit
+-- portrait. True only for a Modern WoW family AND only when the client has no
+-- SetPortraitTexture: that art is built around a portrait, and a ring with an
+-- empty hole in it reads as a bug rather than as a missing feature. Every
+-- other family keeps the existing behaviour exactly -- no portrait at all on
+-- a client without the API.
+local function UsesClassPortrait(id)
   if ResolveApiFn("SetPortraitTexture") then return false end
-  return type(U.GetActiveThemeStyle) == "function" and
-         U.GetActiveThemeStyle() == "modern-wow"
+  local moduleId = type(id) == "string" and string.find(id, "^party") and
+                   "partyframes" or "unitframes"
+  return type(U.ModernWowModuleEnabled) == "function" and
+         U.ModernWowModuleEnabled(moduleId)
 end
 
 -- ---------------------------------------------------------------------------
@@ -1521,7 +1544,12 @@ function model3d.Level(frame)
   if not key or not U.db or not U.db[key] then return 0 end
   if type(U.GetActiveThemeStyle) ~= "function" then return 0 end
   local style = U.GetActiveThemeStyle()
-  if style ~= "modern-wow" and style ~= "modern" then return 0 end
+  if style ~= "modern-wow" and style ~= "modern" then
+    local moduleId = model3d.Family(frame) == "party" and
+                     "partyframes" or "unitframes"
+    if type(U.ModernWowModuleEnabled) ~= "function" or
+       not U.ModernWowModuleEnabled(moduleId) then return 0 end
+  end
   return level
 end
 
@@ -1722,7 +1750,7 @@ local function RefreshPortrait(frame)
     return
   end
 
-  -- modern-wow's class-circle fallback, used only on a client with no
+  -- The Modern WoW class-circle fallback, used only on a client with no
   -- SetPortraitTexture. The cell comes from the shared media table;
   -- modules/modernwow.lua owns everything else about how the box looks.
   --
@@ -2397,7 +2425,7 @@ local function BuildFrame(spec, parent)
     wantsPortrait = U.ModernWowWantsPortrait(spec.id)
   end
 
-  local classPortrait = UsesClassPortrait()
+  local classPortrait = UsesClassPortrait(spec.id)
   local hasPortrait = wantsPortrait and
                       (ResolveApiFn("SetPortraitTexture") ~= nil or classPortrait)
   local barOffsetX = hasPortrait and (portraitSize - border) or 0
@@ -3219,12 +3247,14 @@ end
 -- The two colours every bar resolves through. With the master switch off they
 -- return core/media.lua's values, which is what makes unticking restore the
 -- default look everywhere at once.
-local function HealthBaseColor()
+local function HealthBaseColor(frame)
   local cfg = ColorConfig()
   if cfg.customColors then
     return cfg.healthColorR, cfg.healthColorG, cfg.healthColorB
   end
-  local c = M.color.healthFull
+  local modern = frame and frame.uuiModernWow and M.modernWow and
+                 M.modernWow.unitFrame
+  local c = (modern and modern.healthFull) or M.color.healthFull
   return c[1], c[2], c[3]
 end
 
@@ -3242,10 +3272,19 @@ end
 -- Class colouring matches the player tooltip exactly and takes priority over
 -- both the theme gradient and a custom health colour. Non-player units keep
 -- the normal theme/custom path below.
+local function HealthTexture(frame, textured)
+  if not textured then return M.texture.plain end
+  if frame and frame.uuiModernWow and M.modernWow and M.modernWow.texture and
+     M.modernWow.texture.healthFill then
+    return M.modernWow.texture.healthFill
+  end
+  return M.unitFrame.statusTexture
+end
+
 local function ApplyHealthColor(frame)
   local perc = frame.data.healthPercent
   local cfg = ColorConfig()
-  local cr, cg, cb = HealthBaseColor()
+  local cr, cg, cb = HealthBaseColor(frame)
 
   local r, g, b
   -- Target and party health always carry normTex2, including theme-colour
@@ -3281,8 +3320,7 @@ local function ApplyHealthColor(frame)
      frame.healthColorTextured == textured then return end
   frame.healthColorR, frame.healthColorG, frame.healthColorB = r, g, b
   frame.healthColorTextured = textured
-  U.SetStatusBarTexture(frame.health.bar,
-                        textured and M.unitFrame.statusTexture or M.texture.plain)
+  U.SetStatusBarTexture(frame.health.bar, HealthTexture(frame, textured))
   U.SetStatusBarColor(frame.health.bar, r, g, b, 1)
 end
 
@@ -3734,15 +3772,14 @@ local function RefreshFrame(frame, mode)
       SetFrameShown(frame, true)
       SetBar(frame.health.bar, 0, 1)
       if frame.power then SetBar(frame.power.bar, 0, 1) end
-      local r, g, b = HealthBaseColor()
+      local r, g, b = HealthBaseColor(frame)
       local textured = frame.spec and frame.spec.healthTexture and true or false
       if frame.healthColorR ~= r or frame.healthColorG ~= g or
          frame.healthColorB ~= b or
          frame.healthColorTextured ~= textured then
         frame.healthColorR, frame.healthColorG, frame.healthColorB = r, g, b
         frame.healthColorTextured = textured
-        U.SetStatusBarTexture(frame.health.bar,
-                              textured and M.unitFrame.statusTexture or M.texture.plain)
+        U.SetStatusBarTexture(frame.health.bar, HealthTexture(frame, textured))
         U.SetStatusBarColor(frame.health.bar, r, g, b, 1)
       end
       ClearTexts(frame)
@@ -4053,11 +4090,10 @@ function U.ApplyUnitFrameColors()
       if frame.data.healthPercent then
         ApplyHealthColor(frame)
       else
-        local r, g, b = HealthBaseColor()
+        local r, g, b = HealthBaseColor(frame)
         local textured = frame.spec and frame.spec.healthTexture and true or false
         frame.healthColorTextured = textured
-        U.SetStatusBarTexture(frame.health.bar,
-                              textured and M.unitFrame.statusTexture or M.texture.plain)
+        U.SetStatusBarTexture(frame.health.bar, HealthTexture(frame, textured))
         U.SetStatusBarColor(frame.health.bar, r, g, b, 1)
       end
 
@@ -4544,7 +4580,7 @@ local function PartyPetShown(index)
   -- The Classic theme hands the party over to the client's own frames, which
   -- draw their own nested pet frames. Ours would be invisible anchors with
   -- nothing to anchor, so the option simply does not apply there.
-  if classicNative.active then return false end
+  if classicNative.partyActive then return false end
   if U.IsUnlocked() then return true end
   return ApiTruth("UnitExists", "partypet" .. index) and true or false
 end
@@ -4561,7 +4597,7 @@ end
 -- occupancy, so it stands as the fallback if the count is missing.
 local function PartyPlayerShown()
   if not PartyConfig().partyPlayer then return false end
-  if classicNative.active then return false end
+  if classicNative.partyActive then return false end
   if U.IsUnlocked() then return true end
   if ApiTruth("GetNumPartyMembers") then return true end
   return ApiTruth("GetPartyMember", 1) and true or false
@@ -5403,7 +5439,14 @@ function UF:OnEnable()
   if table.getn(frameOrder) > 0 then return end
 
   local nativeChrome = classicNative.Enabled()
-  if not nativeChrome then SuppressStockFrames() end
+  local modernUnits = nativeChrome and
+                      type(U.ClassicModernModuleEnabled) == "function" and
+                      U.ClassicModernModuleEnabled("unitframes") or false
+  local modernParty = nativeChrome and
+                      type(U.ClassicModernModuleEnabled) == "function" and
+                      U.ClassicModernModuleEnabled("partyframes") or false
+  SuppressStockFrames(not nativeChrome or modernUnits,
+                      not nativeChrome or modernParty)
   unitMouse.AddPartyWhisper()
 
   frames[PARTY_ANCHOR] = BuildPartyAnchor()
@@ -5437,7 +5480,7 @@ function UF:OnEnable()
       })
     end
 
-    if nativeChrome then
+    if nativeChrome and classicNative.UsesNative(spec.id) then
       classicNative.HideCustomVisuals(frame)
     else
       unitMouse.Enable(frame)
@@ -5472,7 +5515,8 @@ function UF:OnEnable()
   LayoutParty(true)
 
   local tickBar, tickHeight
-  if nativeChrome then
+  local playerNative = nativeChrome and classicNative.UsesNative("player")
+  if playerNative then
     -- unitframes.player_click_hit_route.v1 confirms PlayerFrameManaBar exists,
     -- is visible and is a native StatusBar in the Classic path. The overlay is
     -- an addon-owned child, so the stock bar remains responsible for its fill.
@@ -5495,13 +5539,13 @@ function UF:OnEnable()
   end
   if tickBar then
     powerTick.Build(tickBar, tickHeight,
-                    not nativeChrome and frames.player.health or nil)
+                    not playerNative and frames.player.health or nil)
   end
 
   RegisterEvents()
 
   local playerClass = UnitClassToken("player")
-  if not nativeChrome and frames.player and
+  if not playerNative and frames.player and
      (playerClass == "ROGUE" or playerClass == "DRUID") then
     SuppressStockComboFrame()
     BuildComboPoints(frames.player, playerClass == "DRUID")

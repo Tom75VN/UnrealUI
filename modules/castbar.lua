@@ -1036,9 +1036,67 @@ local function ApplyIdlePlaceholder()
   ApplyPushback(0)
 end
 
+-- Craft dock. While a profession window is open, a craft cast moves the player
+-- bar to the left of that window's Create All button (user request,
+-- 2026-09-16); it returns to its mover position when the window closes, a
+-- non-craft cast starts, or edit mode opens. The anchor is the addon-owned
+-- button modules/professions.lua hands out, never a native child
+-- (rules/unreal-ui.md, native widget ownership). No stored position is
+-- touched: undocking re-applies the mover's own saved or default point.
+local craftDock = { docked = false, anchor = nil }
+
+function craftDock.Anchor()
+  if type(U.ProfessionsCastBarAnchor) ~= "function" then return nil end
+  local ok, anchor, gap, shiftX, shiftY = pcall(U.ProfessionsCastBarAnchor)
+  if not ok or not anchor then return nil end
+  return anchor, tonumber(gap) or 0, tonumber(shiftX) or 0, tonumber(shiftY) or 0
+end
+
+function craftDock.Undock()
+  if not craftDock.docked then return end
+  craftDock.docked = false
+  craftDock.anchor = nil
+  if bar then U.ReapplyMoverPosition(bar) end
+end
+
+function craftDock.Dock()
+  if not bar or U.IsUnlocked() then return false end
+  local anchor, gap, shiftX, shiftY = craftDock.Anchor()
+  if not anchor then return false end
+  if craftDock.docked and craftDock.anchor == anchor then return true end
+
+  -- SetPoint offsets are in the bar's own units; the modern-wow bar is scaled,
+  -- so the nudge is divided back out to move the requested UI units.
+  local scaleOk, scale = pcall(bar.GetScale, bar)
+  scale = scaleOk and tonumber(scale) or 1
+  if scale <= 0 then scale = 1 end
+
+  local ok = pcall(function()
+    bar:ClearAllPoints()
+    bar:SetPoint("RIGHT", anchor, "LEFT",
+                 -gap + shiftX / scale, shiftY / scale)
+  end)
+  craftDock.docked = true
+  craftDock.anchor = anchor
+  if not ok then
+    craftDock.Undock()
+    return false
+  end
+  return true
+end
+
+-- Per tick: the window closed or edit mode opened since the bar docked.
+function craftDock.Check()
+  if not craftDock.docked then return end
+  if U.IsUnlocked() or craftDock.Anchor() ~= craftDock.anchor then
+    craftDock.Undock()
+  end
+end
+
 local function UpdateVisibility()
   -- No player bar under a native-chrome theme; the client draws that one.
   if not bar then return end
+  craftDock.Check()
   local shown = casting or U.IsUnlocked() or Finishing(bar)
   if shown then
     if not bar:IsShown() then bar:Show() end
@@ -1115,6 +1173,7 @@ local function StartCast(name, castTimeMs, kind)
   ApplyPushback(0)
 
   castKind = kind or (IsCraftCast(name) and "craft") or "cast"
+  if not (castKind == "craft" and craftDock.Dock()) then craftDock.Undock() end
   ApplyCastKind(bar, castKind)
   ApplyUnitBarTint(bar)
   pcall(bar.bar.SetMinMaxValues, bar.bar, 0, duration)
@@ -1224,6 +1283,14 @@ end
 -- Construction
 -- ---------------------------------------------------------------------------
 
+-- Every addon-owned castbar draws in HIGH strata. UIParent children default to
+-- MEDIUM, the same strata as the stock UI panels (TradeSkill, Craft, ...), so a
+-- cast started from an open crafting window was hidden behind it. Children --
+-- the theme skins and the mover handle -- follow the bar's strata.
+local function RaiseCastbarStrata(widget)
+  if widget then pcall(widget.SetFrameStrata, widget, "HIGH") end
+end
+
 -- Shared cell layout for both the player bar and the target anchor: the
 -- icon flush left, the progress bar filling the rest of the width, name and
 -- timer drawn on top of the fill. `frameName` distinguishes the created
@@ -1235,6 +1302,7 @@ local function BuildBarWidget(frameName, width, height, parent)
   local iconSize = height
   local barWidth = width - iconSize
   local widget = CreateFrame("Frame", frameName, parent or UIParent)
+  RaiseCastbarStrata(widget)
   widget:SetWidth(width)
   widget:SetHeight(height)
 
@@ -1376,6 +1444,7 @@ local function BuildTargetBar()
       U.Debug("castbar: Classic target builder unavailable; target bar omitted")
       return
     end
+    RaiseCastbarStrata(widget)
     nativeTargetStyle = "native static (verified border A)"
   else
     widget = BuildBarWidget("UnrealUICastBarTarget", TARGET_WIDTH)
@@ -1410,6 +1479,7 @@ local function BuildClassicPlayerBar()
 
   local widget = U.CreateClassicCastbar("UnrealUICastBar")
   if not widget then return false end
+  RaiseCastbarStrata(widget)
 
   bar = widget
   bar:Hide()
@@ -1988,6 +2058,7 @@ NativeStyleTargetWidget = function(frameName)
   frameName = frameName .. "Native"
 
   local container = CreateFrame("Frame", frameName, UIParent)
+  RaiseCastbarStrata(container)
   container:SetWidth(coreWidth)
   container:SetHeight(math.max(coreHeight, HANDLE_MIN_HEIGHT))
 

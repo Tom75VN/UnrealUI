@@ -16,8 +16,8 @@
 -- rules/unreal-ui.md records that lifecycle as crash-confirmed.
 --
 -- Only shared tokens live here. The drawing itself is modules/modernwow.lua,
--- which is this theme's complete implementation behind a single
--- U.GetActiveThemeStyle() == "modern-wow" seam.
+-- which owns both this theme's complete implementation and the same complete
+-- per-module paths Classic can explicitly select.
 
 local U = UnrealUI
 

@@ -16,6 +16,29 @@ local FALLBACK_STYLE = "modern"
 local styles = {}
 local styleOrder = {}
 
+-- Classic WoW can selectively hand individual surfaces to Modern WoW while
+-- keeping every other part of the client-native interface intact. These are
+-- profile settings and reload-bound for the same reason as the main theme:
+-- each owning module chooses its complete drawing path during startup.
+local classicModernModules = {
+  { id = "unitframes",   labelKey = "CLASSIC_MODULE_UNIT_FRAMES" },
+  { id = "partyframes",  labelKey = "CLASSIC_MODULE_PARTY_FRAMES" },
+  { id = "actionbar",    labelKey = "CLASSIC_MODULE_ACTION_BARS" },
+  { id = "minimap",      labelKey = "CLASSIC_MODULE_MINIMAP" },
+  { id = "character",    labelKey = "CLASSIC_MODULE_CHARACTER" },
+  { id = "spellbook",    labelKey = "CLASSIC_MODULE_SPELLBOOK" },
+  { id = "talents",      labelKey = "CLASSIC_MODULE_TALENTS" },
+  { id = "professions",  labelKey = "CLASSIC_MODULE_CRAFTING" },
+}
+local classicModernDefaults = {}
+local classicModernKnown = {}
+local classicModernIndex
+for classicModernIndex = 1, table.getn(classicModernModules) do
+  local id = classicModernModules[classicModernIndex].id
+  classicModernDefaults[id] = false
+  classicModernKnown[id] = true
+end
+
 function U.RegisterThemeStyle(id, definition)
   if type(id) ~= "string" or id == "" or type(definition) ~= "table" then
     U.Error("RegisterThemeStyle requires an id and definition")
@@ -63,6 +86,47 @@ end
 
 function U.GetActiveThemeStyle()
   return U.activeThemeStyle or FALLBACK_STYLE
+end
+
+function U.GetClassicModernModules()
+  return classicModernModules
+end
+
+function U.GetClassicModernModule(id)
+  if not classicModernKnown[id] or type(U.ModuleConfig) ~= "function" then
+    return false
+  end
+  return U.ModuleConfig("classicwow", classicModernDefaults)[id] and true or false
+end
+
+function U.SetClassicModernModule(id, enabled)
+  if not classicModernKnown[id] or type(U.ModuleConfig) ~= "function" then
+    return false
+  end
+  U.ModuleConfig("classicwow", classicModernDefaults)[id] = enabled and true or false
+  return true
+end
+
+-- Stored Classic choices never leak into another theme. The broader helper is
+-- for complete Modern WoW drawing paths that are also valid as Classic module
+-- overrides; it deliberately does not replace the per-surface readiness gate.
+function U.ClassicModernModuleEnabled(id)
+  return U.GetActiveThemeStyle() == "classic-wow" and
+         U.GetClassicModernModule(id)
+end
+
+function U.ModernWowModuleEnabled(id)
+  return U.GetActiveThemeStyle() == "modern-wow" or
+         U.ClassicModernModuleEnabled(id)
+end
+
+function U.ClassicModernAnyEnabled()
+  if U.GetActiveThemeStyle() ~= "classic-wow" then return false end
+  local i
+  for i = 1, table.getn(classicModernModules) do
+    if U.GetClassicModernModule(classicModernModules[i].id) then return true end
+  end
+  return false
 end
 
 -- This must use the loaded style, rather than the saved preference: selecting

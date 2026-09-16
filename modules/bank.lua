@@ -58,6 +58,7 @@ local SLOT_GAP      = M.slot.gap
 local PADDING       = M.slot.padding
 local HEADER_HEIGHT = M.slot.header
 local ICON_SIZE     = M.slot.icon
+local HEADER_ICON   = M.slot.headerIcon
 local BAG_BUTTON    = 20      -- header bank-bag button, sized to the header
 
 local anchor, frame, grid
@@ -245,15 +246,31 @@ end
 -- so the desaturated look here reports the engine being busy rather than this
 -- window's own click. ProcessDirty keeps it honest while the window is open:
 -- a bag sort started before the bank was opened greys this button too, and
--- nothing else would tell it when that run ended.
+-- nothing else would tell it when that run ended. The stack-merge engine
+-- (core/itemstack.lua) holds the same cursor, so either run greys both buttons.
 -- ---------------------------------------------------------------------------
 local function RefreshSortButton()
   if not frame or not frame.sort or not frame.sort.icon then return end
 
-  local active = U.BagSortActive()
+  local active = U.BagSortActive() or U.BagStackActive()
   if active == sortActive then return end
   sortActive = active
   pcall(frame.sort.icon.SetDesaturated, frame.sort.icon, active)
+  if frame.stack and frame.stack.icon then
+    pcall(frame.stack.icon.SetDesaturated, frame.stack.icon, active)
+  end
+end
+
+-- Merge partial stacks inside the bank only: the main pane and the purchased
+-- bank bags, never the carried bags. Pane-only partial stacks are gathered
+-- through one free bank-bag slot; see core/itemstack.lua.
+local function StackBank()
+  local started = U.StackBags(BankBags(), {
+    onFinish = RefreshSortButton,
+    prefix = "BANK_STACK",
+    owner = "bank",
+  })
+  if started then RefreshSortButton() end
 end
 
 local function SortBank()
@@ -408,18 +425,14 @@ local function EnsureBankBagButton(index)
     U.SetBorderColor(button, M.Unpack(M.color.moverEdge))
     HighlightBag(button.uuiBag, true)
 
-    local tip = U.G("GameTooltip")
-    if not tip then return end
-    pcall(tip.SetOwner, tip, button, "ANCHOR_BOTTOM")
-    pcall(tip.SetText, tip, U.G("BANK_BAG") or "Bank Bag")
-    pcall(tip.Show, tip)
+    -- Above the bank window, like the header icon buttons.
+    U.ShowWindowTooltip(button, frame, U.G("BANK_BAG") or "Bank Bag")
   end)
 
   button:SetScript("OnLeave", function()
     U.SetBorderColor(button, M.Unpack(M.color.border))
     HighlightBag(button.uuiBag, false)
-    local tip = U.G("GameTooltip")
-    if tip then pcall(tip.Hide, tip) end
+    U.HideWindowTooltip()
   end)
 
   bagButtons[index] = button
@@ -497,6 +510,8 @@ local function EnsureBuyButton()
 
   frame.buy = U.CreateIconButton(frame.bags, {
     name = "UnrealUIBankBuySlot",
+    -- Parented to the bag row; its tooltip still opens above the window.
+    tooltipFrames = frame,
     texture = "Interface\\Icons\\INV_Misc_Bag_08",
     fallback = "+",
     size = BAG_BUTTON,
@@ -735,13 +750,24 @@ local function BuildHeader()
     name = "UnrealUIBankSort",
     texture = M.texture.sortIcon,
     fallback = "S",
-    size = BAG_BUTTON,
+    size = HEADER_ICON,
     title = U.L("BANK_SORT"),
     detail = function() return U.L("BANK_SORT_HINT") end,
     onClick = SortBank,
   })
   frame.sort:SetPoint("LEFT", frame, "TOPLEFT", PADDING,
                       -math.floor(HEADER_HEIGHT / 2))
+
+  frame.stack = U.CreateIconButton(frame, {
+    name = "UnrealUIBankStack",
+    texture = M.texture.stackIcon,
+    fallback = "M",
+    size = HEADER_ICON,
+    title = U.L("BANK_STACK"),
+    detail = function() return U.L("BANK_STACK_HINT") end,
+    onClick = StackBank,
+  })
+  frame.stack:SetPoint("LEFT", frame.sort, "RIGHT", SLOT_GAP, 0)
 
   frame.close = U.CreateButton(frame, {
     name = "UnrealUIBankClose",
@@ -830,13 +856,14 @@ end
 
 -- Anchored to frame.bags's live left edge rather than a captured width, so it
 -- keeps clear of the bank bag row as slots are bought and stays correct
--- without its own LayoutHeader hook. It starts after the sort button for the
--- same reason -- a drag strip drawn over a button would swallow its clicks --
--- using that button's own footprint rather than a second copy of its position.
+-- without its own LayoutHeader hook. It starts after the sort and stack
+-- buttons for the same reason -- a drag strip drawn over a button would
+-- swallow its clicks -- using those buttons' own footprint rather than a second
+-- copy of their position.
 local function BuildDragHandle()
   local handle = CreateFrame("Button", "UnrealUIBankDrag", frame)
   handle:SetPoint("TOPLEFT", frame, "TOPLEFT",
-                  PADDING + BAG_BUTTON + SLOT_GAP, 0)
+                  PADDING + 2 * (HEADER_ICON + SLOT_GAP), 0)
   handle:SetPoint("TOPRIGHT", frame.bags, "TOPLEFT", -4, 0)
   handle:SetHeight(HEADER_HEIGHT)
   handle:RegisterForDrag("LeftButton")
@@ -892,6 +919,7 @@ local function Build()
     -- failed swap later. Silent by design: the window closing is the reason.
     -- A bag sort is another owner's run and is untouched.
     U.StopSort("bank")
+    U.StopStack("bank")
     -- The pane stops being readable with the session, so the derived
     -- main-pane quantities drop their before-state: the next open seeds
     -- again instead of diffing against a stale one.

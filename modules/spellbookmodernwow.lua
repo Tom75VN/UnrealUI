@@ -6,10 +6,10 @@
 -- the themed bottom tabs and the red close button.
 --
 -- modules/spellbook.lua chooses this path in its own OnEnable, before any flat
--- styling, and falls back to its Modern skin when the theme or the `spellbook`
--- surface (modules/modernwow.lua) is off. That module keeps every behaviour it
--- owns -- the book tabs, the highest-rank filter and the action-bar hint -- and
--- only asks this file where the two toggles go.
+-- styling, when the full theme or Classic's `spellbook` selection requests it.
+-- Otherwise it keeps the active theme's normal skin. That module keeps every
+-- behaviour it owns -- the book tabs, the highest-rank filter and the
+-- action-bar hint -- and only asks this file where the two toggles go.
 --
 -- Everything stays on the client's own widgets: spell buttons, tabs, arrows
 -- and their click, drag, tooltip and checked handling are untouched. Placement
@@ -954,10 +954,6 @@ end
 -- Entry points
 -- ---------------------------------------------------------------------------
 function U.ModernWowSpellBookWanted()
-  if type(U.GetActiveThemeStyle) ~= "function" or
-     U.GetActiveThemeStyle() ~= book.THEME then
-    return false
-  end
   return type(U.ModernWowSurfaceEnabled) == "function" and
          U.ModernWowSurfaceEnabled(book.SURFACE) and true or false
 end

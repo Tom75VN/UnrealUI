@@ -244,9 +244,33 @@ local function ReflowPair(state, original, blocker)
     if not best or layout.distance < best.distance then best = layout end
   end
 
+  -- The other window was already open and did not ask to move. Its position
+  -- before the first reflow is kept and restored when the window that pushed
+  -- it closes. Without that, every reopen reflowed from the previous reflow's
+  -- result, so the pair crept across the screen on each open (user report,
+  -- 2026-09-16: Talents open, Spellbook opened and closed repeatedly).
+  if not other.displacedBy then
+    other.home = CurrentPosition(other)
+  end
   local otherApplied = ApplyBottomLeft(other, best.otherLeft, best.otherBottom)
+  if other.home then other.displacedBy = state end
   local movingApplied = ApplyBottomLeft(state, best.movingLeft, best.movingBottom)
   return otherApplied and movingApplied
+end
+
+-- Puts back every open window `state` pushed aside in ReflowPair.
+local function RestoreDisplaced(state)
+  local i
+  for i = 1, table.getn(windowStates) do
+    local other = windowStates[i]
+    if other.displacedBy == state then
+      other.displacedBy = nil
+      if IsShown(other) and other.home then
+        U.ApplyFramePoint(other.frame, other.home)
+      end
+      other.home = nil
+    end
+  end
 end
 
 -- Moves only the window that was just opened or dropped. Saved user positions
@@ -274,6 +298,14 @@ local function AvoidOverlap(state)
     end
   end
   if not overlaps then return false end
+
+  -- Where this opening started, restored when the window closes. A window
+  -- with a saved position (Character) is put back on it by OnShow anyway; one
+  -- without (Spellbook) kept the previous opening's adjusted anchor, so every
+  -- reopen resolved from the last result and the window crept on each open
+  -- beside Talents (user report, 2026-09-16; SavedVariables had
+  -- window.character but no window.spellbook).
+  if not state.openHome then state.openHome = position end
 
   local candidates = {}
   for i = 1, table.getn(blockers) do
@@ -373,6 +405,10 @@ end
 local function StopDrag(state)
   if not state.dragging then return false end
   state.dragging = false
+  -- A window the player moves by hand is no longer waiting to go back.
+  state.displacedBy = nil
+  state.home = nil
+  state.openHome = nil
   pcall(state.frame.StopMovingOrSizing, state.frame)
   local before = state.dragStartPosition
   state.dragStartPosition = nil
@@ -492,6 +528,17 @@ function U.MakeWindowDraggable(id, frame, options)
   end)
   U.PostHookScript(frame, "OnHide", function()
     if state.dragging then StopDrag(state) end
+    -- Its own OnShow re-applies the stored position next time.
+    state.displacedBy = nil
+    state.home = nil
+    if state.openHome then
+      U.ApplyFramePoint(frame, state.openHome)
+      state.openHome = nil
+    end
+    -- Deferred like the overlap check, after the native close has settled.
+    U.DeferOnce("windowdrag.restore." .. state.id, function()
+      RestoreDisplaced(state)
+    end)
   end)
   ApplyStoredPosition(state)
   if IsShown(state) then ScheduleOverlapCheck(state, false) end

@@ -1,14 +1,12 @@
-## UnrealUI 0.7.2
+## UnrealUI 0.7.3
 
-- Hunter Auto Shot now works with Auto Attack without needing the Shot spell on the action bar.
-- Hunter Auto Attack now switches between melee and ranged attacks more smoothly; if the target is lost, it automatically re-targets the mob.
-- Added pet frames to the Modern-WoW party frames.
-- Fixed bag sorting, which a previous update had broken while excluding special bags (ammo, herbs, etc.).
-- Bank bag sorting works again.
-- The Modern-WoW Quest Log now shows the quest count.
-- Fixed the Modern-WoW Quest Log going out of view when UnrealQuest is not installed.
-- Replaced the scrollbar on the skill interface for the Modern-WoW theme.
-- The Modern-WoW target frame now shows 3D portraits on the right.
-- Fixed talent numbers not scrolling with the talent list.
-- Extended rare mob/NPC target borders when 3D portraits are enabled.
-- Fixed a rare issue with incorrect buff timers (needs more testing).
+- Optimised bags to prevent freezing when moving items.
+- Added merge stacks for bags and bank.
+- Improved the recipes list in the crafting interface for the modern WoW theme, adding colors and better positioning.
+- Added craft item stats to the crafting interface for the modern WoW theme.
+- Added item compare tooltips in the crafting interface when available.
+- Fixed Shift + Click not linking items from the crafting interface in chat.
+- Improved the category-based bag view to add columns when possible.
+- Fixed the UI moving when opening a different interface while Talents were open.
+- Improved bag sorting and category-based view to keep same items beside each other.
+- Added a Track Recipe option to the crafting interface for the modern WoW theme, showing reagents on your HUD.

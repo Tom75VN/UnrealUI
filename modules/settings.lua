@@ -1308,10 +1308,105 @@ local function BuildGeneralPage(parent)
   return widgets, Refresh
 end
 
+-- ---------------------------------------------------------------------------
+-- Classic WoW module mixing
+--
+-- Registered only for a loaded Classic session. Each checkbox selects the
+-- owning module's complete Modern WoW drawing path; the rest of the interface
+-- remains on native Classic chrome. Like a theme switch, changes apply after
+-- reload so a window is never left half native and half rebuilt.
+-- ---------------------------------------------------------------------------
+local function BuildClassicModulesPage(parent)
+  local widgets = {}
+  local controls = {}
+  local pageWidth = PANEL_WIDTH - SIDEBAR_WIDTH - 36
+  local columnWidth = math.floor(pageWidth / 2)
+
+  local header = U.CreateSectionHeader(parent, {
+    text = U.L("CLASSIC_MODULES_PAGE"),
+    width = pageWidth,
+    y = -4,
+  })
+  table.insert(widgets, header)
+
+  local intro = U.CreateSettingsLabel(parent, {
+    size = M.fontSize.small,
+    color = M.color.textDim,
+    inherits = "GameFontNormalSmall",
+    justify = "LEFT",
+    width = pageWidth,
+  })
+  if intro then
+    U.AnchorSettingsDescription(intro, header.title)
+    intro:SetText(U.L("CLASSIC_MODULES_INTRO"))
+    table.insert(widgets, intro)
+  end
+
+  local modules = U.GetClassicModernModules()
+  local lastRowAnchor
+  local i
+  for i = 1, table.getn(modules) do
+    local entry = modules[i]
+    local row = math.floor((i - 1) / 2)
+    local column = (i - 1) - row * 2
+    local control = U.CreateCheckbox(parent, {
+      name = "UnrealUIClassicModule" .. entry.id,
+      text = U.L(entry.labelKey),
+      textWidth = columnWidth - 20,
+      value = U.GetClassicModernModule(entry.id),
+      onChange = function(value)
+        if U.SetClassicModernModule(entry.id, value) then
+          U.ShowConfirm({
+            owner = "settings.modern-wow-modules-reload",
+            centered = true,
+            text = U.L("CLASSIC_MODULES_PAGE"),
+            detail = U.L("CLASSIC_MODULES_RELOAD"),
+            acceptText = U.L("COMMON_OK_SHORT"),
+            cancelText = U.L("COMMON_CLOSE"),
+          })
+        end
+      end,
+    })
+    control.SetPoint("TOPLEFT", parent, "TOPLEFT",
+                     column * columnWidth, -82 - row * 38)
+    if column == 0 then lastRowAnchor = control.box end
+    table.insert(controls, { control = control, id = entry.id })
+    table.insert(widgets, control)
+  end
+
+  local hint = U.CreateSettingsLabel(parent, {
+    size = M.fontSize.small,
+    color = M.color.textDim,
+    inherits = "GameFontNormalSmall",
+    justify = "LEFT",
+    width = pageWidth,
+  })
+  if hint and lastRowAnchor then
+    U.AnchorSettingsDescription(hint, lastRowAnchor)
+    hint:SetText(U.L("CLASSIC_MODULES_HINT"))
+    table.insert(widgets, hint)
+  end
+
+  local function Refresh()
+    local n
+    for n = 1, table.getn(controls) do
+      controls[n].control.SetValue(U.GetClassicModernModule(controls[n].id))
+    end
+  end
+
+  return widgets, Refresh
+end
+
 function S:OnInit()
   U.RegisterSettingsTab("general", U.L("SETTINGS_PAGE_GENERAL"), BuildGeneralPage)
+  local profilesAfter = "general"
+  if U.GetActiveThemeStyle() == "classic-wow" then
+    U.RegisterSettingsTab("classic-modules", U.L("CLASSIC_MODULES_PAGE"),
+                          BuildClassicModulesPage, { after = "general" })
+    profilesAfter = "classic-modules"
+  end
   U.RegisterSettingsTab("profiles", U.L("SETTINGS_PAGE_PROFILES"), BuildProfilePage,
-                        { after = "general" })
+                        { after = profilesAfter })
 end
 
 function S:OnEnable()

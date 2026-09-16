@@ -1,12 +1,13 @@
 -- unrealUI :: themes/classic-wow.lua
 --
 -- Classic WoW retains the client chrome on stock windows while UnrealUI's
--- modules remain fully enabled. Unit frames use the real client artwork over
--- UnrealUI's invisible mover/aura anchors, and action buttons reuse the live
--- client's own button faces over UnrealUI's full bar system. The merged bag
--- keeps its UnrealUI behavior but draws from the live ContainerFrame and item
--- slot assets. Addon-owned HUD extras use the Classic palette below. The theme
--- is never an addon-off switch.
+-- modules remain fully enabled. By default unit frames use the real client
+-- artwork over UnrealUI's invisible mover/aura anchors, and action buttons
+-- reuse the live client's own button faces over UnrealUI's full bar system.
+-- The Classic Modules settings page can route selected surfaces through their
+-- complete Modern WoW drawing paths. The merged bag keeps its UnrealUI behavior
+-- but draws from the live ContainerFrame and item-slot assets. Addon-owned HUD
+-- extras use the Classic palette below. The theme is never an addon-off switch.
 
 local U = UnrealUI
 

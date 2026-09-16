@@ -6,8 +6,8 @@
 -- rows (Poisons, Fishing, Cooking, First Aid).
 --
 -- Built only by modules/spellbookmodernwow.lua's drawing path, which asks for
--- the tab while dressing its bottom tabs; nothing here runs under any other
--- theme.
+-- the tab while dressing its bottom tabs. That path belongs to the full Modern
+-- WoW theme and to Classic's explicit Spellbook selection.
 --
 -- Mechanism is WORKING_SOURCE from WoW-DragonflightUI (Mixin/UI.mixin.lua
 -- SpellbookEraProfessions, Mixin/ProfessionSpellbook.mixin.lua,
@@ -488,6 +488,7 @@ function prof.ConfirmUnlearn(row)
     owner = prof,
     centered = true,
     modernWow = true,
+    modernWowModule = "spellbook",
     text = string.format(U.L("SPELLBOOK_PROF_UNLEARN_CONFIRM"), name),
     detail = U.L("SPELLBOOK_PROF_UNLEARN_DETAIL"),
     acceptText = U.L("SPELLBOOK_PROF_UNLEARN"),

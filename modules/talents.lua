@@ -239,7 +239,9 @@ local function TryBuild()
 end
 
 function TL:OnEnable()
-  if U.ThemeStyleUsesNativeChrome() then return end
+  if U.ThemeStyleUsesNativeChrome() and
+     not (type(U.ModernWowTalentsWanted) == "function" and
+          U.ModernWowTalentsWanted()) then return end
   if BuildFrame() then return end
 
   U.RegisterEvent("ADDON_LOADED", TryBuild)

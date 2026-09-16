@@ -462,6 +462,21 @@ USER_SUPPLIED = [
     ("ui/borders/thin-border-bottom", "ThinBorder-Bottom.PNG",
      "Stretchable bottom edge of the textured thin panel border, drawn 16 high.",
      "ThinBorder-Bottom.PNG"),
+    # Blizzard achievement metal border, supplied as PNG. It rims the Modern
+    # WoW profession window's item-stat panel; geometry is tokenised under
+    # M.modernWow.professions.stats in core/media.lua.
+    ("ui/borders/metal-border-joint", "UI-Achievement-MetalBorder-Joint.PNG",
+     "Achievement metal border corner at 32x32: a bottom-right joint whose "
+     "7-texel bars reach texel 25; mirrored for the other three corners.",
+     "UI-Achievement-MetalBorder-Joint.PNG"),
+    ("ui/borders/metal-border-left", "UI-Achievement-MetalBorder-Left.PNG",
+     "Achievement metal border vertical edge at 16x512: a 9-texel bar at "
+     "x 0-8 running to y 453; mirrored for the right edge.",
+     "UI-Achievement-MetalBorder-Left.PNG"),
+    ("ui/borders/metal-border-top", "UI-Achievement-MetalBorder-Top.PNG",
+     "Achievement metal border horizontal edge at 512x16: a 9-texel bar at "
+     "y 0-8 running to x 453; mirrored for the bottom edge.",
+     "UI-Achievement-MetalBorder-Top.PNG"),
 ]
 
 

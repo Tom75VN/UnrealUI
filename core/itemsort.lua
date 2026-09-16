@@ -254,36 +254,141 @@ end
 -- ---------------------------------------------------------------------------
 -- Ordering
 -- ---------------------------------------------------------------------------
--- Category first, then quality high to low, then name, then the link itself.
+-- Category first, then the item's functional family, then its exact template.
+-- The family keeps different ranks of the same kind together: healing potions
+-- share a normalized "restores # health" tooltip signature, while mana potions
+-- share a different one. Type/subtype/equipment slot precede that signature so
+-- broad families such as gear still form useful local groups. Exact item id is
+-- next, which keeps every stack of one item adjacent. Quality, name and the full
+-- link are only deterministic tie-breakers inside those groups.
 --
 -- The key is built as one string rather than compared field by field so the
 -- comparator is a plain `<` on a total order. table.sort raises "invalid order
 -- function for sorting" when a comparator is inconsistent, and a hand-written
 -- multi-field comparison over values that may each be nil is exactly how that
 -- happens.
+IS.familyCache = {}
+
+-- Lowercase and erase changing quantities from a tooltip line. Keeping the
+-- localized words is intentional: two effects written the same way in any
+-- locale receive the same key without an English health/mana keyword table.
+function IS.NormaliseSortText(value)
+  if type(value) ~= "string" or value == "" then return "" end
+
+  value = string.lower(value)
+  value = string.gsub(value, "|c%x%x%x%x%x%x%x%x", "")
+  value = string.gsub(value, "|r", "")
+  value = string.gsub(value, "%d[%d%.,]*", "#")
+  value = string.gsub(value, "%s+", " ")
+  value = string.gsub(value, "^%s+", "")
+  value = string.gsub(value, "%s+$", "")
+  value = string.gsub(value, "|", "/")
+  return value
+end
+
+-- A language-neutral fallback when the private tooltip cannot be populated.
+-- Item ranks normally prefix a shared two-word family ("Major Healing Potion",
+-- "Minor Healing Potion"), so the suffix still separates healing from mana.
+function IS.NameFamily(name)
+  name = IS.NormaliseSortText(name)
+  local _, _, first, second = string.find(name, "([^%s]+)%s+([^%s]+)$")
+  if first and second then return first .. " " .. second end
+  return name
+end
+
+-- Effect text rather than item name is the useful definition of "same kind".
+-- The scanner already exists for ordinary-bag detection; SetHyperlink simply
+-- repopulates it between those scans. Results are cached because category view
+-- relayouts often while the bag is open. Every operation is fail-closed and the
+-- name-family fallback above remains usable if this documented method does not
+-- answer on a particular item.
+function IS.ItemFamily(link, name)
+  if type(link) == "string" and IS.familyCache[link] then
+    return IS.familyCache[link]
+  end
+
+  local lines = {}
+  local tip = IS.Scanner()
+  if tip and type(link) == "string" and link ~= "" then
+    pcall(tip.ClearLines, tip)
+    pcall(tip.SetOwner, tip, U.G("WorldFrame") or UIParent, "ANCHOR_NONE")
+    local populated = pcall(tip.SetHyperlink, tip, link)
+    local countOk, count = pcall(tip.NumLines, tip)
+    count = populated and countOk and tonumber(count) or 0
+    if count > IS.MAX_TOOLTIP_LINES then count = IS.MAX_TOOLTIP_LINES end
+
+    local line
+    for line = 2, count do
+      local region = U.G(IS.SCANNER_NAME .. "TextLeft" .. line)
+      local text
+      if region and type(region.GetText) == "function" then
+        local textOk, value = pcall(region.GetText, region)
+        if textOk then text = IS.NormaliseSortText(value) end
+      end
+      if text and text ~= "" then table.insert(lines, text) end
+    end
+  end
+
+  local family
+  if table.getn(lines) > 0 then
+    family = table.concat(lines, " /")
+  else
+    family = IS.NameFamily(name)
+  end
+
+  if type(link) == "string" and link ~= "" then IS.familyCache[link] = family end
+  return family
+end
+
+function IS.TemplateKey(link)
+  if type(link) ~= "string" then return "item:0000000000" end
+  local _, _, itemId = string.find(link, "item:(%d+)")
+  return string.format("item:%010d", tonumber(itemId) or 0)
+end
+
 function IS.SortKey(order, link)
   local index = 99
-  local quality, name = 0, ""
+  local quality, name, itemType, subType, equipLoc = 0, "", "", "", ""
 
-  local ok, itemName, _, itemQuality = pcall(GetItemInfo, link)
+  local ok, itemName, _, itemQuality, _, class, subclass, _, equipment =
+    pcall(GetItemInfo, link)
   if ok then
     if type(itemName) == "string" then name = string.lower(itemName) end
     quality = tonumber(itemQuality) or 0
+    itemType = IS.NormaliseSortText(class)
+    subType = IS.NormaliseSortText(subclass)
+    equipLoc = IS.NormaliseSortText(equipment)
   end
 
   local category = U.ItemCategoryFromLink(link)
   if category and order[category] then index = order[category] end
 
-  -- 9 - quality so that Legendary sorts above Poor within a category.
-  return string.format("%03d|%02d|", index, 9 - quality) .. name .. "|" .. link
+  local family = IS.ItemFamily(link, name)
+  local template = IS.TemplateKey(link)
+
+  -- 9 - quality so that Legendary sorts above Poor once kind and exact item
+  -- have already kept related and identical items together.
+  return string.format("%03d|", index) .. itemType .. "|" .. subType .. "|" ..
+    equipLoc .. "|" .. family .. "|" .. template .. "|" ..
+    string.format("%02d|", 9 - quality) .. name .. "|" .. tostring(link or "")
 end
 
 function IS.CategoryOrder()
+  if IS.categoryOrder then return IS.categoryOrder end
+
   local order = {}
   local list = U.ItemCategoryOrder()
   local i
   for i = 1, table.getn(list) do order[list[i]] = i end
+  IS.categoryOrder = order
   return order
+end
+
+-- Category view uses this exact key to arrange its buttons without moving the
+-- underlying items. Physical bag and bank sorting call IS.SortKey directly
+-- with the same category order, so the two presentations cannot drift.
+function U.ItemSortKey(link)
+  return IS.SortKey(IS.CategoryOrder(), link)
 end
 
 -- ---------------------------------------------------------------------------
@@ -741,6 +846,11 @@ function U.BagSortActive()
   return IS.run and true or false
 end
 
+-- Shared with core/itemstack.lua, which has to agree with this engine on what
+-- counts as the same item and which bags are ordinary.
+U.ContainerItemKey = IS.ItemKey
+U.IsGeneralContainer = IS.IsGeneralBag
+
 -- bagIds: the containers to sort, pooled and filled as one bag in this order.
 --         Retained by the run, because a container that turns out to refuse a
 --         drop is dropped from the pool and the plan rebuilt from this list.
@@ -760,6 +870,12 @@ function U.SortBags(bagIds, options)
 
   if IS.run then
     U.Print(IS.Message(prefix, "BUSY"))
+    return false
+  end
+
+  -- A stack merge (core/itemstack.lua) holds the same cursor.
+  if type(U.BagStackActive) == "function" and U.BagStackActive() then
+    U.Print(U.L("ITEMS_BUSY"))
     return false
   end
 

@@ -160,8 +160,17 @@ local function BuildClassicSlotBorders()
 
   RefreshClassicSlotBorders()
   U.PostHookScript(frame, "OnShow", RefreshClassicSlotBorders)
-  U.PostHookGlobal("PaperDollItemSlotButton_Update",
-                   RefreshClassicSlotBorders)
+  -- The client calls PaperDollItemSlotButton_Update once per slot button, and
+  -- its gear and bag slots all react to bag/lock events: one item moved between
+  -- bags ran this full every-slot pass hundreds of times inside one frame,
+  -- window open or not (measured 2026-09-16 with UnrealRuntimeProbe bagmove ab:
+  -- 180-260ms frames that survived switching unrealUI bags and bars off).
+  -- Closed window: nothing to draw, OnShow restyles it. Open: one deferred pass.
+  U.PostHookGlobal("PaperDollItemSlotButton_Update", function()
+    local ok, shown = pcall(frame.IsShown, frame)
+    if not (ok and shown) then return end
+    U.DeferOnce("character.classic-slot-borders", RefreshClassicSlotBorders)
+  end)
   return true
 end
 
@@ -729,8 +738,8 @@ end
 -- exact fixed-arity call: ToggleCharacter("PaperDollFrame"). With the window
 -- open on Honor, the first call changed selectedTab 5 -> 1 and left the frame
 -- visible; the second identical call hid it. Reproduce that verified native
--- sequence inside one binding call, but only for modern-wow and only when the
--- request began on another Character page. Calling the original twice avoids
+-- sequence inside one binding call, but only for the Modern WoW drawing path
+-- when the request began on another Character page. Calling the original twice avoids
 -- introducing an unverified HideUIPanel/CharacterFrame:Hide path.
 local function InstallModernWowCharacterToggle()
   if not modernWowTabMode or toggleCharacterOriginal then return end
@@ -1174,7 +1183,7 @@ UpdateSkillRows = function()
   end
 end
 
--- modern-wow only: the Skills collapse-all plate and its button sit this much
+-- Modern WoW drawing path only: the Skills collapse-all plate and its button sit this much
 -- higher, by request.
 local SKILLS_COLLAPSE_RISE = 4
 
@@ -1623,7 +1632,17 @@ local function BuildFrame()
   -- equipped/unequipped while the sheet is open; re-running StyleSlots keeps
   -- unrealUI's border/icon framing in sync with it. StyleStockButton no-ops
   -- past its first pass per button, so this is safe to call repeatedly.
-  U.PostHookGlobal("PaperDollItemSlotButton_Update", StyleSlots)
+  -- The client calls PaperDollItemSlotButton_Update once per slot button, and
+  -- its gear and bag slots all react to bag/lock events: one item moved between
+  -- bags ran this full every-slot pass hundreds of times inside one frame,
+  -- window open or not (measured 2026-09-16 with UnrealRuntimeProbe bagmove ab:
+  -- 180-260ms frames that survived switching unrealUI bags and bars off).
+  -- Closed window: nothing to draw, OnShow restyles it. Open: one deferred pass.
+  U.PostHookGlobal("PaperDollItemSlotButton_Update", function()
+    local ok, shown = pcall(frame.IsShown, frame)
+    if not (ok and shown) then return end
+    U.DeferOnce("character.slots", StyleSlots)
+  end)
 
   local shown = false
   if frame.IsShown then
@@ -1635,12 +1654,13 @@ local function BuildFrame()
 end
 
 function CH:OnEnable()
-  modernWowTabMode = U.GetActiveThemeStyle() == "modern-wow"
+  modernWowTabMode = type(U.ModernWowSurfaceEnabled) == "function" and
+                     U.ModernWowSurfaceEnabled("character")
 
   -- The native theme keeps CharacterFrame's own chrome. windowmove.lua still
   -- supplies its mover. Only the semantic rarity outlines are layered above
   -- the stock item slots.
-  if U.ThemeStyleUsesNativeChrome() then
+  if U.ThemeStyleUsesNativeChrome() and not modernWowTabMode then
     if BuildClassicSlotBorders() then
       U.MakeWindowDraggable("character", frame, {
         headerInset = 40,

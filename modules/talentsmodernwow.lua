@@ -7,8 +7,7 @@
 -- addon-owned talent buttons, prerequisite branches and arrows.
 --
 -- modules/talents.lua chooses this path in its own BuildFrame, before any flat
--- styling, when the theme and the `talents` surface (modules/modernwow.lua) are
--- on.
+-- styling, when the full theme or Classic's `talents` selection requests it.
 --
 -- Mechanism is WORKING_SOURCE from DF-main, adapted to this client:
 --
@@ -1105,10 +1104,6 @@ end
 -- Entry points
 -- ---------------------------------------------------------------------------
 function U.ModernWowTalentsWanted()
-  if type(U.GetActiveThemeStyle) ~= "function" or
-     U.GetActiveThemeStyle() ~= tal.THEME then
-    return false
-  end
   return type(U.ModernWowSurfaceEnabled) == "function" and
          U.ModernWowSurfaceEnabled(tal.SURFACE) and true or false
 end
@@ -1119,10 +1114,12 @@ end
 
 -- The same ThinBorder eight-slice rim, for another modern-wow window whose
 -- panels stand in for DF-main's InsetFrameTemplate (modules/professions.lua).
--- Theme-gated like every other entry point here.
+-- Selection-gated like every other entry point here.
 function U.ModernWowThinBorder(panel)
-  if type(U.GetActiveThemeStyle) ~= "function" or
-     U.GetActiveThemeStyle() ~= tal.THEME or not panel then
+  local active = type(U.ModernWowModuleEnabled) == "function" and
+                 (U.ModernWowModuleEnabled("talents") or
+                  U.ModernWowModuleEnabled("professions"))
+  if not active or not panel then
     return false
   end
   tal.BuildPanelBorder(panel)
