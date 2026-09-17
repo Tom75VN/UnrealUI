@@ -32,6 +32,18 @@ local useModernWow = false
 local ITEM_ROWS = 12
 local TAB_COUNT = 2
 
+-- merchant.buyback_rarity_pipeline.v1 measured GetBuybackItemInfo returning
+-- name, texture, price, quantity, availability and buyability -- but no link or
+-- quality. modules/itemprice.lua supplies a fallback that resolves that
+-- name/texture pair against item ids for which UnrealUI has price data, then
+-- GetItemInfo supplies the quality.
+-- The live bag snapshot below covers server/custom items before they are sold;
+-- unresolved leftovers fail closed and keep their native appearance.
+local merchantInfoHooked = false
+local buybackInfoHooked = false
+local buybackQualityByName = {}
+local BUYBACK_EDGE_SIZE = 2
+
 local function G(name)
   return U.G(name)
 end
@@ -86,16 +98,287 @@ local function StyleItemRows()
   end
 end
 
--- Rarity colour on a vendor tooltip's name line.
+local function MerchantIsOnBuybackTab()
+  local merchant = frame or G("MerchantFrame")
+  return merchant and tonumber(merchant.selectedTab) == 2
+end
+
+local function ItemTexturePath(texture)
+  if not texture or type(texture.GetTexture) ~= "function" then return nil end
+  local ok, path = pcall(texture.GetTexture, texture)
+  if ok and type(path) == "string" and path ~= "" then return path end
+  return nil
+end
+
+local function BuybackNameRegion(i, row)
+  local region = G("MerchantItem" .. i .. "Name")
+  if region then return region end
+  if not row or type(row.GetFontString) ~= "function" then return nil end
+  local ok, fontString = pcall(row.GetFontString, row)
+  if ok then return fontString end
+  return nil
+end
+
+-- Dedicated quality edges deliberately do not reuse button.uuiEdges. The
+-- flat themes' stock-button hover handler owns those edges, while Classic and
+-- Modern WoW keep their native merchant buttons. Four overlay textures on the
+-- native button give every theme the same semantic rarity outline without
+-- replacing or anchoring new frames to client-owned widgets.
+local function BuybackEdges(itemButton)
+  if not itemButton or not itemButton.CreateTexture then return nil end
+  if itemButton.uuiBuybackEdges then return itemButton.uuiBuybackEdges end
+
+  local edges = {}
+  local anchors = {
+    { "TOPLEFT", "TOPRIGHT", true },
+    { "BOTTOMLEFT", "BOTTOMRIGHT", true },
+    { "TOPLEFT", "BOTTOMLEFT", false },
+    { "TOPRIGHT", "BOTTOMRIGHT", false },
+  }
+  local i
+  for i = 1, table.getn(anchors) do
+    local ok, edge = pcall(itemButton.CreateTexture, itemButton, nil, "OVERLAY")
+    if not ok or not edge then return nil end
+    pcall(edge.SetTexture, edge, M.texture.plain)
+    pcall(edge.SetPoint, edge, anchors[i][1], itemButton, anchors[i][1], 0, 0)
+    pcall(edge.SetPoint, edge, anchors[i][2], itemButton, anchors[i][2], 0, 0)
+    if anchors[i][3] then
+      pcall(edge.SetHeight, edge, BUYBACK_EDGE_SIZE)
+    else
+      pcall(edge.SetWidth, edge, BUYBACK_EDGE_SIZE)
+    end
+    pcall(edge.Hide, edge)
+    edges[i] = edge
+  end
+
+  itemButton.uuiBuybackEdges = edges
+  return edges
+end
+
+local function ShowBuybackEdges(itemButton, color)
+  local edges = BuybackEdges(itemButton)
+  if not edges then return end
+  local i
+  for i = 1, table.getn(edges) do
+    U.SetColor(edges[i], color[1], color[2], color[3], color[4] or 1)
+    pcall(edges[i].SetAlpha, edges[i], color[4] or 1)
+    pcall(edges[i].Show, edges[i])
+  end
+end
+
+local function HideBuybackEdges(itemButton)
+  local edges = itemButton and itemButton.uuiBuybackEdges
+  if not edges then return end
+  local i
+  for i = 1, table.getn(edges) do pcall(edges[i].Hide, edges[i]) end
+end
+
+local function RestoreBuybackName(region)
+  local color = region and region.uuiBuybackBaseColor
+  if not color then return end
+  pcall(region.SetTextColor, region,
+        color[1], color[2], color[3], color[4] or 1)
+end
+
+local function RememberItemQuality(link)
+  if type(link) ~= "string" and type(link) ~= "number" then return end
+
+  local ok, name, _, quality, _, _, _, _, _, texture = pcall(GetItemInfo, link)
+  quality = ok and tonumber(quality) or nil
+  if type(name) ~= "string" or name == "" or not quality then return end
+
+  buybackQualityByName[name] = {
+    quality = quality,
+    texture = type(texture) == "string" and texture or nil,
+  }
+end
+
+-- Snapshot carried items while the merchant is open, before a right-click can
+-- remove one from its bag. This covers server/custom items that do not exist in
+-- the bundled Vanilla price table: their direct bag link still carries the
+-- exact quality that GetBuybackItemInfo omits after the sale.
+local function RememberBagItemQualities()
+  local merchant = frame or G("MerchantFrame")
+  if not merchant then return end
+
+  local shown = true
+  if type(merchant.IsShown) == "function" then
+    local shownOk, value = pcall(merchant.IsShown, merchant)
+    shown = shownOk and value and true or false
+  end
+  if not shown then return end
+
+  local bag
+  for bag = 0, 4 do
+    local countOk, count = pcall(GetContainerNumSlots, bag)
+    count = countOk and tonumber(count) or 0
+    local slot
+    for slot = 1, count do
+      local linkOk, link = pcall(GetContainerItemLink, bag, slot)
+      if linkOk and link then RememberItemQuality(link) end
+    end
+  end
+end
+
+local function QualityFromTooltip(name)
+  local label = G("GameTooltipTextLeft1")
+  if not label or type(label.GetText) ~= "function" or
+     type(label.GetTextColor) ~= "function" then
+    return nil
+  end
+
+  local textOk, text = pcall(label.GetText, label)
+  if not textOk or text ~= name then return nil end
+
+  local colorOk, r, g, b = pcall(label.GetTextColor, label)
+  if not colorOk or not tonumber(r) or not tonumber(g) or not tonumber(b) then
+    return nil
+  end
+
+  -- Accept only an actual stock rarity colour. This prevents the merchant's
+  -- ordinary gold label colour from being mistaken for legendary quality.
+  local quality
+  for quality = 0, 6 do
+    local color = U.ItemQualityColor(quality)
+    if color and math.abs(r - color[1]) < 0.03 and
+       math.abs(g - color[2]) < 0.03 and
+       math.abs(b - color[3]) < 0.03 then
+      buybackQualityByName[name] = { quality = quality }
+      return quality
+    end
+  end
+  return nil
+end
+
+local function BuybackRowQuality(i, itemButton, icon)
+  local getInfo = G("GetBuybackItemInfo")
+  if type(getInfo) ~= "function" then return nil, nil end
+
+  local ok, name, buybackTexture = pcall(getInfo, i)
+  if not ok or type(name) ~= "string" or name == "" then return nil, nil end
+
+  local cached = buybackQualityByName[name]
+  if cached and tonumber(cached.quality) then
+    local color = U.ItemQualityColor(cached.quality)
+    if color then
+      itemButton.uuiBuybackQuality = cached.quality
+      return name, color
+    end
+  end
+
+  local linkByInfo = U.PricedItemLinkByInfo
+  if type(linkByInfo) ~= "function" then return name, nil end
+  local texture = type(buybackTexture) == "string" and buybackTexture
+                  or ItemTexturePath(icon)
+  local link = linkByInfo(name, texture)
+  if not link then return name, nil end
+
+  local infoOk, _, _, quality = pcall(GetItemInfo, link)
+  quality = infoOk and tonumber(quality) or nil
+  if not quality then return name, nil end
+
+  itemButton.uuiBuybackQuality = quality
+  return name, U.ItemQualityColor(quality)
+end
+
+-- merchant.buyback_transition.v1 measured that this client does not compact
+-- buyback indexes after an item is repurchased: indexes 1-4 were empty while
+-- the first occupied item remained at index 5, and later sales filled 6/7.
+-- Keep those real button ids (the click contract) but compact their native row
+-- frames visually. The geometry below is the exact two-column chain measured
+-- from the live Buyback tab; empty rows are hidden so TintRow cannot leave a
+-- phantom slot behind.
+local function LayoutBuybackRows(occupied)
+  local i
+  for i = 1, ITEM_ROWS do
+    local row = G("MerchantItem" .. i)
+    if row then pcall(row.Hide, row) end
+  end
+
+  for i = 1, table.getn(occupied) do
+    local row = occupied[i]
+    pcall(row.ClearAllPoints, row)
+    if i == 1 then
+      pcall(row.SetPoint, row, "TOPLEFT", frame, "TOPLEFT", 24, -80)
+    elseif math.mod(i, 2) == 0 then
+      pcall(row.SetPoint, row, "TOPLEFT", occupied[i - 1], "TOPRIGHT", 12, 0)
+    else
+      pcall(row.SetPoint, row, "TOPLEFT", occupied[i - 2], "BOTTOMLEFT", 0, -15)
+    end
+    pcall(row.Show, row)
+  end
+end
+
+-- Buyback and vendor pages reuse the same MerchantItem<n> frames. The native
+-- vendor refresh repopulates their contents but assumes the frames stayed
+-- shown, so rows hidden by LayoutBuybackRows remained invisible after changing
+-- back to tab 1. Restore only rows whose current button id resolves to a real
+-- vendor item; this avoids bringing back empty tinted placeholders.
+local function RestoreMerchantRow(row, itemButton, fallbackIndex)
+  if not row then return end
+
+  local index = fallbackIndex
+  if itemButton and type(itemButton.GetID) == "function" then
+    local idOk, id = pcall(itemButton.GetID, itemButton)
+    if idOk and tonumber(id) then index = id end
+  end
+
+  local getInfo = G("GetMerchantItemInfo")
+  local infoOk, name = false, nil
+  if type(getInfo) == "function" and tonumber(index) then
+    infoOk, name = pcall(getInfo, index)
+  end
+
+  if infoOk and type(name) == "string" and name ~= "" then
+    pcall(row.Show, row)
+  else
+    pcall(row.Hide, row)
+  end
+end
+
+local function RefreshBuybackRarity()
+  local isBuyback = MerchantIsOnBuybackTab()
+  local occupied = {}
+  local i
+  for i = 1, ITEM_ROWS do
+    local row = G("MerchantItem" .. i)
+    local itemButton = G("MerchantItem" .. i .. "ItemButton")
+    local nameRegion = BuybackNameRegion(i, row)
+
+    if not isBuyback then
+      HideBuybackEdges(itemButton)
+      RestoreBuybackName(nameRegion)
+      if itemButton then itemButton.uuiBuybackQuality = nil end
+      RestoreMerchantRow(row, itemButton, i)
+    elseif itemButton and nameRegion then
+      if not nameRegion.uuiBuybackBaseColor and
+         type(nameRegion.GetTextColor) == "function" then
+        local colorOk, r, g, b, a = pcall(nameRegion.GetTextColor, nameRegion)
+        if colorOk then nameRegion.uuiBuybackBaseColor = { r, g, b, a } end
+      end
+
+      local icon = G("MerchantItem" .. i .. "ItemButtonIconTexture")
+      local itemName, color = BuybackRowQuality(i, itemButton, icon)
+      if itemName then table.insert(occupied, row) end
+      if color then
+        pcall(nameRegion.SetTextColor, nameRegion,
+              color[1], color[2], color[3], color[4] or 1)
+        ShowBuybackEdges(itemButton, color)
+      else
+        HideBuybackEdges(itemButton)
+        RestoreBuybackName(nameRegion)
+        itemButton.uuiBuybackQuality = nil
+      end
+    end
+  end
+  if isBuyback then LayoutBuybackRows(occupied) end
+end
+
+-- Rarity colour on a merchant tooltip's name line.
 --
--- Behavior only -- no texture, font or anchor -- so it is installed in both
--- themes, unlike the skinning above. The stock row buttons are reused by the
--- vendor and buyback lists and the native OnEnter picks its setter from
--- whichever tab is selected, while this client documents GetMerchantItemLink
--- and no buyback link getter at all (modules/itemprice.lua records the same
--- gap). The merchant name is therefore handed to the tooltip writer as the
--- name it expects to find: a buyback tooltip will not match it and keeps the
--- client's own colour instead of taking the vendor list's.
+-- Behavior only -- no texture, font or anchor -- so it is installed in every
+-- theme, unlike the skinning above. Vendor rows use their direct link; buyback
+-- rows reuse the quality resolved for their visible name and outline.
 local function HookItemTooltip(itemButton)
   if not itemButton or itemButton.uuiMerchantTooltipHook then return end
   itemButton.uuiMerchantTooltipHook = true
@@ -105,6 +388,21 @@ local function HookItemTooltip(itemButton)
 
     local idOk, index = pcall(itemButton.GetID, itemButton)
     if not idOk or not tonumber(index) then return end
+
+    if MerchantIsOnBuybackTab() then
+      local getInfo = G("GetBuybackItemInfo")
+      if type(getInfo) ~= "function" then return end
+      local infoOk, name = pcall(getInfo, index)
+      if not infoOk or type(name) ~= "string" then return end
+
+      local quality = itemButton.uuiBuybackQuality or QualityFromTooltip(name)
+      if quality then
+        itemButton.uuiBuybackQuality = quality
+        RefreshBuybackRarity()
+      end
+      U.ColorTooltipItemName(nil, quality, name)
+      return
+    end
 
     local getLink = G("GetMerchantItemLink")
     local getInfo = G("GetMerchantItemInfo")
@@ -129,6 +427,37 @@ local function HookItemTooltips()
   for i = 1, ITEM_ROWS do
     HookItemTooltip(G("MerchantItem" .. i .. "ItemButton"))
   end
+end
+
+local function BindBuybackRarity()
+  frame = frame or G("MerchantFrame")
+  if not frame then return false end
+
+  HookItemTooltips()
+  if not merchantInfoHooked then
+    merchantInfoHooked = U.PostHookGlobal(
+      "MerchantFrame_UpdateMerchantInfo", RefreshBuybackRarity)
+  end
+  -- Measured present by merchant.buyback_transition.v1. This is the missing
+  -- tab-switch path: selecting Buyback calls it without firing MERCHANT_UPDATE,
+  -- which is why rarity previously appeared only after a later hover/click.
+  if not buybackInfoHooked then
+    buybackInfoHooked = U.PostHookGlobal(
+      "MerchantFrame_UpdateBuybackInfo", RefreshBuybackRarity)
+  end
+  RefreshBuybackRarity()
+  return true
+end
+
+local function MerchantShown()
+  frame = frame or G("MerchantFrame")
+  RememberBagItemQualities()
+  BindBuybackRarity()
+end
+
+local function MerchantInventoryUpdated()
+  RememberBagItemQualities()
+  RefreshBuybackRarity()
 end
 
 local function StyleBuyBackSlot()
@@ -256,6 +585,7 @@ local function Reapply()
   StyleHeader()
   StyleItemRows()
   StyleBuyBackSlot()
+  BindBuybackRarity()
   ApplyModernWowDialog()
 end
 
@@ -299,6 +629,7 @@ local function BuildFrame()
   StylePageControls()
   StyleBuyBackSlot()
   StyleRepairButtons()
+  BindBuybackRarity()
   ApplyModernWowDialog()
 
   U.PostHookScript(frame, "OnShow", Reapply)
@@ -354,6 +685,15 @@ function MER:OnEnable()
   -- Ahead of the theme gate: the tooltip hooks change no artwork, so Classic
   -- gets them on its untouched vendor window too.
   HookItemTooltips()
+  RememberBagItemQualities()
+  BindBuybackRarity()
+
+  -- MerchantFrame is load-on-demand on some installs. These behavior-only
+  -- callbacks remain active for every theme, including the two themes that
+  -- deliberately keep native NPC/service-window chrome.
+  U.RegisterEvent("MERCHANT_SHOW", MerchantShown)
+  U.RegisterEvent("MERCHANT_UPDATE", MerchantInventoryUpdated)
+  U.RegisterEvent("BAG_UPDATE", RememberBagItemQualities)
 
   useModernWow = type(U.GetActiveThemeStyle) == "function" and
                  U.GetActiveThemeStyle() == "modern-wow"

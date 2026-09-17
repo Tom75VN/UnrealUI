@@ -721,7 +721,27 @@ local function CreateIcon(row, index)
   icon:SetWidth(size)
   icon:SetHeight(size)
   icon.uuiRadialOnly = row.radialOnly
-  U.CreateBackdrop(icon, {})
+  icon.nativeAuraChrome = row.nativeAuraChrome
+
+  -- Classic's native target auras show the icon's full artwork instead of
+  -- UnrealUI's cropped texture and flat outline. Debuffs additionally carry
+  -- the client's dispel-coloured overlay. Mirror both treatments on the
+  -- standalone player and target rows; every non-native frame keeps
+  -- UnrealUI's chrome.
+  -- The timer remains on the raised inset child below, so the radial wipe
+  -- covers the icon artwork without painting over the native border.
+  if row.nativeAuraChrome then
+    if row.harmful then
+      local border = icon:CreateTexture(nil, "OVERLAY")
+      border:SetTexture("Interface\\Buttons\\UI-Debuff-Overlays")
+      border:SetPoint("TOPLEFT", icon, "TOPLEFT", -1, 1)
+      border:SetPoint("BOTTOMRIGHT", icon, "BOTTOMRIGHT", 1, -1)
+      border:SetTexCoord(0.296875, 0.5703125, 0, 0.515625)
+      icon.nativeBorder = border
+    end
+  else
+    U.CreateBackdrop(icon, {})
+  end
 
   -- scripts.handler_arguments_direct: handlers close over `row`/`icon` instead
   -- of reading `this`, matching modules/actionbar.lua's button tooltip wiring.
@@ -730,11 +750,15 @@ local function CreateIcon(row, index)
   icon:SetScript("OnLeave", function() HideIconTooltip() end)
 
   local texture = icon:CreateTexture(nil, "ARTWORK")
-  texture:SetPoint("TOPLEFT", icon, "TOPLEFT", 1, -1)
-  texture:SetPoint("BOTTOMRIGHT", icon, "BOTTOMRIGHT", -1, 1)
-  -- Trims the stock icon border the same way modules/actionbar.lua does, so the
-  -- unrealUI outline is the only edge on screen.
-  pcall(texture.SetTexCoord, texture, 0.08, 0.92, 0.08, 0.92)
+  if row.nativeAuraChrome then
+    texture:SetAllPoints(icon)
+  else
+    texture:SetPoint("TOPLEFT", icon, "TOPLEFT", 1, -1)
+    texture:SetPoint("BOTTOMRIGHT", icon, "BOTTOMRIGHT", -1, 1)
+    -- Trims the stock icon border the same way modules/actionbar.lua does, so
+    -- the UnrealUI outline is the only edge on screen.
+    pcall(texture.SetTexCoord, texture, 0.08, 0.92, 0.08, 0.92)
+  end
   icon.texture = texture
 
   -- A raised child inset one unit, so the wipe covers the artwork but never the
@@ -1008,7 +1032,11 @@ local function ApplyIcon(icon, texture, count, borderColor, size, entry, now, ti
   -- so identity is enough and a nil debuffType needs no sentinel of its own.
   if icon.uuiBorder ~= borderColor then
     icon.uuiBorder = borderColor
-    U.SetBorderColor(icon, M.Unpack(borderColor))
+    if icon.nativeBorder then
+      U.SetColor(icon.nativeBorder, M.Unpack(borderColor))
+    elseif not icon.nativeAuraChrome then
+      U.SetBorderColor(icon, M.Unpack(borderColor))
+    end
   end
 
   -- A stack of 1 is the normal case and the number would just be noise.
@@ -1712,6 +1740,8 @@ local function BuildRow(id, unit, harmful, setting, options)
     row.stopAtCap = options.stopAtCap
     row.radialOnly = options.radialOnly
     row.master = options.master
+    row.nativeAuraChrome = options.nativeAuraChrome and
+                           anchor.classicNativeFrame and true or false
   end
   row.icons = {}
   row.names = {}
@@ -1922,13 +1952,13 @@ end
 
 function A:OnEnable()
   BuildRow("player", "player", true, "playerEnabled",
-           { master = "showOnPlayerFrame" })
+           { master = "showOnPlayerFrame", nativeAuraChrome = true })
   BuildRow("playerBuff", "player", false, "playerBuffEnabled",
-           { master = "showOnPlayerFrame" })
+           { master = "showOnPlayerFrame", nativeAuraChrome = true })
   BuildRow("target", "target", true, "targetEnabled",
-           { master = "showOnTargetFrame" })
+           { master = "showOnTargetFrame", nativeAuraChrome = true })
   BuildRow("targetBuff", "target", false, "targetBuffEnabled",
-           { master = "showOnTargetFrame" })
+           { master = "showOnTargetFrame", nativeAuraChrome = true })
 
   -- One shape for all five rows in the block, so the player's row is identical
   -- to the four beside it apart from where it reads and what it hangs on.

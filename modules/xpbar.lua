@@ -2,7 +2,8 @@
 --
 -- Two thin movable bars: player experience (with a rested overlay) and
 -- watched-faction reputation. The reputation bar can be hidden from the
--- General settings page; the XP bar is required scope and always shown.
+-- General settings page. Under classic-wow the complete stock MainMenuBar is
+-- retained instead, including its native XP/reputation track.
 --
 -- Evidence gap: query_compat.py has no runtime record for UnitXP, UnitXPMax,
 -- GetXPExhaustion, GetFactionInfo, PLAYER_XP_UPDATE, UPDATE_EXHAUSTION,
@@ -932,6 +933,13 @@ end
 
 function XP:OnEnable()
   EnsureConfig()
+  local nativeMain = nil
+  if type(U.ActionBarUsesNativeMainMenuBar) == "function" then
+    nativeMain = U.ActionBarUsesNativeMainMenuBar()
+  elseif type(U.ThemeStyleUsesNativeMainMenuBar) == "function" then
+    nativeMain = U.ThemeStyleUsesNativeMainMenuBar()
+  end
+  if nativeMain then return end
   if not xpAnchor then Build() end
 
   local i, events = nil, {

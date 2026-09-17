@@ -1568,6 +1568,7 @@ local placement = {
   offsetX = 48,
   margin = 4,
   fadeDuration = 0.30,
+  nativeButtonPrefixes = { "ActionButton", "BonusActionButton" },
 }
 
 function placement.Register()
@@ -1738,8 +1739,69 @@ function placement.CursorTarget(tooltip)
   return placement.cursor
 end
 
+-- This client has no GameTooltip:GetOwner (tooltipanchor v1, 2026-09-18), so
+-- owner-based exclusion cannot identify the native action-button tooltip. Use
+-- the actual hover source instead. GetMouseFocus is name-comparable rather than
+-- identity-comparable here (knowledge.json / api.getmousefocus_not_identity_comparable),
+-- and can return nil over some Buttons, so exact cursor hit-testing of the 24
+-- named native main/bonus buttons is the bounded fallback.
+function placement.NativeActionButtonHovered()
+  local nativeMain = nil
+  if type(U.ActionBarUsesNativeMainMenuBar) == "function" then
+    nativeMain = U.ActionBarUsesNativeMainMenuBar()
+  elseif type(U.ThemeStyleUsesNativeMainMenuBar) == "function" then
+    nativeMain = U.ThemeStyleUsesNativeMainMenuBar()
+  end
+  if not nativeMain then return false end
+
+  local focus = Call("GetMouseFocus")
+  if focus and type(focus.GetName) == "function" then
+    local ok, name = pcall(focus.GetName, focus)
+    if ok and type(name) == "string" and
+       (string.find(name, "^ActionButton%d+$") or
+        string.find(name, "^BonusActionButton%d+$")) then
+      return true
+    end
+  end
+
+  local cx, cy = Call("GetCursorPosition")
+  if type(cx) ~= "number" or type(cy) ~= "number" then return false end
+  local p, i
+  for p = 1, table.getn(placement.nativeButtonPrefixes) do
+    for i = 1, 12 do
+      local button = U.G(placement.nativeButtonPrefixes[p] .. i)
+      if button then
+        local ok, visible, scale, left, top, width, height = pcall(function()
+          return button:IsVisible(), button:GetEffectiveScale(),
+                 button:GetLeft(), button:GetTop(),
+                 button:GetWidth(), button:GetHeight()
+        end)
+        if ok and visible and type(scale) == "number" and scale > 0 and
+           type(left) == "number" and type(top) == "number" and
+           type(width) == "number" and type(height) == "number" then
+          local x, y = cx / scale, cy / scale
+          if x >= left and x <= left + width and
+             y <= top and y >= top - height then
+            return true
+          end
+        end
+      end
+    end
+  end
+  return false
+end
+
 function placement.Apply(tooltip)
   if not placement.frame or placement.applying then return end
+
+  -- Action buttons own an explicit native tooltip position. The focused trace
+  -- sampled Polymorph for 3,367 frames and saw only placement.cursor or hidden,
+  -- while the user still saw the other position in every A/B/A phase. That
+  -- proves the native placement happens after Lua's sampled/corrected point and
+  -- before rendering; applying our point more often cannot fix it. Exclude the
+  -- hovered native button entirely so the two placement systems never compete.
+  if placement.NativeActionButtonHovered() then return end
+
   local ok, anchorType = pcall(tooltip.GetAnchorType, tooltip)
   if not ok or anchorType ~= "ANCHOR_NONE" then return end
 

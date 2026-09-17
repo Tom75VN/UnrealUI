@@ -17,26 +17,29 @@
 --
 --   bags module ON   -> UnrealUI's own merged bag window opens from its own
 --                       controls; this bar stays hidden and builds nothing.
---   bags module OFF  -> this bar appears, and every click goes to the client's
---                       own globals (ToggleBackpack, OpenAllBags, ToggleBag),
---                       so whichever addon owns the container UI answers it.
+--   bags module OFF  -> this bar appears outside classic-wow, and every click
+--                       goes to the client's own globals (ToggleBackpack,
+--                       OpenAllBags, ToggleBag), so whichever addon owns the
+--                       container UI answers it. Classic keeps the stock bag
+--                       buttons inside the native MainMenuBar instead.
 --
 -- WHAT IT DOES NOT DO
 --
--- It does not touch a native widget. The stock bag buttons are left where the
--- client put them, suppressed with the rest of MainMenuBar: nothing here
--- reparents, reskins, hides or caches one, so no part of this depends on a
--- native child's lifetime (rules/unreal-ui.md, native widget ownership). The
--- four equipped-bag slots are the one exception that is not a native widget at
--- all -- they are UnrealUI's own buttons built on the client's bag-slot
--- template through the shared component in core/itemslot.lua, exactly as the
--- bag window builds its own row.
+-- It does not touch a native widget. Outside classic-wow, the stock bag buttons
+-- remain where the client put them under the suppressed MainMenuBar; under
+-- classic-wow this module does not build and those buttons remain fully native.
+-- Nothing here reparents, reskins, hides or caches one, so no part of this
+-- depends on a native child's lifetime (rules/unreal-ui.md, native widget
+-- ownership). The four equipped-bag slots in this replacement bar are
+-- UnrealUI-owned buttons built on the client's bag-slot template through the
+-- shared component in core/itemslot.lua, exactly as the bag window builds its
+-- own row.
 --
 -- THEMES
 --
 -- Two complete drawing paths behind one seam, per rules/unreal-ui-design.md:
--- `modern` and `classic-wow` get the shared flat item-slot chrome, and
--- `modern-wow` gets the DragonflightUI bag art imported into
+-- `modern` gets the shared flat item-slot chrome, `classic-wow` keeps the stock
+-- MainMenuBar bag buttons, and `modern-wow` gets DragonflightUI bag art from
 -- media/Textures/modern-wow/bags (registered as the `bagbar` surface in
 -- modules/modernwow.lua). The theme is read once, in Build.
 --
@@ -122,6 +125,13 @@ end
 -- and does not need re-testing on a refresh tick.
 function bb.Wanted()
   if not bb.EnsureConfig().enabled then return false end
+  local nativeMain = nil
+  if type(U.ActionBarUsesNativeMainMenuBar) == "function" then
+    nativeMain = U.ActionBarUsesNativeMainMenuBar()
+  elseif type(U.ThemeStyleUsesNativeMainMenuBar) == "function" then
+    nativeMain = U.ThemeStyleUsesNativeMainMenuBar()
+  end
+  if nativeMain then return false end
   if type(U.BagsEnabled) ~= "function" then return true end
   return not U.BagsEnabled()
 end

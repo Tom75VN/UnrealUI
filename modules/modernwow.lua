@@ -1035,6 +1035,11 @@ function mw.UnitModuleEnabled(id)
      type(U.ClassicModernModuleEnabled) ~= "function" then
     return false
   end
+  -- Classic's target-of-target deliberately keeps the compact player-frame
+  -- atlas housing built by modules/unitframes.lua. The optional Modern unit
+  -- frame surface still dresses player, target and pet, but must not replace
+  -- this one Classic-specific frame with Dragonflight artwork.
+  if id == "targettarget" then return false end
   if string.find(id, "^party") then
     return U.ClassicModernModuleEnabled("partyframes")
   end
@@ -2885,6 +2890,21 @@ mw.character = {
   tabCount = 5,
 }
 
+-- Inspect is the Character surface for another unit. It deliberately shares
+-- Character's surface gate and art rather than becoming an independently
+-- switchable style family.
+mw.inspect = {
+  window = { name = "InspectFrame" },
+  panel = "UnrealUIInspectPanel",
+  slots = {
+    "HeadSlot", "NeckSlot", "ShoulderSlot", "BackSlot", "ChestSlot",
+    "ShirtSlot", "TabardSlot", "WristSlot",
+    "HandsSlot", "WaistSlot", "LegsSlot", "FeetSlot",
+    "Finger0Slot", "Finger1Slot", "Trinket0Slot", "Trinket1Slot",
+    "MainHandSlot", "SecondaryHandSlot", "RangedSlot",
+  },
+}
+
 function mw.TabSet(tab, layer, prefix)
   local token = M.modernWow.tab
   local path = M.modernWow.texture.frameTabs
@@ -3076,6 +3096,41 @@ function mw.BuildCharacter()
     mw.DressTab(U.G(entry.tabPrefix .. i))
   end
   mw.DressCloseButton("CharacterFrameCloseButton")
+  mw.BuildInspect()
+end
+
+function mw.BuildInspect()
+  local entry = mw.inspect
+  local frame = U.G(entry.window.name)
+  if not frame then return false end
+  if frame.uuiModernWowInspectBuilt then
+    mw.InspectClassIcon(frame)
+    return true
+  end
+  if not frame.uuiModernWowWindow and not mw.DressWindow(frame, entry.window) then
+    error("modern-wow Inspect texture could not be applied")
+  end
+
+  local panel = U.G(entry.panel)
+  if panel then mw.HideFlatSurface(panel) end
+
+  mw.InspectClassIcon(frame)
+  mw.DressGearSlots(frame, "Inspect", entry.slots,
+                    "InspectPaperDollItemSlotButton_Update",
+                    "modernwow.inspect-gear-slots")
+
+  mw.DressCloseButton("InspectFrameCloseButton")
+
+  local paperDoll = U.G("InspectPaperDollFrame")
+  U.PostHookScript(frame, "OnShow", function() mw.InspectClassIcon(frame) end)
+  U.PostHookScript(paperDoll, "OnShow", function() mw.InspectClassIcon(frame) end)
+  frame.uuiModernWowInspectBuilt = true
+  return true
+end
+
+function U.ModernWowDressInspect()
+  if not U.ModernWowSurfaceEnabled("character") then return false end
+  return mw.BuildInspect()
 end
 
 -- Gear slots: DragonflightUI's look, which is the stock square slot frame
@@ -3083,12 +3138,9 @@ end
 -- Character equipment slot. HUD bags are not touched here; modules/bagbar.lua
 -- owns those.
 --
--- modules/character.lua keeps styling the slots (tooltip, rarity lookup) and
--- re-runs U.StyleStockButton on every PaperDollItemSlotButton_Update, which
--- re-anchors the icon to its flat 3px inset. These hooks are installed after
--- that module's, so this pass runs second and wins. Rarity comes from the
--- persistent slot.uuiCharacterBorder table that module maintains, and tints the
--- frame the way DF tints its bag borders by quality (bags.lua, WORKING_SOURCE).
+-- The owning Character/Inspect module keeps styling its slots and maintains a
+-- persistent rarity table. These hooks run after that owning refresh, restore
+-- the edge-to-edge icon geometry, and tint only the quality glow.
 mw.character.slots = {
   "HeadSlot", "NeckSlot", "ShoulderSlot", "BackSlot", "ChestSlot",
   "ShirtSlot", "TabardSlot", "WristSlot",
@@ -3096,17 +3148,6 @@ mw.character.slots = {
   "Finger0Slot", "Finger1Slot", "Trinket0Slot", "Trinket1Slot",
   "MainHandSlot", "SecondaryHandSlot", "RangedSlot", "AmmoSlot",
 }
-
-function mw.SameColor(a, b)
-  if not a or not b then return false end
-  local i
-  for i = 1, 3 do
-    if math.abs((tonumber(a[i]) or 0) - (tonumber(b[i]) or 0)) > 0.01 then
-      return false
-    end
-  end
-  return true
-end
 
 function mw.PlaceGearSlot(slot)
   local state = slot and slot.uuiModernWowGear
@@ -3163,29 +3204,12 @@ function mw.PlaceGearSlot(slot)
           shade, 1)
   end
 
-  local border = slot.uuiCharacterBorder
-  local rare = border and not mw.SameColor(border, M.slotBorder.empty)
-     and not mw.SameColor(border, M.slotBorder.plain)
-  local glow = state.glow
-  if glow then
-    local glowExtent = size + token.glowGrow * k
-    pcall(function()
-      glow:ClearAllPoints()
-      glow:SetWidth(glowExtent)
-      glow:SetHeight(glowExtent)
-      glow:SetPoint("CENTER", slot, "CENTER", 0, 0)
-      if rare then
-        glow:SetVertexColor(border[1], border[2], border[3], token.glowAlpha)
-        glow:Show()
-      else
-        glow:Hide()
-      end
-    end)
-  end
+  local border = slot.uuiCharacterBorder or slot.uuiInspectBorder
+  state.glow = U.SetGearQualityGlow(slot, border)
 end
 
-function mw.DressGearSlot(slotName)
-  local slot = U.G("Character" .. slotName)
+function mw.DressGearSlot(prefix, slotName)
+  local slot = U.G(prefix .. slotName)
   if not slot or slot.uuiModernWowGear then return end
 
   local token = M.modernWow.gearSlot
@@ -3199,8 +3223,8 @@ function mw.DressGearSlot(slotName)
 
   -- Rarity glow: the action bar's glow art in the item's quality colour,
   -- above the metal frame (OVERLAY over ARTWORK).
-  local glow = mw.Texture(slot, "OVERLAY", token.glowTexture)
-  if glow then pcall(glow.Hide, glow) end
+  local border = slot.uuiCharacterBorder or slot.uuiInspectBorder
+  local glow = U.SetGearQualityGlow(slot, border)
 
   -- Hover stays the button's own highlight slot so the client drives it.
   -- UnrealUI hid that region when it cleared the stock faces, so it is
@@ -3222,37 +3246,45 @@ function mw.DressGearSlot(slotName)
     corners = corners,
     glow = glow,
     hover = hover,
-    icon = U.G("Character" .. slotName .. "IconTexture"),
+    icon = U.G(prefix .. slotName .. "IconTexture"),
   }
   mw.PlaceGearSlot(slot)
 end
 
-function mw.RefreshGearSlots()
-  local slots = mw.character.slots
+function mw.RefreshGearSlots(prefix, slots)
   local i
   for i = 1, table.getn(slots) do
-    mw.PlaceGearSlot(U.G("Character" .. slots[i]))
+    mw.PlaceGearSlot(U.G(prefix .. slots[i]))
   end
 end
 
-function mw.DressGearSlots(frame)
-  local slots = mw.character.slots
+function mw.DressGearSlots(frame, prefix, slots, updateName, deferId)
+  prefix = prefix or "Character"
+  slots = slots or mw.character.slots
+  updateName = updateName or "PaperDollItemSlotButton_Update"
+  deferId = deferId or "modernwow.gear-slots"
+
   local i
   for i = 1, table.getn(slots) do
-    mw.DressGearSlot(slots[i])
+    mw.DressGearSlot(prefix, slots[i])
   end
+  if frame.uuiModernWowGearHooks then return end
+  frame.uuiModernWowGearHooks = true
+
   -- The client calls PaperDollItemSlotButton_Update once per slot button, and
   -- its gear and bag slots all react to bag/lock events: one item moved between
   -- bags ran this full every-slot pass hundreds of times inside one frame,
   -- window open or not (measured 2026-09-16 with UnrealRuntimeProbe bagmove ab:
   -- 180-260ms frames that survived switching unrealUI bags and bars off).
   -- Closed window: nothing to draw, OnShow restyles it. Open: one deferred pass.
-  U.PostHookGlobal("PaperDollItemSlotButton_Update", function()
+  U.PostHookGlobal(updateName, function()
     local ok, shown = pcall(frame.IsShown, frame)
     if not (ok and shown) then return end
-    U.DeferOnce("modernwow.gear-slots", mw.RefreshGearSlots)
+    U.DeferOnce(deferId, function() mw.RefreshGearSlots(prefix, slots) end)
   end)
-  U.PostHookScript(frame, "OnShow", mw.RefreshGearSlots)
+  U.PostHookScript(frame, "OnShow", function()
+    mw.RefreshGearSlots(prefix, slots)
+  end)
 end
 
 -- Stats boxes: DragonflightUI's look for the stats block under the 3D model --
@@ -3481,36 +3513,59 @@ function mw.CharacterStatsFrame(frame)
   end
 end
 
--- The player's class icon inside the art's gold ring, from the same
--- class-portraits cells the unit-frame fallback uses. The player's class
--- cannot change in a session, so it is set once. An unknown token draws
--- nothing rather than the wrong class. Scaled from the 384x512 design so it
--- follows the quadrants if the window is not the stock size.
-function mw.CharacterClassIcon(frame)
+-- A unit's class icon inside the art's gold ring, from the same class-portrait
+-- cells the unit-frame fallback uses. Character passes "player"; Inspect
+-- passes its current native unit and refreshes whenever that paper doll opens.
+function mw.ClassIcon(frame, unit, stateKey)
   local state = frame and frame.uuiModernWowWindow
-  if not state or not state.chrome or state.classIcon then return end
+  if not state or not state.chrome then return end
+  local icon = state[stateKey]
+  if not unit then
+    if icon then pcall(icon.Hide, icon) end
+    return
+  end
 
-  local ok, _, token = pcall(UnitClass, "player")
+  local unitClass = U.G("UnitClass")
+  if type(unitClass) ~= "function" then
+    if icon then pcall(icon.Hide, icon) end
+    return
+  end
+  local ok, _, token = pcall(unitClass, unit)
   local cell = ok and token and M.modernWow.classCell[token]
-  if not cell then return end
+  if not cell then
+    if icon then pcall(icon.Hide, icon) end
+    return
+  end
 
   local ring = M.modernWow.characterRing
-  local icon = mw.Texture(state.chrome, "ARTWORK",
-                          M.modernWow.texture.classPortraits,
-                          cell[1], cell[2], cell[3], cell[4])
+  if not icon then
+    icon = mw.Texture(state.chrome, "ARTWORK",
+                      M.modernWow.texture.classPortraits)
+    state[stateKey] = icon
+  end
   if not icon then return end
 
   local sx = mw.Dimension(frame, "GetWidth") / ring.designWidth
   local sy = mw.Dimension(frame, "GetHeight") / ring.designHeight
   local size = ring.size - 2 * ring.inset
   pcall(function()
+    icon:ClearAllPoints()
     icon:SetWidth(size * sx)
     icon:SetHeight(size * sy)
     icon:SetPoint("TOPLEFT", frame, "TOPLEFT",
                   (ring.left + ring.inset) * sx,
                   -(ring.top + ring.inset) * sy)
+    icon:SetTexCoord(cell[1], cell[2], cell[3], cell[4])
+    icon:Show()
   end)
-  state.classIcon = icon
+end
+
+function mw.CharacterClassIcon(frame)
+  mw.ClassIcon(frame, "player", "classIcon")
+end
+
+function mw.InspectClassIcon(frame)
+  mw.ClassIcon(frame, frame and frame.unit, "inspectClassIcon")
 end
 
 -- Where the Quest Log art draws its three button beds, in the window's own

@@ -768,6 +768,64 @@ function rank.BuildToggle()
   U.AddWindowDragInteractiveFrame(book, rank.box.box or rank.box)
 end
 
+-- Gap from the rank label to the bar-hint box: 10, widened by 5 under
+-- classic-wow (user request, 2026-09-17).
+function rank.PairGap()
+  if U.GetActiveThemeStyle() == "classic-wow" then return 15 end
+  return 10
+end
+
+function rank.TextWidth(label)
+  if not label or not label.GetStringWidth then return 0 end
+  local ok, width = pcall(label.GetStringWidth, label)
+  return ok and tonumber(width) or 0
+end
+
+-- classic-wow only (user request, 2026-09-17): the toggle row is centred
+-- horizontally on the window's title, 18 units above the default row. The rank
+-- box leads the row and the bar-hint toggle chains off its label, so moving
+-- the rank box moves both; `rank.pairLabel` is that second label once built.
+--
+-- Numeric only: the title's centre is read once per layout (when the row
+-- changes), turned into an offset, and never kept as an anchor
+-- (rules/unreal-ui.md, native widget ownership). Every other theme keeps
+-- rank.AnchorArgs unchanged.
+function rank.Center()
+  if not rank.box or not rank.box.ClearAllPoints then return end
+  if U.GetActiveThemeStyle() ~= "classic-wow" then return end
+  local key = rank.pairLabel or false
+  if rank.centeredFor == key then return end
+
+  local title = G("SpellBookTitleText")
+  local point, relative, relativePoint, _, y = rank.AnchorArgs()
+  if not title or not title.GetCenter or not relative or
+     not relative.GetLeft then
+    return
+  end
+  local centerOk, titleX = pcall(title.GetCenter, title)
+  local leftOk, relLeft = pcall(relative.GetLeft, relative)
+  if not centerOk or not leftOk or not tonumber(titleX) or
+     not tonumber(relLeft) then
+    return
+  end
+
+  local width = rank.NATIVE_SIZE + 3 + rank.TextWidth(rank.label)
+  if rank.pairLabel then
+    -- Gap to the rank label (missing.AnchorArgs) plus that box and label.
+    width = width + rank.PairGap() + rank.NATIVE_SIZE + 3 +
+            rank.TextWidth(rank.pairLabel)
+  end
+  local x = math.floor(titleX - relLeft - width / 2 + 0.5)
+  -- Raised 18 units above the default row (user request, 2026-09-17).
+  y = (tonumber(y) or 0) + 18
+
+  local placed = pcall(function()
+    rank.box:ClearAllPoints()
+    rank.box:SetPoint(point, relative, relativePoint, x, y)
+  end)
+  if placed then rank.centeredFor = key end
+end
+
 function rank.Install()
   if rank.active then return end
 
@@ -817,6 +875,7 @@ function rank.Install()
     -- Also the retry for the checkbox: the window is provably built by the
     -- time it is first shown, even if it was not at PLAYER_LOGIN.
     if not rank.box then rank.BuildToggle() end
+    rank.Center()
     -- Also the retry under native-chrome themes, which never run Reapply.
     booktab.Install()
     rank.UpdatePaging()
@@ -1588,6 +1647,11 @@ function missing.Apply(index)
   -- only returns if that path is not drawn or its glow could not be built.
   local themed = type(U.ModernWowSpellBookBarGlow) == "function" and
                  U.ModernWowSpellBookBarGlow(button, wanted)
+  -- classic-wow's own pulsing highlight (modules/spellbookclassicglow.lua)
+  -- when the modern-wow book is not drawn.
+  if not themed and type(U.ClassicSpellBookBarGlow) == "function" then
+    themed = U.ClassicSpellBookBarGlow(button, wanted)
+  end
   U.SetBorderColor(overlay,
                    M.Unpack((wanted and not themed) and M.color.accent or
                             missing.CLEAR))
@@ -1616,7 +1680,7 @@ function missing.AnchorArgs()
   -- from a width this file would have to know for two different chrome
   -- shapes. Without it, take the place the rank toggle would have had.
   if rank.box and rank.label then
-    return "LEFT", rank.label, "RIGHT", 10, 0
+    return "LEFT", rank.label, "RIGHT", rank.PairGap(), 0
   end
   return rank.AnchorArgs()
 end
@@ -1654,6 +1718,8 @@ function missing.BuildNativeToggle(book)
       label:ClearAllPoints()
       label:SetPoint("LEFT", box, "RIGHT", 3, 0)
     end)
+    -- Read by rank.Center to centre the whole row under classic-wow.
+    rank.pairLabel = label
   end
 
   rank.RaiseNativeMark(box)
@@ -2968,7 +3034,15 @@ function SB:OnEnable()
       U.Error("spellbook: modern-wow drawing path: " .. tostring(err))
     end
   elseif U.ThemeStyleUsesNativeChrome() then
-    -- Native chrome: behaviour only.
+    -- Native chrome: behaviour only, plus classic-wow's own Spellbook /
+    -- Professions tabs (modules/spellbookclassicprof.lua), which keep the
+    -- client's window and tab art.
+    if type(U.BuildClassicSpellBookProfessions) == "function" then
+      local ok, err = pcall(U.BuildClassicSpellBookProfessions)
+      if not ok then
+        U.Error("spellbook: classic-wow professions tab: " .. tostring(err))
+      end
+    end
   else
     BuildFrame()
   end

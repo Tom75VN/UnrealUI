@@ -2,7 +2,7 @@
 ## Title: |cffffffffUnreal |cfff5ae0aUI
 ## Notes: Unreal Azeroth native UI addon.
 ## Author: unrealUI
-## Version: 0.7.3
+## Version: 0.7.4
 ## X-License: MIT
 ## SavedVariables: UnrealUIDB, UnrealUIProfiles, UnrealUIDiagDB, UnrealUIPriceDB
 ## SavedVariablesPerCharacter: UnrealUIProfileDB, UnrealUIFavoriteDB, UnrealUIBankCountDB
@@ -61,7 +61,11 @@ core\itemsort.lua
 core\itemstack.lua
 core\widgets.lua
 core\stockui.lua
+# Talent-tree client data and the prerequisite-branch node walk, shared by
+# every theme's talent drawing path. No drawing of its own.
+core\talentgrid.lua
 core\dropdown.lua
+core\screenguard.lua
 core\mover.lua
 
 # The contextual settings panel that follows the selected mover in edit mode.
@@ -135,10 +139,20 @@ modules\spellbook.lua
 modules\spellbookmodernwow.lua
 # Its Professions tab and page. Built only by that drawing path.
 modules\spellbookprofessions.lua
+# The classic-wow Spellbook's "Not on action bars" glow. Entry point only;
+# modules\spellbook.lua calls it when the modern-wow book is not drawn.
+modules\spellbookclassicglow.lua
+# The classic-wow native Spellbook's Spellbook / Professions tabs and the host
+# for the Professions page above. Entry point only; modules\spellbook.lua
+# builds it on classic-wow's native chrome path.
+modules\spellbookclassicprof.lua
 
-# The Talent window's modern-wow drawing path (DF-main's three-panel frame).
-# Entry points only; modules\talents.lua decides whether to call them.
+# The Talent window's two complete drawing paths: DF-main's three-panel
+# frame for modern-wow, and the same three-tree interface in the modern
+# theme's own flat language. Entry points only; modules\talents.lua
+# picks one.
 modules\talentsmodernwow.lua
+modules\talentsmodern.lua
 modules\talents.lua
 
 # The profession (TradeSkill / Craft) window's modern-wow drawing path
@@ -152,6 +166,7 @@ modules\professions.lua
 # feeds. Theme-independent; professions.lua only calls its U.* entry points.
 modules\crafttracker.lua
 modules\character.lua
+modules\inspect.lua
 modules\friends.lua
 modules\merchant.lua
 modules\trainer.lua

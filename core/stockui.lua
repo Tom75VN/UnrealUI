@@ -98,6 +98,94 @@ function U.PostHookReport()
   return type(U.G("hooksecurefunc")), names
 end
 
+-- Replaces a stock model's separate rotate buttons with click-drag rotation.
+-- Character and Inspect use the same model interaction, so the guarded drag
+-- recipe lives here instead of being copied into each window module.
+--
+-- WORKING_SOURCE: UnrealPfUI rotates these stock model frames with
+-- SetRotation. The Button catcher and StartMoving/StopMoving pairing are the
+-- UnrealUI path confirmed to deliver a matching OnDragStop on this client.
+-- USER_CONFIRMED_INGAME: RegisterForDrag alone left Character spinning after
+-- release; the throwaway StartMoving/StopMovingOrSizing followed by the real
+-- StartMoving is the established mover recipe that fixed that lifecycle.
+function U.EnableStockModelDrag(model, options)
+  options = options or {}
+  if options.leftButton then pcall(options.leftButton.Hide, options.leftButton) end
+  if options.rightButton then pcall(options.rightButton.Hide, options.rightButton) end
+  if not model then return nil end
+  if model.uuiModelRotateCatcher then return model.uuiModelRotateCatcher end
+
+  local ticker = options.ticker or "stock-model-rotate"
+  local speed = tonumber(options.speed) or 0.01
+  local created, catcher = pcall(CreateFrame, "Button", options.name, model)
+  if not created or not catcher then return nil end
+
+  local state = { rotation = 0, lastX = nil }
+  model.uuiModelRotateCatcher = catcher
+  catcher.uuiModelRotateState = state
+
+  pcall(catcher.SetAllPoints, catcher, model)
+  pcall(catcher.EnableMouse, catcher, true)
+  pcall(catcher.RegisterForDrag, catcher, "LeftButton")
+
+  local function StopDrag()
+    U.UnregisterUpdate(ticker)
+    state.lastX = nil
+  end
+
+  local function LeftButtonStillDown()
+    local fn = U.G("IsMouseButtonDown")
+    if type(fn) ~= "function" then return true end
+    local ok, down = pcall(fn, "LeftButton")
+    if not ok then return true end
+    return down and true or false
+  end
+
+  local function LiveDrag()
+    if not LeftButtonStillDown() then
+      StopDrag()
+      return
+    end
+
+    local cursor = U.G("GetCursorPosition")
+    if type(cursor) ~= "function" then return end
+    local ok, x = pcall(cursor)
+    if not ok or not tonumber(x) then return end
+
+    local scale = 1
+    local scaleOk, value = pcall(model.GetEffectiveScale, model)
+    if scaleOk and tonumber(value) and value > 0 then scale = value end
+    x = x / scale
+
+    if state.lastX then
+      state.rotation = state.rotation + (x - state.lastX) * speed
+      pcall(model.SetRotation, model, state.rotation)
+    end
+    state.lastX = x
+  end
+
+  catcher:SetScript("OnDragStart", function()
+    if not pcall(catcher.SetMovable, catcher, true) then return end
+    if pcall(catcher.StartMoving, catcher) then
+      pcall(catcher.StopMovingOrSizing, catcher)
+    end
+    if not pcall(catcher.StartMoving, catcher) then return end
+
+    state.lastX = nil
+    U.RegisterUpdate(ticker, 0, LiveDrag)
+  end)
+  catcher:SetScript("OnDragStop", function()
+    StopDrag()
+    pcall(catcher.StopMovingOrSizing, catcher)
+    pcall(function()
+      catcher:ClearAllPoints()
+      catcher:SetAllPoints(model)
+    end)
+  end)
+
+  return catcher
+end
+
 -- Reset native FontObject attachment before trying the measured font adapter.
 -- Emberveil can otherwise retain the decorative book font after SetFont.
 function U.SetStockFont(fontstring, size, color, fontObject)

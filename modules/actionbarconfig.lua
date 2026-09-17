@@ -57,6 +57,99 @@ local MOVER_ROW_Y = { -106, -182 }
 -- so the control callbacks read this rather than closing over a bar number.
 local moverBar = nil
 
+-- Classic offers two reload-time owners for Bar 1: the complete stock
+-- MainMenuBar assembly, or UnrealUI's standalone action bar. Keep the UI for
+-- that choice together so the settings page and both contextual mover panels
+-- remain two views of the same scalar.
+local classicMode = {
+  nativeMoverId = "actionbar.native1",
+}
+
+function classicMode.Available()
+  return type(U.ClassicMainBarModeAvailable) == "function" and
+         U.ClassicMainBarModeAvailable() or false
+end
+
+function classicMode.Value()
+  return type(U.GetClassicMainBarActionOnly) == "function" and
+         U.GetClassicMainBarActionOnly() or false
+end
+
+function classicMode.Change(value)
+  if type(U.SetClassicMainBarActionOnly) ~= "function" or
+     U.SetClassicMainBarActionOnly(value) == nil then return end
+
+  if type(U.ShowConfirm) == "function" then
+    U.ShowConfirm({
+      owner = "actionbar.classic-main-mode-reload",
+      centered = true,
+      text = U.L("ABC_CLASSIC_BAR_MODE_CHANGED"),
+      detail = U.L("ABC_CLASSIC_BAR_MODE_RELOAD"),
+      acceptText = U.L("COMMON_OK_SHORT"),
+      cancelText = U.L("COMMON_CLOSE"),
+    })
+  else
+    U.Print(U.L("ABC_CLASSIC_BAR_MODE_RELOAD"))
+  end
+end
+
+function classicMode.AddControl(parent, widgets, name, x, y, width)
+  local check = U.CreateCheckbox(parent, {
+    name = name,
+    text = U.L("ABC_CLASSIC_BAR_ACTION_ONLY"),
+    textWidth = width,
+    value = classicMode.Value(),
+    onChange = classicMode.Change,
+  })
+  check.SetPoint("TOPLEFT", parent, "TOPLEFT", x, y)
+  table.insert(widgets, check)
+
+  local hint = U.CreateSettingsLabel(parent, {
+    size = M.fontSize.tiny,
+    color = M.color.textDim,
+    inherits = "GameFontNormalSmall",
+    justify = "LEFT",
+    width = width,
+  })
+  if hint then
+    U.AnchorSettingsDescription(hint, check.box)
+    hint:SetText(U.L("ABC_CLASSIC_BAR_ACTION_ONLY_HINT"))
+    table.insert(widgets, hint)
+  end
+  return check
+end
+
+function classicMode.BuildNativePage(parent)
+  local widgets = {}
+  local header = U.CreateSectionHeader(parent, {
+    text = U.L("ABC_BAR_N", 1),
+    width = PAGE_WIDTH,
+    y = -4,
+  })
+  table.insert(widgets, header)
+
+  local check = classicMode.AddControl(
+    parent, widgets, "UnrealUIActionBarConfigClassicActionOnly", 0, -34,
+    PAGE_WIDTH)
+
+  local function Refresh()
+    check.SetValue(classicMode.Value())
+  end
+  return widgets, Refresh
+end
+
+function classicMode.BuildNativeMoverPanel(frame, contentTop, contentWidth)
+  local widgets = {}
+  local check = classicMode.AddControl(
+    frame, widgets, "UnrealUIActionBarMoverClassicActionOnly",
+    U.MoverPanelPad(), contentTop, contentWidth)
+
+  local function Refresh()
+    check.SetValue(classicMode.Value())
+  end
+  return widgets, Refresh
+end
+
 local function MoverHint(bar)
   if bar == 1 then return U.L("ABC_HINT_BAR1") end
   if bar >= 2 and bar <= 5 then return U.L("ABC_HINT_MULTIBAR") end
@@ -150,6 +243,13 @@ local function BuildBarPage(parent, bar)
     table.insert(widgets, slider)
   end
 
+  local classicActionOnly = nil
+  if bar == 1 and classicMode.Available() then
+    classicActionOnly = classicMode.AddControl(
+      parent, widgets, "UnrealUIActionBarConfigClassicActionOnly", 0, -250,
+      PAGE_WIDTH)
+  end
+
   local function Refresh()
     enable.SetValue(U.GetActionBarSetting(bar, "Enabled"))
     hideBackground.SetValue(U.GetActionBarSetting(bar, "HideBackground"))
@@ -161,6 +261,9 @@ local function BuildBarPage(parent, bar)
       if controls[key] then
         controls[key].SetValue(U.GetActionBarSetting(bar, key))
       end
+    end
+    if classicActionOnly then
+      classicActionOnly.SetValue(classicMode.Value())
     end
   end
 
@@ -178,7 +281,7 @@ end
 -- selected, which is why every callback reads moverBar instead of a captured
 -- bar number.
 -- ---------------------------------------------------------------------------
-local function BuildMoverPanel(frame, contentTop, contentWidth)
+local function BuildMoverPanel(frame, contentTop, contentWidth, includeClassicMode)
   local pad = U.MoverPanelPad()
   local widgets = {}
   local controls = {}
@@ -281,6 +384,12 @@ local function BuildMoverPanel(frame, contentTop, contentWidth)
     table.insert(widgets, slider)
   end
 
+  if includeClassicMode then
+    controls.classicActionOnly = classicMode.AddControl(
+      frame, widgets, "UnrealUIActionBarMoverClassicActionOnly",
+      pad, contentTop - 230, contentWidth)
+  end
+
   -- id is the mover being shown ("actionbar.barN"); the panel is one set of
   -- controls pointed at that bar.
   local function Refresh(id)
@@ -303,6 +412,9 @@ local function BuildMoverPanel(frame, contentTop, contentWidth)
       if controls[key] then
         controls[key].SetValue(U.GetActionBarSetting(bar, key))
       end
+    end
+    if controls.classicActionOnly then
+      controls.classicActionOnly.SetValue(classicMode.Value())
     end
   end
 
@@ -331,6 +443,25 @@ local moverSpec = {
     return bar ~= nil and (type(U.ActionBarReservation) ~= "function" or
                           not U.ActionBarReservation(bar))
   end,
+}
+
+classicMode.actionMoverSpec = {
+  name = "UnrealUIClassicActionBarMoverSettings",
+  width = MOVER_CONTENT_WIDTH + U.MoverPanelPad() * 2,
+  height = 360,
+  build = function(frame, contentTop, contentWidth)
+    return BuildMoverPanel(frame, contentTop, contentWidth, true)
+  end,
+  title = function() return U.L("ABC_BAR_N", 1) end,
+}
+
+classicMode.nativeMoverSpec = {
+  name = "UnrealUIClassicNativeBarMoverSettings",
+  width = MOVER_CONTENT_WIDTH + U.MoverPanelPad() * 2,
+  height = 138,
+  build = classicMode.BuildNativeMoverPanel,
+  title = function() return U.L("ABC_BAR_N", 1) end,
+  preferVertical = true,
 }
 
 -- Both views of a bar's settings read the same store, so whichever one wrote a
@@ -804,28 +935,41 @@ function ABC:OnInit()
   local i
   for i = 1, total do
     local bar = i
-    local reservation = type(U.ActionBarReservation) == "function" and
-                        U.ActionBarReservation(bar) or nil
-    if reservation then
-      local tooltip = U.L("ABC_RESERVED_TOOLTIP", reservation)
+    local native = type(U.ActionBarIsNative) == "function" and
+                   U.ActionBarIsNative(bar)
+    if native then
       U.RegisterSettingsTab(GROUP .. ".bar" .. bar, U.L("ABC_BAR_N", bar),
-        function(parent)
-          return BuildReservedBarPage(parent, bar, reservation)
-        end,
-        { parent = GROUP, muted = true, tooltip = tooltip })
+        classicMode.BuildNativePage, { parent = GROUP })
+      if type(U.RegisterMoverPanel) == "function" then
+        U.RegisterMoverPanel(classicMode.nativeMoverId,
+                             classicMode.nativeMoverSpec)
+      end
     else
-      U.RegisterSettingsTab(GROUP .. ".bar" .. bar, U.L("ABC_BAR_N", bar),
-        function(parent)
-          return BuildBarPage(parent, bar)
-        end,
-        { parent = GROUP })
-    end
+      local reservation = type(U.ActionBarReservation) == "function" and
+                          U.ActionBarReservation(bar) or nil
+      if reservation then
+        local tooltip = U.L("ABC_RESERVED_TOOLTIP", reservation)
+        U.RegisterSettingsTab(GROUP .. ".bar" .. bar, U.L("ABC_BAR_N", bar),
+          function(parent)
+            return BuildReservedBarPage(parent, bar, reservation)
+          end,
+          { parent = GROUP, muted = true, tooltip = tooltip })
+      else
+        U.RegisterSettingsTab(GROUP .. ".bar" .. bar, U.L("ABC_BAR_N", bar),
+          function(parent)
+            return BuildBarPage(parent, bar)
+          end,
+          { parent = GROUP })
+      end
 
-    -- The contextual panel for this bar's mover handle. One spec for every
-    -- bar: core/moverpanel.lua builds it once and points it at whichever bar
-    -- was selected.
-    if type(U.RegisterMoverPanel) == "function" then
-      U.RegisterMoverPanel(MOVER_ID_PREFIX .. bar, moverSpec)
+      -- The contextual panel for this bar's mover handle. One spec for every
+      -- addon-owned bar: core/moverpanel.lua builds it once and points it at
+      -- whichever bar was selected.
+      if type(U.RegisterMoverPanel) == "function" then
+        local spec = bar == 1 and classicMode.Available() and
+                     classicMode.actionMoverSpec or moverSpec
+        U.RegisterMoverPanel(MOVER_ID_PREFIX .. bar, spec)
+      end
     end
   end
 

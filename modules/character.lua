@@ -14,6 +14,7 @@ local WHITE = { 0.90, 0.90, 0.90, 1.00 }
 local DIM   = { 0.60, 0.60, 0.60, 1.00 }
 
 local frame, panel, modernWowTabMode, toggleCharacterOriginal
+local StyleModel, RaiseResistancesAboveModel
 
 local SLOTS = {
   "HeadSlot", "NeckSlot", "ShoulderSlot", "BackSlot", "ChestSlot",
@@ -120,7 +121,11 @@ local function StyleSlot(slotName, keepNativeChrome)
   local quality = SlotQuality(slotName)
   if quality then
     if quality > M.qualityLimit then
-      color = U.ItemQualityColor(quality) or M.slotBorder.plain
+      -- The stronger rare blue belongs only to the native Classic and the
+      -- metal-framed Modern WoW character surfaces. Modern keeps stock colour.
+      local themedColor = keepNativeChrome or modernWowTabMode
+      color = (themedColor and U.ItemQualityBorderColor(quality) or
+               U.ItemQualityColor(quality)) or M.slotBorder.plain
     else
       color = M.slotBorder.plain
     end
@@ -130,9 +135,8 @@ local function StyleSlot(slotName, keepNativeChrome)
 
   if keepNativeChrome then
     -- Classic keeps the client's paper-doll artwork and button states intact.
-    -- Add only UnrealUI's semantic outline above that native slot so equipped
-    -- item rarity remains visible without turning the character sheet Modern.
-    U.CreateBorder(slot)
+    -- Use the same semantic rarity glow as Modern WoW over the native frame.
+    U.SetGearQualityGlow(slot, border)
   else
     local icon = G("Character" .. slotName .. "IconTexture")
     U.StyleStockButton(slot, { icon = icon, border = border })
@@ -147,6 +151,69 @@ local function StyleSlots(keepNativeChrome)
   end
 end
 
+-- Classic keeps the native level/race/class line. Colour only the class name
+-- inside that localized stock text, then lower the line two pixels without
+-- replacing the client's typography or the rest of its wording.
+local function RefreshClassicClassLine()
+  local text = G("CharacterLevelText")
+  if not text then return end
+
+  local textOk, value = pcall(text.GetText, text)
+  local classOk, className, classToken = pcall(UnitClass, "player")
+  if not textOk or type(value) ~= "string" or not classOk or
+     type(className) ~= "string" then
+    return
+  end
+
+  local r, g, b = M.ClassColor(classToken)
+  if not r then return end
+  local coloredName = string.format("|cff%02x%02x%02x%s|r",
+    math.floor(r * 255 + 0.5), math.floor(g * 255 + 0.5),
+    math.floor(b * 255 + 0.5), className)
+  if string.find(value, coloredName, 1, true) then return end
+
+  local first, last = string.find(value, className, 1, true)
+  if first then
+    pcall(text.SetText, text,
+      string.sub(value, 1, first - 1) .. coloredName ..
+      string.sub(value, last + 1))
+  end
+end
+
+local function ShiftClassicClassLine()
+  local text = G("CharacterLevelText")
+  if not text or type(text.GetNumPoints) ~= "function" or
+     type(text.GetPoint) ~= "function" then
+    return
+  end
+
+  local points = text.uuiClassicClassLineStockPoints
+  local i
+  if not points then
+    points = {}
+    local countOk, count = pcall(text.GetNumPoints, text)
+    count = countOk and tonumber(count) or 0
+    for i = 1, count do
+      local ok, point, relative, relativePoint, x, y =
+        pcall(text.GetPoint, text, i)
+      if ok and point then
+        table.insert(points, { point, relative, relativePoint,
+                               tonumber(x) or 0, tonumber(y) or 0 })
+      end
+    end
+    text.uuiClassicClassLineStockPoints = points
+  end
+  if table.getn(points) == 0 then return end
+
+  pcall(function()
+    text:ClearAllPoints()
+    for i = 1, table.getn(points) do
+      local point = points[i]
+      text:SetPoint(point[1], point[2], point[3], point[4], point[5] - 2)
+    end
+  end)
+end
+
 local function BuildClassicSlotBorders()
   frame = G("CharacterFrame")
   if not frame then
@@ -157,9 +224,30 @@ local function BuildClassicSlotBorders()
   local function RefreshClassicSlotBorders()
     StyleSlots(true)
   end
+  local function QueueClassicClassLineRefresh()
+    -- CharacterFrame's OnShow fires before the native paper-doll pass finishes
+    -- rewriting and anchoring CharacterLevelText. Reapply both on the next
+    -- shared-driver tick so the requested colour and offset are the final
+    -- writes.
+    U.DeferOnce("character.classic-class-line", function()
+      StyleModel()
+      RaiseResistancesAboveModel()
+      ShiftClassicClassLine()
+      RefreshClassicClassLine()
+    end)
+  end
 
   RefreshClassicSlotBorders()
-  U.PostHookScript(frame, "OnShow", RefreshClassicSlotBorders)
+  StyleModel()
+  RaiseResistancesAboveModel()
+  QueueClassicClassLineRefresh()
+  U.PostHookScript(frame, "OnShow", function()
+    RefreshClassicSlotBorders()
+    QueueClassicClassLineRefresh()
+  end)
+  U.PostHookScript(G("PaperDollFrame"), "OnShow",
+    QueueClassicClassLineRefresh)
+  U.RegisterEvent("PLAYER_LEVEL_UP", QueueClassicClassLineRefresh)
   -- The client calls PaperDollItemSlotButton_Update once per slot button, and
   -- its gear and bag slots all react to bag/lock events: one item moved between
   -- bags ran this full every-slot pass hundreds of times inside one frame,
@@ -342,7 +430,7 @@ end
 -- client does not push a SetFrameLevel down to existing children, so an earlier
 -- pass that raised CharacterResistanceFrame to level 9 left the five frames
 -- that actually take the mouse still sitting at 4.
-local function RaiseResistancesAboveModel()
+RaiseResistancesAboveModel = function()
   local catcher = G("UnrealUICharacterModelRotateCatcher")
   if not catcher then return end
 
@@ -398,120 +486,14 @@ local function StyleAttributes()
   end
 end
 
--- Click-drag model rotation, replacing the native rotate-left/right buttons
--- (hidden below) with a direct drag on the preview itself.
---
--- WORKING_SOURCE, not runtime-verified on this client: UnrealPfUI's
--- api/ui-widgets.lua EnableClickRotate rotates the same CharacterModelFrame
--- type via frame:SetRotation(radians) on several stock model frames
--- (character, dressup, inspect, stable, tabard, auction), but query_compat.py
--- has no record for SetRotation and it has not been probed on Unreal
--- specifically. Confirm the model actually turns in game.
---
--- Unlike pfUI's version (raw OnMouseDown/OnUpdate on the model frame itself,
--- reading the undocumented `this`), this follows unrealUI's own verified
--- drag recipe: a Button overlay (frames.movable_drag_requires_button_handle)
--- driven by the shared update ticker rather than a child OnUpdate
--- (scripts.child_onupdate_unreliable), matching U.CreateSlider's thumb.
---
--- USER_CONFIRMED_INGAME: an earlier version registered the drag with
--- RegisterForDrag/OnDragStart/OnDragStop alone (no SetMovable/StartMoving)
--- and the model kept spinning after the mouse button was released -- rotation
--- never stopped. core/mover.lua's StartDrag is the only recipe in this addon
--- confirmed to receive a matching OnDragStop on this client, and it always
--- pairs RegisterForDrag with SetMovable(true) immediately before each drag
--- plus a throwaway StartMoving/StopMovingOrSizing pair before the real
--- StartMoving. Reusing that exact pairing here is what makes OnDragStop (and
--- so the ticker teardown) actually fire; the catcher itself moving off the
--- model during the drag doesn't matter since it is invisible and gets
--- re-anchored in OnDragStop, and mouse delivery follows the button that
--- started the drag rather than its current position.
-local ROTATE_RADIANS_PER_PIXEL = 0.01
-local modelRotation = 0
-local modelCatcher
--- Declared ahead of LiveModelDrag/StyleModel, both of which close over it:
--- a later `local` of the same name would not be visible as an upvalue inside
--- a function textually defined before it (Lua locals only scope forward).
-local DRAG_TICKER = "character.model-rotate"
-
--- Safety net alongside OnDragStop, not a replacement for it: if the button
--- reads as released, stop the ticker even if OnDragStop was somehow never
--- delivered. IsMouseButtonDown has no compact-DB record either way, so this
--- is a no-op (ticker just keeps relying on OnDragStop alone) on a client
--- where the call fails or the pcall it lives inside is not trusted.
-local function LeftButtonStillDown()
-  local ok, down = pcall(IsMouseButtonDown, "LeftButton")
-  if not ok then return true end
-  return down and true or false
-end
-
-local function LiveModelDrag()
-  if not modelCatcher then return end
-  if not LeftButtonStillDown() then
-    U.UnregisterUpdate(DRAG_TICKER)
-    modelCatcher.uuiLastX = nil
-    return
-  end
-
+StyleModel = function()
   local model = G("CharacterModelFrame")
-  if not model then return end
-
-  local ok, x = pcall(GetCursorPosition)
-  if not ok or not tonumber(x) then return end
-
-  local scale = 1
-  local scaleOk, value = pcall(model.GetEffectiveScale, model)
-  if scaleOk and tonumber(value) and value > 0 then scale = value end
-  x = x / scale
-
-  local last = modelCatcher.uuiLastX
-  if last then
-    modelRotation = modelRotation + (x - last) * ROTATE_RADIANS_PER_PIXEL
-    pcall(model.SetRotation, model, modelRotation)
-  end
-  modelCatcher.uuiLastX = x
-end
-
-local function StyleModel()
-  local model = G("CharacterModelFrame")
-  local left = G("CharacterModelFrameRotateLeftButton")
-  local right = G("CharacterModelFrameRotateRightButton")
-  if left then pcall(left.Hide, left) end
-  if right then pcall(right.Hide, right) end
-
-  if not model or modelCatcher then return end
-
-  local created, catcher = pcall(CreateFrame, "Button",
-    "UnrealUICharacterModelRotateCatcher", model)
-  if not created or not catcher then return end
-  modelCatcher = catcher
-
-  pcall(catcher.SetAllPoints, catcher, model)
-  pcall(catcher.EnableMouse, catcher, true)
-  pcall(catcher.RegisterForDrag, catcher, "LeftButton")
-
-  catcher:SetScript("OnDragStart", function()
-    if not pcall(catcher.SetMovable, catcher, true) then return end
-    if pcall(catcher.StartMoving, catcher) then
-      pcall(catcher.StopMovingOrSizing, catcher)
-    end
-    if not pcall(catcher.StartMoving, catcher) then return end
-
-    modelCatcher.uuiLastX = nil
-    U.RegisterUpdate(DRAG_TICKER, 0, LiveModelDrag)
-  end)
-  catcher:SetScript("OnDragStop", function()
-    U.UnregisterUpdate(DRAG_TICKER)
-    pcall(catcher.StopMovingOrSizing, catcher)
-    modelCatcher.uuiLastX = nil
-
-    -- StartMoving let the catcher drift with the cursor; put it back over the
-    -- model so the next click-drag has full coverage again.
-    pcall(function()
-      catcher:ClearAllPoints()
-      catcher:SetAllPoints(model)
-    end)
-  end)
+  U.EnableStockModelDrag(model, {
+    name = "UnrealUICharacterModelRotateCatcher",
+    ticker = "character.model-rotate",
+    leftButton = G("CharacterModelFrameRotateLeftButton"),
+    rightButton = G("CharacterModelFrameRotateRightButton"),
+  })
 end
 
 -- Flat, actively-tracked tab bar (see U.StyleStockTabGroup). Positioning is

@@ -2,12 +2,12 @@
 --
 -- pfUI-style micro button bar: pulls the client's own micro menu buttons
 -- (character, spellbook, talent, quest log, social, world map, main menu,
--- help) into one compact, movable row. Under the `modern` and `classic-wow`
--- themes the buttons' own native art is left completely untouched --
--- reparented and scaled down only -- which is deliberate, not an omission:
--- see the reskin note below. The enable option lives on the settings window's
--- General page (modules/settings.lua) rather than a dedicated tab, since it
--- is the bar's only setting.
+-- help) into one compact, movable row. The `classic-wow` theme keeps the
+-- complete stock MainMenuBar assembly intact, including its original micro
+-- menu. Under `modern` the buttons' native art is left untouched and only
+-- reparented/scaled, which is deliberate; see the reskin note below. The enable
+-- option lives on the settings window's General page (modules/settings.lua)
+-- rather than a dedicated tab, since it is the bar's only setting.
 --
 -- Evidence gap: query_compat.py has no runtime record for MICRO_BUTTONS or
 -- any individual *MicroButton global on this client. UnrealPfUI's own
@@ -37,8 +37,8 @@
 -- behind or cropped out of the native art -- it is replaced outright. That is
 -- what DragonflightUI-Reforged itself does (modules/micro/micro.lua), so it is
 -- WORKING_SOURCE for a 1.12-era client, not runtime verification here. See
--- U.BuildModernWowMicroBar below; the other two themes still leave the native
--- art completely alone.
+-- U.BuildModernWowMicroBar below; modern still leaves the native art completely
+-- alone, while classic-wow leaves the whole stock bar in place.
 --
 -- `/uui check` reports how many candidates resolved.
 --
@@ -598,6 +598,13 @@ end
 
 function MB:OnEnable()
   EnsureConfig()
+  local nativeMain = nil
+  if type(U.ActionBarUsesNativeMainMenuBar) == "function" then
+    nativeMain = U.ActionBarUsesNativeMainMenuBar()
+  elseif type(U.ThemeStyleUsesNativeMainMenuBar) == "function" then
+    nativeMain = U.ThemeStyleUsesNativeMainMenuBar()
+  end
+  if nativeMain then return end
   if not anchor then Build() end
   Apply()
 end

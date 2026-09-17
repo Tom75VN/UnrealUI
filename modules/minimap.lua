@@ -349,15 +349,17 @@ end
 -- The dropped anchor is captured and stored, and the button is left exactly
 -- where it was released: knowledge.json / frames.getpoint_relative_name_y_
 -- inverted lists recapturing and immediately re-applying a point as a failed
--- approach, which is why U.GetFramePoint is used to read it and nothing is
--- re-anchored here.
+-- approach, which is why nothing is re-anchored here. The offsets are read
+-- through U.ReadFramePoint (edges, sign-safe): U.GetFramePoint negated the Y
+-- the client writes after StartMoving (frames.getpoint_y_same_sign_as_setpoint),
+-- so a dropped button reloaded mirrored across its anchor.
 local function StopButtonDrag(button)
   if not dragState.dragging then return false end
   dragState.dragging = false
   dragState.stoppedAt = GetTime()
   pcall(button.StopMovingOrSizing, button)
 
-  local point, relative, relativePoint, x, y = U.GetFramePoint(button, 1)
+  local point, relative, relativePoint, x, y = U.ReadFramePoint(button)
   if not point then
     U.Debug("minimap button: no readable anchor after drag")
     return false

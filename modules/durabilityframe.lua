@@ -18,7 +18,7 @@ local FALLBACK_POSITION = {
 local anchor
 
 local function NativePosition(frame)
-  local point, relative, relativePoint, x, y = U.GetFramePoint(frame, 1)
+  local point, relative, relativePoint, x, y = U.ReadFramePoint(frame)
   if point and relative == UIParent then
     return {
       point = point,

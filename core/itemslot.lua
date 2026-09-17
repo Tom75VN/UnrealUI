@@ -36,6 +36,12 @@ function U.ItemQualityColor(quality)
   return M.quality[quality]
 end
 
+function U.ItemQualityBorderColor(quality)
+  quality = tonumber(quality)
+  if not quality then return nil end
+  return (M.qualityBorder and M.qualityBorder[quality]) or U.ItemQualityColor(quality)
+end
+
 -- Quality colour for an item the caller can name with a link.
 --
 -- GetItemInfo's documented third return is the 0-6 quality index, and it
@@ -166,6 +172,95 @@ function U.ItemSlotBorderColor(bag, slot, texture, quality)
     return U.ItemQualityColor(quality) or M.slotBorder.plain
   end
   return M.slotBorder.plain
+end
+
+local function SameGearColor(a, b)
+  if not a or not b then return false end
+  local i
+  for i = 1, 3 do
+    if math.abs((tonumber(a[i]) or 0) - (tonumber(b[i]) or 0)) > 0.01 then
+      return false
+    end
+  end
+  return true
+end
+
+function U.GearBorderIsRare(color)
+  return color and not SameGearColor(color, M.slotBorder.empty)
+         and not SameGearColor(color, M.slotBorder.plain) or false
+end
+
+local function PositionGearGlow(button, glow, grow)
+  local widthOk, width = pcall(button.GetWidth, button)
+  local heightOk, height = pcall(button.GetHeight, button)
+  width, height = tonumber(width), tonumber(height)
+  pcall(function()
+    glow:ClearAllPoints()
+    if widthOk and heightOk and width and height then
+      glow:SetWidth(width + grow)
+      glow:SetHeight(height + grow)
+      glow:SetPoint("CENTER", button, "CENTER", 0, 0)
+    else
+      glow:SetAllPoints(button)
+    end
+  end)
+end
+
+-- The quality-coloured frame glow shared by Modern WoW gear slots and the
+-- Classic Character/Inspect slots. Common and empty slots retain their theme's
+-- neutral/native frame; only uncommon-or-better gear receives semantic color.
+function U.SetGearQualityGlow(button, color)
+  if not button then return nil end
+
+  local glow = button.uuiGearQualityGlow
+  local boost = button.uuiGearRareBoost
+  if not glow and button.CreateTexture then
+    local ok, texture = pcall(button.CreateTexture, button, nil, "OVERLAY")
+    if ok and texture then
+      glow = texture
+      button.uuiGearQualityGlow = glow
+      pcall(glow.SetTexture, glow, M.gearQualityGlow.texture)
+      pcall(glow.SetBlendMode, glow, M.gearQualityGlow.blend or "BLEND")
+      pcall(glow.Hide, glow)
+    end
+  end
+  if not glow then return nil end
+
+  if not U.GearBorderIsRare(color) then
+    pcall(glow.Hide, glow)
+    if boost then pcall(boost.Hide, boost) end
+    return glow
+  end
+
+  local grow = tonumber(M.gearQualityGlow.grow) or 0
+  PositionGearGlow(button, glow, grow)
+  U.SetColor(glow, color[1], color[2], color[3], color[4] or M.gearQualityGlow.alpha)
+  pcall(glow.Show, glow)
+
+  local boostToken = M.gearQualityGlow.rareBoost
+  local rareBlue = boostToken and M.qualityBorder and
+                   SameGearColor(color, M.qualityBorder[3])
+  if rareBlue and not boost and button.CreateTexture then
+    local ok, texture = pcall(button.CreateTexture, button, nil, "OVERLAY")
+    if ok and texture then
+      boost = texture
+      button.uuiGearRareBoost = boost
+      pcall(boost.SetTexture, boost, M.gearQualityGlow.texture)
+      pcall(boost.SetBlendMode, boost, boostToken.blend or "ADD")
+    end
+  end
+  if boost then
+    if rareBlue then
+      local boostColor = boostToken.color or color
+      PositionGearGlow(button, boost, tonumber(boostToken.grow) or grow)
+      U.SetColor(boost, boostColor[1], boostColor[2], boostColor[3],
+                 boostColor[4] or 1)
+      pcall(boost.Show, boost)
+    else
+      pcall(boost.Hide, boost)
+    end
+  end
+  return glow
 end
 
 -- ---------------------------------------------------------------------------

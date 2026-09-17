@@ -196,7 +196,7 @@ end
 local function CaptureNativeAnchor(frame, name)
   if not frame then return nil end
 
-  local point, relative, relativePoint, x, y = U.GetFramePoint(frame, 1)
+  local point, relative, relativePoint, x, y = U.ReadFramePoint(frame)
   if type(point) ~= "string" then
     U.Debug("buffframe: no readable native anchor on " .. name)
     return nil
@@ -335,7 +335,7 @@ local function MirrorNativeSize()
 end
 
 local function AnchorDrifted(frame, position)
-  local point, relative, relativePoint, x, y = U.GetFramePoint(frame, 1)
+  local point, relative, relativePoint, x, y = U.ReadFramePoint(frame)
   if type(point) ~= "string" then return true end
   if relative and relative ~= UIParent then return true end
   if point ~= position.point then return true end

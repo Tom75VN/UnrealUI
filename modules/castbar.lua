@@ -1588,7 +1588,7 @@ local driveFailures = 0
 local function CaptureNativeAnchor()
   if not nativeFrame then return nil end
 
-  local point, relative, relativePoint, x, y = U.GetFramePoint(nativeFrame, 1)
+  local point, relative, relativePoint, x, y = U.ReadFramePoint(nativeFrame)
   if type(point) ~= "string" then
     U.Debug("castbar: no readable native anchor to capture")
     return nil
@@ -1662,7 +1662,7 @@ end
 
 local function AnchorDrifted(position)
   local point, relative, relativePoint, x, y =
-    U.GetFramePoint(nativeMoverAnchor, 1)
+    U.ReadFramePoint(nativeMoverAnchor)
   if type(point) ~= "string" then return true end
   if relative and relative ~= UIParent then return true end
   if point ~= position.point then return true end

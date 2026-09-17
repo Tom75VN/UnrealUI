@@ -258,36 +258,25 @@ function ct.StartDrag()
   ct.dragging = true
 end
 
-function ct.PointFactor(point, low, high)
-  if type(point) ~= "string" then return 0.5 end
-  if string.find(point, low, 1, true) then return 0 end
-  if string.find(point, high, 1, true) then return 1 end
-  return 0.5
-end
-
 -- Stores the drop as a TOPLEFT point so the list keeps growing downwards
--- whatever anchor StopMovingOrSizing left behind. Anchor arithmetic, as in
--- core/windowdrag.lua, rather than the edge getters (knowledge.json /
--- frames.scaled_frame_edge_coordinates_mixed_space).
+-- whatever anchor StopMovingOrSizing left behind. Measured from the frame's
+-- edges: GetPoint's Y comes back in SetPoint's own sign on this client, and
+-- U.GetFramePoint negates it (U.GetFramePlacement, core/screenguard.lua).
 function ct.SaveDrop()
   local frame = ct.frame
-  local point, relative, relativePoint, x, y = U.GetFramePoint(frame, 1)
-  if not point or (relative and relative ~= UIParent) then
-    U.Debug("crafttracker: no UIParent anchor after drag")
+  local leftOk, left = pcall(frame.GetLeft, frame)
+  local bottomOk, bottom = pcall(frame.GetBottom, frame)
+  local hOk, height = pcall(frame.GetHeight, frame)
+  left = leftOk and tonumber(left)
+  bottom = bottomOk and tonumber(bottom)
+  height = hOk and tonumber(height)
+  if not left or not bottom or not height then
+    U.Debug("crafttracker: no readable position after drag")
     return
   end
-  local wOk, width = pcall(frame.GetWidth, frame)
-  local hOk, height = pcall(frame.GetHeight, frame)
-  width, height = wOk and tonumber(width), hOk and tonumber(height)
-  if not width or not height then return end
 
-  relativePoint = relativePoint or point
-  local left = U.UIWidth() * ct.PointFactor(relativePoint, "LEFT", "RIGHT") +
-               (tonumber(x) or 0) - width * ct.PointFactor(point, "LEFT", "RIGHT")
-  local top = U.UIHeight() * ct.PointFactor(relativePoint, "BOTTOM", "TOP") +
-              (tonumber(y) or 0) + height * (1 - ct.PointFactor(point, "BOTTOM", "TOP"))
   local position = { point = "TOPLEFT", relativePoint = "TOPLEFT",
-                     x = left, y = top - U.UIHeight() }
+                     x = left, y = bottom + height - U.UIHeight() }
   U.ApplyFramePoint(frame, position)
   U.SavePosition(ct.MOVER_ID, position.point, position.relativePoint,
                  position.x, position.y)
@@ -298,6 +287,7 @@ function ct.StopDrag()
   ct.dragging = false
   pcall(ct.frame.StopMovingOrSizing, ct.frame)
   ct.SaveDrop()
+  U.CheckOnScreen(ct.frame)
 end
 
 function ct.BuildHandle(frame)
@@ -347,6 +337,13 @@ function CT:OnEnable()
   U.RegisterMover(ct.MOVER_ID, frame, {
     label = U.L("MOVER_LABEL_CRAFT_TRACKER"),
     default = { point = "TOPRIGHT", relativePoint = "TOPRIGHT", x = -240, y = -320 },
+  })
+  -- The list grows downwards as reagents are tracked. Clamp only: a HUD is
+  -- never rescaled, and Move UI owns it while unlocked.
+  U.GuardOnScreen(frame, {
+    id = ct.MOVER_ID,
+    fit = false,
+    suspended = function() return ct.dragging or U.IsUnlocked() end,
   })
 
   U.RegisterEvent("BAG_UPDATE", ct.Queue)

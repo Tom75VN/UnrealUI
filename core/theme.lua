@@ -137,6 +137,14 @@ function U.ThemeStyleUsesNativeChrome()
   return style and style.nativeChrome or false
 end
 
+-- Classic keeps the client's complete bottom action-bar assembly as one owned
+-- surface: main buttons, page controls, end caps, XP/reputation track, micro
+-- menu and bag buttons. Other themes let the individual UnrealUI modules build
+-- replacements for those pieces.
+function U.ThemeStyleUsesNativeMainMenuBar()
+  return U.GetActiveThemeStyle() == "classic-wow"
+end
+
 -- Modern WoW deliberately keeps stock interaction windows on the same path
 -- as classic-wow. Character, Quest Log and HUD surfaces still use the Modern
 -- WoW theme, but NPC/service dialogs and the mailbox retain the client's own

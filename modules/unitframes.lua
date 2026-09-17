@@ -893,9 +893,11 @@ local classicNative = {
   partyActive = false,
   roots = {
     { id = "player",       names = { "PlayerFrame" },
-      auraAnchorName = "PlayerFrameHealthBar" },
+      auraAnchorName = "PlayerFrameHealthBar",
+      auraBelowAnchorName = "PlayerFrameManaBar", auraIconScale = 0.9 },
     { id = "target",       names = { "TargetFrame" },
-      auraAnchorName = "TargetFrameHealthBar" },
+      auraAnchorName = "TargetFrameHealthBar",
+      auraBelowAnchorName = "TargetFrameManaBar", auraIconScale = 0.9 },
     -- The stock target-of-target is optional client UI. Keep its native art
     -- when the client actually shows it, but fall back to UnrealUI's existing
     -- compact bar when that option is off so the theme never loses the unit.
@@ -944,6 +946,47 @@ function classicNative.Dimension(frame, method)
   return tonumber(value) or 0
 end
 
+-- Classic always owns the compact fallback, including when its Unit Frames
+-- module routes player and target through modern-wow. Target-of-target is the
+-- deliberate exception: it keeps Classic player-frame art instead of joining
+-- that Modern WoW surface.
+function classicNative.TargetTargetAtlasEnabled()
+  return type(U.GetActiveThemeStyle) == "function" and
+         U.GetActiveThemeStyle() == "classic-wow" and
+         M.classicWow and M.classicWow.targetTarget
+end
+
+-- Classic's primary artwork extends below its power bar, so the generic
+-- native-root bottom offset leaves a below-frame aura row floating under the
+-- decorative frame -- and, on target, makes that row read as if it belongs to
+-- target-of-target. Read the power bar only while binding, copy its position
+-- into bounded numbers on the addon-owned mover, then release it. Player and
+-- target auras therefore stay on their own visible bars, matching the dressed
+-- modern-wow path without retaining a native child as their relative frame.
+function classicNative.PublishAuraLayout(anchor)
+  local nativeName = anchor and anchor.uuiAuraBelowAnchorName
+  if type(nativeName) ~= "string" then return end
+
+  local bar = U.G(nativeName)
+  if not bar then return end
+
+  local leftOk, barLeft = pcall(bar.GetLeft, bar)
+  local bottomOk, barBottom = pcall(bar.GetBottom, bar)
+  local anchorLeftOk, anchorLeft = pcall(anchor.GetLeft, anchor)
+  local anchorTopOk, anchorTop = pcall(anchor.GetTop, anchor)
+  if not leftOk or not bottomOk or not anchorLeftOk or not anchorTopOk or
+     not tonumber(barLeft) or not tonumber(barBottom) or
+     not tonumber(anchorLeft) or not tonumber(anchorTop) then
+    return
+  end
+
+  anchor.uuiAuraLayout = anchor.uuiAuraLayout or {}
+  anchor.uuiAuraLayout.iconScale =
+    tonumber(anchor.uuiAuraIconScale) or 1
+  anchor.uuiAuraLayout.belowLeft = barLeft - anchorLeft
+  anchor.uuiAuraLayout.belowTop = barBottom - anchorTop - 4
+end
+
 function classicNative.Anchor(anchor, native)
   if not anchor or not native then return end
 
@@ -966,6 +1009,7 @@ function classicNative.Anchor(anchor, native)
   anchor.uuiAuraRightOffset = math.max(0, (nativeWidth - anchorWidth) / 2)
   anchor.uuiAuraTopOffset = math.max(0, (nativeHeight - anchorHeight) / 2)
   anchor.uuiAuraBottomOffset = anchor.uuiAuraTopOffset
+  classicNative.PublishAuraLayout(anchor)
 
   local catcher = anchor.uuiClassicClickCatcher
   if catcher then
@@ -985,6 +1029,7 @@ function classicNative.SetCustomVisuals(frame, shown)
 
   local parts = {
     frame.health, frame.power, frame.values, frame.portrait,
+    frame.uuiClassicTargetTargetArt,
   }
   local i
   for i = 1, table.getn(parts) do
@@ -1064,6 +1109,64 @@ function classicNative.NativeShown(frame)
   return ok and shown and true or false
 end
 
+-- Edit mode owns the click while the UI is unlocked.
+--
+-- The catcher is an addon-owned Button covering the whole native artwork at
+-- frame level 100 + root order, which lands in the same numeric neighbourhood
+-- as the mover's transparent drag input (the anchor's own level + 100 + 1, see
+-- RaiseHandle in core/mover.lua). With a target the Target anchor's handle
+-- could therefore not be hovered, selected or dragged at all: the catcher took
+-- the cursor first. Clicking a unit frame in edit mode is meant to select its
+-- anchor rather than target the unit, so the catcher stands down for exactly
+-- as long as the UI is unlocked, and nothing about the mover's layering has to
+-- be guessed against a fixed level.
+function classicNative.CatcherWanted(shown)
+  if not shown then return false end
+  return not (type(U.IsUnlocked) == "function" and U.IsUnlocked())
+end
+
+-- Compares against the state actually applied to the catcher, not against the
+-- native root: the edit-mode gate changes the answer while the root's own
+-- visibility never moves, so a root-shown cache would never notice it.
+function classicNative.ApplyCatcher(anchor, shown)
+  local catcher = anchor and anchor.uuiClassicClickCatcher
+  if not catcher then return end
+
+  local wanted = classicNative.CatcherWanted(shown)
+  if anchor.uuiClassicCatcherShown == wanted then return end
+  anchor.uuiClassicCatcherShown = wanted
+  if wanted then pcall(catcher.Show, catcher)
+  else pcall(catcher.Hide, catcher) end
+end
+
+-- Unlocking and locking have no event and do not change a native root, so the
+-- 1s native sweep is the wrong place to notice them. This is one boolean read
+-- per 0.2s tick; the walk runs only on the transition itself.
+function classicNative.SyncEditMode()
+  if not classicNative.active then return end
+
+  local unlocked = (type(U.IsUnlocked) == "function" and U.IsUnlocked()) and
+                   true or false
+  if classicNative.editUnlocked == unlocked then return end
+  classicNative.editUnlocked = unlocked
+
+  local i
+  for i = 1, table.getn(classicNative.roots) do
+    local entry = classicNative.roots[i]
+    local anchor = entry.anchor
+    if anchor and anchor.classicNativeFrame then
+      if entry.customFallback then
+        -- RefreshCustomFallback owns the "unit actually exists" half of this
+        -- decision, so unlocking only ever takes the catcher down here and
+        -- that refresh restores it after the lock.
+        if unlocked then classicNative.ApplyCatcher(anchor, false) end
+      else
+        classicNative.ApplyCatcher(anchor, classicNative.NativeShown(anchor))
+      end
+    end
+  end
+end
+
 function classicNative.RefreshCustomFallback(frame, exists)
   local entry = frame and frame.uuiClassicEntry
   if not classicNative.unitActive or not entry or not entry.customFallback then return end
@@ -1075,11 +1178,7 @@ function classicNative.RefreshCustomFallback(frame, exists)
 
   -- A stale/native root must not leave an active click surface when there is
   -- no target-of-target; the client root itself remains completely untouched.
-  local catcher = frame.uuiClassicClickCatcher
-  if catcher then
-    if exists and nativeShown then pcall(catcher.Show, catcher)
-    else pcall(catcher.Hide, catcher) end
-  end
+  classicNative.ApplyCatcher(frame, exists and nativeShown)
 end
 
 function classicNative.Bind(entry, order)
@@ -1103,6 +1202,8 @@ function classicNative.Bind(entry, order)
   -- solely when it must write a changed point; it does not retain or poll the
   -- health-bar object for width or other geometry.
   anchor.uuiAuraTopAnchorName = entry.auraAnchorName
+  anchor.uuiAuraBelowAnchorName = entry.auraBelowAnchorName
+  anchor.uuiAuraIconScale = entry.auraIconScale
   entry.native = native
 
   -- unitframes.player_click_hit_route.v1 first confirmed that neither the
@@ -1139,11 +1240,10 @@ function classicNative.Bind(entry, order)
 
   local shownOk, shown = pcall(native.IsShown, native)
   shown = (shownOk and shown) and true or false
-  anchor.uuiClassicCatcherShown = shown
-  if catcher then
-    if shown then pcall(catcher.Show, catcher)
-    else pcall(catcher.Hide, catcher) end
-  end
+  -- A rebind can hand out a different catcher object, so the applied-state
+  -- cache is dropped rather than trusted across it.
+  anchor.uuiClassicCatcherShown = nil
+  classicNative.ApplyCatcher(anchor, shown)
 
   -- No script hook is installed on the native root here, deliberately.
   --
@@ -1191,15 +1291,7 @@ function classicNative.SyncNative()
     local anchor = entry.anchor
 
     if anchor and anchor.classicNativeFrame and not entry.customFallback then
-      local shown = classicNative.NativeShown(anchor)
-      if anchor.uuiClassicCatcherShown ~= shown then
-        anchor.uuiClassicCatcherShown = shown
-        local catcher = anchor.uuiClassicClickCatcher
-        if catcher then
-          if shown then pcall(catcher.Show, catcher)
-          else pcall(catcher.Hide, catcher) end
-        end
-      end
+      classicNative.ApplyCatcher(anchor, classicNative.NativeShown(anchor))
     end
   end
 end
@@ -1676,7 +1768,11 @@ function model3d.RefreshSquare(frame, box)
 end
 
 local function RefreshPortrait(frame)
-  if frame.classicNative then return end
+  -- Native Classic frames own their own portraits. The target-of-target atlas
+  -- is the exception: its PlayerFrame art is addon-owned and only provides the
+  -- portrait opening, so UnrealUI must still paint the target-of-target unit
+  -- into the texture beneath that art.
+  if frame.classicNative and not frame.uuiClassicTargetTargetArt then return end
   local box = frame.portrait
   if not box or not box.icon then return end
   -- `modern` owns its square path; the ring/stone block below is modern-wow's.
@@ -2384,8 +2480,96 @@ function classSkin.Hide(frame)
   classSkin.SetOuterBordersShown(frame, true)
 end
 
+-- Draw the Classic target-of-target as a compact PlayerFrame, using the
+-- player-facing cell of the stock UI-TargetingFrame atlas. This is an
+-- addon-owned surface: it is safe both as the native target-of-target fallback
+-- and as the Classic exception when player/target use the Modern WoW module.
+function classicNative.BuildTargetTargetAtlas(frame)
+  local token = classicNative.TargetTargetAtlasEnabled()
+  if not frame or not token or frame.uuiClassicTargetTargetArt then return end
+
+  local scale = tonumber(token.scale) or 1
+  local canvas = token.canvas
+  if not canvas then return end
+
+  frame:SetWidth(canvas.width * scale)
+  frame:SetHeight(canvas.height * scale)
+
+  local function HideFlat(framePart)
+    local edges = framePart and framePart.uuiEdges
+    local i
+    for i = 1, table.getn(edges or {}) do pcall(edges[i].Hide, edges[i]) end
+    if framePart and framePart.SetBackdropColor then
+      pcall(framePart.SetBackdropColor, framePart, 0, 0, 0, 0)
+    end
+  end
+
+  local function PlaceBar(box, rect)
+    if not box or not rect then return end
+    local width, height = rect.width * scale, rect.height * scale
+    HideFlat(box)
+    box:SetWidth(width)
+    box:SetHeight(height)
+    box:ClearAllPoints()
+    box:SetPoint("TOPLEFT", frame, "TOPLEFT", rect.x * scale,
+                 -rect.y * scale)
+    if box.bar then
+      box.bar:SetWidth(width)
+      box.bar:SetHeight(height)
+      box.bar:ClearAllPoints()
+      box.bar:SetPoint("TOPLEFT", box, "TOPLEFT", 0, 0)
+    end
+  end
+
+  PlaceBar(frame.health, token.health)
+  PlaceBar(frame.power, token.power)
+
+  if frame.portrait and token.portrait then
+    HideFlat(frame.portrait)
+    frame.portrait:SetWidth(token.portrait.width * scale)
+    frame.portrait:SetHeight(token.portrait.height * scale)
+    frame.portrait:ClearAllPoints()
+    frame.portrait:SetPoint("TOPLEFT", frame, "TOPLEFT",
+                            token.portrait.x * scale,
+                            -token.portrait.y * scale)
+    if frame.portrait.icon then
+      frame.portrait.icon:ClearAllPoints()
+      frame.portrait.icon:SetAllPoints(frame.portrait)
+    end
+  end
+
+  local artFrame = CreateFrame("Frame", nil, frame)
+  artFrame:SetAllPoints(frame)
+  local levelOk, level = pcall(frame.GetFrameLevel, frame)
+  if levelOk and tonumber(level) then
+    pcall(artFrame.SetFrameLevel, artFrame, level + 5)
+  end
+  local art = artFrame:CreateTexture(nil, "ARTWORK")
+  art:SetTexture(token.texture)
+  art:SetAllPoints(artFrame)
+  art:SetTexCoord(token.texCoord[1], token.texCoord[2],
+                  token.texCoord[3], token.texCoord[4])
+  frame.uuiClassicTargetTargetArt = artFrame
+
+  if frame.health and frame.health.label and token.name then
+    frame.health.label:ClearAllPoints()
+    frame.health.label:SetPoint("CENTER", frame, "TOPLEFT",
+                                token.name.x * scale,
+                                -token.name.y * scale)
+  end
+end
+
 local function BuildFrame(spec, parent)
   local border = U.BorderSize()
+
+  local classicTargetTarget = spec.id == "targettarget" and
+                              classicNative.TargetTargetAtlasEnabled()
+  if classicTargetTarget then
+    -- The player atlas has two authored bar openings. Preserve both rather
+    -- than painting a health fill through the mana row and its separator.
+    spec.power = classicTargetTarget.power.height * classicTargetTarget.scale
+    spec.healthTexture = true
+  end
 
   -- A Button, not a Frame: knowledge.json / frames.movable_drag_requires_button
   -- _handle records Button as the widget type this client reliably routes mouse
@@ -2421,6 +2605,7 @@ local function BuildFrame(spec, parent)
   -- editing the specs. The function is absent under any other theme and the
   -- answer is then spec.portrait alone.
   local wantsPortrait = spec.portrait
+  if not wantsPortrait and classicTargetTarget then wantsPortrait = true end
   if not wantsPortrait and type(U.ModernWowWantsPortrait) == "function" then
     wantsPortrait = U.ModernWowWantsPortrait(spec.id)
   end
@@ -2516,6 +2701,8 @@ local function BuildFrame(spec, parent)
   frame.health = health
   frame.power = power
   frame.values = values
+
+  if classicTargetTarget then classicNative.BuildTargetTargetAtlas(frame) end
 
   -- After the bar boxes exist: the skin has to be able to reach their outline
   -- edges to take the outer perimeter down while the ornament stands in for it.
@@ -4177,6 +4364,12 @@ local function RefreshScheduledUnits()
   -- of rows that are not being refreshed is part of that unit.
   local partyRows = not (U.PerfDisabled and U.PerfDisabled("partyrows"))
   if partyRows then LayoutParty() end
+
+  -- Classic only, and a no-op under every other theme: the native click
+  -- catchers hand the cursor back to the mover handles while edit mode is
+  -- open. Cheap enough for this cadence -- it returns after one boolean read
+  -- unless the lock state actually changed.
+  classicNative.SyncEditMode()
 
   if refreshCycle >= 5 then
     refreshCycle = 0

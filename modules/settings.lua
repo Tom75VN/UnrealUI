@@ -1344,6 +1344,7 @@ local function BuildClassicModulesPage(parent)
 
   local modules = U.GetClassicModernModules()
   local lastRowAnchor
+  local firstBox
   local i
   for i = 1, table.getn(modules) do
     local entry = modules[i]
@@ -1367,8 +1368,19 @@ local function BuildClassicModulesPage(parent)
         end
       end,
     })
-    control.SetPoint("TOPLEFT", parent, "TOPLEFT",
-                     column * columnWidth, -82 - row * 38)
+    -- The grid hangs off the intro text rather than a page offset, so the
+    -- first row sits directly below it whatever height the text wraps to.
+    if i == 1 then
+      if intro then
+        control.SetPoint("TOPLEFT", intro, "BOTTOMLEFT", 0, -5)
+      else
+        control.SetPoint("TOPLEFT", header.title, "BOTTOMLEFT", 0, -5)
+      end
+      firstBox = control.box
+    else
+      control.SetPoint("TOPLEFT", firstBox, "TOPLEFT",
+                       column * columnWidth, -row * 22)
+    end
     if column == 0 then lastRowAnchor = control.box end
     table.insert(controls, { control = control, id = entry.id })
     table.insert(widgets, control)

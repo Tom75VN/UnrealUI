@@ -1216,7 +1216,8 @@ handlers["movesnap"] = function()
   U.Print("  1. |cffffff00/uui|r to open edit mode")
   U.Print("  2. drag the element that misbehaves, slowly, into the anchor " ..
           "that throws it")
-  U.Print("  3. close edit mode - the trace stops and saves itself")
+  U.Print("  3. close edit mode - it keeps watching 20 s (change target " ..
+          "now); a /reload at any point keeps what was recorded")
   U.Print("  4. |cffffff00/reload|r, then read UnrealUIDiagDB.moveSnap in " ..
           U.SavedVariablesHint())
 end

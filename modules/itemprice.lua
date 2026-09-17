@@ -235,6 +235,15 @@ local function QuestLinkByInfo(name, texture, quality)
   return link
 end
 
+-- The measured buyback tuple exposes name and texture but no link or quality,
+-- so merchant.lua needs the same bounded identity fallback as quest rewards:
+-- learned priced ids first, then the bundled Vanilla price table, with icon
+-- matching. Keep the resolver here so its cache is shared and a buyback
+-- refresh does not repeat the item-id walk.
+function U.PricedItemLinkByInfo(name, texture, quality)
+  return QuestLinkByInfo(name, texture, quality)
+end
+
 -- ---------------------------------------------------------------------------
 -- Harvest
 -- ---------------------------------------------------------------------------

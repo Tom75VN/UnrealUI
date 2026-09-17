@@ -232,15 +232,17 @@ end
 -- The client's own anchor
 --
 -- Captured once, before the mover is registered and therefore before anything
--- of ours can have moved the bar. Replayed on /uui reset. U.GetFramePoint
--- already returns the relative frame resolved and Y in the sign SetPoint wants
--- (knowledge.json / frames.getpoint_relative_name_y_inverted), so the capture
--- goes straight back through SetPoint unchanged.
+-- of ours can have moved the bar. Replayed on /uui reset. U.ReadFramePoint
+-- (core/screenguard.lua) measures a UIParent-anchored bar's offsets from its
+-- edges, in SetPoint's sign (frames.getpoint_y_same_sign_as_setpoint), so the
+-- capture goes straight back through SetPoint unchanged. A bar anchored to
+-- another frame still goes through U.GetFramePoint, whose sign is unverified
+-- for that case.
 -- ---------------------------------------------------------------------------
 local function CaptureNativeAnchor()
   if not native then return nil end
 
-  local point, relative, relativePoint, x, y = U.GetFramePoint(native, 1)
+  local point, relative, relativePoint, x, y = U.ReadFramePoint(native)
   if type(point) ~= "string" then
     U.Debug("petbar: no readable native anchor to capture")
     return nil
@@ -583,7 +585,7 @@ local function RestoreButtons()
 end
 
 local function AnchorDrifted(frame, position)
-  local point, relative, relativePoint, x, y = U.GetFramePoint(frame, 1)
+  local point, relative, relativePoint, x, y = U.ReadFramePoint(frame)
   if type(point) ~= "string" then return true end
   if relative and relative ~= UIParent then return true end
   if point ~= position.point then return true end

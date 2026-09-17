@@ -1,10 +1,12 @@
 -- unrealUI :: modules/actionbar.lua
 --
--- Up to ten action bars. Modern uses UnrealUI's flat button treatment, Classic
--- copies the live client's own action-button faces, and modern-wow dresses the
--- same UnrealUI buttons with DragonflightUI-derived art. Layout, paging,
--- movers, bindings, cooldowns and interaction remain owned by this module in
--- every theme.
+-- Up to ten action bars. Modern uses UnrealUI's flat button treatment,
+-- classic-wow keeps the client's complete Bar 1 assembly intact at 80% scale
+-- by default, with a reload-time option for UnrealUI's standalone Bar 1, and
+-- uses captured native button faces for UnrealUI Bars 2-10, while
+-- modern-wow dresses UnrealUI's buttons with DragonflightUI-derived art.
+-- Layout, movers, bindings, cooldowns and interaction for addon-owned bars
+-- remain in this module.
 --
 -- Only the look and the call shapes are taken from pfUI. None of its bar
 -- architecture is reproduced: no config schema, no secure/TBC state driver, no
@@ -26,10 +28,10 @@
 --     (INCONCLUSIVE): UseAction / PickupAction / PlaceAction are WORKING_SOURCE
 --     evidence from UnrealPfUI, not runtime-verified. Their call shapes here
 --     match that working implementation rather than a fresh guess.
---   * knowledge.json / actionbars.native_stock_children_suppression: the stock
---     bar parents, every stock button and its visual children have to be
---     suppressed explicitly and re-applied; U.SuppressNativeFrame does exactly
---     that and owns the re-apply sweep.
+--   * knowledge.json / actionbars.native_stock_children_suppression: every
+--     stock bar family UnrealUI replaces needs its parent, buttons and visual
+--     children suppressed explicitly and re-applied; U.SuppressNativeFrame
+--     does exactly that and owns the re-apply sweep.
 --   * knowledge.json / scripts.child_onupdate_unreliable: no button owns an
 --     OnUpdate. Refreshes run on the shared driver -- including the cooldown
 --     countdown, which is why there is no per-button cooldown OnUpdate here
@@ -64,6 +66,7 @@ local AB = U.RegisterModule("actionbar")
 -- ---------------------------------------------------------------------------
 local BAR_COUNT = 10
 local SLOTS_PER_BAR = 12
+local CLASSIC_NATIVE_MAIN_SCALE = 0.8
 
 -- Measured on this client: Rogue Stealth uses bonus offset 1 / page 7. The
 -- Warrior and Druid sets follow UnrealPfUI's working Vanilla path and the
@@ -312,7 +315,26 @@ local bindingsDirty = false
 local classicAction = {
   active = false,
   ready = false,
+  -- Latched once during OnInit. Changing bar ownership after frames, native
+  -- suppression and binding routes have been installed would leave two partial
+  -- bars, so the settings switch deliberately takes effect after /reload.
+  nativeMain = false,
 }
+
+local function UsesNativeMainMenuBar()
+  return classicAction.nativeMain and true or false
+end
+
+local function ScaleNativeMainMenuBar()
+  if not UsesNativeMainMenuBar() then return end
+  local frame = U.G("MainMenuBar")
+  if not frame or type(frame.SetScale) ~= "function" then return end
+
+  -- knowledge.json / frames.own_scale_resizes_about_anchor_in_parent_space:
+  -- SetScale keeps the root's bottom-centre anchor fixed while shrinking every
+  -- descendant with it, which preserves the stock assembly as one unit.
+  pcall(frame.SetScale, frame, CLASSIC_NATIVE_MAIN_SCALE)
+end
 
 -- DragonflightUI visual layer for the modern-wow theme. This is deliberately
 -- one table rather than another run of top-level locals: this module is close
@@ -777,6 +799,11 @@ local function BuildDefaults()
   local key, value
   for key, value in pairs(GLOBAL_DEFAULTS) do defaults[key] = value end
 
+  -- Classic defaults to the complete stock Bar 1 assembly. This scalar stores
+  -- the alternative requested by the player; the active ownership is latched
+  -- in classicAction.nativeMain until the next reload.
+  defaults.classicMainBarActionOnly = false
+
   for i = 1, BAR_COUNT do
     -- Only the main bar is on by default. The rest are one click away in the
     -- settings panel; enabling ten bars nobody asked for is not a default.
@@ -876,8 +903,9 @@ local function ConfigureBarOwnership()
   reservedPages = {}
   availableBars = {}
 
+  local firstBar = UsesNativeMainMenuBar() and 2 or 1
   local bar
-  for bar = 1, BAR_COUNT do
+  for bar = firstBar, BAR_COUNT do
     if classPages[bar] then
       reservedPages[bar] = true
     else
@@ -1081,6 +1109,83 @@ local function BindingFor(bar, index)
     return CompactBinding(U.SlotBindingKey(command))
   end
   return CompactBinding(Call("GetBindingKey", command))
+end
+
+-- Classic keeps the client's real ActionButton1-12, so their ACTIONBUTTON
+-- commands remain the authoritative binding path. Bindings.xml continues to
+-- supply only the extra page commands the client lacks; redeclaring Bar 1 there
+-- would duplicate a command the client already owns. What the stock HotKey
+-- regions do not handle is this client's engine key names (AMPERSAND,
+-- E_ACCENTAIGU, QUOTE, ...), so feed those exact native commands through the
+-- same BindingFor/CompactBinding display path as every UnrealUI-owned bar.
+--
+-- The stock HotKey region cannot carry that display safely. NativeHotKeyProbe
+-- v1 measured ActionButton1-3HotKey switching together from RGB .6 to white and
+-- back 17 times in eight uncorrected seconds. The white periods were precisely
+-- this function's one-second refresh; native FrameXML reclaimed grey a frame or
+-- two later. Even an every-frame white write read back successfully 6,816 times
+-- but still blinked in the rendered result because the native writer ran later
+-- in some frames (USER_CONFIRMED_INGAME, 2026-09-18).
+--
+-- Keep that contested native region hidden and give the native Button one
+-- addon-owned OVERLAY FontString. Only the display is replaced: the real stock
+-- button, ACTIONBUTTON command, click/key execution and all native bar art stay
+-- untouched. Since FrameXML does not know this region, it cannot repaint it.
+local function RefreshNativeMainBindingLabels()
+  if not UsesNativeMainMenuBar() then return end
+
+  local i
+  for i = 1, SLOTS_PER_BAR do
+    local button = U.G("ActionButton" .. i)
+    local native = U.G("ActionButton" .. i .. "HotKey")
+    if button and native then
+      local text = ""
+      if cfg and cfg.showKeybind then text = BindingFor(1, i) end
+      if type(text) ~= "string" then text = "" end
+
+      -- ActionButton_UpdateHotkeys continues to update its own FontString, but
+      -- a hidden native region can no longer flash its grey colour over ours.
+      if native.Hide then pcall(native.Hide, native) end
+
+      -- Match the other action bars: build the corner label lazily, use the
+      -- same inherited stock font route and keep one top-right anchor.
+      if button.uuiNativeKeybind == nil and text ~= "" then
+        local created = U.CreateLabel(button, {
+          size = M.fontSize.tiny,
+          color = { 1, 1, 1, 1 },
+          inherits = "GameFontNormalSmall",
+          justify = "RIGHT",
+        })
+        button.uuiNativeKeybind = created or false
+        if created then
+          if created.ClearAllPoints then pcall(created.ClearAllPoints, created) end
+          if created.SetPoint then
+            pcall(created.SetPoint, created,
+                  "TOPRIGHT", button, "TOPRIGHT", -2, -2)
+          end
+        end
+      end
+
+      local label = button.uuiNativeKeybind
+      if label then
+        if button.uuiNativeKeybindText ~= text then
+          button.uuiNativeKeybindText = text
+          if label.SetText then pcall(label.SetText, label, text) end
+          if text ~= "" and label.GetStringWidth and label.SetWidth then
+            local ok, value = pcall(label.GetStringWidth, label)
+            value = ok and tonumber(value) or 0
+            if value > 0 then pcall(label.SetWidth, label, value + 2) end
+          end
+        end
+        if label.SetTextColor then pcall(label.SetTextColor, label, 1, 1, 1) end
+        if text == "" then
+          if label.Hide then pcall(label.Hide, label) end
+        elseif label.Show then
+          pcall(label.Show, label)
+        end
+      end
+    end
+  end
 end
 
 -- Make the executable key route match the label route exactly. Suppressing the
@@ -2334,7 +2439,10 @@ local function DefaultPosition(bar)
   local i
   for i = 1, table.getn(availableBars) do
     if availableBars[i] == bar then
-      rank = i
+      -- The native Classic Bar 1 still occupies the first row. Preserve every
+      -- other bar's existing default stack position by retaining that one-row
+      -- offset.
+      rank = i + (UsesNativeMainMenuBar() and 1 or 0)
       break
     end
   end
@@ -2375,6 +2483,32 @@ local function CreateBar(bar)
   return bars[bar]
 end
 
+-- In Classic's full-native mode the stock root is the movable element. Its
+-- descendants (gryphons, XP, micro buttons and bags) retain their client-owned
+-- anchors, so moving this one root keeps the assembly intact. A distinct mover
+-- id preserves the former UnrealUI Bar 1 position when the player switches
+-- between the two reload-time modes.
+function classicAction.RegisterNativeMover()
+  if not UsesNativeMainMenuBar() then return end
+  local frame = U.G("MainMenuBar")
+  if not frame then return end
+
+  U.RegisterMover("actionbar.native1", frame, {
+    label = U.L("MOVER_LABEL_ACTION_BAR", 1),
+    default = {
+      point = "BOTTOM",
+      relativePoint = "BOTTOM",
+      x = 0,
+      y = 0,
+    },
+    visible = function() return UsesNativeMainMenuBar() end,
+    -- Stock action buttons sit above MainMenuBar's inherited input layer. Raise
+    -- only the temporary Move UI Button so clicks select this anchor; the native
+    -- assembly itself keeps its original strata.
+    inputStrata = "HIGH",
+  })
+end
+
 -- previewName/previewValue are used by the edit-mode sliders only. They let
 -- the bar show one prospective numeric setting without writing it to the
 -- saved configuration; U.SetActionBarSetting still commits the final value.
@@ -2397,8 +2531,22 @@ local function LayoutBar(bar, previewName, previewValue)
   local columns = perRow
   local rows = math.ceil(count / perRow)
 
-  entry.frame:SetWidth(columns * size + (columns - 1) * spacing)
-  entry.frame:SetHeight(rows * size + (rows - 1) * spacing)
+  local width = columns * size + (columns - 1) * spacing
+  local height = rows * size + (rows - 1) * spacing
+  entry.frame:SetWidth(width)
+  entry.frame:SetHeight(height)
+
+  -- RegisterMover placed the bar while it still had CreateBar's provisional
+  -- 100 x 30, and the screen clamp judges a position by the frame's size. /uui
+  -- movesnap 2026-09-17: bar 3, 30 wide and stored at x = 1805 on a 1834.67
+  -- screen, was clamped as if 100 wide and drawn 70 units left of where it was
+  -- saved. Re-apply once the real size is known; not for slider previews,
+  -- which must not rewrite a position.
+  if not previewName and
+     (entry.uuiPlacedWidth ~= width or entry.uuiPlacedHeight ~= height) then
+    entry.uuiPlacedWidth, entry.uuiPlacedHeight = width, height
+    U.ReapplyMoverPosition(entry.frame)
+  end
 
   local i
   for i = 1, SLOTS_PER_BAR do
@@ -2448,6 +2596,7 @@ end
 
 -- Creates the bar on first use, so a bar nobody enables costs nothing.
 local function ApplyBar(bar)
+  if bar == 1 and UsesNativeMainMenuBar() then return end
   if not bars[bar] then
     if not IsEnabled(bar) then return end
     CreateBar(bar)
@@ -2458,6 +2607,7 @@ end
 local function ApplyAll()
   local i
   for i = 1, BAR_COUNT do ApplyBar(i) end
+  RefreshNativeMainBindingLabels()
 end
 
 -- Called by modules/modernwow.lua's surface registry after all action-bar
@@ -2499,6 +2649,32 @@ function U.ActionBarTotal()
   return BAR_COUNT
 end
 
+function U.ActionBarIsNative(bar)
+  return tonumber(bar) == 1 and UsesNativeMainMenuBar() or false
+end
+
+-- Theme capability and active-session ownership are separate on purpose. The
+-- checkbox writes the next-reload choice while ActionBarIsNative keeps
+-- reporting what this session actually built.
+function U.ClassicMainBarModeAvailable()
+  return type(U.ThemeStyleUsesNativeMainMenuBar) == "function" and
+         U.ThemeStyleUsesNativeMainMenuBar() or false
+end
+
+function U.ActionBarUsesNativeMainMenuBar()
+  return UsesNativeMainMenuBar()
+end
+
+function U.GetClassicMainBarActionOnly()
+  return cfg and cfg.classicMainBarActionOnly and true or false
+end
+
+function U.SetClassicMainBarActionOnly(value)
+  if not cfg or not U.ClassicMainBarModeAvailable() then return nil end
+  cfg.classicMainBarActionOnly = value and true or false
+  return U.GetClassicMainBarActionOnly()
+end
+
 function U.ActionBarReservation(bar)
   bar = tonumber(bar)
   if not bar or not reservedPages[bar] then return nil end
@@ -2538,7 +2714,8 @@ end
 
 function U.GetActionBarSetting(bar, name)
   bar = tonumber(bar)
-  if not bar or bar < 1 or bar > BAR_COUNT or reservedPages[bar] or
+  if not bar or bar < 1 or bar > BAR_COUNT or U.ActionBarIsNative(bar) or
+     reservedPages[bar] or
      not cfg then return nil end
   if name == "Enabled" then return IsEnabled(bar) end
   if name == "HideBackground" then return HidesBackground(bar) end
@@ -2549,7 +2726,8 @@ end
 -- The gryphon option exists only for bar 1 while its modern-wow ornaments are
 -- drawn; the theme is fixed for the session, so the views ask once per refresh.
 function U.ActionBarHasGryphons(bar)
-  return tonumber(bar) == 1 and modernWowAction.active and true or false
+  return tonumber(bar) == 1 and not U.ActionBarIsNative(bar) and
+         modernWowAction.active and true or false
 end
 
 -- Applies a numeric edit-mode value to the live bar without storing it or
@@ -2557,7 +2735,8 @@ end
 -- the drag ends, replacing this preview through the regular layout path.
 function U.PreviewActionBarSetting(bar, name, value)
   bar = tonumber(bar)
-  if not bar or bar < 1 or bar > BAR_COUNT or reservedPages[bar] or
+  if not bar or bar < 1 or bar > BAR_COUNT or U.ActionBarIsNative(bar) or
+     reservedPages[bar] or
      not cfg or not LIMITS[name] then return nil end
 
   local clamped = Clamp(name, value)
@@ -2569,7 +2748,8 @@ end
 -- was actually stored after clamping.
 function U.SetActionBarSetting(bar, name, value)
   bar = tonumber(bar)
-  if not bar or bar < 1 or bar > BAR_COUNT or reservedPages[bar] or
+  if not bar or bar < 1 or bar > BAR_COUNT or U.ActionBarIsNative(bar) or
+     reservedPages[bar] or
      not cfg then return nil end
 
   if name == "Enabled" then
@@ -2596,26 +2776,29 @@ end
 -- ---------------------------------------------------------------------------
 -- Native bars
 --
--- knowledge.json / actionbars.native_stock_children_suppression: the stock
--- parents, every stock button prefix and the visual children this client draws
--- independently all have to be named. U.SuppressNativeFrame owns the re-apply
--- sweep, so this list is handed over once.
+-- knowledge.json / actionbars.native_stock_children_suppression: every stock
+-- family UnrealUI replaces needs its parent, button prefixes and independently
+-- drawn visual children named. Classic excludes the complete MainMenuBar family
+-- from this list while the other themes suppress it with the multibars.
+-- U.SuppressNativeFrame owns the re-apply sweep, so the selected list is handed
+-- over once.
 -- ---------------------------------------------------------------------------
-local NATIVE_ROOTS = {
-  "MainMenuBar", "MainMenuBarArtFrame", "BonusActionBarFrame",
-  "MultiBarBottomLeft", "MultiBarBottomRight", "MultiBarLeft", "MultiBarRight",
-}
-
-local NATIVE_ART = {
-  "MainMenuBarTexture0", "MainMenuBarTexture1", "MainMenuBarTexture2",
-  "MainMenuBarTexture3", "MainMenuBarLeftEndCap", "MainMenuBarRightEndCap",
-  "MainMenuBarOverlayFrame", "MainMenuBarPageNumber",
-  "ActionBarUpButton", "ActionBarDownButton",
-}
-
-local NATIVE_BUTTON_PREFIXES = {
-  "ActionButton", "BonusActionButton", "MultiBarBottomLeftButton",
-  "MultiBarBottomRightButton", "MultiBarLeftButton", "MultiBarRightButton",
+local NATIVE = {
+  mainRoots = { "MainMenuBar", "MainMenuBarArtFrame", "BonusActionBarFrame" },
+  otherRoots = {
+    "MultiBarBottomLeft", "MultiBarBottomRight", "MultiBarLeft", "MultiBarRight",
+  },
+  mainArt = {
+    "MainMenuBarTexture0", "MainMenuBarTexture1", "MainMenuBarTexture2",
+    "MainMenuBarTexture3", "MainMenuBarLeftEndCap", "MainMenuBarRightEndCap",
+    "MainMenuBarOverlayFrame", "MainMenuBarPageNumber",
+    "ActionBarUpButton", "ActionBarDownButton",
+  },
+  mainButtonPrefixes = { "ActionButton", "BonusActionButton" },
+  otherButtonPrefixes = {
+    "MultiBarBottomLeftButton", "MultiBarBottomRightButton",
+    "MultiBarLeftButton", "MultiBarRightButton",
+  },
 }
 
 -- "Cooldown" is deliberately absent. The native style borrows those frames, and
@@ -2632,16 +2815,32 @@ local NATIVE_BUTTON_PARTS = {
 local function SuppressNativeBars()
   local names, i, j, k = {}, nil, nil, nil
 
-  for i = 1, table.getn(NATIVE_ROOTS) do
-    table.insert(names, NATIVE_ROOTS[i])
+  for i = 1, table.getn(NATIVE.otherRoots) do
+    table.insert(names, NATIVE.otherRoots[i])
   end
-  for i = 1, table.getn(NATIVE_ART) do
-    table.insert(names, NATIVE_ART[i])
+  if not UsesNativeMainMenuBar() then
+    for i = 1, table.getn(NATIVE.mainRoots) do
+      table.insert(names, NATIVE.mainRoots[i])
+    end
+    for i = 1, table.getn(NATIVE.mainArt) do
+      table.insert(names, NATIVE.mainArt[i])
+    end
   end
 
-  for i = 1, table.getn(NATIVE_BUTTON_PREFIXES) do
+  local prefixes = NATIVE.otherButtonPrefixes
+  if not UsesNativeMainMenuBar() then
+    prefixes = {}
+    for i = 1, table.getn(NATIVE.otherButtonPrefixes) do
+      table.insert(prefixes, NATIVE.otherButtonPrefixes[i])
+    end
+    for i = 1, table.getn(NATIVE.mainButtonPrefixes) do
+      table.insert(prefixes, NATIVE.mainButtonPrefixes[i])
+    end
+  end
+
+  for i = 1, table.getn(prefixes) do
     for j = 1, SLOTS_PER_BAR do
-      local base = NATIVE_BUTTON_PREFIXES[i] .. j
+      local base = prefixes[i] .. j
       table.insert(names, base)
       for k = 1, table.getn(NATIVE_BUTTON_PARTS) do
         table.insert(names, base .. NATIVE_BUTTON_PARTS[k])
@@ -2689,6 +2888,7 @@ local STATE_EVENTS = {
 local function RefreshSlots()
   work.slotSweeps = work.slotSweeps + 1
   ForEachVisibleButton(FullUpdate)
+  RefreshNativeMainBindingLabels()
 end
 
 -- Only the number, from the cached pair. The pair itself is refreshed by the
@@ -2905,7 +3105,6 @@ local function RemoveThemedLayoutData()
 end
 
 function AB:OnInit()
-  ConfigureBarOwnership()
   cfg = U.ModuleConfig("actionbar", BuildDefaults())
 
   -- The shipped button spacing changed from 4 to 2. A database written by the
@@ -2927,10 +3126,19 @@ function AB:OnInit()
   end
 
   RemoveThemedLayoutData()
+
+  classicAction.nativeMain = U.ClassicMainBarModeAvailable() and
+                             not cfg.classicMainBarActionOnly or false
+  ConfigureBarOwnership()
 end
 
 function AB:OnEnable()
-  if not cfg then cfg = U.ModuleConfig("actionbar", BuildDefaults()) end
+  if not cfg then
+    cfg = U.ModuleConfig("actionbar", BuildDefaults())
+    classicAction.nativeMain = U.ClassicMainBarModeAvailable() and
+                               not cfg.classicMainBarActionOnly or false
+    ConfigureBarOwnership()
+  end
 
   local _, class = Call("UnitClass", "player")
   local r, g, b = M.ClassColor(class)
@@ -2944,6 +3152,8 @@ function AB:OnEnable()
   -- stock action bars invisible. Modern records no template and follows its
   -- existing flat rendering path.
   classicAction.Capture()
+  ScaleNativeMainMenuBar()
+  classicAction.RegisterNativeMover()
   SuppressNativeBars()
   ApplyAll()
 
@@ -2954,7 +3164,10 @@ function AB:OnEnable()
   InstallDeclaredBindingHandler()
 
   ApplyOverrideBindings()
-  InstallLegacyMainBindingRoute()
+  -- The legacy route replaces ActionButtonDown/Up with dispatch into UnrealUI
+  -- Bar 1. Classic keeps the stock bar, so replacing that route would turn its
+  -- keyboard bindings into no-ops.
+  if not UsesNativeMainMenuBar() then InstallLegacyMainBindingRoute() end
   -- Keep the visual-only hooks for the static multibars too. On the legacy
   -- main route they wrap UnrealUI's replacement, never the hidden stock path.
   HookNativeBindingHighlights()
@@ -2972,16 +3185,18 @@ function U.ActionBarReport()
   local report, i = {}, nil
   for i = 1, BAR_COUNT do
     local entry = bars[i]
+    local native = U.ActionBarIsNative(i)
     table.insert(report, {
       bar = i,
       reserved = reservedPages[i] and true or false,
-      enabled = IsEnabled(i),
+      enabled = native or IsEnabled(i),
       created = entry and true or false,
       buttons = Number(i, "Buttons"),
       perRow = Number(i, "PerRow"),
       size = Number(i, "Size"),
       spacing = Number(i, "Spacing"),
       page = (i == 1) and ActivePage() or nil,
+      native = native,
       cooldownText = (entry and entry.buttons[1] and
                       entry.buttons[1].uuiCooldownText) and true or false,
       nativeCooldown = (entry and entry.buttons[1] and

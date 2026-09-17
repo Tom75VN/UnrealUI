@@ -87,67 +87,24 @@ function tal.Hide(object)
 end
 
 -- ---------------------------------------------------------------------------
--- Client data
+-- Client data and tree lookup
+--
+-- Both live in core/talentgrid.lua, which every talent drawing path shares.
+-- The thin wrappers here keep this module's own call sites unchanged.
 -- ---------------------------------------------------------------------------
-function tal.TabInfo(tab)
-  if type(GetTalentTabInfo) ~= "function" then return nil end
-  local ok, name, icon, spent, background = pcall(GetTalentTabInfo, tab)
-  if not ok then return nil end
-  return name, icon, tonumber(spent) or 0, background
-end
+function tal.TabInfo(tab) return U.TalentGrid.TabInfo(tab) end
+function tal.NumTalents(tab) return U.TalentGrid.NumTalents(tab) end
+function tal.TalentInfo(tab, index) return U.TalentGrid.TalentInfo(tab, index) end
+function tal.UnspentPoints() return U.TalentGrid.UnspentPoints() end
+function tal.PlayerLevel() return U.TalentGrid.PlayerLevel() end
 
-function tal.NumTalents(tab)
-  if type(GetNumTalents) ~= "function" then return 0 end
-  local ok, count = pcall(GetNumTalents, tab)
-  return (ok and tonumber(count)) or 0
-end
-
-function tal.TalentInfo(tab, index)
-  if type(GetTalentInfo) ~= "function" then return nil end
-  local ok, name, icon, tier, column, rank, maxRank, _, meets =
-    pcall(GetTalentInfo, tab, index)
-  if not ok or not name then return nil end
-  return name, icon, tonumber(tier) or 1, tonumber(column) or 1,
-         tonumber(rank) or 0, tonumber(maxRank) or 0, meets
-end
-
-function tal.UnspentPoints()
-  if type(UnitCharacterPoints) ~= "function" then return 0 end
-  local ok, points = pcall(UnitCharacterPoints, "player")
-  return (ok and tonumber(points)) or 0
-end
-
-function tal.PlayerLevel()
-  local ok, level = pcall(UnitLevel, "player")
-  return (ok and tonumber(level)) or 0
-end
-
--- Looks a tree up by its background file name in a token table keyed by that
--- name (`treeColor`, `treeRoles`). The name is reduced to its bare, lower-cased
--- form ("Interface\TalentFrame\PaladinCombat-TopLeft.blp" -> "paladincombat")
--- and compared against a lower-cased copy of the table, so a path, suffix or
--- case difference cannot miss a class.
-tal.treeKeys = {}
+-- `field` is this token table's own name for one of M.talentTree's tables.
 function tal.TreeLookup(field, background)
-  local source = tal.Token()[field]
-  if not source or type(background) ~= "string" or background == "" then return nil end
-  local keys = tal.treeKeys[field]
-  if not keys then
-    keys = {}
-    for key, value in pairs(source) do keys[string.lower(key)] = value end
-    tal.treeKeys[field] = keys
-  end
-  local bare = string.gsub(background, "^.*[/\\]", "")
-  bare = string.gsub(bare, "%.%a+$", "")
-  bare = string.gsub(bare, "%-%a+$", "")
-  return source[background] or keys[string.lower(bare)]
+  return U.TalentGrid.Lookup(tal.Token()[field], background)
 end
 
--- A tree's DF-main colour; an unmatched name falls back to the by-index default.
 function tal.TreeColor(background, index)
-  local t = tal.Token()
-  return tal.TreeLookup("treeColor", background) or
-         t.defaultColor[index] or t.defaultColor[1]
+  return U.TalentGrid.TreeColor(background, index)
 end
 
 -- ---------------------------------------------------------------------------
@@ -155,20 +112,8 @@ end
 -- ---------------------------------------------------------------------------
 function tal.ResetBranches(state)
   local t = tal.Token()
-  local i, j
-  for i = 1, t.grid.rows do
-    for j = 1, t.grid.columns do
-      local node = state.nodes[i][j]
-      node.id = nil
-      node.up = 0
-      node.down = 0
-      node.left = 0
-      node.right = 0
-      node.rightArrow = 0
-      node.leftArrow = 0
-      node.topArrow = 0
-    end
-  end
+  local i
+  U.TalentGrid.ResetNodes(state.nodes, t.grid.rows, t.grid.columns)
   for i = 1, table.getn(state.branches) do tal.Hide(state.branches[i]) end
   for i = 1, table.getn(state.arrows) do tal.Hide(state.arrows[i]) end
   state.branchIndex = 1
@@ -226,120 +171,16 @@ function tal.SetArrowTexture(state, coords, x, y)
   end)
 end
 
--- DF-main DrawLines, unchanged except that its blocked-layout message() calls
--- are dropped: a layout this client cannot draw simply draws no line.
+-- The branch-node walk and prerequisite reader are core/talentgrid.lua's;
+-- only the drawing below is this theme's.
 function tal.DrawLines(state, buttonTier, buttonColumn, tier, column, requirementsMet)
-  local nodes = state.nodes
-  local met = requirementsMet and 1 or -1
-  local i
-
-  if not nodes[tier] or not nodes[buttonTier] then return end
-
-  if buttonColumn == column then
-    if (buttonTier - tier) > 1 then
-      for i = tier + 1, buttonTier - 1 do
-        if nodes[i][buttonColumn].id then return end
-      end
-    end
-    for i = tier, buttonTier - 1 do
-      nodes[i][buttonColumn].down = met
-      if (i + 1) <= (buttonTier - 1) then
-        nodes[i + 1][buttonColumn].up = met
-      end
-    end
-    nodes[buttonTier][buttonColumn].topArrow = met
-    return
-  end
-
-  if buttonTier == tier then
-    local left = math.min(buttonColumn, column)
-    local right = math.max(buttonColumn, column)
-    if (right - left) > 1 then
-      for i = left + 1, right - 1 do
-        if nodes[tier][i].id then return end
-      end
-    end
-    for i = left, right - 1 do
-      nodes[tier][i].right = met
-      nodes[tier][i + 1].left = met
-    end
-    if buttonColumn < column then
-      nodes[buttonTier][buttonColumn].rightArrow = met
-    else
-      nodes[buttonTier][buttonColumn].leftArrow = met
-    end
-    return
-  end
-
-  -- Diagonal prerequisite.
-  local left = math.min(buttonColumn, column)
-  local right = math.max(buttonColumn, column)
-  if left == column then
-    left = left + 1
-  else
-    right = right - 1
-  end
-  local blocked = nil
-  for i = left, right do
-    if nodes[tier][i].id then blocked = 1 end
-  end
-  left = math.min(buttonColumn, column)
-  right = math.max(buttonColumn, column)
-  if not blocked then
-    nodes[tier][buttonColumn].down = met
-    nodes[buttonTier][buttonColumn].up = met
-    for i = tier, buttonTier - 1 do
-      nodes[i][buttonColumn].down = met
-      nodes[i + 1][buttonColumn].up = met
-    end
-    for i = left, right - 1 do
-      nodes[tier][i].right = met
-      nodes[tier][i + 1].left = met
-    end
-    nodes[buttonTier][buttonColumn].topArrow = met
-    return
-  end
-
-  -- Blocked vertically: go across first, then up.
-  if left == buttonColumn then
-    left = left + 1
-  else
-    right = right - 1
-  end
-  for i = left, right do
-    if nodes[buttonTier][i].id then return end
-  end
-  for i = tier, buttonTier - 1 do
-    nodes[i][column].up = met
-    nodes[i + 1][column].down = met
-  end
-  if buttonColumn < column then
-    nodes[buttonTier][buttonColumn].rightArrow = met
-  else
-    nodes[buttonTier][buttonColumn].leftArrow = met
-  end
+  U.TalentGrid.DrawLines(state.nodes, buttonTier, buttonColumn, tier, column,
+                         requirementsMet)
 end
 
--- DF-main SetPrereqs. This client returns (tier, column, meetsRank) triples,
--- up to three, and has no preview state.
 function tal.SetPrereqs(state, tier, column, forceDesaturated, tierUnlocked, tab, index)
-  local requirementsMet = tierUnlocked and not forceDesaturated
-  if type(GetTalentPrereqs) ~= "function" then return requirementsMet end
-
-  local ok, t1, c1, m1, t2, c2, m2, t3, c3, m3 = pcall(GetTalentPrereqs, tab, index)
-  if not ok then return requirementsMet end
-
-  local prereqs = { { t1, c1, m1 }, { t2, c2, m2 }, { t3, c3, m3 } }
-  local i
-  for i = 1, 3 do
-    local p = prereqs[i]
-    local pTier, pColumn = tonumber(p[1]), tonumber(p[2])
-    if pTier and pColumn then
-      if forceDesaturated or not p[3] then requirementsMet = nil end
-      tal.DrawLines(state, tier, column, pTier, pColumn, requirementsMet)
-    end
-  end
-  return requirementsMet
+  return U.TalentGrid.SetPrereqs(state.nodes, tier, column, forceDesaturated,
+                                 tierUnlocked, tab, index)
 end
 
 function tal.DrawBranches(state)
@@ -600,18 +441,10 @@ function tal.BuildPanel(host, index)
     buttons = {},
     branches = {},
     arrows = {},
-    nodes = {},
     branchIndex = 1,
     arrowIndex = 1,
   }
-  local i, j
-  for i = 1, t.grid.rows do
-    state.nodes[i] = {}
-    for j = 1, t.grid.columns do
-      state.nodes[i][j] = { up = 0, down = 0, left = 0, right = 0,
-                            leftArrow = 0, rightArrow = 0, topArrow = 0 }
-    end
-  end
+  state.nodes = U.TalentGrid.NewNodes(t.grid.rows, t.grid.columns)
 
   local bg = t.background
   state.bgTop = tal.Texture(panel, "BACKGROUND", nil, bg.topTexCoord)

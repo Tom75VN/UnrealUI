@@ -1,6 +1,7 @@
 -- unrealUI :: modules/loot.lua
 --
--- Sell price and equipped-item comparison on the native loot window.
+-- Sell price and equipped-item comparison on the native loot window, and the
+-- equipped-item comparison on the native group loot roll popups.
 --
 -- Behavior only. .claude/rules/unreal-ui.md keeps the original loot interface
 -- untouched, and this module honours that literally: it reads no texture and
@@ -174,9 +175,58 @@ local function HookRows()
   if declared and declared >= 1 then rows = declared end
 end
 
+-- ---------------------------------------------------------------------------
+-- Group loot roll
+--
+-- Same behaviour-only contract, on the party roll popups. GroupLootFrame1..4
+-- are live on this client (knowledge.json / world.nameplates_are_not_lua_widgets
+-- inventoried them). Their item button's name and the `.rollID` field on the
+-- popup follow Vanilla's GroupLootFrameTemplate; UnrealPfUI's roll module uses
+-- the same `GetParent().rollID` + GetLootRollItemLink shape. WORKING_SOURCE,
+-- not runtime-verified: a missing button or rollID leaves the popup as it was.
+-- ---------------------------------------------------------------------------
+local MAX_ROLL_FRAMES = 4
+
+-- The popup whose item opened the current comparison, so a different popup
+-- expiring does not close a comparison opened somewhere else.
+local rollCompareOwner = nil
+
+local function HookRollFrame(index)
+  local frame = G("GroupLootFrame" .. index)
+  local button = G("GroupLootFrame" .. index .. "IconFrame")
+  if not frame or not button or button.uuiRollCompareHooks then return end
+  button.uuiRollCompareHooks = true
+
+  U.PostHookScript(button, "OnEnter", function()
+    local rollID = tonumber(frame.rollID)
+    if not rollID or type(U.ShowItemCompare) ~= "function" then return end
+
+    local link = Call("GetLootRollItemLink", rollID)
+    if type(link) ~= "string" then return end
+    rollCompareOwner = frame
+    U.ShowItemCompare(link)
+  end)
+
+  local function Clear()
+    if rollCompareOwner ~= frame then return end
+    rollCompareOwner = nil
+    if type(U.HideItemCompare) == "function" then U.HideItemCompare() end
+  end
+
+  U.PostHookScript(button, "OnLeave", Clear)
+  -- A roll that ends under the cursor hides the popup without an OnLeave.
+  U.PostHookScript(frame, "OnHide", Clear)
+end
+
+local function HookRollFrames()
+  local i
+  for i = 1, MAX_ROLL_FRAMES do HookRollFrame(i) end
+end
+
 function LT:OnEnable()
   HookRows()
   U.RegisterEvent("LOOT_OPENED", HookRows)
+  HookRollFrames()
 
   -- The comparison tooltips are children of UIParent, not of the loot frame,
   -- so a window that closes under the cursor would otherwise leave them up.

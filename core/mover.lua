@@ -21,7 +21,12 @@ local activeMover
 -- Snap tracer state. One table rather than a set of loose locals, per
 -- rules/unreal-ui.md: a diagnostic has no business spending top-level slots.
 local trace = { on = false, samples = {}, max = 400, seq = 0, dropped = 0,
-                current = nil, startedAt = nil, reason = nil, before = nil }
+                current = nil, startedAt = nil, reason = nil, before = nil,
+                -- Diagnostic logs beside the snap samples: what the mouse is
+                -- over, anchors that move on their own, and store writes.
+                focus = {}, drift = {}, events = {}, rects = {},
+                maxLog = 300, lastFocus = nil, nextDrift = 0,
+                lockedAt = nil, afterLock = nil, LOCK_WATCH = 20 }
 local grid, editPanel, editKeys, alignmentGuides
 local IsEntryAvailable, IsEntryVisible
 local UpdateAlignmentGuides, HideAlignmentGuides
@@ -68,7 +73,7 @@ local advanced = {
       setting = { module = "microbar", key = "enabled", default = true,
                   apply = "ApplyMicroBar" }, movers = { "microbar" } },
     { key = "actionbar1", labelKey = "MOVER_LABEL_ACTION_BAR", labelArg = 1,
-      actionBar = 1, movers = { "actionbar.bar1" } },
+      actionBar = 1, movers = { "actionbar.bar1", "actionbar.native1" } },
     { key = "actionbar2", labelKey = "MOVER_LABEL_ACTION_BAR", labelArg = 2,
       actionBar = 2, movers = { "actionbar.bar2" } },
     { key = "actionbar3", labelKey = "MOVER_LABEL_ACTION_BAR", labelArg = 3,
@@ -102,6 +107,7 @@ local advanced = {
     ["status.population"] = "online",
     microbar = "microbar",
     ["actionbar.bar1"] = "actionbar1",
+    ["actionbar.native1"] = "actionbar1",
     ["actionbar.bar2"] = "actionbar2",
     ["actionbar.bar3"] = "actionbar3",
     ["actionbar.bar4"] = "actionbar4",
@@ -113,7 +119,8 @@ local advanced = {
     ["actionbar.bar10"] = "actionbar10",
   },
   moverActionBars = {
-    ["actionbar.bar1"] = 1, ["actionbar.bar2"] = 2,
+    ["actionbar.bar1"] = 1, ["actionbar.native1"] = 1,
+    ["actionbar.bar2"] = 2,
     ["actionbar.bar3"] = 3, ["actionbar.bar4"] = 4,
     ["actionbar.bar5"] = 5, ["actionbar.bar6"] = 6,
     ["actionbar.bar7"] = 7, ["actionbar.bar8"] = 8,
@@ -289,6 +296,10 @@ local function ApplyStoredPosition(entry)
   local saved = U.GetPosition(entry.id)
   local position = saved or entry.default
   if not position then return false end
+  -- A placement stored on a larger screen or UI scale is pulled back inside
+  -- this one (core/screenguard.lua). Applied only, not re-saved: going back to
+  -- the larger screen restores the original placement.
+  position = U.ClampPositionToScreen(entry.frame, position)
 
   local applied = U.ApplyFramePoint(entry.frame, position)
   if not applied then
@@ -299,6 +310,7 @@ local function ApplyStoredPosition(entry)
   if saved then
     U.Debug("mover " .. entry.id .. ": restored saved position")
   end
+  trace.Event("apply", entry, position, { fromSaved = saved and true or false })
 
   NormaliseAnchorEdge(entry)
   return true
@@ -364,10 +376,15 @@ local function IntervalsNear(aLow, aHigh, bLow, bHigh)
          aHigh >= bLow - MAGNET_DISTANCE
 end
 
+-- Edges that touch are not an overlap. The tolerance matters: a flush magnet
+-- snap reproduces the neighbour's edge through float arithmetic, and a
+-- hundredth over read as a collision would push the anchor back out.
 local function Overlaps(left, right, bottom, top,
                         otherLeft, otherRight, otherBottom, otherTop)
-  return left < otherRight and right > otherLeft and
-         bottom < otherTop and top > otherBottom
+  return left < otherRight - ALIGNMENT_EPSILON and
+         right > otherLeft + ALIGNMENT_EPSILON and
+         bottom < otherTop - ALIGNMENT_EPSILON and
+         top > otherBottom + ALIGNMENT_EPSILON
 end
 
 local function ClosestDelta(candidate, best, bestDistance)
@@ -378,13 +395,57 @@ local function ClosestDelta(candidate, best, bestDistance)
   return best, bestDistance
 end
 
+-- Where a frame is, as { point, relative, relativePoint, x, y }. Offsets come
+-- from its measured edges (U.GetFramePlacement, core/screenguard.lua), never
+-- from GetPoint: knowledge.json / frames.getpoint_y_same_sign_as_setpoint
+-- (2026-09-17) shows GetPoint keeps SetPoint's Y sign, so U.GetFramePoint's
+-- negation mirrored the drag origin -- a TOPLEFT y = -683 bar started its drag
+-- at +683 and the screen clamp pinned it to the top edge.
+--
+-- A frame parented elsewhere but anchored to UIParent is measured by its edges
+-- too, when it is drawn at UIParent's scale (so its edges and its offsets share
+-- one unit). /uui movesnap 2026-09-17: target-of-target is a child of
+-- UnrealUIUnitTarget; after PinToUIParent its BOTTOMLEFT point read back with
+-- the negated Y (-244 for a bottom at 244), the screen clamp lifted that to 0,
+-- and every drop saved y = 0 -- the frame fell to the bottom of the screen.
+-- Only a differently scaled or non-UIParent-anchored frame still falls back to
+-- the point read.
+local function ReadPlacement(frame)
+  local placement = U.GetFramePlacement(frame)
+  if placement then
+    placement.relative = UIParent
+    return placement
+  end
+  local point, relative, relativePoint, x, y = U.GetFramePoint(frame, 1)
+  if not point then return nil end
+  relativePoint = relativePoint or point
+
+  local frameScale = Edge(frame, "GetEffectiveScale")
+  local uiScale = Edge(UIParent, "GetEffectiveScale")
+  local left, bottom = Edge(frame, "GetLeft"), Edge(frame, "GetBottom")
+  local width, height = Edge(frame, "GetWidth"), Edge(frame, "GetHeight")
+  if (not relative or relative == UIParent) and frameScale and uiScale and
+     math.abs(frameScale - uiScale) < 0.001 and left and bottom and
+     width and height then
+    left = left - (Edge(UIParent, "GetLeft") or 0)
+    bottom = bottom - (Edge(UIParent, "GetBottom") or 0)
+    x = left + width * PointFactor(point, "LEFT", "RIGHT") -
+        U.UIWidth() * PointFactor(relativePoint, "LEFT", "RIGHT")
+    y = bottom + height * PointFactor(point, "BOTTOM", "TOP") -
+        U.UIHeight() * PointFactor(relativePoint, "BOTTOM", "TOP")
+  end
+  return { point = point, relative = relative,
+           relativePoint = relativePoint, x = x, y = y }
+end
+
 local function EntryPosition(entry)
   local position = U.GetPosition(entry.id) or entry.default
   if position then return position end
 
-  local point, relative, relativePoint, x, y = U.GetFramePoint(entry.frame, 1)
-  if not point or (relative and relative ~= UIParent) then return nil end
-  return { point = point, relativePoint = relativePoint, x = x, y = y }
+  local placement = ReadPlacement(entry.frame)
+  if not placement or (placement.relative and
+                       placement.relative ~= UIParent) then return nil end
+  return placement
 end
 
 -- Bounds of a registered mover in UIParent layout space, as MoverBounds
@@ -448,6 +509,78 @@ local function LiveRect(entry)
   return left, left + width, bottom, bottom + height
 end
 
+function trace.Name(frame)
+  if frame == nil then return "none" end
+  if frame == UIParent then return "UIParent" end
+  if type(frame) == "string" then return frame end
+  if type(frame) ~= "table" or type(frame.GetName) ~= "function" then
+    return "?"
+  end
+  local ok, name = pcall(frame.GetName, frame)
+  if ok and type(name) == "string" then return name end
+  return "unnamed"
+end
+
+-- Layering and hit-test state of one widget: the answer to "why can this
+-- handle not be clicked" is in strata, level, visibility, mouse and rect.
+function trace.Widget(frame)
+  if not frame then return nil end
+  local row = { name = trace.Name(frame) }
+  local left, bottom = Edge(frame, "GetLeft"), Edge(frame, "GetBottom")
+  local width, height = Edge(frame, "GetWidth"), Edge(frame, "GetHeight")
+  row.l, row.b = Rounded(left), Rounded(bottom)
+  row.w, row.h = Rounded(width), Rounded(height)
+  row.level = Edge(frame, "GetFrameLevel")
+  row.points = Edge(frame, "GetNumPoints")
+  row.effScale = Rounded(Edge(frame, "GetEffectiveScale"))
+
+  local ok, value = pcall(frame.IsShown, frame)
+  if ok then row.shown = value and true or false end
+  if type(frame.IsVisible) == "function" then
+    ok, value = pcall(frame.IsVisible, frame)
+    if ok then row.visible = value and true or false end
+  end
+  if type(frame.GetFrameStrata) == "function" then
+    ok, value = pcall(frame.GetFrameStrata, frame)
+    if ok then row.strata = value end
+  end
+  if type(frame.IsMouseEnabled) == "function" then
+    ok, value = pcall(frame.IsMouseEnabled, frame)
+    if ok then row.mouse = value and true or false end
+  end
+  if type(frame.GetParent) == "function" then
+    ok, value = pcall(frame.GetParent, frame)
+    if ok then row.parent = trace.Name(value) end
+  end
+  return row
+end
+
+function trace.Log(list, row)
+  if not trace.on or table.getn(list) >= trace.maxLog then return end
+  row.t = Rounded(GetTime())
+  row.unlocked = unlocked and true or false
+  table.insert(list, row)
+end
+
+-- A write to or a re-application of a stored position.
+function trace.Event(kind, entry, position, extra)
+  if not trace.on or not entry then return end
+  local row = { kind = kind, id = entry.id }
+  if type(position) == "table" then
+    row.point = position.point
+    row.relativePoint = position.relativePoint
+    row.x, row.y = Rounded(position.x), Rounded(position.y)
+  end
+  if type(extra) == "table" then
+    local key, value
+    for key, value in pairs(extra) do row[key] = value end
+  end
+  local left, right, bottom, top = LiveRect(entry)
+  row.liveLeft, row.liveBottom = Rounded(left), Rounded(bottom)
+  row.liveRight, row.liveTop = Rounded(right), Rounded(top)
+  trace.Log(trace.events, row)
+end
+
 -- Every registered mover, as the snapper sees it and as the client draws it.
 function trace.Snapshot()
   local rows, i = {}, nil
@@ -476,6 +609,12 @@ function trace.Snapshot()
         -- What the client draws.
         liveLeft = Rounded(liveLeft), liveRight = Rounded(liveRight),
         liveBottom = Rounded(liveBottom), liveTop = Rounded(liveTop),
+        saved = U.GetPosition(entry.id) and true or false,
+        enters = entry.enters, dragStarts = entry.dragStarts,
+        dragStops = entry.dragStops,
+        frame = trace.Widget(entry.frame),
+        handle = trace.Widget(entry.handle),
+        input = trace.Widget(entry.dragInput),
       })
     end
   end
@@ -491,7 +630,15 @@ function trace.Start()
   trace.reason = nil
   trace.startedAt = type(U.DiagnosticStamp) == "function"
                     and U.DiagnosticStamp() or "?"
+  trace.focus, trace.drift, trace.events, trace.rects = {}, {}, {}, {}
+  trace.lastFocus, trace.nextDrift = nil, 0
+  trace.lockedAt, trace.afterLock = nil, nil
+  trace.lastId, trace.lastInX, trace.lastInY = nil, nil, nil
+  trace.atUnlock = nil
   trace.before = trace.Snapshot()
+  trace.NewReport()
+  -- trace.Watch is defined further down; it is looked up when the driver runs.
+  U.RegisterUpdate("mover.diag", 0, function() trace.Watch() end)
   return true
 end
 
@@ -500,6 +647,12 @@ end
 function trace.Begin(entry, point, relativePoint, x, y, config)
   trace.current = nil
   if not trace.on then return nil end
+  -- A held but motionless cursor re-resolves the same request every frame;
+  -- one sample per distinct request keeps the cap for actual movement.
+  if trace.lastId == entry.id and trace.lastInX == x and trace.lastInY == y then
+    return nil
+  end
+  trace.lastId, trace.lastInX, trace.lastInY = entry.id, x, y
   if table.getn(trace.samples) >= trace.max then
     trace.dropped = trace.dropped + 1
     return nil
@@ -562,40 +715,71 @@ function trace.Commit(sample, gridX, gridY, x, y)
   trace.current = nil
 end
 
--- Disarmed by U.LockUI, so the recording ends with the gesture rather than
--- needing a command the player cannot type while the overlay is up.
+-- The report is written into UnrealUIDiagDB as soon as the run is armed, and
+-- every log below is the live table it references. SavedVariables are
+-- flushed only on /reload or logout, and this client has no verified logout
+-- event to save from, so a report written only at the end was lost whenever
+-- the player reloaded first (2026-09-17: reload 3 s after the last lock, 17 s
+-- before the post-lock watch would have saved). Now a reload at any point
+-- keeps everything recorded up to it.
+function trace.Publish(reason)
+  local report = trace.report
+  if not report then return end
+  local scaleOk, uiScale = pcall(UIParent.GetEffectiveScale, UIParent)
+  report.stoppedAt = type(U.DiagnosticStamp) == "function"
+                     and U.DiagnosticStamp() or "?"
+  report.reason = reason
+  report.theme = type(U.GetActiveThemeStyle) == "function"
+                 and U.GetActiveThemeStyle() or "?"
+  report.uiWidth = Rounded(U.UIWidth())
+  report.uiHeight = Rounded(U.UIHeight())
+  report.uiScale = scaleOk and Rounded(uiScale) or "?"
+  report.gridSize = GridSize()
+  report.magnetDistance = MAGNET_DISTANCE
+  report.dropped = trace.dropped
+  report.before = trace.before
+  report.atUnlock = trace.atUnlock
+  report.afterLock = trace.afterLock
+  if type(U.SaveDiagnostic) == "function" then
+    U.SaveDiagnostic("moveSnap", report)
+  end
+end
+
+function trace.NewReport()
+  trace.report = {
+    startedAt = trace.startedAt,
+    samples = trace.samples,
+    -- GetMouseFocus changes, with the mover part it belongs to.
+    focus = trace.focus,
+    -- Live rects that changed, sampled every 0.25 s.
+    drift = trace.drift,
+    -- Store writes and re-applications (save, apply, pin, pendingSnap).
+    events = trace.events,
+  }
+  trace.Publish("running")
+end
+
+-- Disarmed after the post-lock watch or by the command, so the recording ends
+-- with the gesture rather than needing a command the player cannot type while
+-- the overlay is up.
 function trace.Stop(reason)
   if not trace.on then return false, 0, 0 end
   trace.on = false
   trace.current = nil
   trace.reason = reason
+  U.UnregisterUpdate("mover.diag")
 
-  local scaleOk, uiScale = pcall(UIParent.GetEffectiveScale, UIParent)
-  local report = {
-    startedAt = trace.startedAt,
-    stoppedAt = type(U.DiagnosticStamp) == "function"
-                and U.DiagnosticStamp() or "?",
-    reason = reason,
-    theme = type(U.GetActiveThemeStyle) == "function"
-            and U.GetActiveThemeStyle() or "?",
-    uiWidth = Rounded(U.UIWidth()),
-    uiHeight = Rounded(U.UIHeight()),
-    uiScale = scaleOk and Rounded(uiScale) or "?",
-    gridSize = GridSize(),
-    magnetDistance = MAGNET_DISTANCE,
-    samples = trace.samples,
-    dropped = trace.dropped,
-    before = trace.before,
-    after = trace.Snapshot(),
-  }
-
-  if type(U.SaveDiagnostic) == "function" then
-    U.SaveDiagnostic("moveSnap", report)
+  if trace.report then
+    trace.report.after = trace.Snapshot()
+    trace.Publish(reason)
   end
 
   local count = table.getn(trace.samples)
+  trace.report = nil
   trace.samples = {}
-  trace.before = nil
+  trace.before, trace.afterLock, trace.lockedAt = nil, nil, nil
+  trace.atUnlock = nil
+  trace.focus, trace.drift, trace.events, trace.rects = {}, {}, {}, {}
   return true, count, trace.dropped
 end
 
@@ -618,32 +802,29 @@ local function IsFollower(entry, other)
   return entry.followerSet[other.id] and true or false
 end
 
--- Grid-aligned magnet corrections.
+-- Magnet contact wins over the grid on the axis where two anchors touch.
 --
--- With the grid on, an anchor's edge is already sitting on a drawn line, so a
--- correction that is a whole number of cells leaves it on one. The escape from
--- an overlap is therefore rounded AWAY from zero to the next full cell: that
--- clears the neighbour by at least as much as the exact figure would, and the
--- anchor lands on the cell boundary the player can see rather than a third of
--- a cell off it.
-local function GridCorrection(value, gridOn)
-  if not gridOn then return value end
-  local size = GridSize()
-  if size <= 0 then return value end
-  local cells = math.abs(value) / size
-  local whole = math.floor(cells)
-  if cells - whole > 0.0001 then whole = whole + 1 end
-  if value < 0 then return -whole * size end
-  return whole * size
-end
-
--- `gridOn` is the alignment grid's switch, not a preference: with the grid on
--- the proximity pull is skipped entirely -- the grid is what aligns edges, and
--- pulling flush with a neighbour whose size is not a whole number of cells is
--- exactly what took anchors off the visible lines -- and the collision escape
--- is rounded to whole cells. With it off, both behave as they always have.
-local function SnapToMovers(entry, point, relativePoint, x, y, gridOn)
-  local moving = { point = point, relativePoint = relativePoint, x = x, y = y }
+-- With the grid on, this used to skip the proximity pull and round the
+-- collision escape up to whole cells, so the grid kept every edge on a drawn
+-- line. Against a neighbour whose size is not a whole number of cells that
+-- always left a visible gap between the two anchors, which is exactly what
+-- enabling the magnet asks not to have. Now:
+--
+--   * the edge-to-edge pull runs with the grid on too, measured from the
+--     cursor's unsnapped position (rawX/rawY) so the grid cell the anchor
+--     happens to sit in cannot hold it out of magnet range; a hit on an axis
+--     replaces the grid value on that axis only, and the other axis stays on
+--     the grid;
+--   * centre alignment (screen and neighbour) stays grid-off only, since the
+--     grid already provides alignment;
+--   * the collision escape is exact, leaving the anchor flush against the
+--     edge it approached.
+local function SnapToMovers(entry, point, relativePoint, x, y, gridOn,
+                            rawX, rawY)
+  local fromX, fromY = x, y
+  if gridOn then fromX, fromY = rawX or x, rawY or y end
+  local moving = { point = point, relativePoint = relativePoint,
+                   x = fromX, y = fromY }
   local left, right, bottom, top = MoverBounds(entry, moving)
   if not left then return x, y, false, false end
 
@@ -655,28 +836,32 @@ local function SnapToMovers(entry, point, relativePoint, x, y, gridOn)
       U.UIWidth() / 2 - (left + right) / 2, bestX, bestXDistance)
     bestY, bestYDistance = ClosestDelta(
       U.UIHeight() / 2 - (bottom + top) / 2, bestY, bestYDistance)
-    for i = 1, table.getn(moverOrder) do
-      local other = movers[moverOrder[i]]
-      if other ~= entry and IsEntryVisible(other) and
-         not IsFollower(entry, other) then
-        local position = EntryPosition(other)
-        local otherLeft, otherRight, otherBottom, otherTop =
-          MoverBounds(other, position)
-        if otherLeft then
-          if IntervalsNear(bottom, top, otherBottom, otherTop) then
-            bestX, bestXDistance = ClosestDelta(
-              otherLeft - right, bestX, bestXDistance)
-            bestX, bestXDistance = ClosestDelta(
-              otherRight - left, bestX, bestXDistance)
+  end
+  for i = 1, table.getn(moverOrder) do
+    local other = movers[moverOrder[i]]
+    if other ~= entry and IsEntryVisible(other) and
+       not IsFollower(entry, other) then
+      local position = EntryPosition(other)
+      local otherLeft, otherRight, otherBottom, otherTop =
+        MoverBounds(other, position)
+      if otherLeft then
+        if IntervalsNear(bottom, top, otherBottom, otherTop) then
+          bestX, bestXDistance = ClosestDelta(
+            otherLeft - right, bestX, bestXDistance)
+          bestX, bestXDistance = ClosestDelta(
+            otherRight - left, bestX, bestXDistance)
+          if not gridOn then
             bestX, bestXDistance = ClosestDelta(
               ((otherLeft + otherRight) - (left + right)) / 2,
               bestX, bestXDistance)
           end
-          if IntervalsNear(left, right, otherLeft, otherRight) then
-            bestY, bestYDistance = ClosestDelta(
-              otherBottom - top, bestY, bestYDistance)
-            bestY, bestYDistance = ClosestDelta(
-              otherTop - bottom, bestY, bestYDistance)
+        end
+        if IntervalsNear(left, right, otherLeft, otherRight) then
+          bestY, bestYDistance = ClosestDelta(
+            otherBottom - top, bestY, bestYDistance)
+          bestY, bestYDistance = ClosestDelta(
+            otherTop - bottom, bestY, bestYDistance)
+          if not gridOn then
             bestY, bestYDistance = ClosestDelta(
               ((otherBottom + otherTop) - (bottom + top)) / 2,
               bestY, bestYDistance)
@@ -684,10 +869,10 @@ local function SnapToMovers(entry, point, relativePoint, x, y, gridOn)
         end
       end
     end
-
-    if bestX then x = x + bestX end
-    if bestY then y = y + bestY end
   end
+
+  if bestX then x = fromX + bestX end
+  if bestY then y = fromY + bestY end
 
   -- A magnet is also a collision barrier. Resolve every overlap after the
   -- proximity snap, backing the anchor out the way it came in. Repeating the
@@ -699,14 +884,26 @@ local function SnapToMovers(entry, point, relativePoint, x, y, gridOn)
   -- party block -- the nearest edge flips from one side to another between two
   -- ticks, and the anchor is teleported several grid cells across the block
   -- instead of stopping at it. entry.snapFrom* is the last position this drag
-  -- settled on, so the overlap is undone along the axis the anchor actually
-  -- moved on, which leaves it flush against the edge it approached and free to
-  -- slide along the other axis. With no recorded travel -- a position applied
-  -- outside a drag -- the original shortest-route choice still applies.
-  local travelX = tonumber(entry.snapFromX)
-  local travelY = tonumber(entry.snapFromY)
-  travelX = travelX and (x - travelX) or 0
-  travelY = travelY and (y - travelY) or 0
+  -- settled on, and the overlap is undone across the edge the anchor was
+  -- still clear of there -- the edge it actually crossed -- which leaves it
+  -- flush against that edge and free to slide along it. With no recorded
+  -- position -- one applied outside a drag -- or one that already overlapped,
+  -- the shortest-route choice applies.
+  --
+  -- Not the direction of travel. /uui movesnap 2026-09-17, bar 3 (30 x 382)
+  -- held against the quest tracker's right edge while the cursor went left:
+  -- a 2-unit upward wobble made "undo the vertical travel" (115 units down)
+  -- smaller than "undo the horizontal travel" (135 right), so the bar was
+  -- shoved below the tracker into the status bar, whose own escape threw it
+  -- 188 units right and the screen clamp dropped it 13 more -- a jump across
+  -- the whole corner of the screen from a slow drag.
+  local lastX, lastY = tonumber(entry.snapFromX), tonumber(entry.snapFromY)
+  local lastLeft, lastRight, lastBottom, lastTop
+  if lastX and lastY then
+    lastLeft, lastRight, lastBottom, lastTop = MoverBounds(entry, {
+      point = point, relativePoint = relativePoint, x = lastX, y = lastY,
+    })
+  end
   local pass
   for pass = 1, table.getn(moverOrder) do
     local resolved = false
@@ -729,19 +926,33 @@ local function SnapToMovers(entry, point, relativePoint, x, y, gridOn)
           local moveDown = otherBottom - top
           local moveUp = otherTop - bottom
           -- Positive x is rightward and positive y upward, here as in
-          -- SetPoint, so each axis is undone against its own direction of
-          -- travel. The smaller of the two wins when the drag is diagonal,
-          -- which is what lets the anchor slide along the edge it is held on.
+          -- SetPoint. The side the anchor was on at its last position picks
+          -- the escape; only an entry across a corner (clear on both axes)
+          -- compares the two, so a held edge is never traded for a far one.
           local correction, axis = nil, nil
-          if travelX > 0 then correction, axis = moveLeft, "x"
-          elseif travelX < 0 then correction, axis = moveRight, "x" end
-
-          local vertical = nil
-          if travelY > 0 then vertical = moveDown
-          elseif travelY < 0 then vertical = moveUp end
-          if vertical and (not correction or
-             math.abs(vertical) < math.abs(correction)) then
-            correction, axis = vertical, "y"
+          if lastLeft then
+            local xFix, yFix = nil, nil
+            if lastRight <= otherLeft + ALIGNMENT_EPSILON then
+              xFix = moveLeft
+            elseif lastLeft >= otherRight - ALIGNMENT_EPSILON then
+              xFix = moveRight
+            end
+            if lastTop <= otherBottom + ALIGNMENT_EPSILON then
+              yFix = moveDown
+            elseif lastBottom >= otherTop - ALIGNMENT_EPSILON then
+              yFix = moveUp
+            end
+            if xFix and yFix then
+              if math.abs(yFix) < math.abs(xFix) then
+                correction, axis = yFix, "y"
+              else
+                correction, axis = xFix, "x"
+              end
+            elseif xFix then
+              correction, axis = xFix, "x"
+            elseif yFix then
+              correction, axis = yFix, "y"
+            end
           end
 
           if not correction then
@@ -756,9 +967,7 @@ local function SnapToMovers(entry, point, relativePoint, x, y, gridOn)
               correction, axis = moveUp, "y"
             end
           end
-          local exact = correction
-          correction = GridCorrection(correction, gridOn)
-          trace.Hit(other, axis, correction, exact,
+          trace.Hit(other, axis, correction, correction,
                     otherLeft, otherRight, otherBottom, otherTop,
                     left, right, bottom, top)
           if axis == "x" then
@@ -823,6 +1032,7 @@ local function ResolveSnap(entry, point, relative, relativePoint, x, y)
   local config = MoverConfig()
   local snapped = false
   local sample = trace.Begin(entry, point, relativePoint, x, y, config)
+  local rawX, rawY = x, y
   if config.gridShown then
     local sx, sy = SnapPosition(entry, point, relativePoint, x, y)
     snapped = sx ~= x or sy ~= y
@@ -833,10 +1043,25 @@ local function ResolveSnap(entry, point, relative, relativePoint, x, y)
   if config.magnet and (not relative or relative == UIParent) then
     local magneticX, magneticY
     x, y, magneticX, magneticY =
-      SnapToMovers(entry, point, relativePoint, x, y, config.gridShown)
+      SnapToMovers(entry, point, relativePoint, x, y, config.gridShown,
+                   rawX, rawY)
     snapped = snapped or magneticX or magneticY
   end
   trace.Commit(sample, gridX, gridY, x, y)
+
+  -- Last, so neither grid nor magnet can place an element off screen. Counts as
+  -- a snap: the drop path then re-applies the stored, corrected point.
+  if not relative or relative == UIParent then
+    local clamped, moved = U.ClampPositionToScreen(entry.frame, {
+      point = point, relativePoint = relativePoint, x = x, y = y,
+    })
+    if moved then
+      x, y, snapped = clamped.x, clamped.y, true
+    end
+    if sample then sample.clamped = moved and true or false end
+  end
+  -- Committed above, before the clamp; the sample is still the same table.
+  if sample then sample.finalX, sample.finalY = Rounded(x), Rounded(y) end
   return x, y, snapped
 end
 
@@ -848,17 +1073,20 @@ local function ApplyPendingSnap()
 
   local stored = U.GetPosition(entry.id)
   if stored then U.ApplyFramePoint(entry.frame, stored) end
+  trace.Event("pendingSnap", entry, stored)
   -- After the snap, not before: converting a pre-snap rect would pin the frame
   -- to the bottom edge it had while it was still off the grid.
   NormaliseAnchorEdge(entry)
 end
 
 local function CapturePosition(entry)
-  local point, relative, relativePoint, x, y = U.GetFramePoint(entry.frame, 1)
-  if not point then
+  local placement = ReadPlacement(entry.frame)
+  if not placement then
     U.Debug("mover " .. entry.id .. ": no readable anchor after drag")
     return false
   end
+  local point, relative, relativePoint, x, y = placement.point,
+    placement.relative, placement.relativePoint, placement.x, placement.y
 
   -- Stored positions are always UIParent-relative. If the drag left the frame
   -- anchored to something else, say so rather than silently storing an offset
@@ -872,6 +1100,14 @@ local function CapturePosition(entry)
   x, y, snapped = ResolveSnap(entry, point, relative, relativePoint, x, y)
 
   local saved = U.SavePosition(entry.id, point, relativePoint, x, y)
+  trace.Event("save", entry, {
+    point = point, relativePoint = relativePoint, x = x, y = y,
+  }, {
+    ok = saved and true or false, snapped = snapped and true or false,
+    readRelative = trace.Name(relative),
+    -- A non-UIParent parent means ReadPlacement fell back to U.GetFramePoint.
+    parent = trace.on and trace.Widget(entry.frame).parent or nil,
+  })
 
   if saved and snapped then
     pendingSnap = entry
@@ -970,6 +1206,7 @@ local function PinToUIParent(entry)
     y = bottom - (Edge(UIParent, "GetBottom") or 0),
   })
   if applied then
+    trace.Event("pin", entry, nil, { fromRelative = trace.Name(relative) })
     U.Debug("mover " .. entry.id .. ": pinned to UIParent so it is not towed")
   end
   return applied
@@ -1110,10 +1347,7 @@ local function ClearFollowers(entry)
 end
 
 local function ReadDragPosition(frame)
-  local point, relative, relativePoint, x, y = U.GetFramePoint(frame, 1)
-  if not point then return nil end
-  return { point = point, relative = relative,
-           relativePoint = relativePoint, x = x, y = y }
+  return ReadPlacement(frame)
 end
 
 -- knowledge.json / api.getcursorposition_usable_for_hit_testing
@@ -1458,9 +1692,10 @@ local function SetActiveMover(entry)
   if entry ~= previous then ApplyHandleState(entry) end
 
   -- The panel belongs to the anchor, not to the edit window: it is handed the
-  -- mover itself so it can sit beside that anchor and carry its label as the
-  -- window title. entry.frame is unrealUI's own frame, which is the one
-  -- relationship rules/unreal-ui.md allows an addon frame to be anchored to.
+  -- addon-owned handle so it can sit beside that anchor and carry its label as
+  -- the window title. Using the handle rather than entry.frame also keeps the
+  -- panel off a client-owned relative when a mover deliberately owns a native
+  -- root such as Classic's MainMenuBar.
   --
   -- Which movers have a panel is not decided here: a module registers one for
   -- its own mover id (core/moverpanel.lua), and a mover with no registered
@@ -1468,7 +1703,7 @@ local function SetActiveMover(entry)
   if entry and type(entry.id) == "string" and
      type(U.ShowMoverPanel) == "function" then
     U.ShowMoverPanel(entry.id, {
-      id = entry.id, frame = entry.frame, label = entry.label,
+      id = entry.id, frame = entry.handle or entry.frame, label = entry.label,
     })
   elseif type(U.HideMoverPanel) == "function" then
     U.HideMoverPanel()
@@ -1496,8 +1731,28 @@ local function RaiseHandle(entry)
     -- The input is a UIParent child, so it does not inherit the moved frame's
     -- strata. Without matching it the handle would win hit-testing and the
     -- drag gesture would never reach the Button that owns it.
-    local strataOk, strata = pcall(entry.handle.GetFrameStrata, entry.handle)
-    if strataOk and type(strata) == "string" then
+    --
+    -- Read from the moved frame, not the handle. /uui movesnap 2026-09-17: at
+    -- unlock every handle read GetFrameStrata "PARENT" (it inherits), so the
+    -- input was set to "PARENT" too and resolved against UIParent -- MEDIUM.
+    -- That is above a LOW anchor but BELOW the HIGH cast bars, whose handles
+    -- then covered their inputs: 0 OnEnter, 0 drag starts, unselectable.
+    -- Most anchors inherit their target's strata. A native root may contain
+    -- client buttons above that level, so a caller can raise only the temporary
+    -- edit-mode input without changing the actual frame's draw order.
+    local strata = entry.inputStrata
+    if not strata then
+      local strataOk, value = pcall(entry.frame.GetFrameStrata, entry.frame)
+      if strataOk and type(value) == "string" and value ~= "PARENT" then
+        strata = value
+      else
+        strataOk, value = pcall(entry.handle.GetFrameStrata, entry.handle)
+        if strataOk and type(value) == "string" and value ~= "PARENT" then
+          strata = value
+        end
+      end
+    end
+    if strata then
       pcall(entry.dragInput.SetFrameStrata, entry.dragInput, strata)
     end
     pcall(entry.dragInput.SetFrameLevel, entry.dragInput, handleLevel + 1)
@@ -1513,6 +1768,9 @@ local function CreateHandle(entry)
   local handle = CreateFrame("Button", "UnrealUIMoverHandle" .. handleCount,
                              entry.frame)
   handle:SetAllPoints(entry.frame)
+  -- Visual only: every script lives on the input below. A mouse-enabled handle
+  -- that ends up above its input swallows the hover and the drag.
+  pcall(handle.EnableMouse, handle, false)
 
   -- Match the settings slider's reliable two-layer drag: this visible handle
   -- never enters native movement. A separate transparent Button owns the
@@ -2064,7 +2322,10 @@ function advanced.SetOpen(open, immediate)
 end
 
 function advanced.GroupLocked(group)
-  return group.actionBar and type(U.ActionBarReservation) == "function" and
+  if not group.actionBar then return false end
+  if type(U.ActionBarIsNative) == "function" and
+     U.ActionBarIsNative(group.actionBar) then return true end
+  return type(U.ActionBarReservation) == "function" and
          U.ActionBarReservation(group.actionBar) ~= nil
 end
 
@@ -2073,6 +2334,8 @@ end
 function advanced.GroupSettingValue(group)
   if not group then return nil end
   if group.actionBar then
+    if type(U.ActionBarIsNative) == "function" and
+       U.ActionBarIsNative(group.actionBar) then return true end
     if advanced.GroupLocked(group) or
        type(U.GetActionBarSetting) ~= "function" then return nil end
     return U.GetActionBarSetting(group.actionBar, "Enabled")
@@ -2482,14 +2745,11 @@ local function NudgeActiveMover(x, y)
 
   local position = U.GetPosition(entry.id) or entry.default
   if not position then
-    local point, relative, relativePoint, offsetX, offsetY =
-      U.GetFramePoint(entry.frame, 1)
-    if not point or relative ~= UIParent then
+    position = ReadPlacement(entry.frame)
+    if not position or position.relative ~= UIParent then
       U.Print(U.L("MOVER_DRAG_FIRST", entry.label))
       return false
     end
-    position = { point = point, relativePoint = relativePoint,
-                 x = offsetX, y = offsetY }
   end
 
   entry.followers = MoverConfig().groupTouching and CollectFollowers(entry) or {}
@@ -2720,7 +2980,8 @@ end
 -- frame    the frame the user drags
 -- options  { label = "Player", default = { point, relativePoint, x, y },
 --            visible = function() return true end,
---            setEditShown = function(falseOrNil) end }
+--            setEditShown = function(falseOrNil) end,
+--            inputStrata = "HIGH" }
 function U.RegisterMover(id, frame, options)
   if type(id) ~= "string" or not frame then
     U.Error("RegisterMover requires an id and a frame")
@@ -2740,6 +3001,9 @@ function U.RegisterMover(id, frame, options)
     default = options.default,
     visible = options.visible,
     setEditShown = options.setEditShown,
+    -- Optional edit-mode-only input override for a native target whose own
+    -- children otherwise sit above the transparent drag/click Button.
+    inputStrata = options.inputStrata,
     -- "BOTTOM" for a window that changes height with its content: it is then
     -- always held by its bottom edge and grows upwards. See NormaliseAnchorEdge.
     anchorEdge = options.anchorEdge,
@@ -2788,19 +3052,113 @@ function U.UnlockUI()
   local failures = WalkHandles(ShowHandle)
   if advanced.panel then advanced.Sync() end
   SnapshotMovers("unlock", failures, overlayError and tostring(overlayError))
+  -- Handles only exist from the first unlock, so the arm-time snapshot has no
+  -- layering to show; this one does.
+  if trace.on then
+    trace.atUnlock = trace.Snapshot()
+    trace.lockedAt = nil
+    trace.Publish("unlocked")
+  end
 
   U.Print(U.L("MOVER_ENTERED"))
 end
 
-function U.LockUI()
-  -- The tracer is armed before edit mode because no command can be typed while
-  -- the overlay is up; closing the overlay is therefore what ends the run.
-  if trace.on then
-    local _, count, dropped = trace.Stop("lock")
+-- Diagnostic driver, every frame while the tracer is armed.
+--
+--   * focus: GetMouseFocus (documented, pcall-guarded) whenever it changes,
+--     named and mapped to the mover part it is, so a handle that cannot be
+--     clicked shows what takes the cursor instead.
+--   * drift: every mover's live rect every 0.25 s; a change is logged with
+--     whether a drag was in progress, so an anchor moved by its own module
+--     (after a drop, after lock, on a target change) is caught.
+--   * after lock: keeps watching for LOCK_WATCH seconds, then saves.
+function trace.Watch()
+  if not trace.on then
+    U.UnregisterUpdate("mover.diag")
+    return
+  end
+  local now = GetTime()
+  local i
+
+  local focusFn = U.G("GetMouseFocus")
+  if type(focusFn) == "function" then
+    local ok, focus = pcall(focusFn)
+    local name = ok and trace.Name(focus) or "error"
+    if name ~= trace.lastFocus then
+      trace.lastFocus = name
+      local part = nil
+      if ok and focus then
+        for i = 1, table.getn(moverOrder) do
+          local entry = movers[moverOrder[i]]
+          if entry then
+            if focus == entry.handle then part = entry.id .. ":handle"
+            elseif focus == entry.dragInput then part = entry.id .. ":input"
+            elseif focus == entry.frame then part = entry.id .. ":frame" end
+          end
+          if part then break end
+        end
+      end
+      local cursorOk, cx, cy = pcall(U.G("GetCursorPosition"))
+      local scale = Edge(UIParent, "GetEffectiveScale") or 1
+      if scale <= 0 then scale = 1 end
+      trace.Log(trace.focus, {
+        focus = name, part = part,
+        widget = ok and part == nil and focus and trace.Widget(focus) or nil,
+        cursorX = cursorOk and Rounded((tonumber(cx) or 0) / scale) or nil,
+        cursorY = cursorOk and Rounded((tonumber(cy) or 0) / scale) or nil,
+      })
+    end
+  end
+
+  if now >= trace.nextDrift then
+    trace.nextDrift = now + 0.25
+    local dragging = nil
+    for i = 1, table.getn(moverOrder) do
+      local entry = movers[moverOrder[i]]
+      if entry and entry.dragging then dragging = entry.id end
+    end
+    for i = 1, table.getn(moverOrder) do
+      local entry = movers[moverOrder[i]]
+      if entry then
+        local left, right, bottom, top = LiveRect(entry)
+        local key = left and (Rounded(left) .. "," .. Rounded(bottom) .. "," ..
+                              Rounded(right) .. "," .. Rounded(top)) or "none"
+        local last = trace.rects[entry.id]
+        if last and last ~= key then
+          local stored = U.GetPosition(entry.id)
+          trace.Log(trace.drift, {
+            id = entry.id, from = last, to = key, dragging = dragging,
+            storedX = stored and Rounded(stored.x),
+            storedY = stored and Rounded(stored.y),
+            storedPoint = stored and stored.point,
+            points = Edge(entry.frame, "GetNumPoints"),
+            parent = trace.Widget(entry.frame).parent,
+          })
+        end
+        trace.rects[entry.id] = key
+      end
+    end
+  end
+
+  if trace.lockedAt and now - trace.lockedAt >= trace.LOCK_WATCH then
+    local _, count, dropped = trace.Stop("lock+" .. trace.LOCK_WATCH .. "s")
     U.Print("mover snap trace: " .. tostring(count) .. " samples" ..
             (dropped > 0 and (", " .. tostring(dropped) .. " dropped") or "") ..
             " saved to UnrealUIDiagDB.moveSnap - |cffffff00/reload|r then " ..
             "open " .. U.SavedVariablesHint() .. " to read it")
+  end
+end
+
+function U.LockUI()
+  -- The tracer is armed before edit mode because no command can be typed while
+  -- the overlay is up. Closing the overlay starts a short watch instead of
+  -- ending the run, so an anchor its module moves after the drop is recorded.
+  if trace.on and not trace.lockedAt then
+    trace.afterLock = trace.Snapshot()
+    trace.lockedAt = GetTime()
+    trace.Publish("locked, watching")
+    U.Print("mover snap trace: watching " .. trace.LOCK_WATCH ..
+            " s more (change target now), then it saves itself")
   end
 
   unlocked = false

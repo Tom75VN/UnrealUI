@@ -1701,20 +1701,26 @@ local function StartBagDrag()
 
   if not pcall(anchor.StartMoving, anchor) then
     U.Error("bags: StartMoving failed; the bag will not drag")
+    return
   end
+  U.HoldScreenGuard(anchor, true)
 end
 
 local function StopBagDrag()
   pcall(anchor.StopMovingOrSizing, anchor)
+  U.HoldScreenGuard(anchor, false)
 
-  local point, _, relativePoint, x, y = U.GetFramePoint(anchor, 1)
-  if not point then
-    U.Debug("bags: no readable anchor after drag")
+  -- Edge-derived, not GetPoint offsets (U.GetFramePlacement explains the
+  -- mirrored-Y readback).
+  local p = U.GetFramePlacement(anchor)
+  if not p then
+    U.Debug("bags: no readable position after drag")
     return
   end
-  if U.SavePosition(BAG_POSITION_ID, point, relativePoint, x, y) then
+  if U.SavePosition(BAG_POSITION_ID, p.point, p.relativePoint, p.x, p.y) then
     U.PinFrameToBottomEdge(BAG_POSITION_ID, anchor, BAG_DEFAULT_POSITION)
   end
+  U.CheckOnScreen(anchor)
 end
 
 -- The grab strip runs from the header icon group to the close button. It is
@@ -1802,6 +1808,9 @@ local function Build()
   pcall(anchor.SetMovable, anchor, true)
   ApplyBagPosition()
   U.OnPositionReset(ApplyBagPosition)
+  -- Its height follows the contents, so a full category view can outgrow the
+  -- screen after a drop; core/screenguard.lua fits and clamps it while shown.
+  U.GuardOnScreen(anchor, { id = BAG_POSITION_ID })
 
   -- Nothing on this client should be able to bring the native container
   -- windows back over unrealUI's frame. Uses the shared native-suppression

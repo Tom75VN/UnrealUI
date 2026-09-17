@@ -844,14 +844,20 @@ local function StartBankDrag()
   if pcall(anchor.StartMoving, anchor) then
     pcall(anchor.StopMovingOrSizing, anchor)
   end
-  pcall(anchor.StartMoving, anchor)
+  if pcall(anchor.StartMoving, anchor) then
+    U.HoldScreenGuard(anchor, true)
+  end
 end
 
 local function StopBankDrag()
   pcall(anchor.StopMovingOrSizing, anchor)
+  U.HoldScreenGuard(anchor, false)
 
-  local point, _, relativePoint, x, y = U.GetFramePoint(anchor, 1)
-  if point then U.SavePosition(BANK_POSITION_ID, point, relativePoint, x, y) end
+  -- Edge-derived, not GetPoint offsets (U.GetFramePlacement explains the
+  -- mirrored-Y readback).
+  local p = U.GetFramePlacement(anchor)
+  if p then U.SavePosition(BANK_POSITION_ID, p.point, p.relativePoint, p.x, p.y) end
+  U.CheckOnScreen(anchor)
 end
 
 -- Anchored to frame.bags's live left edge rather than a captured width, so it
@@ -933,6 +939,7 @@ local function Build()
   pcall(anchor.SetMovable, anchor, true)
   ApplyBankPosition()
   U.OnPositionReset(ApplyBankPosition)
+  U.GuardOnScreen(anchor, { id = BANK_POSITION_ID })
 end
 
 -- Second layer under the parking above: the stock bank's own parts, by name,

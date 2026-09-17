@@ -1,12 +1,12 @@
-## UnrealUI 0.7.3
+## UnrealUI 0.7.4
 
-- Optimised bags to prevent freezing when moving items.
-- Added merge stacks for bags and bank.
-- Improved the recipes list in the crafting interface for the modern WoW theme, adding colors and better positioning.
-- Added craft item stats to the crafting interface for the modern WoW theme.
-- Added item compare tooltips in the crafting interface when available.
-- Fixed Shift + Click not linking items from the crafting interface in chat.
-- Improved the category-based bag view to add columns when possible.
-- Fixed the UI moving when opening a different interface while Talents were open.
-- Improved bag sorting and category-based view to keep same items beside each other.
-- Added a Track Recipe option to the crafting interface for the modern WoW theme, showing reagents on your HUD.
+- Added an option to customize the Classic WoW theme by enabling different modules from Modern WoW.
+- Added new talent windows for the Modern theme.
+- Fixed the interface appearing outside the screen after the latest client update.
+- Target of Target in the Classic WoW theme now uses a Classic-style design.
+- Added item border colors based on gear rarity in the Inspect interface.
+- Gear rarity borders in the Classic WoW theme now display in a Modern WoW style instead of flat borders.
+- The Inspect interface design now changes based on your selected theme.
+- Added compare tooltips for roll items in parties.
+- The Classic WoW theme now includes the Professions tab in the Spellbook.
+- The merchant Buyback interface now shows item rarity colors.

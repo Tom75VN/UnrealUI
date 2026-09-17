@@ -45,24 +45,14 @@ local function PointFactor(point, low, high)
   return 0.5
 end
 
--- Window bounds use the same UIParent-relative anchor arithmetic as mover.lua.
--- Do not use GetLeft/GetRight/GetTop/GetBottom here: this client reports mixed
--- coordinate spaces for scaled frames (knowledge.json /
--- frames.scaled_frame_edge_coordinates_mixed_space).
+-- Positions come from the window's measured edges (U.GetFramePlacement,
+-- core/screenguard.lua), not from GetPoint's offsets: this client reports Y in
+-- SetPoint's own sign, and U.GetFramePoint negates it, so offsets read through
+-- it came back mirrored. The edges of a UIParent child are in UIParent units
+-- with its own scale applied (frames.own_scale_resizes_about_anchor_in_parent_space,
+-- which also reconciles the older mixed-space record).
 local function CurrentPosition(state)
-  local point, relative, relativePoint, x, y = U.GetFramePoint(state.frame, 1)
-  if not point then return nil end
-
-  -- A nil relative frame means the parent. Every registered top-level window
-  -- is parented to UIParent; an explicit non-UIParent anchor cannot safely be
-  -- converted into UIParent coordinates without the broken edge methods.
-  if relative and relative ~= UIParent then return nil end
-  return {
-    point = point,
-    relativePoint = relativePoint or point,
-    x = x,
-    y = y,
-  }
+  return U.GetFramePlacement(state.frame)
 end
 
 local function WindowBounds(state, position)
@@ -356,9 +346,7 @@ function U.RefreshWindowOverlap(frame)
 end
 
 local function ReadDragPosition(frame)
-  local point, _, relativePoint, x, y = U.GetFramePoint(frame, 1)
-  if not point then return nil end
-  return { point = point, relativePoint = relativePoint, x = x, y = y }
+  return U.GetFramePlacement(frame)
 end
 
 local function PositionChanged(before, after)
@@ -394,12 +382,13 @@ local function StartDrag(state)
 end
 
 CapturePosition = function(state)
-  local point, relative, relativePoint, x, y = U.GetFramePoint(state.frame, 1)
-  if not point then
-    U.Debug("windowdrag " .. state.id .. ": no readable anchor after drag")
+  local position = U.GetFramePlacement(state.frame)
+  if not position then
+    U.Debug("windowdrag " .. state.id .. ": no readable position after drag")
     return false
   end
-  return U.SavePosition(state.id, point, relativePoint, x, y)
+  return U.SavePosition(state.id, position.point, position.relativePoint,
+                        position.x, position.y)
 end
 
 local function StopDrag(state)
@@ -410,6 +399,7 @@ local function StopDrag(state)
   state.home = nil
   state.openHome = nil
   pcall(state.frame.StopMovingOrSizing, state.frame)
+  U.CheckOnScreen(state.frame)
   local before = state.dragStartPosition
   state.dragStartPosition = nil
   if not PositionChanged(before, ReadDragPosition(state.frame)) then
@@ -521,6 +511,10 @@ function U.MakeWindowDraggable(id, frame, options)
     -- receives the next mouse press.
     RaiseHandle(state)
     ApplyStoredPosition(state)
+    -- Fits and clamps before the overlap check measures it. A saved position
+    -- that ended up off screen (resolution or UI-scale change) is corrected
+    -- and re-saved by core/screenguard.lua.
+    U.CheckOnScreen(frame)
     -- Some native Show functions keep changing anchors after OnShow returns
     -- (QuestLog_OnShow is one known example). Resolve on the next shared-driver
     -- tick, after that call chain has settled and before the next layout sticks.
@@ -541,7 +535,16 @@ function U.MakeWindowDraggable(id, frame, options)
     end)
   end)
   ApplyStoredPosition(state)
-  if IsShown(state) then ScheduleOverlapCheck(state, false) end
+  -- Every registered window, any theme: fitted and kept inside the screen on
+  -- open, on drop and on the guard's sweep (core/screenguard.lua).
+  U.GuardOnScreen(frame, {
+    id = state.id,
+    suspended = function() return state.dragging end,
+  })
+  if IsShown(state) then
+    U.CheckOnScreen(frame)
+    ScheduleOverlapCheck(state, false)
+  end
 
   return state
 end

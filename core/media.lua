@@ -181,6 +181,22 @@ M.texture = {
 M.classicWow = {}
 M.classicWow.path = "Interface\\AddOns\\unrealUI\\media\\Textures\\classic-wow\\questLog\\"
 
+-- Compact Classic target-of-target housing (modules/unitframes.lua). This is
+-- the player-facing slice of the client's UI-TargetingFrame atlas, not
+-- modern-wow art. Geometry is the original 1.12.1 PlayerFrame XML scaled so
+-- its 64-unit portrait becomes the stock target-of-target's 35-unit portrait;
+-- every bar and label therefore keeps the player frame's authored alignment.
+M.classicWow.targetTarget = {
+  texture = "Interface\\TargetingFrame\\UI-TargetingFrame",
+  texCoord = { 1.0, 0.09375, 0, 0.78125 },
+  scale = 35 / 64,
+  canvas = { width = 232, height = 100 },
+  portrait = { x = 42, y = 12, width = 64, height = 64 },
+  health = { x = 106, y = 41, width = 119, height = 12 },
+  power = { x = 106, y = 52, width = 119, height = 12 },
+  name = { x = 166, y = 31 },
+}
+
 M.classicWow.page = {
   { file = "questLog_TopLeft",        width = 256, height = 256, point = "TOPLEFT",    x =   0, y = 0 },
   { file = "questLog_TopSwitchOn",    width = 128, height = 256, point = "TOPLEFT",    x = 256, y = 0 },
@@ -777,6 +793,40 @@ M.modernWow.spellBook = {
   spellHighlight = "Interface\\Buttons\\ButtonHilight-Square",
 }
 
+-- The classic-wow Spellbook's "Not on action bars" mark
+-- (modules/spellbookclassicglow.lua; user request, 2026-09-17), in place of
+-- the flat accent outline. Reuses modern-wow art read-only: action-bar art
+-- over the icon, sized to the button, and only the Spellbook-Parts streak
+-- behind the name -- never the atlas' burst/slot frame. Pulses with the
+-- modern-wow book's own timing.
+--
+-- `streak` places that cell against the native 37-unit SpellButton: its LEFT
+-- edge `x` units right of the button's RIGHT, its centre `y` units above the
+-- button's centre (y up), `width` x `height` (squashed from the cell's ~89
+-- aspect height: it overran the name and rank, user report 2026-09-17).
+-- Placement is numeric against the button, never the native name string.
+--
+-- `icon` lists the textures drawn over the icon, in draw order. Each is drawn
+-- `layers` times additively with its own `pulse` alpha range, on the shared
+-- phase (user requests, 2026-09-17): the button highlight is the border
+-- effect, stacked because one copy read too faint; the indicator sits above
+-- it at reduced opacity.
+M.classicSpellBookBarGlow = {
+  iconGrow = 0,
+  icon = {
+    { texture = M.modernWow.texture.actionButtonHover, layers = 2,
+      pulse = { alphaMin = 0.6, alphaMax = 1.0 } },
+    { texture = M.modernWow.texture.actionIndicator, layers = 1,
+      pulse = { alphaMin = 0.2, alphaMax = 0.45 } },
+  },
+  parts = M.modernWow.spellBook.texture.parts,
+  atlas = M.modernWow.spellBook.parts.atlas,
+  streakCell = M.modernWow.spellBook.parts.barGlow.streak,
+  -- 44 then read too thin (user report, 2026-09-17).
+  streak = { x = -2, y = 1, width = 112, height = 56 },
+  pulse = M.modernWow.spellBook.barGlowPulse,
+}
+
 -- Professions page (modules/spellbookprofessions.lua), drawn in place of the
 -- spell pages when the Spellbook's bottom Professions tab is selected.
 --
@@ -865,6 +915,150 @@ M.modernWow.spellBook.professions = {
   -- Maximum skill of each training rank, lowest first.
   ranks = { 75, 150, 225, 300 },
 }
+
+-- The classic-wow native Spellbook's Professions page
+-- (modules/spellbookclassicprof.lua; user request, 2026-09-17): the same
+-- Dragonflight page as M.modernWow.spellBook.professions, drawn inside the
+-- client's own 384x512 window, which cannot widen the way the modern-wow book
+-- does.
+--
+-- `page` is the rect, in window units from SpellBookFrame's TOPLEFT, that the
+-- page art (M.modernWow.spellBook.page's canvas) is stretched over. Chosen to
+-- cover the native parchment below the header and above the bottom tabs; NOT
+-- measured off the client's art, so tune here. Every page texel of the
+-- professions token maps through it.
+--
+-- `text` places each spell button's name and rank beside it, as the modern-wow
+-- book does (M.modernWow.spellBook.grid textGap/nameY/subY).
+--
+-- `tab`: owned tabs are created from the client's own tab template (the one
+-- SpellBookFrameTabButton1/2 use in 1.12 FrameXML; WORKING_SOURCE, not
+-- runtime-verified). The Spellbook tab takes the native first tab's anchor,
+-- read once at install; `gap` is the chain offset used when the native second
+-- tab's offset cannot be read, and `fallback` the anchor when the first
+-- tab's cannot.
+M.classicWow.spellBookProfessions = {
+  -- `height` runs the page art down to just above the window's bottom bevel:
+  -- 348 left a bare native band over the tabs and 366 ran onto the border
+  -- itself (user reports, 2026-09-18).
+  -- 4 narrower than 326, kept centred by the same 2 units on `left` (user
+  -- request, 2026-09-18).
+  page = { left = 21, top = 74, width = 322, height = 357 },
+  canvas = M.modernWow.spellBook.page,
+  text = { gap = 8, nameY = -3, subY = 2 },
+  tab = {
+    template = "CharacterFrameTabButtonTemplate",
+    gap = -16,
+    -- Added between the Spellbook and Professions tabs only (user request,
+    -- 2026-09-18).
+    extraGap = 4,
+    fallback = { point = "CENTER", relativePoint = "BOTTOMLEFT", x = 79, y = 61 },
+  },
+}
+
+-- Talent-tree classification data. This is game data -- which class tree a
+-- background file names, the colour Blizzard/DF-main give that tree and the
+-- role it serves -- rather than theme chrome, so it lives outside M.modernWow
+-- and every talent drawing path reads it: modules/talentsmodern.lua as well as
+-- modules/talentsmodernwow.lua. M.modernWow.talents aliases the three fields
+-- under its own names.
+M.talentTree = {
+  -- Vanilla talent rules: five points open the next tier, the first point is
+  -- granted at level 10 and one more at every level to the cap.
+  pointsPerTier = 5,
+  firstTalentLevel = 10,
+  maxLevel = 60,
+
+  -- DF-main TALENT_INFO colours (Mixin/Talents.mixin.lua), copied verbatim for
+  -- every class and tree; keep them identical to that table. Keyed by the
+  -- tree's background file because
+  -- this client's tab order differs from DF-main's (MageFire is tab 1). Mage
+  -- and Priest names are seen in game; the rest are the stock 1.12 file names.
+  -- Matching ignores case, any path and any -TopLeft/extension suffix; only a
+  -- name matching nothing falls back to `defaultColor` by tab index.
+  defaultColor = {
+    { 1.0, 0.72, 0.1 },
+    { 1.0, 0.0, 0.0 },
+    { 0.3, 0.5, 1.0 },
+  },
+  color = {
+    DruidBalance = { 0.8, 0.3, 0.8 },
+    DruidFeralCombat = { 1.0, 0.0, 0.0 },
+    DruidRestoration = { 0.4, 0.8, 0.2 },
+    HunterBeastMastery = { 1.0, 0.0, 0.3 },
+    HunterMarksmanship = { 0.3, 0.6, 1.0 },
+    HunterSurvival = { 1.0, 0.6, 0.0 },
+    MageArcane = { 0.7, 0.2, 1.0 },
+    MageFire = { 1.0, 0.5, 0.0 },
+    MageFrost = { 0.3, 0.6, 1.0 },
+    PaladinHoly = { 1.0, 0.5, 0.0 },
+    PaladinProtection = { 0.3, 0.5, 1.0 },
+    PaladinCombat = { 1.0, 0.0, 0.0 },
+    PriestDiscipline = { 1.0, 0.5, 0.0 },
+    PriestHoly = { 0.6, 0.6, 1.0 },
+    PriestShadow = { 0.7, 0.4, 0.8 },
+    RogueAssassination = { 0.5, 0.8, 0.5 },
+    RogueCombat = { 1.0, 0.5, 0.0 },
+    RogueSubtlety = { 0.3, 0.5, 1.0 },
+    ShamanElementalCombat = { 0.8, 0.2, 0.8 },
+    ShamanEnhancement = { 0.3, 0.5, 1.0 },
+    ShamanRestoration = { 0.2, 0.8, 0.4 },
+    WarlockCurses = { 0.0, 1.0, 0.6 },
+    WarlockSummoning = { 1.0, 0.0, 0.0 },
+    WarlockDestruction = { 1.0, 0.5, 0.0 },
+    WarriorArms = { 1.0, 0.72, 0.1 },
+    WarriorFury = { 1.0, 0.0, 0.0 },
+    WarriorProtection = { 0.3, 0.5, 1.0 },
+    -- The same DF-main colours under the other file names a tree's art is
+    -- known by, so a client that renamed a background still resolves to its
+    -- own tree colour rather than the by-index default.
+    DruidFeral = { 1.0, 0.0, 0.0 },
+    PaladinRetribution = { 1.0, 0.0, 0.0 },
+    ShamanElemental = { 0.8, 0.2, 0.8 },
+    WarlockAffliction = { 0.0, 1.0, 0.6 },
+    WarlockDemonology = { 1.0, 0.0, 0.0 },
+  },
+
+  -- DF-main PlayerClassRoleTable (Mixin/Talents.mixin.lua), non-SoD values,
+  -- keyed by background file like `treeColor` and matched the same way. List
+  -- order is DF-main's: with two roles it swaps them, so the first entry is
+  -- drawn left of the second (Feral: damage, then tank at the far right).
+  roles = {
+    DruidBalance = { "DAMAGER" },
+    DruidFeralCombat = { "DAMAGER", "TANK" },
+    DruidRestoration = { "HEALER" },
+    HunterBeastMastery = { "DAMAGER" },
+    HunterMarksmanship = { "DAMAGER" },
+    HunterSurvival = { "DAMAGER" },
+    MageArcane = { "DAMAGER" },
+    MageFire = { "DAMAGER" },
+    MageFrost = { "DAMAGER" },
+    PaladinHoly = { "HEALER" },
+    PaladinProtection = { "TANK" },
+    PaladinCombat = { "DAMAGER" },
+    PriestDiscipline = { "HEALER" },
+    PriestHoly = { "HEALER" },
+    PriestShadow = { "DAMAGER" },
+    RogueAssassination = { "DAMAGER" },
+    RogueCombat = { "DAMAGER" },
+    RogueSubtlety = { "DAMAGER" },
+    ShamanElementalCombat = { "DAMAGER" },
+    ShamanEnhancement = { "DAMAGER" },
+    ShamanRestoration = { "HEALER" },
+    WarlockCurses = { "DAMAGER" },
+    WarlockSummoning = { "DAMAGER" },
+    WarlockDestruction = { "DAMAGER" },
+    WarriorArms = { "DAMAGER" },
+    WarriorFury = { "DAMAGER" },
+    WarriorProtection = { "TANK" },
+    DruidFeral = { "DAMAGER", "TANK" },
+    PaladinRetribution = { "DAMAGER" },
+    ShamanElemental = { "DAMAGER" },
+    WarlockAffliction = { "DAMAGER" },
+    WarlockDemonology = { "DAMAGER" },
+  },
+}
+
 
 -- Talent window (modules/talentsmodernwow.lua): WoW-DragonflightUI's
 -- three-panel frame. Every number is WORKING_SOURCE from DF-main --
@@ -1006,9 +1200,9 @@ M.modernWow.talents = {
            rows = 11, columns = 4 },
   slot = { size = 64 },
   rankBorder = { size = 32, x = 0, y = 0 },
-  pointsPerTier = 5,
-  firstTalentLevel = 10,
-  maxLevel = 60,
+  pointsPerTier = M.talentTree.pointsPerTier,
+  firstTalentLevel = M.talentTree.firstTalentLevel,
+  maxLevel = M.talentTree.maxLevel,
   -- DF-main's -5, lowered 2 to sit centred in the header bar (user request,
   -- 2026-09-14).
   title = { y = 7 },
@@ -1050,94 +1244,12 @@ M.modernWow.talents = {
     left = { [1] = { 0.5, 1.0, 0, 0.5 }, [-1] = { 0.5, 1.0, 0.5, 1.0 } },
   },
 
-  -- DF-main TALENT_INFO colours (Mixin/Talents.mixin.lua), copied verbatim for
-  -- every class and tree; keep them identical to that table. Keyed by the
-  -- tree's background file because
-  -- this client's tab order differs from DF-main's (MageFire is tab 1). Mage
-  -- and Priest names are seen in game; the rest are the stock 1.12 file names.
-  -- Matching ignores case, any path and any -TopLeft/extension suffix; only a
-  -- name matching nothing falls back to `defaultColor` by tab index.
-  defaultColor = {
-    { 1.0, 0.72, 0.1 },
-    { 1.0, 0.0, 0.0 },
-    { 0.3, 0.5, 1.0 },
-  },
-  treeColor = {
-    DruidBalance = { 0.8, 0.3, 0.8 },
-    DruidFeralCombat = { 1.0, 0.0, 0.0 },
-    DruidRestoration = { 0.4, 0.8, 0.2 },
-    HunterBeastMastery = { 1.0, 0.0, 0.3 },
-    HunterMarksmanship = { 0.3, 0.6, 1.0 },
-    HunterSurvival = { 1.0, 0.6, 0.0 },
-    MageArcane = { 0.7, 0.2, 1.0 },
-    MageFire = { 1.0, 0.5, 0.0 },
-    MageFrost = { 0.3, 0.6, 1.0 },
-    PaladinHoly = { 1.0, 0.5, 0.0 },
-    PaladinProtection = { 0.3, 0.5, 1.0 },
-    PaladinCombat = { 1.0, 0.0, 0.0 },
-    PriestDiscipline = { 1.0, 0.5, 0.0 },
-    PriestHoly = { 0.6, 0.6, 1.0 },
-    PriestShadow = { 0.7, 0.4, 0.8 },
-    RogueAssassination = { 0.5, 0.8, 0.5 },
-    RogueCombat = { 1.0, 0.5, 0.0 },
-    RogueSubtlety = { 0.3, 0.5, 1.0 },
-    ShamanElementalCombat = { 0.8, 0.2, 0.8 },
-    ShamanEnhancement = { 0.3, 0.5, 1.0 },
-    ShamanRestoration = { 0.2, 0.8, 0.4 },
-    WarlockCurses = { 0.0, 1.0, 0.6 },
-    WarlockSummoning = { 1.0, 0.0, 0.0 },
-    WarlockDestruction = { 1.0, 0.5, 0.0 },
-    WarriorArms = { 1.0, 0.72, 0.1 },
-    WarriorFury = { 1.0, 0.0, 0.0 },
-    WarriorProtection = { 0.3, 0.5, 1.0 },
-    -- The same DF-main colours under the other file names a tree's art is
-    -- known by, so a client that renamed a background still resolves to its
-    -- own tree colour rather than the by-index default.
-    DruidFeral = { 1.0, 0.0, 0.0 },
-    PaladinRetribution = { 1.0, 0.0, 0.0 },
-    ShamanElemental = { 0.8, 0.2, 0.8 },
-    WarlockAffliction = { 0.0, 1.0, 0.6 },
-    WarlockDemonology = { 1.0, 0.0, 0.0 },
-  },
-
-  -- DF-main PlayerClassRoleTable (Mixin/Talents.mixin.lua), non-SoD values,
-  -- keyed by background file like `treeColor` and matched the same way. List
-  -- order is DF-main's: with two roles it swaps them, so the first entry is
-  -- drawn left of the second (Feral: damage, then tank at the far right).
-  treeRoles = {
-    DruidBalance = { "DAMAGER" },
-    DruidFeralCombat = { "DAMAGER", "TANK" },
-    DruidRestoration = { "HEALER" },
-    HunterBeastMastery = { "DAMAGER" },
-    HunterMarksmanship = { "DAMAGER" },
-    HunterSurvival = { "DAMAGER" },
-    MageArcane = { "DAMAGER" },
-    MageFire = { "DAMAGER" },
-    MageFrost = { "DAMAGER" },
-    PaladinHoly = { "HEALER" },
-    PaladinProtection = { "TANK" },
-    PaladinCombat = { "DAMAGER" },
-    PriestDiscipline = { "HEALER" },
-    PriestHoly = { "HEALER" },
-    PriestShadow = { "DAMAGER" },
-    RogueAssassination = { "DAMAGER" },
-    RogueCombat = { "DAMAGER" },
-    RogueSubtlety = { "DAMAGER" },
-    ShamanElementalCombat = { "DAMAGER" },
-    ShamanEnhancement = { "DAMAGER" },
-    ShamanRestoration = { "HEALER" },
-    WarlockCurses = { "DAMAGER" },
-    WarlockSummoning = { "DAMAGER" },
-    WarlockDestruction = { "DAMAGER" },
-    WarriorArms = { "DAMAGER" },
-    WarriorFury = { "DAMAGER" },
-    WarriorProtection = { "TANK" },
-    DruidFeral = { "DAMAGER", "TANK" },
-    PaladinRetribution = { "DAMAGER" },
-    ShamanElemental = { "DAMAGER" },
-    WarlockAffliction = { "DAMAGER" },
-    WarlockDemonology = { "DAMAGER" },
-  },
+  -- Theme-neutral tree data (M.talentTree) under this table's own field
+  -- names, so tal.TreeLookup keeps reading `defaultColor`/`treeColor`/
+  -- `treeRoles` unchanged.
+  defaultColor = M.talentTree.defaultColor,
+  treeColor = M.talentTree.color,
+  treeRoles = M.talentTree.roles,
 }
 
 -- Profession window (modules/professions.lua): WoW-DragonflightUI's
@@ -1569,12 +1681,30 @@ M.modernWow.characterLevelLine = {
 -- never tinted: rarity draws `glowTexture` (the action-button glow) in the
 -- item's quality colour at `glowAlpha`, `glowGrow` units larger than the slot
 -- and centred on it, above the metal; hidden for common and empty slots.
+-- Character/Inspect quality glow shared by Modern WoW's metal gear slots and,
+-- by explicit design, Classic's native gear slots. Both paths therefore use
+-- the same texture, alpha and rare/common threshold rather than approximating
+-- one another with different outlines.
+M.gearQualityGlow = {
+  texture = M.modernWow.texture.actionButtonHover,
+  grow = 4,
+  alpha = 0.8,
+  blend = "BLEND",
+  -- Blue has much lower perceived luminance than green. Reinforce rare gear
+  -- with a second pass without changing any other rarity or the Modern theme.
+  rareBoost = {
+    color = { 0.08, 0.20, 1.00, 0.75 },
+    grow = 4,
+    blend = "ADD",
+  },
+}
+
 M.modernWow.gearSlot = {
   frame = M.modernWow.path .. "ui\\character-create-diamond-metal",
   hover = "Interface\\Buttons\\ButtonHilight-Square",
-  glowTexture = M.modernWow.texture.actionButtonHover,
-  glowGrow = 0,
-  glowAlpha = 0.8,
+  glowTexture = M.gearQualityGlow.texture,
+  glowGrow = M.gearQualityGlow.grow,
+  glowAlpha = M.gearQualityGlow.alpha,
   atlasWidth = 512,
   atlasHeight = 2048,
   designSlot = 37,
@@ -2301,6 +2431,77 @@ M.color = {
 -- overpowering the orange-gold frame art when drawn additively.
 M.modernWow.playerFX.restColor = { 1.00, 0.909804, 0.00 } -- #FFE800
 
+-- Talent window, modern theme (modules/talentsmodern.lua). The same interface
+-- the modern-wow path draws -- all three trees side by side, addon-owned talent
+-- buttons, prerequisite branches and arrows -- laid out in this theme's own
+-- visual language instead: flat near-black surfaces, one 1-unit outline per
+-- surface, owned glyphs and the shared accent. No modern-wow media or token is
+-- read from here, and nothing here is read by that theme.
+--
+-- Geometry: a 4-column grid of 30-unit buttons on a 46 pitch is 168 wide and,
+-- at Vanilla's 7 tiers, 306 tall; a 196-wide panel centres it with a 14 margin
+-- and closes at 364 high. Three of those panels plus their gaps and the window
+-- padding make the 616x422 window.
+M.talents = {
+  design = { width = 616, height = 422 },
+  -- Window padding: `top` is the title band above the trees.
+  inset = { left = 10, top = 48, right = 10, bottom = 10 },
+  -- Centred header lines, offset down from the window's top edge.
+  title = { y = 10 },
+  status = { y = 29 },
+  close = { x = -6, y = -6 },
+  -- Drag handle: the title band, stopping short of the close button.
+  dragInset = 26,
+
+  trees = 3,
+  panel = { width = 196, height = 364, gap = 4 },
+  -- Tree header inside a panel: icon, name, role tag, spent-point count, and
+  -- the 1-unit rule that closes it off from the grid.
+  header = {
+    inset = 8, iconSize = 26, iconY = 8,
+    nameX = 8, nameY = 9, roleY = 24,
+    pointsY = 9,
+    ruleY = 41,
+  },
+  -- Node capacity matches the modern-wow grid; Vanilla fills 7 of the 11 rows.
+  grid = { left = 14, top = 51, pitch = 46, button = 30, rows = 11, columns = 4 },
+  -- Rank readout ("2/5"): a flat box hung off the button's bottom-right corner.
+  rank = { width = 20, height = 11, x = 4, y = -2, size = M.fontSize.tiny },
+  -- Prerequisite branches: a 2-unit flat line down the middle of the gap
+  -- between two buttons, ending in an owned arrow glyph whose centre sits
+  -- `arrowGap` beyond the button edge it points at.
+  branch = { thickness = 2, arrowSize = M.fontSize.normal, arrowGap = 6 },
+
+  icon = { crop = { 0.08, 0.92, 0.08, 0.92 } },
+  panelColor = { 0.03, 0.03, 0.03, 0.85 },
+  buttonColor = { 0.02, 0.02, 0.02, 0.90 },
+  rankColor = { 0.02, 0.02, 0.02, 0.95 },
+  -- Button outline by talent state: neutral while learnable, subdued accent
+  -- once points are in it, full accent at max rank, and visibly dim when the
+  -- tier or a prerequisite locks it.
+  borderColor = {
+    normal   = M.color.border,
+    partial  = M.color.accentDim,
+    maxed    = M.color.accent,
+    disabled = { 0.13, 0.13, 0.13, 1.00 },
+  },
+  -- Branch and arrow colour: accent where the prerequisite is met, neutral
+  -- grey where it is not.
+  branchColor = {
+    [1]  = M.color.accent,
+    [-1] = { 0.32, 0.32, 0.32, 1.00 },
+  },
+  -- Rank text keeps the game's own talent-state colours (learnable, maxed,
+  -- locked), which are semantic state rather than addon chrome.
+  rankTextColor = {
+    available = { 0.10, 1.00, 0.10, 1.00 },
+    maxed     = M.color.accent,
+    disabled  = M.color.textDim,
+  },
+  -- A locked talent's icon is desaturated and dimmed to this tint.
+  disabledIcon = { 0.55, 0.55, 0.55 },
+}
+
 -- Unit frames have a small theme-owned style surface. Their geometry,
 -- generated frame names and aura attachment points are deliberately not part
 -- of it: themes may change appearance, never the unit-frame feature contract.
@@ -2507,6 +2708,13 @@ M.quality = {
   [4] = { 0.64, 0.21, 0.93 },   -- Epic
   [5] = { 1.00, 0.50, 0.00 },   -- Legendary
   [6] = { 0.90, 0.80, 0.50 },   -- Artifact
+}
+
+-- Border-specific tuning keeps item text on the client's semantic quality
+-- colours while giving rare-slot frames a bright, saturated blue that remains
+-- legible against dark item icons and the Modern WoW metal frame.
+M.qualityBorder = {
+  [3] = { 0.12, 0.42, 1.00, 1.00 },   -- Rare
 }
 
 -- Only quality *above* this gets its colour on the slot border. pfUI calls the

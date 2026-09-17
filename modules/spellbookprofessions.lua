@@ -5,9 +5,15 @@
 -- with two primary rows (icon ring, name, rank, skill bar) and four secondary
 -- rows (Poisons, Fishing, Cooking, First Aid).
 --
--- Built only by modules/spellbookmodernwow.lua's drawing path, which asks for
--- the tab while dressing its bottom tabs. That path belongs to the full Modern
--- WoW theme and to Classic's explicit Spellbook selection.
+-- Built by the window drawing path that hosts it (prof.host):
+--  * modules/spellbookmodernwow.lua, which asks for the tabs while dressing
+--    its bottom tabs (U.ModernWowSpellBookExtraTabs). That path belongs to the
+--    full Modern WoW theme and to Classic's explicit Spellbook selection.
+--  * modules/spellbookclassicprof.lua, the classic-wow native window
+--    (U.ClassicSpellBookExtraTabs; user request, 2026-09-17), which draws the
+--    same page inside the client's own window with native-template tabs.
+-- The page itself is identical under both; only geometry, page art, button
+-- placement and tabs come from the host.
 --
 -- Mechanism is WORKING_SOURCE from WoW-DragonflightUI (Mixin/UI.mixin.lua
 -- SpellbookEraProfessions, Mixin/ProfessionSpellbook.mixin.lua,
@@ -50,7 +56,41 @@ local prof = {
   placeByIndex = {},
   shown = {},
   title = nil,
+  -- The hosting drawing path, set once by prof.Install:
+  --   Active() -> bool
+  --   PagePoint(x, y) -> left, top   page-art texel as TOPLEFT window units
+  --   PageScale() -> kx, ky
+  --   SetPageArt(left, right)        nil, nil restores the spell pages
+  --   Redress()                      re-applies spell button placement
+  --   ShowClassPortrait(shown) -> left, top, size | nil
+  --   SetButtonPlacer(placer)
+  --   tabGap                         Pet tab offset when Professions hides
+  host = nil,
 }
+
+-- The modern-wow book as a host: its own entry points, called exactly as this
+-- module always called them.
+function prof.ModernWowHost()
+  return {
+    Active = function()
+      return type(U.ModernWowSpellBookActive) == "function" and
+             U.ModernWowSpellBookActive()
+    end,
+    PagePoint = function(x, y) return U.ModernWowSpellBookPagePoint(x, y) end,
+    PageScale = function() return U.ModernWowSpellBookPageScale() end,
+    SetPageArt = function(left, right)
+      U.ModernWowSpellBookSetPageArt(left, right)
+    end,
+    Redress = function() U.ModernWowSpellBookRedress() end,
+    ShowClassPortrait = function(shown)
+      return U.ModernWowSpellBookShowClassPortrait(shown)
+    end,
+    SetButtonPlacer = function(placer)
+      U.ModernWowSpellBookSetButtonPlacer(placer)
+    end,
+    tabGap = M.modernWow.spellBook.bottomTab.gap,
+  }
+end
 
 -- Skill-line names, every UnrealUI locale merged into one lookup: a name is
 -- only ever looked up, and no name means a different profession in another
@@ -287,8 +327,8 @@ end
 -- A page-art rectangle as TOPLEFT window units.
 function prof.Place(region, x, y, width, height)
   if not region then return end
-  local left, top = U.ModernWowSpellBookPagePoint(x, y)
-  local kx, ky = U.ModernWowSpellBookPageScale()
+  local left, top = prof.host.PagePoint(x, y)
+  local kx, ky = prof.host.PageScale()
   if not left or not kx then return end
   pcall(function()
     region:ClearAllPoints()
@@ -319,7 +359,7 @@ function prof.Text(parent, size, color, width)
   U.ClearTextShadow(text)
   pcall(text.SetJustifyH, text, "LEFT")
   if width then
-    local kx = U.ModernWowSpellBookPageScale()
+    local kx = prof.host.PageScale()
     if kx then pcall(text.SetWidth, text, width * kx) end
   end
   return text
@@ -331,7 +371,7 @@ end
 function prof.BuildBar(parent, x, y)
   local t = prof.Token()
   local cfg = t.bar
-  local kx, ky = U.ModernWowSpellBookPageScale()
+  local kx, ky = prof.host.PageScale()
 
   -- The dark track -- rounded left end, middle, rounded right end -- is laid
   -- out on the page in page texels, the way the ring is, each piece at its
@@ -604,7 +644,7 @@ function prof.BuildPage()
   -- The book in the gold ring, over the hidden class portrait. On this page
   -- frame rather than the window: the window's own redress hides every
   -- region whose path is not the addon's (book.StripForeign).
-  local left, top, size = U.ModernWowSpellBookShowClassPortrait(true)
+  local left, top, size = prof.host.ShowClassPortrait(true)
   if left then
     local icon = page:CreateTexture(nil, "ARTWORK")
     pcall(icon.SetTexture, icon, t.portrait)
@@ -711,8 +751,8 @@ function prof.ButtonPlace(rowIndex, position)
     y = t.secondaryTop[rowIndex - 2] + cfg.y
   end
 
-  local left, top = U.ModernWowSpellBookPagePoint(x, y)
-  local kx = U.ModernWowSpellBookPageScale()
+  local left, top = prof.host.PagePoint(x, y)
+  local kx = prof.host.PageScale()
   if not left or not kx then return nil end
 
   -- The name plate, sized off the live button against the template's.
@@ -830,10 +870,7 @@ end
 
 function prof.Enter()
   if prof.active or not prof.available or not prof.frame then return end
-  if type(U.ModernWowSpellBookActive) ~= "function" or
-     not U.ModernWowSpellBookActive() then
-    return
-  end
+  if not prof.host or not prof.host.Active() then return end
   if not prof.page then prof.BuildPage() end
 
   -- Profession spells live in the player book.
@@ -847,11 +884,11 @@ function prof.Enter()
   prof.active = true
   prof.Fill()
 
-  U.ModernWowSpellBookSetPageArt(prof.Token().texture.pageLeft,
-                                 prof.Token().texture.pageRight)
+  prof.host.SetPageArt(prof.Token().texture.pageLeft,
+                       prof.Token().texture.pageRight)
   prof.HideControls()
-  U.ModernWowSpellBookRedress()
-  U.ModernWowSpellBookShowClassPortrait(false)
+  prof.host.Redress()
+  prof.host.ShowClassPortrait(false)
   pcall(prof.page.Show, prof.page)
   prof.Repaint()
 end
@@ -861,10 +898,10 @@ function prof.Leave()
   prof.active = false
   if prof.page then pcall(prof.page.Hide, prof.page) end
 
-  U.ModernWowSpellBookSetPageArt(nil, nil)
-  U.ModernWowSpellBookShowClassPortrait(true)
+  prof.host.SetPageArt(nil, nil)
+  prof.host.ShowClassPortrait(true)
   prof.RestoreControls()
-  U.ModernWowSpellBookRedress()
+  prof.host.Redress()
   prof.Call("SpellBookFrame_Update", 1)
   prof.Repaint()
 end
@@ -937,11 +974,10 @@ function U.ModernWowProfessionsSetAvailable(available)
     if prof.tab then pcall(prof.tab.Hide, prof.tab) end
     -- The Pet tab was chained to Professions; it follows Spellbook instead.
     local petTab = U.G("SpellBookFrameTabButton2")
-    if petTab and prof.spellTab then
+    if petTab and prof.spellTab and prof.host then
       pcall(function()
         petTab:ClearAllPoints()
-        petTab:SetPoint("LEFT", prof.spellTab, "RIGHT",
-                        M.modernWow.spellBook.bottomTab.gap, 0)
+        petTab:SetPoint("LEFT", prof.spellTab, "RIGHT", prof.host.tabGap, 0)
       end)
     end
   end
@@ -984,27 +1020,27 @@ function prof.SpellTabText()
   return U.L("SPELLBOOK_TAB")
 end
 
--- Called once by modules/spellbookmodernwow.lua while dressing the bottom
--- tabs: { spellbook, professions }, which that module styles and chains ahead
--- of the client's Pet tab. Nil when either tab cannot be made, so the window
--- keeps the client's own tabs.
-function U.ModernWowSpellBookExtraTabs(frame)
+-- Shared by both hosts: creates the two owned tabs with the host's
+-- `createTab(frame, name, text, onClick)` and wires the page. Returns
+-- { spellbook, professions }, or nil when either tab cannot be made, so the
+-- window keeps the client's own tabs. Builds once.
+function prof.Install(frame, host, createTab)
   if prof.tab and prof.spellTab then
     return { professions = prof.tab, spellbook = prof.spellTab }
   end
-  if not frame then return nil end
-  prof.frame = frame
+  if not frame or not host then return nil end
 
-  local professions = prof.CreateTab(frame, "UnrealUISpellBookProfessionsTab",
-                                     U.L("SPELLBOOK_PROFESSIONS"),
-                                     function() prof.Enter() end)
-  local spellbook = prof.CreateTab(frame, "UnrealUISpellBookSpellsTab",
-                                   prof.SpellTabText(), prof.OnSpellTabClick)
+  local professions = createTab(frame, "UnrealUISpellBookProfessionsTab",
+                                U.L("SPELLBOOK_PROFESSIONS"),
+                                function() prof.Enter() end)
+  local spellbook = createTab(frame, "UnrealUISpellBookSpellsTab",
+                              prof.SpellTabText(), prof.OnSpellTabClick)
   if not professions or not spellbook then
     prof.SetShown(professions, false)
     prof.SetShown(spellbook, false)
     return nil
   end
+  prof.frame, prof.host = frame, host
   prof.tab, prof.spellTab = professions, spellbook
 
   prof.HideNativeSpellTab()
@@ -1021,6 +1057,33 @@ function U.ModernWowSpellBookExtraTabs(frame)
   U.PostHookGlobal("SpellBookFrame_Update", prof.OnBookUpdate)
   U.RegisterEvent("SKILL_LINES_CHANGED", prof.Refresh)
   U.RegisterEvent("SPELLS_CHANGED", prof.Refresh)
-  U.ModernWowSpellBookSetButtonPlacer(prof.Placer)
+  host.SetButtonPlacer(prof.Placer)
   return { professions = professions, spellbook = spellbook }
+end
+
+-- Called once by modules/spellbookmodernwow.lua while dressing the bottom
+-- tabs: { spellbook, professions }, which that module styles and chains ahead
+-- of the client's Pet tab. Nil when either tab cannot be made, so the window
+-- keeps the client's own tabs.
+function U.ModernWowSpellBookExtraTabs(frame)
+  if prof.tab and prof.spellTab then
+    return { professions = prof.tab, spellbook = prof.spellTab }
+  end
+  return prof.Install(frame, prof.ModernWowHost(), prof.CreateTab)
+end
+
+-- Called once by modules/spellbookclassicprof.lua for the classic-wow native
+-- window, with that module's host and its native-template tab builder. Same
+-- result as U.ModernWowSpellBookExtraTabs.
+function U.ClassicSpellBookExtraTabs(frame, host)
+  if prof.tab and prof.spellTab then
+    return { professions = prof.tab, spellbook = prof.spellTab }
+  end
+  if not host or type(host.CreateTab) ~= "function" then return nil end
+  return prof.Install(frame, host, host.CreateTab)
+end
+
+-- True while the Professions page is shown, for a host's own tab state.
+function U.SpellBookProfessionsShown()
+  return prof.active
 end
