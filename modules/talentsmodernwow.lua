@@ -945,13 +945,17 @@ function U.ModernWowTalentsActive()
   return tal.built
 end
 
--- The same ThinBorder eight-slice rim, for another modern-wow window whose
--- panels stand in for DF-main's InsetFrameTemplate (modules/professions.lua).
--- Selection-gated like every other entry point here.
+-- The same ThinBorder eight-slice rim, for another window whose panels stand in
+-- for DF-main's InsetFrameTemplate (modules/professions.lua) or need the rim as
+-- their whole housing (modules/lootdesign.lua). Selection-gated like every
+-- other entry point here, and per caller: `loot` is listed because the loot
+-- design also runs under classic-wow, where the talent and profession modules
+-- may well be off.
 function U.ModernWowThinBorder(panel)
   local active = type(U.ModernWowModuleEnabled) == "function" and
                  (U.ModernWowModuleEnabled("talents") or
-                  U.ModernWowModuleEnabled("professions"))
+                  U.ModernWowModuleEnabled("professions") or
+                  U.ModernWowModuleEnabled("loot"))
   if not active or not panel then
     return false
   end

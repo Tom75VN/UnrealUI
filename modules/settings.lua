@@ -90,7 +90,11 @@ end
 
 -- A collapsible heading in the category list. Groups hold pages; they have no
 -- content of their own and clicking one expands or collapses it.
-function U.RegisterSettingsGroup(id, label)
+--
+-- options  { after = "<entry id>", defaultPage = "<page id>" }.
+--          after places the group like RegisterSettingsTab's option does;
+--          defaultPage is opened whenever a click expands the group.
+function U.RegisterSettingsGroup(id, label, options)
   if type(id) ~= "string" then
     U.Error("RegisterSettingsGroup requires an id")
     return nil
@@ -107,11 +111,22 @@ function U.RegisterSettingsGroup(id, label)
     expanded = false,
   }
 
+  options = options or {}
+  entry.defaultPage = options.defaultPage
+
+  local afterIndex
+  if options.after then
+    local _, index = FindEntry(options.after)
+    afterIndex = index
+  end
+
   -- Same default placement as RegisterSettingsTab: slot in ahead of profiles
   -- so a group registered after it (e.g. action bar options, whose OnInit
   -- runs later in module order) doesn't end up stranded past its own pages.
   local _, profilesIndex = FindEntry("profiles")
-  if profilesIndex then
+  if afterIndex then
+    table.insert(entries, afterIndex + 1, entry)
+  elseif profilesIndex then
     table.insert(entries, profilesIndex, entry)
   else
     table.insert(entries, entry)
@@ -336,6 +351,15 @@ RenderSidebar = function()
       if not target then return end
 
       if target.kind == "group" then
+        -- A group with a default page opens it on expand; SelectPage claims
+        -- the highlight and re-renders the list itself.
+        local default = not target.expanded and target.defaultPage
+                        and FindEntry(target.defaultPage)
+        if default and default.kind == "page" then
+          target.expanded = true
+          SelectPage(default)
+          return
+        end
         target.expanded = not target.expanded
         if target.expanded then CollapseOtherGroups(target.id) end
         -- Only one row is ever highlighted: expanding a group claims the

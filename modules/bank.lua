@@ -61,6 +61,45 @@ local ICON_SIZE     = M.slot.icon
 local HEADER_ICON   = M.slot.headerIcon
 local BAG_BUTTON    = 20      -- header bank-bag button, sized to the header
 
+-- The bag-family design (modules/bagdesign.lua) owns the bank's chrome and
+-- spacing whenever it is on; every layout number below goes through it, so
+-- the flat theme keeps its own values.
+local modernBank = {}
+
+function modernBank.Active()
+  return U.ModernWowBagFamilyActive()
+end
+
+function modernBank.Header()
+  return U.ModernWowBagMetric("header", HEADER_HEIGHT)
+end
+
+function modernBank.SlotGap()
+  return U.ModernWowBagMetric("slotGap", SLOT_GAP)
+end
+
+function modernBank.IconGap()
+  return U.ModernWowBagMetric("iconGap", SLOT_GAP)
+end
+
+function modernBank.SidePad()
+  return U.ModernWowBagMetric("sidePad", PADDING)
+end
+
+function modernBank.BottomPad()
+  return U.ModernWowBagMetric("bottomPad", PADDING)
+end
+
+-- A bank-bag button's resting outline: none under Modern WoW, where the slot
+-- face is the frame and the outline only appears as hover feedback.
+function modernBank.RestBorder(button)
+  if modernBank.Active() then
+    U.SetBorderColor(button, 0, 0, 0, 0)
+  else
+    U.SetBorderColor(button, M.Unpack(M.color.border))
+  end
+end
+
 local anchor, frame, grid
 local slots = {}        -- slots[bag][slot] = button
 local containers = {}   -- containers[bag] = per-bag parent frame, SetID(bag)
@@ -356,6 +395,7 @@ local function EnsureSlot(bag, slot, parent)
   if not button then return nil end
 
   InstallBankTransfer(button, bag)
+  if modernBank.Active() then U.ModernWowBagSlot(button, SLOT_SIZE) end
 
   slots[bag][slot] = button
   return button
@@ -420,6 +460,7 @@ local function EnsureBankBagButton(index)
   button:SetHeight(BAG_BUTTON)
   U.StyleItemSlot(button, name)
   U.UseBorderOnlyItemSlotHover(button)
+  if modernBank.Active() then U.ModernWowBagSlot(button, BAG_BUTTON) end
 
   button:SetScript("OnEnter", function()
     U.SetBorderColor(button, M.Unpack(M.color.moverEdge))
@@ -430,7 +471,7 @@ local function EnsureBankBagButton(index)
   end)
 
   button:SetScript("OnLeave", function()
-    U.SetBorderColor(button, M.Unpack(M.color.border))
+    modernBank.RestBorder(button)
     HighlightBag(button.uuiBag, false)
     U.HideWindowTooltip()
   end)
@@ -479,7 +520,7 @@ local function RefreshBankBagButton(index)
   end
 
   button.tooltipText = U.L("BANK_BAG_LABEL")
-  U.SetBorderColor(button, M.Unpack(M.color.border))
+  modernBank.RestBorder(button)
 end
 
 local function BankSlotCost()
@@ -519,6 +560,9 @@ local function EnsureBuyButton()
     price = BankSlotCost,
     onClick = BuyBankSlot,
   })
+  if modernBank.Active() then
+    U.ModernWowBagHeaderIcon(frame.buy, BAG_BUTTON)
+  end
 
   return frame.buy
 end
@@ -544,7 +588,7 @@ local function LayoutHeader()
       if index <= purchased then
         button:ClearAllPoints()
         button:SetPoint("LEFT", frame.bags, "LEFT",
-                        shown * (BAG_BUTTON + SLOT_GAP), 0)
+                        shown * (BAG_BUTTON + modernBank.IconGap()), 0)
         button:Show()
         -- Refresh after Show: the stock template can run an OnShow update that
         -- changes its icon region, so UnrealUI's explicit texture wins last.
@@ -556,19 +600,20 @@ local function LayoutHeader()
     end
   end
 
-  local width = shown * (BAG_BUTTON + SLOT_GAP)
+  local gap = modernBank.IconGap()
+  local width = shown * (BAG_BUTTON + gap)
 
   if purchased < maximum then
     local buy = EnsureBuyButton()
     buy:ClearAllPoints()
     buy:SetPoint("LEFT", frame.bags, "LEFT", width, 0)
     buy:Show()
-    width = width + BAG_BUTTON + SLOT_GAP
+    width = width + BAG_BUTTON + gap
   elseif frame.buy then
     frame.buy:Hide()
   end
 
-  if width > 0 then width = width - SLOT_GAP end
+  if width > 0 then width = width - gap end
   frame.bags:SetWidth(math.max(1, width))
   frame.bags:SetHeight(BAG_BUTTON)
 end
@@ -583,6 +628,7 @@ local function LayoutSlots()
   local live = {}
   local placed = 0
   local x, y = 0, 0
+  local gap = modernBank.SlotGap()
   local i
 
   for i = 1, table.getn(bags) do
@@ -597,8 +643,7 @@ local function LayoutSlots()
       if button then
         button:ClearAllPoints()
         button:SetPoint("TOPLEFT", grid, "TOPLEFT",
-                        x * (SLOT_SIZE + SLOT_GAP),
-                        -(y * (SLOT_SIZE + SLOT_GAP)))
+                        x * (SLOT_SIZE + gap), -(y * (SLOT_SIZE + gap)))
         button:SetWidth(SLOT_SIZE)
         button:SetHeight(SLOT_SIZE)
         UpdateSlotAppearance(bag, slot)
@@ -639,9 +684,11 @@ local function LayoutSlots()
 
   -- The anchor owns the rect; the visible frame is stretched over it, so the
   -- mover handle keeps the same bounds whether or not the bank is open.
-  anchor:SetWidth(COLUMNS * (SLOT_SIZE + SLOT_GAP) - SLOT_GAP + PADDING * 2)
-  anchor:SetHeight(HEADER_HEIGHT + y * (SLOT_SIZE + SLOT_GAP) - SLOT_GAP
-                   + PADDING)
+  anchor:SetWidth(COLUMNS * (SLOT_SIZE + gap) - gap +
+                  modernBank.SidePad() * 2)
+  anchor:SetHeight(modernBank.Header() + y * (SLOT_SIZE + gap) - gap +
+                   modernBank.BottomPad())
+  if modernBank.Active() then U.ModernWowBagHousing(frame) end
 
   return placed
 end
@@ -868,10 +915,18 @@ end
 -- copy of their position.
 local function BuildDragHandle()
   local handle = CreateFrame("Button", "UnrealUIBankDrag", frame)
-  handle:SetPoint("TOPLEFT", frame, "TOPLEFT",
-                  PADDING + 2 * (HEADER_ICON + SLOT_GAP), 0)
-  handle:SetPoint("TOPRIGHT", frame.bags, "TOPLEFT", -4, 0)
-  handle:SetHeight(HEADER_HEIGHT)
+  if modernBank.Active() then
+    -- Modern WoW right-aligns the bank bags, so the free strip is the span
+    -- between the stack button and the bag row.
+    handle:SetPoint("TOPLEFT", frame.stack, "TOPRIGHT", 4, 0)
+    handle:SetPoint("TOPRIGHT", frame.bags, "TOPLEFT", -4, 0)
+    handle:SetHeight(BAG_BUTTON)
+  else
+    handle:SetPoint("TOPLEFT", frame, "TOPLEFT",
+                    PADDING + 2 * (HEADER_ICON + SLOT_GAP), 0)
+    handle:SetPoint("TOPRIGHT", frame.bags, "TOPLEFT", -4, 0)
+    handle:SetHeight(HEADER_HEIGHT)
+  end
   handle:RegisterForDrag("LeftButton")
   pcall(handle.EnableMouse, handle, true)
 
@@ -882,14 +937,49 @@ local function BuildDragHandle()
   return handle
 end
 
+-- The bag-family header, rearranged for the bank: portrait,
+-- sort and stack on the close button's line, the bank bags right-aligned
+-- before the close button; no title.
+function modernBank.StyleHeader()
+  if not modernBank.Active() then return end
+  local token = M.modernWow.bags
+
+  U.ModernWowBagHousing(frame)
+  U.ModernWowBagPortrait(frame)
+  U.ModernWowBagClose(frame, "UnrealUIBankClose")
+
+  frame.sort:ClearAllPoints()
+  frame.sort:SetPoint("TOPLEFT", frame, "TOPLEFT",
+                      token.actions.left, -token.actions.top)
+  frame.stack:ClearAllPoints()
+  frame.stack:SetPoint("LEFT", frame.sort, "RIGHT", modernBank.IconGap(), 0)
+  U.ModernWowBagHeaderIcon(frame.sort, HEADER_ICON)
+  U.ModernWowBagHeaderIcon(frame.stack, HEADER_ICON)
+
+  -- Bank bags and the purchase control are right-aligned against the close
+  -- button, centred on the icon row. frame.bags grows leftwards as bags are
+  -- bought (LayoutHeader sets its width).
+  frame.bags:ClearAllPoints()
+  frame.bags:SetPoint("RIGHT", frame, "TOPRIGHT",
+                      -(token.close.right + token.close.width +
+                        modernBank.IconGap()),
+                      -(token.actions.top + token.actions.height / 2))
+
+  -- No title under Modern WoW (user request).
+  if frame.title then frame.title:Hide() end
+
+  U.ModernWowBagSeparator(frame)
+end
+
 local function Build()
   -- Same shape as the bag frame: the anchor owns the rect and is the mover
   -- target, the visible panel is stretched over it, so edit mode can place the
   -- bank while the bank is closed.
+  local gap = modernBank.SlotGap()
   anchor = CreateFrame("Frame", "UnrealUIBankAnchor", UIParent)
-  anchor:SetWidth(COLUMNS * (SLOT_SIZE + SLOT_GAP) - SLOT_GAP + PADDING * 2)
-  anchor:SetHeight(HEADER_HEIGHT + 4 * (SLOT_SIZE + SLOT_GAP) - SLOT_GAP
-                   + PADDING)
+  anchor:SetWidth(COLUMNS * (SLOT_SIZE + gap) - gap + modernBank.SidePad() * 2)
+  anchor:SetHeight(modernBank.Header() + 4 * (SLOT_SIZE + gap) - gap +
+                   modernBank.BottomPad())
 
   frame = U.CreatePanel(anchor, { name = "UnrealUIBankFrame" })
   frame:SetAllPoints(anchor)
@@ -906,11 +996,14 @@ local function Build()
   end
 
   BuildHeader()
+  modernBank.StyleHeader()
   BuildDragHandle()
 
   grid = CreateFrame("Frame", "UnrealUIBankGrid", frame)
-  grid:SetPoint("TOPLEFT", frame, "TOPLEFT", PADDING, -HEADER_HEIGHT)
-  grid:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -PADDING, PADDING)
+  grid:SetPoint("TOPLEFT", frame, "TOPLEFT", modernBank.SidePad(),
+                -modernBank.Header())
+  grid:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -modernBank.SidePad(),
+                modernBank.BottomPad())
 
   -- Escape (UISpecialFrames) and the close glyph both end up here, so the
   -- banker session is closed from one place instead of from each caller. The

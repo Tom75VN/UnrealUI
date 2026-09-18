@@ -167,10 +167,30 @@ local function ShowBuybackEdges(itemButton, color)
 end
 
 local function HideBuybackEdges(itemButton)
+  if itemButton and itemButton.uuiGearQualityGlow then
+    U.SetGearQualityGlow(itemButton, M.slotBorder.plain)
+  end
   local edges = itemButton and itemButton.uuiBuybackEdges
   if not edges then return end
   local i
   for i = 1, table.getn(edges) do pcall(edges[i].Hide, edges[i]) end
+end
+
+-- Classic and Modern WoW keep the native merchant buttons, so their buyback
+-- rarity uses the Character window's gear-slot glow (same texture, border
+-- colour and uncommon-or-better threshold) instead of the flat outline. The
+-- flat Modern theme keeps the 1-unit edges of its own design system.
+local function ShowBuybackRarity(itemButton, quality, color)
+  if not U.ThemeStyleUsesClassicInteractionChrome() then
+    ShowBuybackEdges(itemButton, color)
+    return
+  end
+  HideBuybackEdges(itemButton)
+  local border = M.slotBorder.plain
+  if tonumber(quality) and quality > M.qualityLimit then
+    border = U.ItemQualityBorderColor(quality) or color
+  end
+  U.SetGearQualityGlow(itemButton, border)
 end
 
 local function RestoreBuybackName(region)
@@ -288,7 +308,12 @@ end
 -- frames visually. The geometry below is the exact two-column chain measured
 -- from the live Buyback tab; empty rows are hidden so TintRow cannot leave a
 -- phantom slot behind.
+--
+-- MerchantItem1 itself is never moved: the first occupied row is pinned to its
+-- native position instead, so the vendor grid can be rebuilt from it without
+-- reading GetPoint (whose Y sign is contested in knowledge.json).
 local function LayoutBuybackRows(occupied)
+  local first = G("MerchantItem1")
   local i
   for i = 1, ITEM_ROWS do
     local row = G("MerchantItem" .. i)
@@ -297,9 +322,14 @@ local function LayoutBuybackRows(occupied)
 
   for i = 1, table.getn(occupied) do
     local row = occupied[i]
-    pcall(row.ClearAllPoints, row)
+    if row ~= first then
+      pcall(row.ClearAllPoints, row)
+      row.uuiBuybackMoved = true
+    end
     if i == 1 then
-      pcall(row.SetPoint, row, "TOPLEFT", frame, "TOPLEFT", 24, -80)
+      if row ~= first and first then
+        pcall(row.SetPoint, row, "TOPLEFT", first, "TOPLEFT", 0, 0)
+      end
     elseif math.mod(i, 2) == 0 then
       pcall(row.SetPoint, row, "TOPLEFT", occupied[i - 1], "TOPRIGHT", 12, 0)
     else
@@ -314,8 +344,34 @@ end
 -- shown, so rows hidden by LayoutBuybackRows remained invisible after changing
 -- back to tab 1. Restore only rows whose current button id resolves to a real
 -- vendor item; this avoids bringing back empty tinted placeholders.
+--
+-- BUG (reported in game, modern theme): sell -> Buyback tab -> Merchant tab
+-- left vendor rows overlapping. The native vendor refresh re-points only the
+-- odd rows, so even rows kept their compacted buyback chain. Rebuild the
+-- native two-column vendor grid (12 across, 8 down) for every row the buyback
+-- layout moved. Rows past the vendor page size stay hidden, as natively.
+local VENDOR_ROWS = 10
+
+local function RestoreMerchantAnchor(i, row)
+  if not row.uuiBuybackMoved then return end
+  row.uuiBuybackMoved = nil
+  pcall(row.ClearAllPoints, row)
+  if math.mod(i, 2) == 0 then
+    local left = G("MerchantItem" .. (i - 1))
+    if left then pcall(row.SetPoint, row, "TOPLEFT", left, "TOPRIGHT", 12, 0) end
+  else
+    local above = G("MerchantItem" .. (i - 2))
+    if above then pcall(row.SetPoint, row, "TOPLEFT", above, "BOTTOMLEFT", 0, -8) end
+  end
+end
+
 local function RestoreMerchantRow(row, itemButton, fallbackIndex)
   if not row then return end
+  RestoreMerchantAnchor(fallbackIndex, row)
+  if fallbackIndex > VENDOR_ROWS then
+    pcall(row.Hide, row)
+    return
+  end
 
   local index = fallbackIndex
   if itemButton and type(itemButton.GetID) == "function" then
@@ -363,7 +419,7 @@ local function RefreshBuybackRarity()
       if color then
         pcall(nameRegion.SetTextColor, nameRegion,
               color[1], color[2], color[3], color[4] or 1)
-        ShowBuybackEdges(itemButton, color)
+        ShowBuybackRarity(itemButton, itemButton.uuiBuybackQuality, color)
       else
         HideBuybackEdges(itemButton)
         RestoreBuybackName(nameRegion)

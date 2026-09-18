@@ -450,6 +450,16 @@ function QLX:OnEnable()
     return
   end
 
+  -- Classic WoW can also hand this one window to the Modern WoW design
+  -- (modules/questlogdesign.lua, the `questlog` Classic -> Modern WoW module),
+  -- which modules/questlog.lua has then already built on the same stock
+  -- widgets. The two Classic surfaces are alternatives, never both.
+  if type(U.ModernWowQuestLogActive) == "function" and
+     U.ModernWowQuestLogActive() then
+    state.mode = "modern-wow"
+    return
+  end
+
   local applied = Apply()
   if applied ~= nil then
     Finish(applied)

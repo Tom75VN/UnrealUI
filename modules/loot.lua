@@ -3,9 +3,12 @@
 -- Sell price and equipped-item comparison on the native loot window, and the
 -- equipped-item comparison on the native group loot roll popups.
 --
--- Behavior only. .claude/rules/unreal-ui.md keeps the original loot interface
--- untouched, and this module honours that literally: it reads no texture and
--- writes no texture, font, colour, anchor or size. All it does is post-hook
+-- Behavior only, in every theme: this module reads no texture and writes no
+-- texture, font, colour, anchor or size. The window's design belongs to the
+-- independent modules/lootdesign.lua, which draws it under both `modern-wow`
+-- and `classic-wow` from the events below and the row -> slot mapping exported
+-- here, and leaves the native window alone in every other theme and whenever
+-- its own gate is off. All this module does is post-hook
 -- OnEnter/OnLeave on each existing loot row and hand the resolved item to the
 -- two shared readouts bag slots and quest rewards already drive --
 -- modules/itemprice.lua for the sell value and core/itemslot.lua for the
@@ -137,6 +140,9 @@ local function HookRow(index, button)
   button.uuiLootReadoutHooks = true
 
   U.PostHookScript(button, "OnEnter", function()
+    -- modern-wow moves the tooltip beside the window first, so the readouts
+    -- below are placed against its final position.
+    if type(U.ModernWowLootTooltip) == "function" then U.ModernWowLootTooltip(index) end
     local total = tonumber(Call("GetNumLootItems")) or 0
     if total < 1 then return end
 
@@ -153,6 +159,7 @@ local function HookRow(index, button)
   end)
 
   U.PostHookScript(button, "OnLeave", function()
+    if type(U.ModernWowLootTooltipDone) == "function" then U.ModernWowLootTooltipDone() end
     if type(U.HideItemPrice) == "function" then U.HideItemPrice() end
     if type(U.HideItemCompare) == "function" then U.HideItemCompare() end
   end)
@@ -223,14 +230,51 @@ local function HookRollFrames()
   for i = 1, MAX_ROLL_FRAMES do HookRollFrame(i) end
 end
 
+-- The row -> slot mapping, for the modern-wow drawing path.
+function U.LootRowSlot(button, index)
+  local total = tonumber(Call("GetNumLootItems")) or 0
+  if total < 1 then return nil end
+  return ResolveSlot(button, index, total)
+end
+
+function U.LootRowCount()
+  return rows
+end
+
+-- The frame that owns the visible loot window rect, or nil while no window is
+-- up. modules/tooltip.lua uses it to keep the cursor-follow world tooltip off
+-- the window (user request, 2026-09-19). Under modern-wow the window is the
+-- addon-owned chrome drawn over the stripped native frame, so that rect is the
+-- one to avoid; every other theme keeps the untouched native LootFrame, whose
+-- own rect is correct. The caller measures it in place and never keeps it
+-- (rules/unreal-ui.md, native widget ownership boundaries).
+function U.LootWindowFrame()
+  local frame = G("LootFrame")
+  if not frame then return nil end
+  local ok, visible = pcall(frame.IsVisible, frame)
+  if not ok or not visible then return nil end
+  if type(U.ModernWowLootChrome) == "function" then
+    local chrome = U.ModernWowLootChrome()
+    if chrome then return chrome end
+  end
+  return frame
+end
+
 function LT:OnEnable()
   HookRows()
   U.RegisterEvent("LOOT_OPENED", HookRows)
+  U.RegisterEvent("LOOT_OPENED", function()
+    if type(U.ModernWowLootOpened) == "function" then U.ModernWowLootOpened() end
+  end)
+  U.RegisterEvent("LOOT_SLOT_CLEARED", function(event, slot)
+    if type(U.ModernWowLootChanged) == "function" then U.ModernWowLootChanged(slot) end
+  end)
   HookRollFrames()
 
   -- The comparison tooltips are children of UIParent, not of the loot frame,
   -- so a window that closes under the cursor would otherwise leave them up.
   U.RegisterEvent("LOOT_CLOSED", function()
+    if type(U.ModernWowLootClosed) == "function" then U.ModernWowLootClosed() end
     if type(U.HideItemPrice) == "function" then U.HideItemPrice() end
     if type(U.HideItemCompare) == "function" then U.HideItemCompare() end
   end)

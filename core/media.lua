@@ -134,6 +134,9 @@ M.texture = {
   -- not have renders blank, so changing either one line fixes both surfaces.
   bagIcon = "Interface\\Icons\\INV_Misc_Bag_08",
   keyringIcon = "Interface\\Icons\\INV_Misc_Key_03",
+  -- The bag window's saved-bank button (modules/bankview.lua). Bundled
+  -- 64x64 uncompressed 32-bit TGA, the same encoding as sortIcon/stackIcon.
+  bankViewIcon = "Interface\\AddOns\\unrealUI\\media\\icons\\view-bank-64",
   -- unrealUI's own open/close arrow (media/arrow.tga, 25x32, uncompressed
   -- 32-bit): a yellow triangle carrying its own dark outline, so it reads
   -- over the game world with no panel behind it and needs no vertex tint.
@@ -571,8 +574,10 @@ M.modernWow.questLog = {
 -- page, measured off that page's own width so they follow the window when the
 -- details pane opens or closes and the split is recomputed. `x` and `width`
 -- are fractions of the LEFT piece; `bottom` and `height` are fractions of the
--- window, whose height does not change. The third bed is genuinely narrower
--- than the other two -- that is the art, not a measurement slip.
+-- window, whose height does not change. `buttonWidthGrow` and
+-- `buttonHeightGrow` enlarge the live textured control; `buttonOffsetX` and
+-- `buttonOffsetY` nudge it from the measured bed. The third bed is genuinely
+-- narrower than the other two -- that is the art, not a measurement slip.
 M.modernWow.questLog.buttonCell = {
   { x =  22 / 507, width = 112 / 507 },
   { x = 144 / 507, width = 111 / 507 },
@@ -580,6 +585,10 @@ M.modernWow.questLog.buttonCell = {
 }
 M.modernWow.questLog.buttonBottom = 15 / 440
 M.modernWow.questLog.buttonHeight = 14 / 440
+M.modernWow.questLog.buttonWidthGrow = 4
+M.modernWow.questLog.buttonHeightGrow = 4
+M.modernWow.questLog.buttonOffsetX = -2
+M.modernWow.questLog.buttonOffsetY = -2
 
 -- The gold portrait ring the left page draws in its top-left corner. Measured
 -- from questlog-left-large-v2.tga's own gold pixels: the ring's outer bounds are
@@ -1604,6 +1613,112 @@ M.modernWow.bagCell = {
   keyBorder = { 0.699219, 0.818359, 0.5,       0.976562 },
 }
 
+-- Combined-bag window. The housing uses the shared Modern WoW metal frame;
+-- the portrait is the imported round backpack face. The square container
+-- slots reuse the action bar's dark-grey slot face and thin grey rim
+-- (actionbar/button, actionbar/button-border), matching the reference
+-- combined-bag cells. Both are whole textures; `grow` is how many units each
+-- extends past the button so the rim's inner edge (8/128 of the art) meets
+-- the icon, the same allowance the action bar uses.
+M.modernWow.bags = {
+  -- Icon row bottom (actions.top 11 + 22) plus ~10 visible units to the
+  -- grid; each slot face overhangs its button by ~1, hence 45 not 43.
+  header = 45,
+  -- Metal separator between icon row and grid: its centreline, in units
+  -- below the window top (midway between icon bottom 33 and grid top 45).
+  -- `extend` pushes each end that many units into the side rails.
+  headerRule = { y = 39, extend = 1 },
+  footer = 22,
+  -- Offset out of the frame's top-left corner by half its size (21), then
+  -- nudged 2 back in.
+  portrait = { size = 42, left = -14, top = -15 },
+  title = { top = 8, color = { 1.00, 0.82, 0.00, 1.00 } },
+  -- The red-button close cell at the 17x17 every themed window close uses.
+  close = { width = 17, height = 17, right = 9, top = 9 },
+  -- Extra units on top of the shared slot gap / side padding (M.slot).
+  slotGap = 1,
+  sidePad = 5,
+  -- Extra bottom inset for the bank windows, which have no footer strip.
+  bottomPad = 5,
+  -- Category-view boxes: the thin-border eight-slice at the talent panels'
+  -- 16-unit cell. Its rim art covers cols 0-11 of 32 (~5.5 units), so the
+  -- slots are inset 8 to keep their faces (which overhang ~1) off it.
+  section = {
+    border = M.modernWow.talents.texture.panelBorder,
+    edge = 16,
+    inset = 8,
+    fill = { 0.03, 0.03, 0.03, 0.47 },  -- 0.78 less 40%
+    fillInset = 3,
+  },
+  -- Icon row, left-aligned 3 units right of the portrait (user request,
+  -- 2026-09-19): portrait right edge -14 + 42 = 28, + 3, + the slot rim's
+  -- half grow (2.5, rounded) so the visible rim, not the button, keeps the
+  -- gap. 2 units below the close button's top edge (close.top 9).
+  actions = { left = 34, top = 11, gap = 6, height = 22 },
+  money = { right = 10, bottom = 5 },
+  -- Used-slot readout, bottom left (shown in the category view).
+  slotCount = { left = 10, bottom = 7 },
+  slot = {
+    background = M.modernWow.texture.actionButton,
+    frame = M.modernWow.texture.actionButtonBorder,
+    grow = 5,
+    -- The rim art is mid grey; darken it toward the reference's near-black
+    -- outline (vertex colour only, the file is unchanged).
+    frameColor = { 0.55, 0.55, 0.55, 1 },
+  },
+}
+
+-- Corpse loot window (modules/lootdesign.lua). The native LootFrame and its
+-- LootButton rows stay the interaction owners -- scripted looting does not
+-- work on this client (knowledge.json /
+-- loot.native_shift_autoloot_and_scripted_slot_failure) -- so this only
+-- redraws around them. Chrome offsets are measured from the live row
+-- positions when the window first opens, never hardcoded to stock geometry.
+--
+-- `card` is the dark rounded row card with a thin light outline in the
+-- professions atlas (user-selected, 2026-09-19): alpha bbox 0,834-188,916 of
+-- the 2048x1024 canvas, drawn three-sliced with `cap` source columns per end.
+-- The icon rim is the combined bag's slot rim (M.modernWow.bags.slot).
+M.modernWow.loot = {
+  atlas = M.modernWow.professions.texture.atlas,
+  atlasSize = { width = 2048, height = 1024 },
+  card = { left = 0, top = 834, right = 188, bottom = 916, cap = 12 },
+  border = M.modernWow.talents.texture.panelBorder,
+  streak = M.modernWow.talents.texture.topStreak,
+  streakTexCoord = { 0, 1, 0.0078125, 0.34375 },
+  -- Rule under the title band: the thin border's own top edge, cropped to its
+  -- painted rows 0-11 of 32 (light line at row 4) and drawn at the rim's 0.5
+  -- scale, so it matches the window outline. lineOffset is where the line
+  -- falls below the texture's top; inset keeps it inside the side rims.
+  headerRule = { texCoord = { 0, 1, 0, 0.375 }, height = 6, lineOffset = 7,
+                 inset = 4 },
+  slotRim = M.modernWow.bags.slot,
+  fill = { 0.10, 0.10, 0.10, 0.88 },
+  -- Window padding around the row block, the title band above it and the
+  -- row card's extent from the icon's left edge.
+  pad = 10,
+  header = 28,
+  footer = 8,
+  cardWidth = 180,
+  -- Card height is the icon's less this on each side; it starts at the icon's
+  -- centre so its outline tucks behind the icon rim.
+  cardInset = 3,
+  title = { size = 13, y = -9, color = { 1.00, 0.82, 0.00, 1.00 } },
+  -- Rarity label offset from the card's top-right (user-tuned 2026-09-19).
+  quality = { size = 9, right = -6, top = 3 },
+  close = { size = 20, right = -5, top = -4 },
+  -- Item tooltip placed left of the window, `gap` units from its edge.
+  tooltip = { gap = 4 },
+  -- Drag strip over the title band: `inset` from the rim, stopping
+  -- `closeGap` units short of the close button.
+  drag = { inset = 3, closeGap = 8 },
+  -- Press and hover art on the row button: the flat grey fill the combined
+  -- bag's item slots use (core/itemslot.lua), replacing the stock bevelled
+  -- squares that drew a second border over the icon rim.
+  stateFill = { 0.5, 0.5, 0.5, 0.4 },
+}
+
+
 -- The Character window's three stat group boxes, DragonflightUI style: the
 -- stock rounded boxes darkened. Drawn with the client's own tooltip edge and
 -- a dark fill; `border` is DF's 0.4 darken. `margin` grows the stats rect out
@@ -1691,9 +1806,11 @@ M.gearQualityGlow = {
   alpha = 0.8,
   blend = "BLEND",
   -- Blue has much lower perceived luminance than green. Reinforce rare gear
-  -- with a second pass without changing any other rarity or the Modern theme.
+  -- with a second pass without changing any other rarity or the Modern theme,
+  -- and draw both blue passes fully opaque (other rarities keep `alpha`).
+  rareAlpha = 1,
   rareBoost = {
-    color = { 0.08, 0.20, 1.00, 0.75 },
+    color = { 0.08, 0.20, 1.00, 1.00 },
     grow = 4,
     blend = "ADD",
   },
@@ -2425,6 +2542,58 @@ M.color = {
   grid       = { 0.45, 0.45, 0.45, 0.30 },
   gridAxis   = { 0.96, 0.68, 0.04, 0.55 },
   moverGuide = { 1.00, 0.20, 0.20, 0.90 },
+}
+
+-- Loot window animation, shared by every theme (modules/lootdesign.lua). These
+-- are behaviour numbers, not chrome: the animation moves and fades what the
+-- client already draws, so it runs under `modern` -- where the loot window
+-- stays native -- exactly as it does under the two themes that redraw it.
+-- Kept out of M.modernWow for that reason.
+--
+-- Opening fade, in seconds: the window's ease-out, then each row's own fade
+-- starting `rowDelay` in and `stagger` after the row above it. A looted item's
+-- ghost eases `ghostSlide` units right over `ghost` seconds while fading;
+-- back-to-back clears (Shift-click looting all) start `ghostStagger` apart.
+-- `ghostWidth` is the sliding group's width and `ghostTextGap` the space
+-- between its icon and the item name.
+M.loot = {
+  anim = { window = 0.18, row = 0.22, rowDelay = 0.06, stagger = 0.06,
+           ghost = 0.35, ghostSlide = 40, ghostStagger = 0.08 },
+  ghostWidth = 180,
+  ghostTextGap = 6,
+}
+
+-- The `modern` theme's loot window (user request, 2026-09-19). Deliberately the
+-- same key names as M.modernWow.loot for everything the window's shared
+-- mechanics read -- fit, drag strip, tooltip placement, quality label -- so
+-- modules/lootdesign.lua picks a token table once and the layout code is one
+-- path. Values follow rules/unreal-ui-design.md: flat WHITE8X8 surfaces, one
+-- 1-unit outline, near-black fill, the addon accent on the short title and on
+-- the client-driven hover/press states only.
+--
+-- `cardWidth` is the row's extent from the icon's left edge, matched to the
+-- themed window so both designs cover the same row and the looted-item slide
+-- reads the same distance.
+M.loot.flat = {
+  pad = 10,
+  header = 22,
+  footer = 8,
+  cardWidth = 180,
+  title = { size = M.fontSize.normal, color = M.color.accent, y = -6 },
+  -- Rule between the title band and the rows: 1 unit, inset to the row inset.
+  rule = { inset = 8 },
+  close = { size = 17, right = -3, top = -3 },
+  drag = { inset = 3, closeGap = 8 },
+  tooltip = { gap = 4 },
+  quality = { size = M.fontSize.tiny, right = -6, top = 3 },
+  -- The list row: one flat tinted surface, shorter than the icon on each side
+  -- so its edge stays inside the icon's outline rather than doubling it.
+  rowFill = { 0.12, 0.12, 0.12, 0.60 },
+  rowInset = 3,
+  -- Client-driven states on the native row button: subdued accent on hover,
+  -- the accent fill on press. Nothing else replaces the stock state squares.
+  hoverFill = { M.color.accent[1], M.color.accent[2], M.color.accent[3], 0.16 },
+  pressFill = M.color.accentFill,
 }
 
 -- Midway between the warmer #FFD200 and pure #FFFF00: clearly yellow without

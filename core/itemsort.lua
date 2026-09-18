@@ -254,13 +254,16 @@ end
 -- ---------------------------------------------------------------------------
 -- Ordering
 -- ---------------------------------------------------------------------------
--- Category first, then the item's functional family, then its exact template.
--- The family keeps different ranks of the same kind together: healing potions
--- share a normalized "restores # health" tooltip signature, while mana potions
--- share a different one. Type/subtype/equipment slot precede that signature so
--- broad families such as gear still form useful local groups. Exact item id is
--- next, which keeps every stack of one item adjacent. Quality, name and the full
--- link are only deterministic tie-breakers inside those groups.
+-- Bundled templates use Database/item_sort.lua's offline-derived order:
+-- category, functional family, subgroup, tier, then exact item id. That last
+-- field guarantees every stack and random-property variant of one template is
+-- adjacent. The database was derived from numeric VMaNGOS item/profession data,
+-- so it does not depend on the client's broad localized class strings.
+--
+-- Unknown/custom templates keep the former live fallback: category, client
+-- type/subtype/equipment slot, normalized tooltip family, then exact item id,
+-- quality, name and full link. It is intentionally below the static fast path
+-- rather than removed; the game can contain templates newer than the snapshot.
 --
 -- The key is built as one string rather than compared field by field so the
 -- comparator is a plain `<` on a total order. table.sort raises "invalid order
@@ -347,6 +350,13 @@ function IS.TemplateKey(link)
 end
 
 function IS.SortKey(order, link)
+  local code, itemId, staticCategory, detail = U.ItemSortStaticInfo(link)
+  if code and itemId and staticCategory then
+    local staticIndex = order[staticCategory] or 99
+    return string.format("%03d|%08d|item:%010d|", staticIndex, detail,
+                         itemId) .. tostring(link or "")
+  end
+
   local index = 99
   local quality, name, itemType, subType, equipLoc = 0, "", "", "", ""
 

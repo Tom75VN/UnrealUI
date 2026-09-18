@@ -2,10 +2,10 @@
 ## Title: |cffffffffUnreal |cfff5ae0aUI
 ## Notes: Unreal Azeroth native UI addon.
 ## Author: unrealUI
-## Version: 0.7.4
+## Version: 0.8.0
 ## X-License: MIT
 ## SavedVariables: UnrealUIDB, UnrealUIProfiles, UnrealUIDiagDB, UnrealUIPriceDB
-## SavedVariablesPerCharacter: UnrealUIProfileDB, UnrealUIFavoriteDB, UnrealUIBankCountDB
+## SavedVariablesPerCharacter: UnrealUIProfileDB, UnrealUIFavoriteDB, UnrealUIBankCountDB, UnrealUIBankCacheDB
 
 core\init.lua
 
@@ -47,6 +47,7 @@ Database\unit_vitals.lua
 Database\unit_names.lua
 Database\unit_names_ruRU.lua
 Database\unit_names_zhCN.lua
+Database\item_sort.lua
 core\unitvitals.lua
 
 core\compat.lua
@@ -56,6 +57,7 @@ core\style.lua
 core\easing.lua
 core\statusbarfx.lua
 core\itemslot.lua
+core\itemsortdata.lua
 core\itemcategory.lua
 core\itemsort.lua
 core\itemstack.lua
@@ -102,6 +104,7 @@ modules\nameplates.lua
 modules\tooltip.lua
 modules\itemprice.lua
 modules\loot.lua
+modules\lootdesign.lua
 modules\castbarclassic.lua
 modules\castbar.lua
 modules\actionbar.lua
@@ -113,6 +116,7 @@ modules\buffframe.lua
 modules\stancebar.lua
 modules\rogue.lua
 modules\bagfavorites.lua
+modules\bagdesign.lua
 modules\bags.lua
 
 # The HUD bag bar. Loaded after modules\bags.lua because it stands in for
@@ -121,7 +125,17 @@ modules\bags.lua
 modules\bagbar.lua
 modules\bankcount.lua
 modules\bank.lua
+modules\bankview.lua
 modules\status.lua
+
+# The Quest Log's Dragonflight design, as its own module: the page art's two
+# panes, the action-button beds, the native scroll bars in their channels, the
+# count boxes, the parchment ink and the scrolling reward-money row. Entry
+# points only -- modules\questlog.lua binds the window and calls them, for the
+# full Modern WoW theme or Classic's explicit Quest Log selection, so both
+# themes draw this one file. Loaded before that module for the same reason
+# modules\bagdesign.lua precedes modules\bags.lua.
+modules\questlogdesign.lua
 modules\questlog.lua
 
 # The Classic WoW theme's two-page parchment Quest Log (classic-wow layout).

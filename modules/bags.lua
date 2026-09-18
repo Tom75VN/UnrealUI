@@ -120,6 +120,23 @@ local classicBag = {
   nativeHeaderHeight = 58,
 }
 
+local modernBag = {}
+
+function modernBag.Active()
+  return U.ModernWowBagFamilyActive()
+end
+
+local function BagHeaderHeight()
+  return U.ModernWowBagMetric("header", HEADER_HEIGHT)
+end
+
+local function BagFooterHeight()
+  if modernBag.Active() and M.modernWow and M.modernWow.bags then
+    return M.modernWow.bags.footer
+  end
+  return 0
+end
+
 function classicBag.Dimension(region, method)
   local fn = region and region[method]
   if type(fn) ~= "function" then return 0 end
@@ -176,8 +193,11 @@ function classicBag.Face(regionName, ownerName)
 end
 
 function classicBag.Capture()
+  -- Under classic-wow the shared bag design (modules/bagdesign.lua) replaces
+  -- the native bag art when it is on, so none of it is captured.
   classicBag.active = type(U.ThemeStyleUsesNativeChrome) == "function" and
-                      U.ThemeStyleUsesNativeChrome() or false
+                      U.ThemeStyleUsesNativeChrome() and
+                      not modernBag.Active() or false
   classicBag.ready = false
   if not classicBag.active then return end
 
@@ -208,7 +228,24 @@ function classicBag.SlotGap()
   -- The native action-button rim extends beyond the clickable slot. Give
   -- Classic two extra pixels so adjacent rims remain visually distinct.
   if classicBag.ready then return SLOT_GAP + 2 end
-  return SLOT_GAP
+  return U.ModernWowBagMetric("slotGap", SLOT_GAP)
+end
+
+-- Slot inset inside a category box. Modern WoW's thin-border rim is wider
+-- than the flat outline, so the slots sit further in to clear it.
+function classicBag.SectionInset()
+  return U.ModernWowBagMetric("sectionInset", SECTION_INSET)
+end
+
+-- Space between the header icons (key, bags, sell, sort, stack, bank).
+function classicBag.IconGap()
+  return U.ModernWowBagMetric("iconGap", 4)
+end
+
+-- Horizontal inset from the window edge to the item grid. Modern WoW adds a
+-- few units so the grown slot faces clear the metal frame's side rails.
+function classicBag.SidePad()
+  return U.ModernWowBagMetric("sidePad", PADDING)
 end
 
 function classicBag.CreateFace(parent, face, layer)
@@ -263,17 +300,17 @@ function classicBag.StylePanel(panel, main)
   local middle = classicBag.CreateFace(panel, source, "BORDER")
   local right = classicBag.CreateFace(panel, source, "BORDER")
   if not left or not middle or not right then return end
-  local headerScale = classicBag.HeaderHeight() / classicBag.nativeHeaderHeight
+  local headerScale = BagHeaderHeight() / classicBag.nativeHeaderHeight
 
   classicBag.SetSlice(left, 0, 0.40, 0, 1)
   left:SetPoint("TOPLEFT", panel, "TOPLEFT", 0, 0)
   left:SetWidth(82 * headerScale)
-  left:SetHeight(classicBag.HeaderHeight())
+  left:SetHeight(BagHeaderHeight())
 
   classicBag.SetSlice(right, 0.73, 1, 0, 1)
   right:SetPoint("TOPRIGHT", panel, "TOPRIGHT", 0, 0)
   right:SetWidth(56 * headerScale)
-  right:SetHeight(classicBag.HeaderHeight())
+  right:SetHeight(BagHeaderHeight())
 
   classicBag.SetSlice(middle, 0.40, 0.73, 0, 1)
   middle:SetPoint("TOPLEFT", left, "TOPRIGHT", 0, 0)
@@ -337,6 +374,66 @@ function classicBag.StyleItemSlot(button, size)
   -- No layer argument: the shared helper owns the one that keeps the item icon
   -- above the slot face.
   return U.StyleClassicActionButtonBorder(button, size)
+end
+
+function modernBag.StylePanel(panel)
+  if not modernBag.Active() or not panel then return false end
+  return U.ModernWowBagHousing(panel)
+end
+
+function modernBag.ResizePanel(panel)
+  if not modernBag.Active() or not panel or
+     type(U.ModernWowMetalFrame) ~= "function" then return end
+  U.ModernWowMetalFrame(panel)
+end
+
+function modernBag.StyleItemSlot(button, size)
+  if not modernBag.Active() then return false end
+  return U.ModernWowBagSlot(button, size)
+end
+
+function modernBag.StyleHeader(window)
+  if not modernBag.Active() or not window then return false end
+  local token = M.modernWow.bags
+
+  -- No title under Modern WoW (user request): the portrait names the window.
+  U.ModernWowBagPortrait(window)
+  U.ModernWowBagClose(window, "UnrealUIBagClose")
+
+  if window.money then
+    window.money:ClearAllPoints()
+    window.money:SetPoint("BOTTOMRIGHT", window, "BOTTOMRIGHT",
+                          -token.money.right, token.money.bottom)
+  end
+
+  if window.keyToggle then
+    window.keyToggle:ClearAllPoints()
+    window.keyToggle:SetPoint("TOPLEFT", window, "TOPLEFT",
+                              token.actions.left, -token.actions.top)
+  end
+
+  local controls = {
+    window.keyToggle, window.bagsToggle, window.pickLock, window.sell,
+    window.sortBags, window.stackBags, window.bankView,
+  }
+  local i
+  for i = 1, table.getn(controls) do
+    local control = controls[i]
+    if control then U.ModernWowBagHeaderIcon(control, HEADER_ICON) end
+  end
+
+  if window.slotCount then
+    window.slotCount:ClearAllPoints()
+    window.slotCount:SetPoint("BOTTOMLEFT", window, "BOTTOMLEFT",
+                              token.slotCount.left, token.slotCount.bottom)
+  end
+
+  U.ModernWowBagSeparator(window)
+  return true
+end
+
+function U.ModernWowBagsActive()
+  return modernBag.built and true or false
 end
 
 -- ---------------------------------------------------------------------------
@@ -514,7 +611,7 @@ local function SetSortButtonShown(shown)
   if frame.stackBags then
     frame.stackBags:ClearAllPoints()
     frame.stackBags:SetPoint("LEFT", shown and frame.sortBags or frame.sell,
-                             "RIGHT", 4, 0)
+                             "RIGHT", classicBag.IconGap(), 0)
   end
   RefreshSortButton()
 end
@@ -755,8 +852,7 @@ local function InvalidateSlotCache()
 end
 
 -- Anchor, size and slot-face styling only when they actually change. Both
--- layouts run on every bag change, and re-anchoring plus re-sizing the classic
--- face of every slot each pass was native work with nothing to show for it.
+-- layouts run on every bag change, so unchanged theme art is kept in place.
 local function PlaceSlot(button, relative, x, y)
   if button.uuiPlacedTo ~= relative or button.uuiPlacedX ~= x or
      button.uuiPlacedY ~= y then
@@ -770,11 +866,14 @@ local function PlaceSlot(button, relative, x, y)
     button.uuiPlacedSize = SLOT_SIZE
     button.uuiSlotStyled = nil
   end
-  -- Retried until the shared classic face exists: modules/actionbar.lua may
-  -- not have captured it yet on the first layout.
+  -- Retried until the selected theme face exists.
   if not button.uuiSlotStyled then
-    button.uuiSlotStyled = classicBag.StyleItemSlot(button, SLOT_SIZE) and true
-                           or not classicBag.ready
+    if modernBag.Active() then
+      button.uuiSlotStyled = modernBag.StyleItemSlot(button, SLOT_SIZE) and true
+    else
+      button.uuiSlotStyled = classicBag.StyleItemSlot(button, SLOT_SIZE) and true
+                             or not classicBag.ready
+    end
   end
 end
 
@@ -824,6 +923,7 @@ local function LayoutKeyring()
       button:SetWidth(TRAY_SLOT)
       button:SetHeight(TRAY_SLOT)
       classicBag.StyleItemSlot(button, TRAY_SLOT)
+      modernBag.StyleItemSlot(button, TRAY_SLOT)
       UpdateSlotAppearance(KEYRING_BAG, slot)
       button:Show()
       shown = shown + 1
@@ -843,6 +943,7 @@ local function LayoutKeyring()
     tray:SetWidth(shown * (TRAY_SLOT + slotGap) - slotGap + PADDING * 2)
   end
   tray:SetHeight(TRAY_SLOT + PADDING * 2)
+  modernBag.ResizePanel(tray)
 end
 
 -- ---------------------------------------------------------------------------
@@ -869,6 +970,9 @@ local function HighlightBagSlots(bag, on)
       if on then
         U.SetBorderColor(item, M.Unpack(M.color.accent))
       else
+        -- The accent border lives outside the per-slot cache, so an unchanged
+        -- slot would otherwise short-circuit and keep the highlight.
+        item.uuiSlotCached = nil
         UpdateSlotAppearance(bag, slot)
       end
     end
@@ -918,6 +1022,7 @@ local function LayoutBagSlots()
       U.StyleItemSlot(button, name)
       U.UseBorderOnlyItemSlotHover(button)
       classicBag.StyleItemSlot(button, TRAY_SLOT)
+      modernBag.StyleItemSlot(button, TRAY_SLOT)
       tray.buttons[i] = button
       RefreshBagSlotButton(button)
       U.PostHookScript(button, "OnEnter", function()
@@ -934,6 +1039,7 @@ local function LayoutBagSlots()
 
   tray:SetWidth(BAG_SLOT_COUNT * (TRAY_SLOT + slotGap) - slotGap + PADDING * 2)
   tray:SetHeight(TRAY_SLOT + PADDING * 2)
+  modernBag.ResizePanel(tray)
 end
 
 -- ---------------------------------------------------------------------------
@@ -1007,10 +1113,11 @@ local function EnsureSection(key, contentWidth)
 
   section.box = U.CreatePanel(grid, {
     name = "UnrealUIBagCategory_" .. key,
-    width = contentWidth + SECTION_INSET * 2,
-    height = SLOT_SIZE + SECTION_INSET * 2,
+    width = contentWidth + classicBag.SectionInset() * 2,
+    height = SLOT_SIZE + classicBag.SectionInset() * 2,
   })
   classicBag.StylePanel(section.box, false)
+  if modernBag.Active() then U.ModernWowBagSection(section.box) end
   -- Purely a backdrop for the slots anchored over it; it must not eat the
   -- clicks and drags those slots depend on.
   pcall(section.box.EnableMouse, section.box, false)
@@ -1023,6 +1130,9 @@ local function EnsureSection(key, contentWidth)
     collapsed = EnsureConfig().collapsed[key],
     onClick = function(collapsed) ToggleSection(key, collapsed) end,
   })
+  if modernBag.Active() and type(U.ModernWowCollapseFace) == "function" then
+    U.ModernWowCollapseFace(section.toggle)
+  end
 
   section.title = U.CreateLabel(grid, {
     size = M.fontSize.small,
@@ -1100,7 +1210,7 @@ end
 local function CategoryBodyHeight(n, columns, collapsed, slotGap)
   if collapsed then return 0 end
   local rows = math.ceil(n / columns)
-  return SECTION_INSET * 2 + rows * (SLOT_SIZE + slotGap) - slotGap
+  return classicBag.SectionInset() * 2 + rows * (SLOT_SIZE + slotGap) - slotGap
 end
 
 -- Two categories share a row only when the half-width slot grids are no taller
@@ -1128,8 +1238,8 @@ function LayoutCategories()
   local slotGap = classicBag.SlotGap()
   local fullContentWidth = COLUMNS * (SLOT_SIZE + slotGap) - slotGap
   local halfContentWidth = SECTION_ITEM_COLUMNS * (SLOT_SIZE + slotGap) - slotGap
-  local fullSectionWidth = fullContentWidth + SECTION_INSET * 2
-  local halfSectionWidth = halfContentWidth + SECTION_INSET * 2
+  local fullSectionWidth = fullContentWidth + classicBag.SectionInset() * 2
+  local halfSectionWidth = halfContentWidth + classicBag.SectionInset() * 2
   local buckets, usedSlots, totalSlots = CollectCategories()
   local order = U.ItemCategoryOrder()
   local live = {}    -- every (bag, slot) this pass actually placed
@@ -1205,7 +1315,7 @@ function LayoutCategories()
         -- sweep at the end of this function is what takes them off screen.
         section.box:Hide()
       else
-        section.box:SetWidth(contentWidth + SECTION_INSET * 2)
+        section.box:SetWidth(contentWidth + classicBag.SectionInset() * 2)
         section.box:SetHeight(height)
         section.box:ClearAllPoints()
         section.box:SetPoint("TOPLEFT", grid, "TOPLEFT", x,
@@ -1219,9 +1329,10 @@ function LayoutCategories()
           if button then
             local col = math.mod(j - 1, columns)
             local row = math.floor((j - 1) / columns)
+            local inset = classicBag.SectionInset()
             PlaceSlot(button, section.box,
-                      SECTION_INSET + col * (SLOT_SIZE + slotGap),
-                      -(SECTION_INSET + row * (SLOT_SIZE + slotGap)))
+                      inset + col * (SLOT_SIZE + slotGap),
+                      -(inset + row * (SLOT_SIZE + slotGap)))
             UpdateSlotAppearance(entry.bag, entry.slot)
             button:Show()
             live[entry.bag .. ":" .. entry.slot] = true
@@ -1263,8 +1374,9 @@ function LayoutCategories()
   -- than collapsing the frame onto its header.
   if y <= 0 then y = SLOT_SIZE end
 
-  anchor:SetWidth(layoutWidth + PADDING * 2)
-  anchor:SetHeight(classicBag.HeaderHeight() + y + PADDING)
+  anchor:SetWidth(layoutWidth + classicBag.SidePad() * 2)
+  anchor:SetHeight(BagHeaderHeight() + y + PADDING + BagFooterHeight())
+  modernBag.ResizePanel(frame)
 end
 
 -- ---------------------------------------------------------------------------
@@ -1318,10 +1430,12 @@ local function LayoutSlots()
 
   -- The anchor owns the rect; the visible frame is stretched over it, so the
   -- stored placement keeps the same bounds whether or not the bag is open.
-  anchor:SetWidth(COLUMNS * (SLOT_SIZE + slotGap) - slotGap + PADDING * 2)
-  anchor:SetHeight(classicBag.HeaderHeight() +
+  anchor:SetWidth(COLUMNS * (SLOT_SIZE + slotGap) - slotGap +
+                  classicBag.SidePad() * 2)
+  anchor:SetHeight(BagHeaderHeight() + BagFooterHeight() +
                    y * (SLOT_SIZE + slotGap) - slotGap
                    + PADDING)
+  modernBag.ResizePanel(frame)
 end
 
 local function ProcessDirty()
@@ -1452,6 +1566,7 @@ local function BuildTray(name)
     height = TRAY_SLOT + PADDING * 2,
   })
   classicBag.StylePanel(tray, false)
+  modernBag.StylePanel(tray)
   pcall(tray.EnableMouse, tray, true)
   tray:Hide()
   return tray
@@ -1469,9 +1584,9 @@ local function RefreshRogueBagButton()
   if frame.sell and frame.bagsToggle then
     frame.sell:ClearAllPoints()
     if available then
-      frame.sell:SetPoint("LEFT", frame.pickLock, "RIGHT", 4, 0)
+      frame.sell:SetPoint("LEFT", frame.pickLock, "RIGHT", classicBag.IconGap(), 0)
     else
-      frame.sell:SetPoint("LEFT", frame.bagsToggle, "RIGHT", 4, 0)
+      frame.sell:SetPoint("LEFT", frame.bagsToggle, "RIGHT", classicBag.IconGap(), 0)
     end
   end
 end
@@ -1545,7 +1660,7 @@ local function BuildHeader()
     end,
   })
   classicBag.StyleIconButton(frame.bagsToggle)
-  frame.bagsToggle:SetPoint("LEFT", frame.keyToggle, "RIGHT", 4, 0)
+  frame.bagsToggle:SetPoint("LEFT", frame.keyToggle, "RIGHT", classicBag.IconGap(), 0)
 
   if type(U.IsRogue) == "function" and U.IsRogue() then
     frame.pickLock = U.CreateIconButton(frame, {
@@ -1569,7 +1684,7 @@ local function BuildHeader()
       end,
     })
     classicBag.StyleIconButton(frame.pickLock)
-    frame.pickLock:SetPoint("LEFT", frame.bagsToggle, "RIGHT", 4, 0)
+    frame.pickLock:SetPoint("LEFT", frame.bagsToggle, "RIGHT", classicBag.IconGap(), 0)
   end
 
   frame.sell = U.CreateIconButton(frame, {
@@ -1583,7 +1698,7 @@ local function BuildHeader()
     detail = function() return U.L("BAGS_GREYS_HINT") end,
   })
   classicBag.StyleIconButton(frame.sell)
-  frame.sell:SetPoint("LEFT", frame.bagsToggle, "RIGHT", 4, 0)
+  frame.sell:SetPoint("LEFT", frame.bagsToggle, "RIGHT", classicBag.IconGap(), 0)
 
   -- Sort, last in the icon group. It belongs to the flat grid only: the
   -- category view already groups everything by the very order this sorts into,
@@ -1607,7 +1722,7 @@ local function BuildHeader()
     end,
   })
   classicBag.StyleIconButton(frame.sortBags)
-  frame.sortBags:SetPoint("LEFT", frame.sell, "RIGHT", 4, 0)
+  frame.sortBags:SetPoint("LEFT", frame.sell, "RIGHT", classicBag.IconGap(), 0)
   frame.sortBags:Hide()
 
   -- Merge partial stacks, carried bags only. SetSortButtonShown keeps it
@@ -1629,15 +1744,33 @@ local function BuildHeader()
     end,
   })
   classicBag.StyleIconButton(frame.stackBags)
-  frame.stackBags:SetPoint("LEFT", frame.sell, "RIGHT", 4, 0)
+  frame.stackBags:SetPoint("LEFT", frame.sell, "RIGHT", classicBag.IconGap(), 0)
+
+  -- The saved bank (modules/bankview.lua): a read-only copy of the bank as it
+  -- was last seen at a banker. Last in the icon group, after stack, so it
+  -- follows stack wherever SetSortButtonShown puts it.
+  frame.bankView = U.CreateIconButton(frame, {
+    name = "UnrealUIBagBankView",
+    tooltipFrames = BagTooltipFrames,
+    size = HEADER_ICON,
+    texture = M.texture.bankViewIcon,
+    fallback = "V",
+    title = U.L("BAGS_BANK_VIEW"),
+    detail = function() return U.L("BAGS_BANK_VIEW_HINT") end,
+    onClick = function()
+      if type(U.ToggleBankView) == "function" then U.ToggleBankView() end
+    end,
+  })
+  classicBag.StyleIconButton(frame.bankView)
+  frame.bankView:SetPoint("LEFT", frame.stackBags, "RIGHT", classicBag.IconGap(), 0)
 
   -- Slot readout, left-aligned after the header icon group. Anchored to the
-  -- stack button because that is the last icon in the group either way: the
-  -- Rogue Pick Lock shortcut is inserted before sell, RefreshRogueBagButton
-  -- re-anchors sell when the skill is missing, and stack follows sell or sort
-  -- (SetSortButtonShown), so following stack keeps the readout in place
-  -- without repeating either rule. Hidden until the category view asks for
-  -- it; see RefreshSlotCount.
+  -- saved-bank button because that is the last icon in the group either way:
+  -- the Rogue Pick Lock shortcut is inserted before sell, RefreshRogueBagButton
+  -- re-anchors sell when the skill is missing, stack follows sell or sort
+  -- (SetSortButtonShown) and the saved-bank button follows stack, so following
+  -- it keeps the readout in place without repeating either rule. Hidden until
+  -- the category view asks for it; see RefreshSlotCount.
   frame.slotCount = U.CreateLabel(frame, {
     size = M.fontSize.small,
     color = M.color.textDim,
@@ -1645,7 +1778,7 @@ local function BuildHeader()
     justify = "LEFT",
   })
   if frame.slotCount then
-    frame.slotCount:SetPoint("LEFT", frame.stackBags, "RIGHT", 8, 0)
+    frame.slotCount:SetPoint("LEFT", frame.bankView, "RIGHT", 8, 0)
     frame.slotCount:Hide()
   end
 
@@ -1723,18 +1856,21 @@ local function StopBagDrag()
   U.CheckOnScreen(anchor)
 end
 
--- The grab strip runs from the header icon group to the close button. It is
--- anchored to the live edges of the buttons either side of it rather than to
--- computed offsets, so RefreshRogueBagButton re-anchoring the icon group when
--- the Pick Lock shortcut appears or goes moves the strip with it, without a
--- second copy of that rule. It spans the money readout, which is a plain
--- display frame that never enables mouse input, and stops short of the close
--- button so that click is not swallowed.
+-- The grab strip occupies header space without covering its controls.
 local function BuildDragHandle()
   local handle = CreateFrame("Button", "UnrealUIBagDrag", frame)
-  handle:SetPoint("TOPLEFT", frame.stackBags, "TOPRIGHT", 4, 0)
-  handle:SetPoint("TOPRIGHT", frame.close, "TOPLEFT", -4, 0)
-  handle:SetHeight(classicBag.HeaderHeight() - PADDING)
+  if modernBag.Active() then
+    local token = M.modernWow.bags
+    -- The icon row now shares the close button's line, so the strip starts
+    -- after its last control (bank view) instead of covering the icons.
+    handle:SetPoint("TOPLEFT", frame.bankView, "TOPRIGHT", 4, 0)
+    handle:SetPoint("TOPRIGHT", frame.close, "TOPLEFT", -4, 0)
+    handle:SetHeight(token.actions.height)
+  else
+    handle:SetPoint("TOPLEFT", frame.bankView, "TOPRIGHT", 4, 0)
+    handle:SetPoint("TOPRIGHT", frame.close, "TOPLEFT", -4, 0)
+    handle:SetHeight(BagHeaderHeight() - PADDING)
+  end
   handle:RegisterForDrag("LeftButton")
   pcall(handle.EnableMouse, handle, true)
 
@@ -1752,13 +1888,15 @@ local function Build()
   -- panel, so a drag cannot break that relationship.
   local slotGap = classicBag.SlotGap()
   anchor = CreateFrame("Frame", "UnrealUIBagAnchor", UIParent)
-  anchor:SetWidth(COLUMNS * (SLOT_SIZE + slotGap) - slotGap + PADDING * 2)
-  anchor:SetHeight(classicBag.HeaderHeight() +
+  anchor:SetWidth(COLUMNS * (SLOT_SIZE + slotGap) - slotGap +
+                  classicBag.SidePad() * 2)
+  anchor:SetHeight(BagHeaderHeight() + BagFooterHeight() +
                    4 * (SLOT_SIZE + slotGap) - slotGap + PADDING)
 
   frame = U.CreatePanel(anchor, { name = "UnrealUIBagFrame" })
   frame:SetAllPoints(anchor)
   classicBag.StylePanel(frame, true)
+  local modernPanel = modernBag.StylePanel(frame)
   -- Above the client tooltip rather than MEDIUM: this client draws a world
   -- object's tooltip over the window regardless of the UI covering the
   -- cursor (core/style.lua carries the measurement and the trade-off).
@@ -1773,12 +1911,15 @@ local function Build()
 
   BuildHeader()
   classicBag.StyleHeader(frame)
+  local modernHeader = modernBag.StyleHeader(frame)
+  modernBag.built = modernPanel and modernHeader and true or false
   BuildDragHandle()
 
   grid = CreateFrame("Frame", "UnrealUIBagGrid", frame)
-  grid:SetPoint("TOPLEFT", frame, "TOPLEFT", PADDING,
-                -classicBag.HeaderHeight())
-  grid:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -PADDING, PADDING)
+  grid:SetPoint("TOPLEFT", frame, "TOPLEFT", classicBag.SidePad(),
+                -BagHeaderHeight())
+  grid:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -classicBag.SidePad(),
+                PADDING + BagFooterHeight())
 
   -- Trays sit above the frame: keyring on the left, bag slots on the right,
   -- matching the reference layout.

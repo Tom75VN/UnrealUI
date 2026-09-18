@@ -1598,7 +1598,8 @@ end
 --
 -- Differs from UnrealPfUI's model path on purpose: no hidden second model
 -- probed with SetUnit on every refresh, and SetUnit runs only when the unit
--- behind the frame changes, with a two-call budget for a model not yet loaded.
+-- behind the frame changes, with a three-call budget spaced in time
+-- (model3d.retryAt) for a model or skin not yet loaded.
 -- ---------------------------------------------------------------------------
 local model3d = {}
 
@@ -1709,18 +1710,50 @@ function model3d.Refresh(frame, box)
 
   pcall(model.Show, model)
 
+  -- Target families also key on the target-change epoch: two mobs sharing a
+  -- name (a pack of Witherbark Scalpers) otherwise never re-apply SetUnit.
   local key = (frame.data and frame.data.name) or ""
+  local family = model3d.Family(frame)
+  if family == "target" or family == "targettarget" then
+    key = key .. "#" .. model3d.targetEpoch
+  end
   local calls = model.uuiCalls or 0
+  local now = model3d.Now()
   if key ~= model.uuiKey then
     calls = 0
     model.uuiKey = key
-  elseif calls >= 2 then
+    model.uuiFirstAt = now
+  elseif calls >= table.getn(model3d.retryAt) + 1 then
     return true
+  else
+    -- Blind safeguard, not runtime-verified: a user screenshot showed an NPC
+    -- model with its skin missing (black silhouette, placeholder blocks), and
+    -- Lua cannot detect that. Re-applies are spaced in time so a skin still
+    -- streaming in gets another chance; back-to-back refreshes used to spend
+    -- the whole budget within one frame. No timer of its own: this rides the
+    -- existing ~1s full refresh. Without a clock, fall back to count-only.
+    local due = model3d.retryAt[calls]
+    if now and model.uuiFirstAt and now - model.uuiFirstAt < due then
+      return true
+    end
   end
   model.uuiCalls = calls + 1
   pcall(model.SetUnit, model, frame.unit)
   pcall(model.SetCamera, model, 0)
   return true
+end
+
+-- Seconds after the first SetUnit at which the model is re-applied, one
+-- entry per retry (3 calls per unit in total, up from 2 back-to-back).
+model3d.retryAt = { 0.5, 2 }
+model3d.targetEpoch = 0
+
+function model3d.Now()
+  local getTime = ResolveApiFn("GetTime")
+  if not getTime then return nil end
+  local ok, value = pcall(getTime)
+  if ok and type(value) == "number" then return value end
+  return nil
 end
 
 -- Empty mover shells and disabled frames do not reach RefreshPortrait. Hide
@@ -4697,6 +4730,7 @@ local function RegisterEvents()
   end
 
   U.RegisterEvent("PLAYER_TARGET_CHANGED", function()
+    model3d.targetEpoch = model3d.targetEpoch + 1
     QueueUnitToken("target", "full")
     QueueUnitToken("targettarget", "full")
     classicNative.Reanchor()

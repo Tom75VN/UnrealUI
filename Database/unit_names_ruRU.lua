@@ -1,35 +1,3 @@
--- unrealUI :: Database/unit_names_ruRU.lua
---
--- Russian creature name -> creature id: the ruRU counterpart of
--- Database/unit_names.lua, same ids, same shape, same job. It is the lookup
--- index core/unitvitals.lua matches UnitName() against.
---
--- Exactly one of the three name files builds its table. This one returns
--- immediately unless the client reports ruRU, and Database/unit_names.lua
--- returns immediately when it reports a locale that has its own file, so the
--- guards decide between them rather than the .toc order does. On any other
--- client the enUS table stays in place, which is what this path always did.
---
--- The test is GetLocale, not unrealUI's own language setting: these names are
--- matched against what the *client* returns from UnitName, a property of the
--- client build, while the addon's language is a display preference the player
--- sets independently (core/locale.lua). documentation.json /
--- global:System:GetLocale lists "ruRU" among the tokens it returns.
---
--- 617 of the 10369 creatures have no ruRU name in the source data and
--- keep their English one here -- that is what UnitName returns for them.
---
--- A handful of ids share a name in ruRU that they do not share in enUS.
--- 6 such names would answer one level with two different maximum
--- healths, so they are left out entirely: core/unitvitals.lua takes the first
--- id whose level range covers the unit, and a wrong absolute number is worse
--- than the percentage readout the miss falls back to. Every name below is
--- unambiguous at every level it covers, which is the property the enUS index
--- has for all of its own.
---
--- Content originates from the VMaNGOS world database and was packaged by
--- pfQuest (MIT, Eric Mauser / Shagu). Generated data -- do not hand-edit.
--- Source DB revision: 6958f2666be3feb7b5584f3a49cb36e5acf74172
 
 if not GetLocale or GetLocale() ~= "ruRU" then return end
 

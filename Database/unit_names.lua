@@ -1,39 +1,3 @@
--- unrealUI :: Database/unit_names.lua
---
--- Creature name -> creature id, for exactly the ids Database/unit_vitals.lua
--- carries. core/unitvitals.lua matches the name UnitName() returns against
--- this table, then reads the vitals record the id points at.
---
--- Why this file exists
--- --------------------
--- The vitals table is keyed by creature id, and this client gives an addon no
--- way to get an id from a unit -- UnitName is the only identity a targeted
--- creature exposes. So a name index is required to use the vitals data at all.
---
--- It used to be borrowed from unrealQuest's bundled units_<locale> tables over
--- a shared global. That made a core unrealUI readout depend on a sibling addon
--- being installed and loaded, so it is now bundled here and unrealUI's exact
--- vitals work standalone.
---
--- Keyed by name rather than by id on purpose: this IS the lookup index, so
--- core/unitvitals.lua uses it directly instead of rebuilding an equivalent
--- table in chunks on every login. A handful of names are shared by more than
--- one id and hold a list; core/unitvitals.lua picks the entry whose level
--- range covers the unit.
---
--- These names are matched against what UnitName returns, which the *client*
--- picks, not against unrealUI's language setting -- that one is a display
--- preference the player sets independently (core/locale.lua). So the name file
--- has to follow GetLocale. Database/unit_names_ruRU.lua and
--- Database/unit_names_zhCN.lua carry the two other locales unrealUI bundles,
--- and this file steps aside for them: exactly one of the three builds a table,
--- decided by each file's own guard rather than by the .toc order. Any locale
--- without a file of its own lands here and resolves English names, which is
--- what this path did for every non-enUS client before those two existed.
---
--- Content originates from the VMaNGOS world database and was packaged by
--- pfQuest (MIT, Eric Mauser / Shagu). Generated data -- do not hand-edit.
--- Source DB revision: 6958f2666be3feb7b5584f3a49cb36e5acf74172
 
 local locale = GetLocale and GetLocale()
 if locale == "ruRU" or locale == "zhCN" then return end

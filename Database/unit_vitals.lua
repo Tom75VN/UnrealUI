@@ -1,32 +1,4 @@
--- unrealUI creature vitals data for Vanilla 1.12.1.
--- Source DB: db-sqlite-6958f26.zip / mangos.sqlite.
--- VMaNGOS core revision: 6958f2666be3feb7b5584f3a49cb36e5acf74172.
--- Database snapshot timestamp: 2026-08-22 06:58:00; latest migration: 20260822042038.
---
--- Exact VMaNGOS max-health formula for a normal DB creature:
---   maxHealth = max(1, round(rankHpRate[rank] * classLevel[class][level][1] * healthMultiplier))
--- Exact VMaNGOS max-mana formula:
---   maxMana = round(classLevel[class][level][2] * manaMultiplier)
--- round() here means C/C++ roundf for positive values: floor(x + 0.5).
---
--- Power type selection used by Creature::SetInitCreaturePowerType():
---   if classLevel[class][level][2] > 0 => MANA (0)
---   elseif class == 4 (rogue)          => ENERGY (3), max 100
---   else                              => RAGE (1), max 1000 internal = 100 displayed rage
--- Hunter-pet focus/happiness use Pet logic and are intentionally not modeled as normal world creatures.
---
--- units[creatureId] positional record:
---   { class, rank, levelMin, levelMax, healthMultiplier, manaMultiplier }
--- classLevel[class][level] positional record:
---   { baseMaxHealth, baseMaxMana }
---
--- The standard VMaNGOS rank HP rates are all 1.0. They are stored separately
--- because a realm can override them in mangosd.conf; the world DB itself does not store that config.
 
--- Names for these ids live in Database/unit_names.lua, with unit_names_ruRU.lua
--- and unit_names_zhCN.lua as the per-locale alternatives. The tables hang off
--- the addon table the way core/pricedata.lua does, so nothing here depends
--- on a sibling addon being installed.
 local U = UnrealUI
 
 U.unitVitals = {
@@ -43,18 +15,18 @@ U.unitVitals = {
   },
 
   ["powerCap"] = {
-    [1] = 1000, -- rage, internal VMaNGOS units (100 displayed rage)
-    [2] = 100,  -- focus (hunter pets only)
-    [3] = 100,  -- energy
-    [4] = 1050000, -- happiness (hunter pets only)
+    [1] = 1000,
+    [2] = 100,
+    [3] = 100,
+    [4] = 1050000,
   },
 
   ["rankHpRate"] = {
-    [0] = 1.0, -- normal
-    [1] = 1.0, -- elite
-    [2] = 1.0, -- rareelite
-    [3] = 1.0, -- worldboss
-    [4] = 1.0, -- rare
+    [0] = 1.0,
+    [1] = 1.0,
+    [2] = 1.0,
+    [3] = 1.0,
+    [4] = 1.0,
   },
 
   ["classLevel"] = {
@@ -10627,8 +10599,6 @@ U.unitVitals = {
     [18199] = { 1, 0, 1, 1, 1.0, 1.0 },
   },
 
-  -- Templates below exist in the DB but cannot be calculated from Vanilla
-  -- creature_classlevelstats (level 0 or test levels above 63). Do not guess.
   ["unsupported"] = {
     [3575] = true,
     [6526] = true,

@@ -6,17 +6,21 @@
 -- (modules/bank.lua) runs on the same core/itemslot.lua component and would
 -- need exactly this table if it ever grows the same view.
 --
--- Evidence: every classification signal comes from GetItemInfo, whose tuple is
--- documented for this client as
+-- Fallback evidence: every live-client classification signal comes from
+-- GetItemInfo, whose tuple is documented for this client as
 --   name, link, quality, minLevel, type, subType, stackCount, equipLoc, texture
 -- (documentation.json / global:Item:GetItemInfo, OFFICIAL_CLIENT_DOCUMENTATION,
 -- DOCUMENTED_NOT_RUNTIME_VERIFIED). The same entry states it "returns no values
 -- if the item is not in the local cache", so a miss falls through to the
--- "unknown" bucket instead of to a wrong one. Nothing here is runtime verified;
--- knowledge.json / bags.container_api_contract_unverified still covers the
--- container reads this builds on, and every call stays inside pcall.
+-- "unknown" bucket instead of to a wrong one. The bundled static metadata is
+-- world-data evidence, not client-API evidence; knowledge.json /
+-- bags.container_api_contract_unverified still covers the container reads this
+-- builds on, and every client call stays inside pcall.
 --
--- Signal order is deliberate, strongest first:
+-- Database/item_sort.lua is the primary classification for every template in
+-- the bundled VMaNGOS 1.12.1 snapshot. Its numeric class/subclass and
+-- profession-graph derivation are deeper and locale independent. The live
+-- signals below remain the deliberate fallback for custom or future items:
 --   1. no item in the slot            -> empty
 --   2. GetItemInfo gave nothing       -> unknown
 --   3. quality 0                      -> junk  (the bag's own grey-vendor rule)
@@ -167,6 +171,9 @@ local function Normalise(value)
 end
 
 function IC.FromLink(link)
+  local static = U.ItemSortStaticCategory(link)
+  if static and static ~= "unknown" then return static end
+
   local cached = IC.cache[link]
   if cached then return cached end
 

@@ -50,10 +50,24 @@ local modernWow = { applied = false }
 -- extension so the amount of rested XP remains visible.
 -- ---------------------------------------------------------------------------
 function modernWow.Enabled()
+  if modernWow.ClassicActionOnly() then return true end
   return type(U.GetActiveThemeStyle) == "function" and
          U.GetActiveThemeStyle() == "modern-wow" and
          type(U.ModernWowSurfaceEnabled) == "function" and
          U.ModernWowSurfaceEnabled("xpbar") or false
+end
+
+-- By user decision, classic-wow borrows this drawing path when Bar 1 is not
+-- the original UI (the reload-time "action only" mode): the stock MainMenuBar
+-- and its native XP track are then gone, and UnrealUI's own bars take the
+-- Modern WoW look instead of the flat one. Only the media is shared; the
+-- classic-wow theme itself is unchanged. Reads the reload-time bar owner, not
+-- the saved toggle, so flipping it before the reload changes nothing yet.
+function modernWow.ClassicActionOnly()
+  return type(U.GetActiveThemeStyle) == "function" and
+         U.GetActiveThemeStyle() == "classic-wow" and
+         type(U.ActionBarUsesNativeMainMenuBar) == "function" and
+         not U.ActionBarUsesNativeMainMenuBar() or false
 end
 
 function modernWow.StyleBar(bar, hasBackground)
@@ -941,6 +955,7 @@ function XP:OnEnable()
   end
   if nativeMain then return end
   if not xpAnchor then Build() end
+  if modernWow.ClassicActionOnly() then modernWow.Apply() end
 
   local i, events = nil, {
     "PLAYER_ENTERING_WORLD", "PLAYER_XP_UPDATE", "PLAYER_LEVEL_UP", "UPDATE_EXHAUSTION",

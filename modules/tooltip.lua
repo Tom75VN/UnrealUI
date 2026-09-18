@@ -570,6 +570,18 @@ function U.StyleCompareTooltip(tooltip, name)
     U.SetTextShadow(U.G(name .. "TextLeft" .. i))
     U.SetTextShadow(U.G(name .. "TextRight" .. i))
   end
+
+  -- Native compare setters (merchant, auction, ...) write CURRENTLY_EQUIPPED
+  -- as line 1 themselves; give it the same accent as UnrealUI's own heading.
+  local first = U.G(name .. "TextLeft1")
+  local header = U.G("CURRENTLY_EQUIPPED")
+  local accent = M.color.accent
+  if first and first.GetText and accent and type(header) == "string" then
+    local textOk, text = pcall(first.GetText, first)
+    if textOk and text == header then
+      pcall(first.SetTextColor, first, accent[1], accent[2], accent[3], 1)
+    end
+  end
 end
 
 -- SetInventoryItem populates ShoppingTooltip with the equipped item's native
@@ -724,8 +736,18 @@ function U.ShowCompareTooltipHeader(tooltip, name)
   local first = U.G(name .. "TextLeft1")
   if not first or not first.GetText then return end
 
+  -- The heading takes the shared accent in every theme, because the tooltip
+  -- it sits in is UnrealUI's flat frame in every theme.
+  local accent = M.color.accent
+  local r, g, b = 0.96, 0.68, 0.04
+  if accent then r, g, b = accent[1], accent[2], accent[3] end
+
+  -- Native compare setters already wrote the heading; only recolour it.
   local firstOk, firstText = pcall(first.GetText, first)
-  if firstOk and firstText == header then return first end
+  if firstOk and firstText == header then
+    pcall(first.SetTextColor, first, r, g, b, 1)
+    return first
+  end
 
   local countOk, lineCount = pcall(tooltip.NumLines, tooltip)
   if not countOk or type(lineCount) ~= "number" then return end
@@ -761,12 +783,6 @@ function U.ShowCompareTooltipHeader(tooltip, name)
       end
     end
   end
-
-  -- The heading takes the shared palette in every theme, because the tooltip
-  -- it sits in is UnrealUI's flat frame in every theme.
-  local dim = M.color.textDim
-  local r, g, b = 0.5, 0.5, 0.5
-  if dim then r, g, b = dim[1], dim[2], dim[3] end
 
   WriteCompareLine(first, header)
   pcall(first.SetTextColor, first, r, g, b, 1)
@@ -1567,6 +1583,8 @@ local placement = {
   -- overlapped the hovered unit, so the cursor sat on the tooltip.
   offsetX = 48,
   margin = 4,
+  -- Clearance kept between the cursor-follow box and the loot window.
+  avoidGap = 8,
   fadeDuration = 0.30,
   nativeButtonPrefixes = { "ActionButton", "BonusActionButton" },
 }
@@ -1610,6 +1628,82 @@ function placement.Register()
   placement.cursor:EnableMouse(false)
 end
 
+-- The rect the cursor-follow tooltip must not cover, in UIParent units:
+-- left, bottom, right, top, or nil when nothing is in the way. Only the loot
+-- window is avoided (user request, 2026-09-19); it is the one window the
+-- pointer is necessarily parked on top of while the world tooltip is up, so a
+-- tooltip over it hides the rows the player is trying to click.
+function placement.LootRect()
+  if type(U.LootWindowFrame) ~= "function" then return nil end
+  local frame = U.LootWindowFrame()
+  if not frame then return nil end
+
+  local left, bottom, width, height = CompareBox(frame)
+  if not left then return nil end
+  -- Same space conversion as NoteOverflow: the origin comes back in the
+  -- parent's space, and CompareBox has already scaled the extent.
+  local ok, uiLeft, uiBottom = pcall(function()
+    return UIParent:GetLeft(), UIParent:GetBottom()
+  end)
+  if ok and type(uiLeft) == "number" and type(uiBottom) == "number" then
+    left, bottom = left - uiLeft, bottom - uiBottom
+  end
+  return left, bottom, left + width, bottom + height
+end
+
+-- Nearest-candidate bookkeeping, written as a shared function rather than a
+-- closure because the caller runs on every frame the tooltip is up.
+function placement.Nearer(bx, by, best, cx, cy, cost)
+  if cost < 0 then cost = -cost end
+  if best and cost >= best then return bx, by, best end
+  return cx, cy, cost
+end
+
+-- Step the box off the loot window.
+--
+-- The box occupies [x, x + width] horizontally and [y - foot, y + height]
+-- vertically, because the styled health bar hangs below the anchored corner.
+-- Four candidates clear the window completely -- fully left of it, fully
+-- right, fully below, fully above -- and the nearest one that is still wholly
+-- on screen wins, so the tooltip moves aside by the smallest visible amount
+-- and keeps the axis it did not need to change.
+--
+-- A box too large to fit beside the window on any side keeps the position it
+-- came in with: the cursor placement stays predictable, and an unavoidable
+-- overlap is better than pushing the name and first lines off screen.
+function placement.AvoidLoot(x, y, width, height, foot, screenWidth, screenHeight)
+  local left, bottom, right, top = placement.LootRect()
+  if not left then return x, y end
+
+  local margin, gap = placement.margin, placement.avoidGap
+  left, bottom, right, top = left - gap, bottom - gap, right + gap, top + gap
+  if x >= right or x + width <= left or
+     y - foot >= top or y + height <= bottom then
+    return x, y
+  end
+
+  local bx, by, best, candidate = x, y, nil, nil
+
+  candidate = left - width
+  if candidate >= margin and candidate + width <= screenWidth - margin then
+    bx, by, best = placement.Nearer(bx, by, best, candidate, y, candidate - x)
+  end
+  candidate = right
+  if candidate >= margin and candidate + width <= screenWidth - margin then
+    bx, by, best = placement.Nearer(bx, by, best, candidate, y, candidate - x)
+  end
+  candidate = bottom - height
+  if candidate - foot >= margin and candidate + height <= screenHeight - margin then
+    bx, by, best = placement.Nearer(bx, by, best, x, candidate, candidate - y)
+  end
+  candidate = top + foot
+  if candidate - foot >= margin and candidate + height <= screenHeight - margin then
+    bx, by, best = placement.Nearer(bx, by, best, x, candidate, candidate - y)
+  end
+
+  return bx, by
+end
+
 -- All inputs are in UIParent units. Prefer above/right of the pointer, flip
 -- each axis when needed, then clamp the whole box, including the health bar
 -- below the body. Content size is read again while shown, so native rebuilds
@@ -1640,7 +1734,9 @@ function placement.CursorBox(cx, cy, width, height, foot, screenWidth, screenHei
   x = math.max(margin, x)
   y = math.max(margin + foot, y)
   y = math.min(y, screenHeight - margin - height)
-  return x, y
+  -- Last, on the already on-screen box: the loot window is avoided by the
+  -- final position, not by one the clamp could then slide back over it.
+  return placement.AvoidLoot(x, y, width, height, foot, screenWidth, screenHeight)
 end
 
 -- Reset the measured allowance. Called whenever the tooltip stops showing the

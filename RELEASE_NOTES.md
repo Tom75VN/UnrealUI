@@ -1,12 +1,12 @@
-## UnrealUI 0.7.4
+## UnrealUI 0.8.0
 
-- Added an option to customize the Classic WoW theme by enabling different modules from Modern WoW.
-- Added new talent windows for the Modern theme.
-- Fixed the interface appearing outside the screen after the latest client update.
-- Target of Target in the Classic WoW theme now uses a Classic-style design.
-- Added item border colors based on gear rarity in the Inspect interface.
-- Gear rarity borders in the Classic WoW theme now display in a Modern WoW style instead of flat borders.
-- The Inspect interface design now changes based on your selected theme.
-- Added compare tooltips for roll items in parties.
-- The Classic WoW theme now includes the Professions tab in the Spellbook.
-- The merchant Buyback interface now shows item rarity colors.
+- Watch your bank contents from a distance.
+- Redesigned the combined bag and bank for Classic WoW and modern WoW.
+- Redesigned the loot panel with an easing effect when looting items, with loot moving right and fading out.
+- Classic WoW theme now uses the modern WoW quest log.
+- Improved bag sorting, automatically applied to the category-based view.
+- For the Classic WoW theme, Bar 1 now matches the native UI, with an option to disable it in Move UI settings when clicking Bar 1.
+- When Bar 1 on the Classic WoW theme is not set as the original UI, the XP bar now uses the modern WoW design.
+- Fixed a modern WoW interface bug when switching between the Buyback and Merchant tabs.
+- Fixed Highlight Slot accumulating when related to an extra bag.
+- Improved 3D portrait loading to avoid textures not yet being loaded.

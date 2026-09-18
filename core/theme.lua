@@ -29,13 +29,35 @@ local classicModernModules = {
   { id = "spellbook",    labelKey = "CLASSIC_MODULE_SPELLBOOK" },
   { id = "talents",      labelKey = "CLASSIC_MODULE_TALENTS" },
   { id = "professions",  labelKey = "CLASSIC_MODULE_CRAFTING" },
+  -- The Quest Log's Dragonflight design is its own module
+  -- (modules/questlogdesign.lua), so selecting it here runs exactly the code
+  -- `modern-wow` runs. On by default, like the bag family: switching it off is
+  -- what restores modules/questlogextended.lua's parchment two-page log, which
+  -- stands down for the session while this is on.
+  { id = "questlog",     labelKey = "CLASSIC_MODULE_QUEST_LOG", default = true },
+  -- Bag, bank and saved bank share one design (modules/bagdesign.lua). On by
+  -- default: Classic uses it unless the player switches it off.
+  { id = "bags",         labelKey = "CLASSIC_MODULE_BAGS", default = true },
+  -- The corpse loot window's one design (modules/lootdesign.lua), same
+  -- arrangement as the bag family: on by default, off restores the native
+  -- window. modules/loot.lua's price and comparison readouts are behaviour and
+  -- run either way.
+  { id = "loot",         labelKey = "CLASSIC_MODULE_LOOT", default = true },
 }
+-- Bumped when a module's shipped default changes. U.ModuleConfig writes a
+-- registration default into the profile the first time it is read, so a module
+-- that shipped off and later became on-by-default would stay off forever for
+-- anyone who ran the earlier build. Same trap, and the same one-time fix, as
+-- the surface version bumps in modules/modernwow.lua.
+local CLASSIC_MODERN_VERSION = 2
+
 local classicModernDefaults = {}
 local classicModernKnown = {}
 local classicModernIndex
 for classicModernIndex = 1, table.getn(classicModernModules) do
-  local id = classicModernModules[classicModernIndex].id
-  classicModernDefaults[id] = false
+  local entry = classicModernModules[classicModernIndex]
+  local id = entry.id
+  classicModernDefaults[id] = entry.default and true or false
   classicModernKnown[id] = true
 end
 
@@ -92,18 +114,34 @@ function U.GetClassicModernModules()
   return classicModernModules
 end
 
-function U.GetClassicModernModule(id)
-  if not classicModernKnown[id] or type(U.ModuleConfig) ~= "function" then
-    return false
+-- The stored Classic choices, with the pending default migrations applied.
+-- Guarded on U.db because U.ModuleConfig hands back the defaults table itself
+-- before SavedVariables are readable, and a migration must never write into
+-- that shared table.
+local function ClassicModernConfig()
+  if type(U.ModuleConfig) ~= "function" then return classicModernDefaults end
+  local config = U.ModuleConfig("classicwow", classicModernDefaults)
+  if U.db and (tonumber(config.version) or 1) < CLASSIC_MODERN_VERSION then
+    -- The Quest Log's Dragonflight design shipped opt-in for one build before
+    -- becoming the Classic default, so turn it on once for the profiles that
+    -- stored that earlier default. A later explicit choice in Settings stands,
+    -- because this runs once per profile.
+    config.questlog = true
+    config.version = CLASSIC_MODERN_VERSION
   end
-  return U.ModuleConfig("classicwow", classicModernDefaults)[id] and true or false
+  return config
+end
+
+function U.GetClassicModernModule(id)
+  if not classicModernKnown[id] then return false end
+  return ClassicModernConfig()[id] and true or false
 end
 
 function U.SetClassicModernModule(id, enabled)
   if not classicModernKnown[id] or type(U.ModuleConfig) ~= "function" then
     return false
   end
-  U.ModuleConfig("classicwow", classicModernDefaults)[id] = enabled and true or false
+  ClassicModernConfig()[id] = enabled and true or false
   return true
 end
 

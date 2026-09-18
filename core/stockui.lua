@@ -228,6 +228,21 @@ function U.FitLineToText(object)
   -- +2 absorbs rounding so a line that fits is not wrapped by its own box.
   if textWidth > 0 and textWidth + 2 < width then width = textWidth + 2 end
   pcall(object.SetWidth, object, width)
+  -- What this width was measured against, so a caller that cannot know when
+  -- the string changed can ask. A box fitted to one text and then filled with
+  -- a longer one wraps inside its own shrunk width, and nothing in the native
+  -- refresh path fires when another addon writes the string directly.
+  local textOk, text = pcall(object.GetText, object)
+  object.uuiFitText = textOk and text or nil
+end
+
+-- True when `object` was fitted against a different string than it now shows.
+-- Cheap enough for a poll: one GetText and a compare, no geometry touched.
+function U.FitLineIsStale(object)
+  if not object or not object.uuiNativeWidth then return false end
+  local ok, text = pcall(object.GetText, object)
+  if not ok then return false end
+  return (text or "") ~= (object.uuiFitText or "")
 end
 
 function U.StockRegionKeep(frame, extra)

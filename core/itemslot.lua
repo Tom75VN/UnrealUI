@@ -232,14 +232,19 @@ function U.SetGearQualityGlow(button, color)
     return glow
   end
 
-  local grow = tonumber(M.gearQualityGlow.grow) or 0
-  PositionGearGlow(button, glow, grow)
-  U.SetColor(glow, color[1], color[2], color[3], color[4] or M.gearQualityGlow.alpha)
-  pcall(glow.Show, glow)
-
   local boostToken = M.gearQualityGlow.rareBoost
   local rareBlue = boostToken and M.qualityBorder and
                    SameGearColor(color, M.qualityBorder[3])
+
+  local grow = tonumber(M.gearQualityGlow.grow) or 0
+  local alpha = color[4] or M.gearQualityGlow.alpha
+  if rareBlue and M.gearQualityGlow.rareAlpha then
+    alpha = M.gearQualityGlow.rareAlpha
+  end
+  PositionGearGlow(button, glow, grow)
+  U.SetColor(glow, color[1], color[2], color[3], alpha)
+  pcall(glow.Show, glow)
+
   if rareBlue and not boost and button.CreateTexture then
     local ok, texture = pcall(button.CreateTexture, button, nil, "OVERLAY")
     if ok and texture then
@@ -261,6 +266,19 @@ function U.SetGearQualityGlow(button, color)
     end
   end
   return glow
+end
+
+-- The same glow driven from a raw quality index, for a themed item button that
+-- is not a gear slot (the Modern WoW loot rows). Colour and threshold follow
+-- the Modern WoW Character slots exactly: above M.qualityLimit the themed
+-- border colour, otherwise the plain border, which hides the glow.
+function U.SetItemQualityGlow(button, quality)
+  quality = tonumber(quality)
+  local color = M.slotBorder.plain
+  if quality and quality > M.qualityLimit then
+    color = U.ItemQualityBorderColor(quality) or M.slotBorder.plain
+  end
+  return U.SetGearQualityGlow(button, color)
 end
 
 -- ---------------------------------------------------------------------------
@@ -445,6 +463,99 @@ function U.StyleItemSlot(button, name, raisedCount)
   local pushOk, pushed = pcall(button.GetPushedTexture, button)
   if pushOk and pushed then
     pcall(pushed.SetTexture, pushed, 0.5, 0.5, 0.5, 0.4)
+  end
+end
+
+-- Square Modern WoW container face used by the bag family
+-- (modules/bagdesign.lua), under modern-wow and, when the bag design is on,
+-- classic-wow. The underlying item button remains the interaction owner; this
+-- only replaces its flat fill with the dark-grey slot face and lays the thin
+-- grey rim above the icon. Quality edges, counts, cooldowns and native button
+-- states remain; hover/pressed take the shared grey wash in both themes.
+function U.StyleModernWowContainerSlot(button, size)
+  if not button then return false end
+  if U.GetActiveThemeStyle() ~= "modern-wow" and
+     not (type(U.ModernWowBagFamilyActive) == "function" and
+          U.ModernWowBagFamilyActive()) then
+    return false
+  end
+
+  local token = M.modernWow and M.modernWow.bags and M.modernWow.bags.slot
+  if not token or not token.background or not token.frame then return false end
+
+  local state = button.uuiModernWowContainerSlot
+  if type(state) ~= "table" then
+    local okBackground, background =
+      pcall(button.CreateTexture, button, nil, "BACKGROUND")
+    -- ARTWORK keeps the rim over the native item icon but below the shared
+    -- OVERLAY quality edges, count and favourite marker.
+    local okFrame, rim = pcall(button.CreateTexture, button, nil, "ARTWORK")
+    if not okBackground or not okFrame or not background or not rim then
+      return false
+    end
+
+    pcall(background.SetTexture, background, token.background)
+    pcall(rim.SetTexture, rim, token.frame)
+    local c = token.frameColor
+    if c then pcall(rim.SetVertexColor, rim, c[1], c[2], c[3], c[4] or 1) end
+    state = { background = background, frame = rim }
+    button.uuiModernWowContainerSlot = state
+  end
+
+  size = tonumber(size)
+  if not size and button.GetWidth then
+    local ok, value = pcall(button.GetWidth, button)
+    if ok then size = tonumber(value) end
+  end
+  size = (size or M.slot.size) + (token.grow or 0)
+
+  pcall(function()
+    for _, texture in ipairs({ state.background, state.frame }) do
+      texture:ClearAllPoints()
+      texture:SetWidth(size)
+      texture:SetHeight(size)
+      texture:SetPoint("CENTER", button, "CENTER", 0, 0)
+      texture:Show()
+    end
+  end)
+
+  -- Classic's item styling keeps the template's stock hover art; give both
+  -- themes the same grey wash U.StyleItemSlot uses for modern slots.
+  local hlOk, highlight = pcall(button.GetHighlightTexture, button)
+  if hlOk and highlight then
+    pcall(highlight.SetTexture, highlight, 0.5, 0.5, 0.5, 0.4)
+  end
+  local pushOk, pushed = pcall(button.GetPushedTexture, button)
+  if pushOk and pushed then
+    pcall(pushed.SetTexture, pushed, 0.5, 0.5, 0.5, 0.4)
+  end
+
+  -- Keep the explicit quality outline, but make the old flat bed transparent.
+  U.SetBackgroundColor(button, 0, 0, 0, 0)
+  return true
+end
+
+-- Shows an item slot's rarity/state colour. Modern WoW container slots show
+-- it the way the themed Character window does -- the shared quality glow
+-- (blue fully opaque) with no flat outline; every other slot tints its flat
+-- outline. Used by the bag, the bank and the saved-bank view alike.
+--
+-- `quality` is the item's 0-6 index when known. The glow is tuned against
+-- the border palette (U.ItemQualityBorderColor), not the client's text
+-- colours the flat outline uses: only that rare blue gets the Character
+-- window's full-opacity pass and boost. Quest and empty colours pass through.
+function U.SetItemSlotRarity(button, color, quality)
+  if not button or not color then return end
+  if button.uuiModernWowContainerSlot then
+    quality = tonumber(quality)
+    if quality and quality > M.qualityLimit and
+       color ~= M.slotBorder.quest and U.GearBorderIsRare(color) then
+      color = U.ItemQualityBorderColor(quality) or color
+    end
+    U.SetBorderColor(button, 0, 0, 0, 0)
+    U.SetGearQualityGlow(button, color)
+  else
+    U.SetBorderColor(button, color[1], color[2], color[3], color[4] or 1)
   end
 end
 
@@ -816,8 +927,9 @@ function U.UpdateItemSlot(button, bag, slot)
     end
   end
 
-  local color = U.ItemSlotBorderColor(bag, slot, texture, quality)
-  U.SetBorderColor(button, color[1], color[2], color[3], color[4] or 1)
+  U.SetItemSlotRarity(button,
+                      U.ItemSlotBorderColor(bag, slot, texture, quality),
+                      quality)
 
   -- The Classic action-button face deliberately hides the flat backdrop, but
   -- U.SetBackdropShown also hides its four explicit edge textures. Restore

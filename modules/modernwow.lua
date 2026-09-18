@@ -77,9 +77,10 @@ function mw.Defaults()
   local defaults, i = { powerTextSize = 0,
                         castScale = mw.cast.scale,
                         actionbarVisualVersion = 1,
-                        playerFXVersion = 1,
-                        microbarVersion = 1,
-                        xpbarVersion = 1 }, nil
+                         playerFXVersion = 1,
+                         microbarVersion = 1,
+                         xpbarVersion = 1,
+                         bagsVersion = 1 }, nil
   for i = 1, table.getn(mw.surfaceOrder) do
     local surface = mw.surfaceOrder[i]
     defaults["surface_" .. surface.id] = surface.default
@@ -144,6 +145,11 @@ function MW:OnInit()
   if (tonumber(config.xpbarVersion) or 1) < 2 then
     config.surface_xpbar = true
     config.xpbarVersion = 2
+  end
+
+  if (tonumber(config.bagsVersion) or 1) < 2 then
+    config.surface_bags = true
+    config.bagsVersion = 2
   end
 end
 
@@ -443,6 +449,89 @@ function U.ModernWowRedButtonFace(owner, height, gold)
   return true
 end
 
+-- Shared Modern WoW treatment for a real Button that must keep its current
+-- geometry. The stock button remains the click and enabled-state owner; a
+-- mouse-transparent child cover carries the measured 128RedButton three-slice
+-- and an owned copy of its label. The raised cover is deliberate: the Modern
+-- WoW window chrome is built after modules such as Quest Log, so regions drawn
+-- directly on those native buttons can remain underneath the later page art.
+-- Call this again after a native refresh so changed text and enabled state are
+-- reflected immediately.
+function U.StyleModernWowActionButton(button, options)
+  if not mw.Active() or not button then return false end
+  options = options or {}
+
+  local skin = button.uuiModernWowActionButton
+  if type(skin) ~= "table" then
+    -- Do the region walk before the atlas slices exist. The button may already
+    -- carry UnrealUI's flat backdrop; HideFlatSurface removes that without a
+    -- second walk, which would also hide these addon-owned slices.
+    U.RefreshStockButtonArtwork(button)
+    mw.HideFlatSurface(button)
+
+    local okCover, cover = pcall(CreateFrame, "Frame", nil, button)
+    if not okCover or not cover then return false end
+    pcall(cover.SetAllPoints, cover, button)
+    pcall(cover.EnableMouse, cover, false)
+    local level = mw.Dimension(button, "GetFrameLevel")
+    pcall(cover.SetFrameLevel, cover, level + 10)
+
+    skin = { cover = cover }
+    skin.label = U.CreateLabel(cover, {
+      size = options.fontSize or M.fontSize.small,
+      color = M.color.text,
+      inherits = "GameFontNormal",
+    })
+    if skin.label then U.CenterButtonLabel(skin.label, cover) end
+    button.uuiModernWowActionButton = skin
+
+    U.PostHookScript(button, "OnEnter", function()
+      skin.hovered = true
+      U.StyleModernWowActionButton(button, options)
+    end)
+    U.PostHookScript(button, "OnLeave", function()
+      skin.hovered = false
+      U.StyleModernWowActionButton(button, options)
+    end)
+    U.PostHookScript(button, "OnShow", function()
+      U.StyleModernWowActionButton(button, options)
+    end)
+  end
+
+  local face = skin.cover
+  if not face then return false end
+  local height = mw.Dimension(button, "GetHeight")
+  if not U.ModernWowRedButtonFace(face, height, options.gold) then
+    return false
+  end
+
+  local enabled = true
+  if button.IsEnabled then
+    local ok, value = pcall(button.IsEnabled, button)
+    if ok then enabled = value == true or value == 1 end
+  end
+  U.ModernWowSetRedButtonDisabled(face, not enabled)
+  U.ModernWowPaintRedButton(face, skin.hovered and enabled)
+
+  local ok, label = false, nil
+  if button.GetFontString then
+    ok, label = pcall(button.GetFontString, button)
+  end
+  if ok and label and skin.label then
+    local textOk, text = pcall(label.GetText, label)
+    if textOk then
+      skin.label:SetText(text or "")
+      pcall(label.Hide, label)
+    end
+  end
+  if skin.label then
+    pcall(skin.label.SetTextColor, skin.label,
+          M.Unpack(enabled and M.color.text or M.color.textDim))
+  end
+  pcall(face.Show, face)
+  return true
+end
+
 function U.ModernWowPaintRedButton(owner, hovered)
   local state = owner and owner.uuiModernWowAction
   if type(state) ~= "table" then return end
@@ -701,6 +790,8 @@ mw.units = {
     -- percentage is pulled back by that difference to share the health one's
     -- screen x. Player only: the target's insets are left as they read today.
     alignPowerPercent = true,
+    -- Extra upward nudge for the power bar's percentage only.
+    powerPercentY = 2,
     -- Horizontal nudge for this frame's aura rows only, in screen units with
     -- positive meaning rightward whichever way the housing is mirrored. The
     -- player's bar opening reads 3 units left of where its auras should line
@@ -713,7 +804,9 @@ mw.units = {
     -- The target health fill only overruns the rim at its left edge.
     healthLeftInset = 2,
     -- Extra rightward nudge for the power bar's percentage only.
-    powerPercentX = 1,
+    powerPercentX = 2,
+    -- Extra upward nudge for the power bar's percentage only.
+    powerPercentY = 2,
     header = { name = -5, level = 6 } },
   -- Portrait LEFT, by request: the housing is flipped so the ring sits on the
   -- left. The bed takes the player file, whose opaque region lies under the
@@ -1562,6 +1655,7 @@ function mw.AlignPercentages(frame, entry)
   end
 
   y = y + (tonumber(M.modernWow.text.powerPercentY) or 0)
+  if entry then y = y + (tonumber(entry.powerPercentY) or 0) end
 
   target:ClearAllPoints()
   target:SetPoint("LEFT", frame.power.textLayer, "LEFT", x, y)
@@ -2856,7 +2950,7 @@ function mw.BuildQuestLog()
   if not mw.DressWindow(frame, entry) then
     error("modern-wow Quest Log texture could not be applied")
   end
-  -- Also created from modules/questlog.lua; whichever runs second finds it.
+  -- Also created from modules/questlogdesign.lua; whichever runs second finds it.
   pcall(U.ModernWowQuestLogBook)
   -- The window's own close button, dressed with this surface rather than with
   -- the generic `close` one: that surface covers a dozen windows this theme
@@ -3569,7 +3663,8 @@ function mw.InspectClassIcon(frame)
 end
 
 -- Where the Quest Log art draws its three button beds, in the window's own
--- coordinates, for the module that owns those buttons (modules/questlog.lua).
+-- coordinates, for the module that places those buttons
+-- (modules/questlogdesign.lua).
 --
 -- Recomputed per call rather than measured once: the beds are on the left
 -- page, whose width is the live frame width times the art's seam, and the
@@ -3587,11 +3682,15 @@ function U.ModernWowQuestLogButtonRect(index)
   if width <= 0 or height <= 0 then return nil end
 
   local page = width * (M.modernWow.questLog.split or mw.quadrant.split)
-  return cell.x * page, M.modernWow.questLog.buttonBottom * height,
-         cell.width * page, M.modernWow.questLog.buttonHeight * height
+  return cell.x * page + (M.modernWow.questLog.buttonOffsetX or 0),
+         M.modernWow.questLog.buttonBottom * height
+           + (M.modernWow.questLog.buttonOffsetY or 0),
+         cell.width * page + (M.modernWow.questLog.buttonWidthGrow or 0),
+         M.modernWow.questLog.buttonHeight * height
+           + (M.modernWow.questLog.buttonHeightGrow or 0)
 end
 
--- Narrow seam used by modules/questlog.lua after the native frame changes
+-- Narrow seam used by modules/questlogdesign.lua after the native frame changes
 -- between its compact and expanded widths.
 function U.ResizeModernWowQuestLog()
   if not mw.Active() then return false end
@@ -3973,6 +4072,26 @@ function mw.BuildProfessions()
 end
 mw.RegisterSurface("professions", "Profession window", true, mw.BuildProfessions)
 
+-- modules/bags.lua owns and draws the merged window before this registry's
+-- OnEnable pass. The surface gates that path; this confirms it activated when
+-- the bag component itself is enabled.
+function mw.BuildBags()
+  if type(U.BagsEnabled) == "function" and not U.BagsEnabled() then return end
+  if type(U.ModernWowBagsActive) ~= "function" or
+     not U.ModernWowBagsActive() then
+    error("modern-wow bag-window drawing path did not activate")
+  end
+end
+mw.RegisterSurface("bags", "Bag window", true, mw.BuildBags)
+
+-- modules/lootdesign.lua draws the corpse loot window itself, the first
+-- time it opens (its row geometry is read from the live window). Nothing
+-- exists to check at this pass, so the build is a deliberate no-op; the
+-- surface is the gate that path reads.
+function mw.BuildLoot()
+end
+mw.RegisterSurface("loot", "Loot window", true, mw.BuildLoot)
+
 -- Planned surfaces: art imported and tokenised in core/media.lua, no drawing
 -- path yet. Registered with no build function so `/uui mw list` states the
 -- real roadmap and enabling one is a no-op rather than a surprise.
@@ -3983,12 +4102,8 @@ mw.RegisterSurface("professions", "Profession window", true, mw.BuildProfessions
 -- U.StyleClassicActionButtonBorder family for the Classic theme rather than
 -- letting another file dress its buttons:
 --
---   bags       -> modules/bags.lua slot construction (slot, cutout, hover)
---                 plus the window background. The bag BAR is separate and
---                 already drawn -- see the `bagbar` surface above.
 --   chat       -> the two scroll arrows only; the two-arrow control itself is
 --                 a scope invariant and does not change.
-mw.RegisterSurface("bags", "Bag window (planned)", false, nil)
 mw.RegisterSurface("chat", "Chat arrows (planned)", false, nil)
 
 -- ---------------------------------------------------------------------------

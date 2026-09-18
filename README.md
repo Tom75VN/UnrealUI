@@ -91,7 +91,7 @@ Use `/uui` to open the settings, `/uui unlock` to arrange supported elements, an
 
 ## Version
 
-Current release: **0.7.4**
+Current release: **0.8.0**
 
 ## Acknowledgements
 
