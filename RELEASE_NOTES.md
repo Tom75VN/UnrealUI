@@ -1,12 +1,19 @@
-## UnrealUI 0.8.0
+## UnrealUI 0.9.0
 
-- Watch your bank contents from a distance.
-- Redesigned the combined bag and bank for Classic WoW and modern WoW.
-- Redesigned the loot panel with an easing effect when looting items, with loot moving right and fading out.
-- Classic WoW theme now uses the modern WoW quest log.
-- Improved bag sorting, automatically applied to the category-based view.
-- For the Classic WoW theme, Bar 1 now matches the native UI, with an option to disable it in Move UI settings when clicking Bar 1.
-- When Bar 1 on the Classic WoW theme is not set as the original UI, the XP bar now uses the modern WoW design.
-- Fixed a modern WoW interface bug when switching between the Buyback and Merchant tabs.
-- Fixed Highlight Slot accumulating when related to an extra bag.
-- Improved 3D portrait loading to avoid textures not yet being loaded.
+- Added Talent Build Advisor.
+- Deeply reworked the social interface for the modern WoW theme.
+- Added a new crafting interface for the modern WoW theme.
+- Added a Professions tab for the modern WoW theme.
+- The swing bar now uses WoW Forever textures.
+- Added options in Move UI to change the swing bar width and height.
+- Added target reaction status to the modern WoW target frame.
+- Redesigned the quest giver interface for the modern WoW theme.
+- Action bar spells that require reagents now show how many casts are available based on the reagents in your bags.
+- The classic WoW theme talent window now displays all 3 talent panes.
+- Improved Move UI edit mode with a new border design.
+- Added an animated icon near the minimap when you have unread letters.
+- Fixed quest log item rewards sometimes appearing in the wrong position in the classic WoW theme.
+- Fixed mouse wheel scrolling in the crafting interface.
+- Improved the pulse effect for highlighted action bar spells in the modern WoW theme.
+- Added new spell borders to the spellbook for the modern WoW theme.
+- Fixed missing spell highlights sometimes appearing on the wrong action bar tab and position.

@@ -51,13 +51,28 @@ local M = U.media
 local SB = U.RegisterModule("swingbar")
 
 -- Thirty percent narrower than the previous 180-unit lane.
-local WIDTH = 126
-local TEXT_SIZE = 6
+local FLAT_WIDTH = 126
+local FLAT_TEXT_SIZE = 6
 -- Twenty percent thinner than the previous 8-unit lane. The compact text is
 -- taller than the bar, so stacked lanes retain enough separation for their
 -- labels not to collide.
-local ROW_HEIGHT = 6.4
-local ROW_GAP = 3
+local FLAT_ROW_HEIGHT = 6.4
+local FLAT_ROW_GAP = 3
+-- Lane width is the one thing edit mode changes about this bar (user request,
+-- 2026-09-21). A stored 0 means "the width this theme's lane art was authored
+-- at", so the default stays right when the theme changes under a saved profile.
+local WIDTH_LIMIT = { min = 100, max = 400, step = 1 }
+-- Lane height runs from the height the theme's art is drawn at up to double
+-- it (user request, 2026-09-21), so its limits are derived rather than fixed.
+local HEIGHT_STEP = 1
+-- With a weapon in each hand the main-hand and off-hand lanes stack, and the
+-- authored lane height leaves the lower label clipped by the lane above it.
+-- Both lanes gain two units while an off-hand lane exists (user request,
+-- 2026-09-21); a single lane keeps the height its art was authored at.
+local DUAL_WIELD_HEIGHT_BONUS = 2
+local MOVER_ID = "swingbar"
+local MOVER_CONTENT_WIDTH = 200
+local MOVER_SLIDER_WIDTH = 150
 local STATE_INTERVAL = 0.08
 local EQUIPMENT_INTERVAL = 0.5
 local RANGE_INTERVAL = 0.15
@@ -99,6 +114,18 @@ local tickInterval
 local Tick
 local UpdateTickRate
 local rangedClock = { generation = 0, casting = false }
+local foreverStyle = false
+local laneWidth = FLAT_WIDTH
+local rowHeight = FLAT_ROW_HEIGHT
+local laneHeight = FLAT_ROW_HEIGHT
+local rowGap = FLAT_ROW_GAP
+local textSize = FLAT_TEXT_SIZE
+
+local function ApplyAtlasCell(texture, cell)
+  if not texture or not cell then return end
+  texture:SetTexture(M.modernWow.texture.swingTimer)
+  texture:SetTexCoord(cell[1], cell[2], cell[3], cell[4])
+end
 
 local function InvalidateRangedPulse()
   rangedClock.generation = rangedClock.generation + 1
@@ -196,7 +223,8 @@ local function Positive(value)
 end
 
 local function EnsureConfig()
-  if not config then config = U.ModuleConfig("swingbar", { enabled = true }) end
+  if not config then config = U.ModuleConfig("swingbar",
+      { enabled = true, width = 0, height = 0 }) end
   return config
 end
 
@@ -212,7 +240,7 @@ local function ApplySwingTextSize(label)
   end
   local path = U.ResolveFont()
   if type(path) ~= "string" or path == "" then return false end
-  return pcall(label.SetFont, label, path, TEXT_SIZE, "OUTLINE")
+  return pcall(label.SetFont, label, path, FLAT_TEXT_SIZE, "OUTLINE")
 end
 
 local function SetLaneSpeed(lane, speed, now)
@@ -348,8 +376,51 @@ local function SetLaneShown(lane, shown)
   if shown then lane.frame:Show() else lane.frame:Hide() end
 end
 
+-- The drawn lane height, which is rowHeight plus the dual-wield bonus. Kept
+-- apart from rowHeight so the theme's authored height stays the baseline.
+local function ApplyLaneHeight(height)
+  if laneHeight == height then return end
+  laneHeight = height
+  local i
+  for i = 1, table.getn(laneOrder) do
+    local lane = laneOrder[i]
+    if lane and lane.frame then lane.frame:SetHeight(height) end
+  end
+end
+
+-- Both of a lane's labels move together, so one offset per lane is enough.
+-- extra is added to the theme's own labelDrop rather than replacing it.
+local function ApplyLabelDrop(lane, extra)
+  if not lane or lane.labelDrop == extra then return end
+  lane.labelDrop = extra
+
+  local style = foreverStyle and M.modernWow.swingTimer or nil
+  local inset = style and style.labelInset or 4
+  local y = (style and style.labelDrop or 0) + extra
+  if lane.left then
+    lane.left:ClearAllPoints()
+    lane.left:SetPoint("LEFT", lane.bar, "LEFT", inset, y)
+  end
+  if lane.right then
+    lane.right:ClearAllPoints()
+    lane.right:SetPoint("RIGHT", lane.bar, "RIGHT", -inset, y)
+  end
+end
+
 local function Layout()
   if not anchor then return end
+
+  -- An off-hand speed is only ever set when U.HasOffhandWeapon confirms a real
+  -- melee weapon in slot 17, so it is this module's dual-wield test.
+  local stacked = lanes.off.speed and true or false
+  ApplyLaneHeight(rowHeight + (stacked and DUAL_WIELD_HEIGHT_BONUS or 0))
+
+  -- The stacked pair's text offsets are theme media, so the flat modern lanes
+  -- keep their own centred labels.
+  local drop = foreverStyle and M.modernWow.swingTimer.stackedLabelDrop or nil
+  ApplyLabelDrop(lanes.main, (stacked and drop and drop.main) or 0)
+  ApplyLabelDrop(lanes.off, (stacked and drop and drop.off) or 0)
+  ApplyLabelDrop(lanes.ranged, 0)
 
   local unlocked = U.IsUnlocked and U.IsUnlocked()
   local enabled = EnsureConfig().enabled
@@ -380,7 +451,7 @@ local function Layout()
     if lane.shown then
       lane.frame:ClearAllPoints()
       if previous then
-        lane.frame:SetPoint("TOPLEFT", previous.frame, "BOTTOMLEFT", 0, -ROW_GAP)
+        lane.frame:SetPoint("TOPLEFT", previous.frame, "BOTTOMLEFT", 0, -rowGap)
       else
         lane.frame:SetPoint("TOPLEFT", anchor, "TOPLEFT", 0, 0)
       end
@@ -389,8 +460,111 @@ local function Layout()
     end
   end
 
-  anchor:SetHeight(math.max(ROW_HEIGHT,
-    count * ROW_HEIGHT + math.max(0, count - 1) * ROW_GAP))
+  anchor:SetHeight(math.max(laneHeight,
+    count * laneHeight + math.max(0, count - 1) * rowGap))
+end
+
+-- 0 or anything unreadable falls back to the authored lane width of whichever
+-- lane art the active theme draws.
+local function ClampWidth(value)
+  value = tonumber(value) or 0
+  if value <= 0 then
+    return foreverStyle and M.modernWow.swingTimer.width or FLAT_WIDTH
+  end
+  if value < WIDTH_LIMIT.min then value = WIDTH_LIMIT.min end
+  if value > WIDTH_LIMIT.max then value = WIDTH_LIMIT.max end
+  return math.floor(value / WIDTH_LIMIT.step + 0.5) * WIDTH_LIMIT.step
+end
+
+-- The height the active theme's lane art is drawn at, which is also the
+-- smallest height offered: the slider only ever makes a lane taller.
+local function LaneBaseHeight()
+  if foreverStyle then
+    local style = M.modernWow.swingTimer
+    return style.height - style.heightTrim
+  end
+  return FLAT_ROW_HEIGHT
+end
+
+local function ClampHeight(value)
+  local base = LaneBaseHeight()
+  value = tonumber(value) or 0
+  if value <= base then return base end
+  if value > base * 2 then return base * 2 end
+  return math.floor((value - base) / HEIGHT_STEP + 0.5) * HEIGHT_STEP + base
+end
+
+-- Every lane is one frame wide; the bar, its labels and the pip are anchored
+-- to it, so only the frames, the mover anchor and the label shadow carry a
+-- width of their own.
+local function ApplyLaneWidth(value)
+  laneWidth = ClampWidth(value)
+  if not anchor then return end
+  anchor:SetWidth(laneWidth)
+
+  local style = foreverStyle and M.modernWow.swingTimer or nil
+  local i
+  for i = 1, table.getn(laneOrder) do
+    local lane = laneOrder[i]
+    if lane and lane.frame then lane.frame:SetWidth(laneWidth) end
+    -- The label shadow is a fixed slice of the authored lane rather than a
+    -- baked 171 units, so it keeps its share of a resized one.
+    if lane and lane.titleShadow and style then
+      lane.titleShadow:SetWidth(style.shadowWidth * laneWidth / style.width)
+    end
+  end
+end
+
+function U.SwingBarWidthLimits()
+  return WIDTH_LIMIT.min, WIDTH_LIMIT.max, WIDTH_LIMIT.step
+end
+
+function U.GetSwingBarWidth()
+  return ClampWidth(EnsureConfig().width)
+end
+
+-- Live preview while the slider thumb is held. Nothing is stored until the
+-- drag is released and the panel calls U.SetSwingBarWidth.
+function U.PreviewSwingBarWidth(value)
+  ApplyLaneWidth(value)
+end
+
+function U.SetSwingBarWidth(value)
+  local cfg = EnsureConfig()
+  if not tonumber(value) then return cfg.width end
+  cfg.width = ClampWidth(value)
+  ApplyLaneWidth(cfg.width)
+  return cfg.width
+end
+
+function U.SwingBarHeightLimits()
+  local base = LaneBaseHeight()
+  return base, base * 2, HEIGHT_STEP
+end
+
+function U.GetSwingBarHeight()
+  return ClampHeight(EnsureConfig().height)
+end
+
+-- rowHeight is the baseline Layout adds the dual-wield bonus to, so a height
+-- change is applied by clearing the cached layout state and running Layout,
+-- which re-heights the lanes and resizes the mover anchor in one pass.
+local function ApplyLaneBaseHeight(value)
+  rowHeight = ClampHeight(value)
+  layoutMainShown, layoutOffShown, layoutRangedShown = nil, nil, nil
+  Layout()
+end
+
+function U.PreviewSwingBarHeight(value)
+  ApplyLaneBaseHeight(value)
+end
+
+function U.SetSwingBarHeight(value)
+  local cfg = EnsureConfig()
+  if not tonumber(value) then return cfg.height end
+  cfg.height = ClampHeight(value)
+  ApplyLaneBaseHeight(cfg.height)
+  return cfg.height
 end
 
 local function OnRangedCastEvent(event)
@@ -434,6 +608,26 @@ local function FormatLane(lane, remaining)
   if lane.right then lane.right:SetText(string.sub(text, separator + 1)) end
 end
 
+local function SetLaneValue(lane, value)
+  lane.bar:SetValue(value)
+  if not lane.fillCell then return end
+
+  -- Forever's native StatusBar reveals this atlas cell. Crop the UV by the
+  -- same fraction as the region width so its pattern never stretches.
+  local minimum, maximum = lane.bar:GetMinMaxValues()
+  local range = maximum - minimum
+  local progress = range > 0 and (value - minimum) / range or 0
+  if progress < 0 then progress = 0 end
+  if progress > 1 then progress = 1 end
+
+  local cell = lane.fillCell
+  lane.bar.uuiFillTexture:SetTexCoord(
+    cell[1], cell[1] + (cell[2] - cell[1]) * progress,
+    cell[3], cell[4])
+
+  if lane.pip then lane.pip:Show() end
+end
+
 -- Read-only probe surface. No timer behavior changes: the focused rangedshot
 -- capture compares this exact clock with the client's shot/cooldown events.
 function U.RangedSwingTiming()
@@ -463,7 +657,7 @@ local function DrawLane(lane, now)
   local speed = LanePeriod(lane)
   if not speed then
     lane.bar:SetMinMaxValues(0, 1)
-    lane.bar:SetValue(0.4)
+    SetLaneValue(lane, 0.4)
     FormatLane(lane, 0)
     return
   end
@@ -471,7 +665,7 @@ local function DrawLane(lane, now)
   if (not lane.active or not LaneReady(lane)) and
      U.IsUnlocked and U.IsUnlocked() then
     lane.bar:SetMinMaxValues(0, speed)
-    lane.bar:SetValue(speed * 0.4)
+    SetLaneValue(lane, speed * 0.4)
     FormatLane(lane, speed)
     return
   end
@@ -493,7 +687,7 @@ local function DrawLane(lane, now)
   end
 
   lane.bar:SetMinMaxValues(0, speed)
-  lane.bar:SetValue(elapsed)
+  SetLaneValue(lane, elapsed)
   FormatLane(lane, math.max(0, speed - elapsed))
 end
 
@@ -552,49 +746,104 @@ local function OnSpecialSwing()
   AnchorMeleeLane(lane, now, true)
 end
 
-local function BuildLane(name, labelKey, color)
-  local frame = U.CreatePanel(anchor, {
-    name = name,
-    width = WIDTH,
-    height = ROW_HEIGHT,
-    background = M.color.healthBg,
-    border = M.color.border,
-  })
+local function BuildLane(name, labelKey, color, fillKey)
+  local style = foreverStyle and M.modernWow.swingTimer or nil
+  local frame, rim
+  if style then
+    frame = CreateFrame("Frame", name, anchor)
+    frame:SetWidth(laneWidth)
+    frame:SetHeight(rowHeight)
+
+    local background = frame:CreateTexture(nil, "BACKGROUND")
+    ApplyAtlasCell(background, style.background)
+    background:SetAllPoints(frame)
+  else
+    frame = U.CreatePanel(anchor, {
+      name = name,
+      width = laneWidth,
+      height = rowHeight,
+      background = M.color.healthBg,
+      border = M.color.border,
+    })
+  end
 
   local bar = U.CreateStatusBar(frame, {
-    width = WIDTH - 2 * U.BorderSize(),
-    height = ROW_HEIGHT - 2 * U.BorderSize(),
+    width = laneWidth,
+    height = rowHeight,
     color = color,
     background = { 0, 0, 0, 0 },
-    texture = M.unitFrame.statusTexture,
+    texture = style and M.modernWow.texture.swingTimer or M.unitFrame.statusTexture,
   })
   bar:ClearAllPoints()
-  bar:SetPoint("TOPLEFT", frame, "TOPLEFT", U.BorderSize(), -U.BorderSize())
-  bar:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -U.BorderSize(), U.BorderSize())
+  if style then
+    -- The fill sits just inside the framed lane (user request, 2026-09-21).
+    -- The frame texture itself is drawn afterwards, on a frame above the bar,
+    -- because the bar is a child frame and would otherwise cover a rim owned
+    -- by its parent whatever layer that rim used.
+    local inset = style.fillInset
+    bar:SetPoint("TOPLEFT", frame, "TOPLEFT", inset, -inset)
+    bar:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -inset, inset)
+    ApplyAtlasCell(bar.uuiFillTexture, style.fill[fillKey])
+
+    rim = CreateFrame("Frame", nil, frame)
+    rim:SetAllPoints(frame)
+    rim:SetFrameLevel(bar:GetFrameLevel() + 1)
+    rim:EnableMouse(false)
+    local border = rim:CreateTexture(nil, "ARTWORK")
+    ApplyAtlasCell(border, style.frame)
+    border:SetAllPoints(rim)
+  else
+    bar:SetPoint("TOPLEFT", frame, "TOPLEFT", U.BorderSize(), -U.BorderSize())
+    bar:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT",
+                 -U.BorderSize(), U.BorderSize())
+  end
+
+  local pip, titleShadow
+  local fillCell
+  if style then
+    fillCell = style.fill[fillKey]
+    -- The pip stands taller than the lane and reads as part of the frame art,
+    -- so it belongs on the rim rather than under it.
+    pip = rim:CreateTexture(nil, "OVERLAY")
+    ApplyAtlasCell(pip, style.pip)
+    pip:SetWidth(style.pipWidth)
+    pip:SetHeight(style.pipHeight)
+    pip:SetPoint("RIGHT", bar.uuiFillTexture, "RIGHT", 0, 0)
+    pip:Hide()
+
+    titleShadow = bar:CreateTexture(nil, "OVERLAY")
+    ApplyAtlasCell(titleShadow, style.shadow)
+    titleShadow:SetWidth(style.shadowWidth)
+    titleShadow:SetPoint("TOPLEFT", bar, "TOPLEFT", 0, 0)
+    titleShadow:SetPoint("BOTTOMLEFT", bar, "BOTTOMLEFT", 0, 0)
+  end
 
   -- Parent the labels to the bar itself. A child frame's textures can draw in
   -- front of regions owned by its parent even when those regions use OVERLAY;
   -- keeping text and fill in the same frame makes OVERLAY reliably win.
   local left = U.CreateLabel(bar, {
-    size = TEXT_SIZE,
+    size = textSize,
     color = M.color.text,
-    inherits = "GameFontNormalSmall",
+    inherits = style and "GameFontHighlightSmall" or "GameFontNormalSmall",
     justify = "LEFT",
   })
   if left then
-    ApplySwingTextSize(left)
-    left:SetPoint("LEFT", bar, "LEFT", 4, 0)
+    if not style then ApplySwingTextSize(left) end
+    left:SetPoint("LEFT", bar, "LEFT", style and style.labelInset or 4,
+                  style and style.labelDrop or 0)
   end
 
   local right = U.CreateLabel(bar, {
-    size = TEXT_SIZE,
+    size = textSize,
     color = M.color.text,
-    inherits = "GameFontNormalSmall",
+    inherits = style and "GameFontHighlightSmall" or "GameFontNormalSmall",
     justify = "RIGHT",
   })
   if right then
-    ApplySwingTextSize(right)
-    right:SetPoint("RIGHT", bar, "RIGHT", -4, 0)
+    if not style then ApplySwingTextSize(right) end
+    right:SetPoint("RIGHT", bar, "RIGHT",
+                   style and -style.labelInset or -4,
+                   style and style.labelDrop or 0)
   end
 
   frame:Hide()
@@ -603,6 +852,9 @@ local function BuildLane(name, labelKey, color)
     bar = bar,
     left = left,
     right = right,
+    pip = pip,
+    titleShadow = titleShadow,
+    fillCell = fillCell,
     labelKey = labelKey,
     color = color,
     active = false,
@@ -611,13 +863,33 @@ local function BuildLane(name, labelKey, color)
 end
 
 local function Build()
-  anchor = CreateFrame("Frame", "UnrealUISwingBarAnchor", UIParent)
-  anchor:SetWidth(WIDTH)
-  anchor:SetHeight(ROW_HEIGHT)
+  -- The swing-timer atlas is the client's own Forever art (FileDataID
+  -- 8344036), not imported Dragonflight chrome, so classic-wow draws the same
+  -- three-lane bar as modern-wow (user request, 2026-09-21). Only the flat
+  -- modern theme keeps the plain panel lanes.
+  local activeStyle = U.GetActiveThemeStyle()
+  foreverStyle = activeStyle == "modern-wow" or activeStyle == "classic-wow"
+  if foreverStyle then
+    local style = M.modernWow.swingTimer
+    laneWidth = style.width
+    rowHeight = style.height - style.heightTrim
+    rowGap = style.bottomPadding + style.laneGap
+    textSize = M.fontSize.small
+  end
+  laneWidth = ClampWidth(EnsureConfig().width)
+  rowHeight = ClampHeight(EnsureConfig().height)
+  laneHeight = rowHeight
 
-  lanes.main = BuildLane("UnrealUISwingBarMain", "SWING_BAR_MAIN", COLOR_MAIN)
-  lanes.off = BuildLane("UnrealUISwingBarOff", "SWING_BAR_OFF", COLOR_OFF)
-  lanes.ranged = BuildLane("UnrealUISwingBarRanged", "SWING_BAR_RANGED", COLOR_RANGED)
+  anchor = CreateFrame("Frame", "UnrealUISwingBarAnchor", UIParent)
+  anchor:SetWidth(laneWidth)
+  anchor:SetHeight(rowHeight)
+
+  lanes.main = BuildLane("UnrealUISwingBarMain", "SWING_BAR_MAIN", COLOR_MAIN,
+                         "main")
+  lanes.off = BuildLane("UnrealUISwingBarOff", "SWING_BAR_OFF", COLOR_OFF,
+                        "off")
+  lanes.ranged = BuildLane("UnrealUISwingBarRanged", "SWING_BAR_RANGED",
+                           COLOR_RANGED, "ranged")
   -- Both melee lanes are always event driven. The ranged lane only becomes one
   -- once RefreshAttackState confirms a bow or gun rather than a wand.
   lanes.main.eventClock = true
@@ -625,7 +897,7 @@ local function Build()
   laneOrder[1], laneOrder[2], laneOrder[3] =
     lanes.main, lanes.off, lanes.ranged
 
-  U.RegisterMover("swingbar", anchor, {
+  U.RegisterMover(MOVER_ID, anchor, {
     label = U.L("MOVER_LABEL_SWING_BAR"),
     default = { point = "CENTER", relativePoint = "CENTER", x = 0, y = -185 },
     visible = function() return EnsureConfig().enabled end,
@@ -679,8 +951,70 @@ function U.ApplySwingBar()
   UpdateTickRate()
 end
 
+-- The contextual panel the mover shows when this bar's handle is selected
+-- (core/moverpanel.lua). One control: how wide a lane is drawn.
+local function BuildMoverPanel(frame, contentTop)
+  local pad = U.MoverPanelPad()
+  local widgets = {}
+
+  local min, max, step = U.SwingBarWidthLimits()
+  local width = U.CreateSlider(frame, {
+    name = "UnrealUISwingBarMoverWidth",
+    text = U.L("SWING_BAR_WIDTH"),
+    width = MOVER_SLIDER_WIDTH,
+    boxWidth = 60,
+    min = min,
+    max = max,
+    step = step,
+    value = U.GetSwingBarWidth(),
+    onInputStart = function()
+      if type(U.FreezeMoverPanel) == "function" then U.FreezeMoverPanel() end
+    end,
+    onInput = function(value) U.PreviewSwingBarWidth(value) end,
+    onChange = function(value) U.SetSwingBarWidth(value) end,
+  })
+  width.SetPoint("TOPLEFT", frame, "TOPLEFT", pad, contentTop)
+  table.insert(widgets, width)
+
+  min, max, step = U.SwingBarHeightLimits()
+  local height = U.CreateSlider(frame, {
+    name = "UnrealUISwingBarMoverHeight",
+    text = U.L("SWING_BAR_HEIGHT"),
+    width = MOVER_SLIDER_WIDTH,
+    boxWidth = 60,
+    min = min,
+    max = max,
+    step = step,
+    value = U.GetSwingBarHeight(),
+    onInputStart = function()
+      if type(U.FreezeMoverPanel) == "function" then U.FreezeMoverPanel() end
+    end,
+    onInput = function(value) U.PreviewSwingBarHeight(value) end,
+    onChange = function(value) U.SetSwingBarHeight(value) end,
+  })
+  height.SetPoint("TOPLEFT", frame, "TOPLEFT", pad, contentTop - 58)
+  table.insert(widgets, height)
+
+  local function Refresh()
+    width.SetValue(U.GetSwingBarWidth())
+    height.SetValue(U.GetSwingBarHeight())
+  end
+
+  return widgets, Refresh
+end
+
 function SB:OnInit()
   EnsureConfig()
+  if type(U.RegisterMoverPanel) == "function" then
+    U.RegisterMoverPanel(MOVER_ID, {
+      name = "UnrealUISwingBarMoverSettings",
+      width = MOVER_CONTENT_WIDTH + U.MoverPanelPad() * 2,
+      height = 162,
+      build = BuildMoverPanel,
+      title = function() return U.L("MOVER_LABEL_SWING_BAR") end,
+      preferVertical = true,
+    })
+  end
 end
 
 function SB:OnEnable()

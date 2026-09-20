@@ -2,7 +2,7 @@
 --
 -- The Spellbook's complete `modern-wow` drawing path: the Character window's
 -- paperdoll housing, the Dragonflight book pages inside its recess, the
--- Spellbook-Parts slot frames on every spell button, the skill-line side tabs,
+-- dedicated ornate frames on every spell button, the skill-line side tabs,
 -- the themed bottom tabs and the red close button.
 --
 -- modules/spellbook.lua chooses this path in its own OnEnable, before any flat
@@ -291,11 +291,11 @@ end
 -- ---------------------------------------------------------------------------
 -- Spell buttons
 --
--- Three owned textures per button from Spellbook-Parts: the slot background
--- under the icon, the gold slot frame over it, and the soft shadow that seats
--- the name on the parchment. The client's own quick-slot frame and slot
--- background are the stock chrome these replace; the icon, highlight, pushed,
--- checked and autocast regions stay the client's.
+-- Three owned textures per button: the Spellbook-Parts slot background under
+-- the icon and name shadow, plus the dedicated spell border over it. The
+-- client's own quick-slot frame and slot background are the stock chrome these
+-- replace; the icon, highlight, pushed, checked and autocast regions stay the
+-- client's.
 --
 -- An empty slot hides the three textures with its icon, read back after every
 -- SpellButton_UpdateButton (the one repaint path on this client, knowledge.json
@@ -303,9 +303,12 @@ end
 -- ---------------------------------------------------------------------------
 function book.PartTexture(button, layer, cell)
   local parts = book.Token().parts
-  return book.Texture(button, layer, book.Token().texture.parts,
-                      cell.left / parts.atlas, cell.right / parts.atlas,
-                      cell.top / parts.atlas, cell.bottom / parts.atlas)
+  return book.Texture(button, layer,
+                      cell.texture or book.Token().texture.parts,
+                      (cell.uvLeft or cell.left) / parts.atlas,
+                      (cell.uvRight or cell.right) / parts.atlas,
+                      (cell.uvTop or cell.top) / parts.atlas,
+                      (cell.uvBottom or cell.bottom) / parts.atlas)
 end
 
 -- Hides the client's own texture regions on `object` and nothing of this
@@ -383,6 +386,34 @@ function book.StripSpellButton(index, state)
   U.HideRegion(U.G("SpellButton" .. index .. "NormalTexture"))
   if button.SetNormalTexture and not pcall(button.SetNormalTexture, button, "") then
     pcall(button.SetNormalTexture, button, nil)
+  end
+end
+
+function book.PlaceSpellText(index, state, name, sub)
+  local layout = state and state.text
+  if not layout then return end
+
+  local grid = book.Token().grid
+  name = name or U.G("SpellButton" .. index .. "SpellName")
+  sub = sub or U.G("SpellButton" .. index .. "SubSpellName")
+  if name then
+    pcall(function()
+      name:ClearAllPoints()
+      name:SetPoint("TOPLEFT", U.G("SpellButton" .. index), "TOPRIGHT",
+                    layout.offset, grid.nameY)
+      name:SetWidth(layout.width)
+      name:SetJustifyH("LEFT")
+    end)
+    U.ClearTextShadow(name)
+  end
+  if sub and name then
+    pcall(function()
+      sub:ClearAllPoints()
+      sub:SetPoint("TOPLEFT", name, "BOTTOMLEFT", 0, grid.subY)
+      sub:SetWidth(layout.width)
+      sub:SetJustifyH("LEFT")
+    end)
+    U.ClearTextShadow(sub)
   end
 end
 
@@ -499,9 +530,18 @@ function book.DressSpellButton(index)
   end
 
   local k = size / t.parts.designButton
-  local textWidth = grid.columnPitch * L.kx - size - grid.textGap -
+  local rim = t.parts.slotFrame
+  local textOffset = grid.textGap
+  if placed then
+    textOffset = placed.textGap or grid.placedTextGap
+  else
+    local overhang = ((rim.x or 0) + rim.width / 2) * k - size / 2
+    if overhang > 0 then textOffset = textOffset + overhang end
+  end
+  local textWidth = grid.columnPitch * L.kx - size - textOffset -
                     grid.textInset
   if placed then textWidth = placed.textWidth end
+  state.text = { offset = textOffset, width = textWidth }
 
   local slot = t.parts.slotBackground
   pcall(function()
@@ -511,12 +551,12 @@ function book.DressSpellButton(index)
     state.background:SetPoint("CENTER", button, "CENTER", 0, 0)
   end)
 
-  local rim = t.parts.slotFrame
   pcall(function()
     state.frame:ClearAllPoints()
     state.frame:SetWidth(rim.width * k)
     state.frame:SetHeight(rim.height * k)
-    state.frame:SetPoint("CENTER", button, "CENTER", rim.x * k, 0)
+    state.frame:SetPoint("CENTER", button, "CENTER", rim.x * k,
+                         (rim.y or 0) * k)
   end)
 
   local shadow = t.parts.nameShadow
@@ -528,29 +568,7 @@ function book.DressSpellButton(index)
                           shadow.y * k)
   end)
 
-  local name = U.G("SpellButton" .. index .. "SpellName")
-  if name then
-    pcall(function()
-      name:ClearAllPoints()
-      name:SetPoint("TOPLEFT", button, "TOPRIGHT", grid.textGap, grid.nameY)
-      name:SetWidth(textWidth)
-      name:SetJustifyH("LEFT")
-    end)
-  end
-  local sub = U.G("SpellButton" .. index .. "SubSpellName")
-  if sub and name then
-    pcall(function()
-      sub:ClearAllPoints()
-      sub:SetPoint("TOPLEFT", name, "BOTTOMLEFT", 0, grid.subY)
-      sub:SetWidth(textWidth)
-      sub:SetJustifyH("LEFT")
-    end)
-  end
-  -- Spell name and rank print on the parchment without a drop shadow (user
-  -- request, 2026-09-13). The client's update only recolours these strings,
-  -- and this pass also runs on every show.
-  if name then U.ClearTextShadow(name) end
-  if sub then U.ClearTextShadow(sub) end
+  book.PlaceSpellText(index, state)
 
   book.StripSpellButton(index, state)
   book.SyncSpellButton(index)
@@ -574,6 +592,10 @@ function book.SyncSpellButton(index)
   -- OVERLAY slot frame.
   local name = U.G("SpellButton" .. index .. "SpellName")
   local sub = U.G("SpellButton" .. index .. "SubSpellName")
+  -- SpellButton_UpdateButton restores the template's text anchors. Reapply
+  -- ours from this post-hook as well as during the initial dress
+  -- (USER_CONFIRMED_INGAME, 2026-09-20).
+  book.PlaceSpellText(index, state, name, sub)
   if name then pcall(name.SetDrawLayer, name, "OVERLAY") end
   if sub then pcall(sub.SetDrawLayer, sub, "OVERLAY") end
 
@@ -633,11 +655,11 @@ end
 -- elapsed read from GetTime because OnUpdate passes no delta here
 -- (knowledge.json / scripts.onupdate_elapsed_only_via_arg1).
 --
--- ARTWORK on the button: above the icon and name shadow, below the slot frame
--- and the name and rank, which SyncSpellButton lifts to OVERLAY, so the
--- streak never covers the text it runs behind. The ticker runs only while a
--- glow is lit and the window is open; reopening the book repaints every
--- button, which re-lights it.
+-- The icon burst is OVERLAY, created after the slot frame so it remains above
+-- the ornate border. The name streak stays on ARTWORK below the name and rank,
+-- which SyncSpellButton lifts to OVERLAY. The ticker runs only while a glow is
+-- lit and the window is open; reopening the book repaints every button, which
+-- re-lights it.
 -- ---------------------------------------------------------------------------
 book.glow = {
   updateId = "modernwow.spellbook.barglow",
@@ -646,6 +668,7 @@ book.glow = {
   running = false,
   pulseTime = 0,
   alpha = 0,
+  streakAlpha = 0,
 }
 
 function book.GlowNow()
@@ -680,37 +703,53 @@ function book.GlowTick()
   g.pulseTime = math.mod(g.pulseTime + elapsed, cfg.pulsePeriod)
   local progress = g.pulseTime / cfg.pulsePeriod
   local swing = progress < 0.5 and progress * 2 or (1 - progress) * 2
-  g.alpha = cfg.alphaMin + (cfg.alphaMax - cfg.alphaMin) * U.EaseInOutCubic(swing)
+  -- One eased swing, two peaks: the burst's halves ride `alphaMax`, the name
+  -- streak the lower `streakMax`, so both stay on the same phase.
+  local eased = U.EaseInOutCubic(swing)
+  g.alpha = cfg.alphaMin + (cfg.alphaMax - cfg.alphaMin) * eased
+  g.streakAlpha = cfg.alphaMin + (cfg.streakMax - cfg.alphaMin) * eased
 
   local glow
   for glow in pairs(g.lit) do
     pcall(glow.burst.SetAlpha, glow.burst, g.alpha)
-    pcall(glow.streak.SetAlpha, glow.streak, g.alpha)
+    pcall(glow.burstMirror.SetAlpha, glow.burstMirror, g.alpha)
+    pcall(glow.streak.SetAlpha, glow.streak, g.streakAlpha)
   end
 end
 
 function book.GlowTexture(button)
   if button.uuiModernWowBarGlow then return button.uuiModernWowBarGlow end
   local cell = book.Token().parts.barGlow
-  local burst = book.PartTexture(button, "ARTWORK", cell.burst)
+  local half = cell.burst
+  -- The mirrored half: the same measured region, read right-to-left.
+  local mirror = { left = half.left, top = half.top, right = half.right,
+                   bottom = half.bottom,
+                   uvLeft = half.right, uvRight = half.left }
+  local burst = book.PartTexture(button, "OVERLAY", half)
+  local burstMirror = book.PartTexture(button, "OVERLAY", mirror)
   local streak = book.PartTexture(button, "ARTWORK", cell.streak)
-  if not burst or not streak then
+  if not burst or not burstMirror or not streak then
     if burst then pcall(burst.Hide, burst) end
+    if burstMirror then pcall(burstMirror.Hide, burstMirror) end
     if streak then pcall(streak.Hide, streak) end
     return nil
   end
-  pcall(burst.SetBlendMode, burst, "ADD")
-  pcall(streak.SetBlendMode, streak, "ADD")
-  pcall(burst.Hide, burst)
-  pcall(streak.Hide, streak)
-  local glow = { burst = burst, streak = streak }
+  local glow = { burst = burst, burstMirror = burstMirror, streak = streak }
+  glow.parts = { burst, burstMirror, streak }
+  local i
+  for i = 1, table.getn(glow.parts) do
+    pcall(glow.parts[i].SetBlendMode, glow.parts[i], "ADD")
+    pcall(glow.parts[i].Hide, glow.parts[i])
+  end
   button.uuiModernWowBarGlow = glow
   return glow
 end
 
 -- Sized from the button's live width on every call, since DressSpellButton
 -- owns that size and may re-apply it. The burst's rim is laid over the slot
--- frame's square, while the separately cropped streak is vertically aligned
+-- frame's square -- as two mirrored halves meeting on that square's centre
+-- line, see M.modernWow.spellBook.parts.barGlow.burst -- while the
+-- separately cropped streak is vertically aligned
 -- with the name shadow and takes its exact live width. The atlas authored them
 -- side by side, but one shared vertical anchor cannot align both pieces in
 -- this compact layout.
@@ -726,10 +765,11 @@ function book.PlaceGlow(button, glow)
 
   -- Slot square centre from the button centre (y up), then the glow region's
   -- centre from its own rim centre.
-  local sx = ((slotSq.left + slotSq.right) / 2 -
-              (rim.left + rim.right) / 2 + rim.x) * k
-  local sy = ((rim.top + rim.bottom) / 2 -
-              (slotSq.top + slotSq.bottom) / 2) * k
+  local rimCX = rim.centerX or (rim.left + rim.right) / 2
+  local rimCY = rim.centerY or (rim.top + rim.bottom) / 2
+  local sx = ((slotSq.left + slotSq.right) / 2 - rimCX + rim.x) * k
+  local sy = (rimCY - (slotSq.top + slotSq.bottom) / 2 +
+              (rim.y or 0)) * k
   local burst = cell.burst
   local bx = ((burst.left + burst.right) / 2 -
               (glowSq.left + glowSq.right) / 2) * kg
@@ -745,11 +785,24 @@ function book.PlaceGlow(button, glow)
     streakWidth = (streak.right - streak.left) * kg
   end
 
+  -- `burst.right` is the mirror axis, so `bx` already carries the left half's
+  -- centre offset from it. The mirrored half hangs off that half's right edge
+  -- rather than off its own centre offset: the join runs through the lit spike
+  -- rows, and a rounding gap there would read as the dark hairline this
+  -- replaced. A mirror is continuous across its axis, so butted edges leave no
+  -- seam, while any overlap would double under additive blending.
+  local burstWidth = (burst.right - burst.left) * kg
+  local burstHeight = (burst.bottom - burst.top) * kg
   pcall(function()
     glow.burst:ClearAllPoints()
-    glow.burst:SetWidth((burst.right - burst.left) * kg)
-    glow.burst:SetHeight((burst.bottom - burst.top) * kg)
+    glow.burst:SetWidth(burstWidth)
+    glow.burst:SetHeight(burstHeight)
     glow.burst:SetPoint("CENTER", button, "CENTER", sx + bx, sy + by)
+
+    glow.burstMirror:ClearAllPoints()
+    glow.burstMirror:SetWidth(burstWidth)
+    glow.burstMirror:SetHeight(burstHeight)
+    glow.burstMirror:SetPoint("LEFT", glow.burst, "RIGHT", 0, 0)
 
     glow.streak:ClearAllPoints()
     glow.streak:SetWidth(streakWidth)
@@ -775,8 +828,10 @@ function U.ModernWowSpellBookBarGlow(button, wanted)
     if glow and g.lit[glow] then
       g.lit[glow] = nil
       g.count = g.count - 1
-      pcall(glow.burst.Hide, glow.burst)
-      pcall(glow.streak.Hide, glow.streak)
+      local i
+      for i = 1, table.getn(glow.parts) do
+        pcall(glow.parts[i].Hide, glow.parts[i])
+      end
     end
     return true
   end
@@ -789,12 +844,16 @@ function U.ModernWowSpellBookBarGlow(button, wanted)
     g.lit[glow] = true
     g.count = g.count + 1
     -- Joins the running phase so every lit spell breathes together.
-    local alpha = g.running and g.alpha or
-                  book.Token().barGlowPulse.alphaMin
+    local cfg = book.Token().barGlowPulse
+    local alpha = g.running and g.alpha or cfg.alphaMin
+    local streakAlpha = g.running and g.streakAlpha or cfg.alphaMin
     pcall(glow.burst.SetAlpha, glow.burst, alpha)
-    pcall(glow.streak.SetAlpha, glow.streak, alpha)
-    pcall(glow.burst.Show, glow.burst)
-    pcall(glow.streak.Show, glow.streak)
+    pcall(glow.burstMirror.SetAlpha, glow.burstMirror, alpha)
+    pcall(glow.streak.SetAlpha, glow.streak, streakAlpha)
+    local i
+    for i = 1, table.getn(glow.parts) do
+      pcall(glow.parts[i].Show, glow.parts[i])
+    end
   end
 
   if not g.running then

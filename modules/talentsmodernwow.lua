@@ -293,7 +293,17 @@ function tal.BuildButton(state, index)
   local icon = tal.Texture(button, "BORDER")
   if icon then pcall(icon.SetAllPoints, icon, button) end
 
-  local rankBorder = tal.Texture(button, "OVERLAY", t.texture.rankBorder)
+  -- The rank border and its count live on their own frame, above every
+  -- advisor mark (M.talentAdvisor.level): those marks are separate frames, so
+  -- a region drawn on the button itself would sit under the next talent's
+  -- animated border instead of over it (user report, 2026-09-20).
+  local badge = CreateFrame("Frame", nil, button)
+  pcall(badge.SetAllPoints, badge, button)
+  pcall(badge.EnableMouse, badge, false)
+  pcall(badge.SetFrameLevel, badge,
+        tal.Level(button) + M.talentAdvisor.level.badge)
+
+  local rankBorder = tal.Texture(badge, "OVERLAY", t.texture.rankBorder)
   if rankBorder then
     pcall(function()
       rankBorder:SetWidth(t.rankBorder.size * k)
@@ -303,7 +313,7 @@ function tal.BuildButton(state, index)
     end)
   end
 
-  local rank = U.CreateLabel(button, {
+  local rank = U.CreateLabel(badge, {
     size = M.fontSize.small,
     color = t.rankColor.normal,
     inherits = "GameFontNormalSmall",
@@ -323,8 +333,12 @@ function tal.BuildButton(state, index)
 
   button.uuiSlot = slot
   button.uuiIcon = icon
+  button.uuiRankBadge = badge
   button.uuiRankBorder = rankBorder
   button.uuiRank = rank
+  if type(U.TalentAdvisorBind) == "function" then
+    U.TalentAdvisorBind(button)
+  end
   state.buttons[index] = button
   return button
 end
@@ -371,13 +385,13 @@ end
 -- ---------------------------------------------------------------------------
 -- Panels (DFPlayerTalentFramePanelTemplate)
 -- ---------------------------------------------------------------------------
-function tal.BuildPanelBorder(panel)
+function tal.BuildPanelBorder(panel, sizeOverride, bottomRightPath)
   local t = tal.Token()
   local spec = t.panel.border
   local paths = t.texture.panelBorder
   if not spec or not paths then return end
 
-  local size = tonumber(spec.size) or 16
+  local size = tonumber(sizeOverride) or tonumber(spec.size) or 16
   local function Piece(path, width, height)
     local texture = tal.Texture(panel, "BORDER", path)
     if texture then
@@ -394,12 +408,16 @@ function tal.BuildPanelBorder(panel)
   local topLeft = Piece(paths.topLeft, size, size)
   local topRight = Piece(paths.topRight, size, size)
   local bottomLeft = Piece(paths.bottomLeft, size, size)
-  local bottomRight = Piece(paths.bottomLeft, size, size)
+  -- These pieces ship no bottom-right corner, so the bottom-left one is
+  -- mirrored into that slot. On a panel it passes; on a control small enough
+  -- to read the corner it does not, and a caller may hand in a real corner
+  -- from the same metal family instead.
+  local bottomRight = Piece(bottomRightPath or paths.bottomLeft, size, size)
   if topLeft then topLeft:SetPoint("TOPLEFT", panel, "TOPLEFT", 0, 0) end
   if topRight then topRight:SetPoint("TOPRIGHT", panel, "TOPRIGHT", 0, 0) end
   if bottomLeft then bottomLeft:SetPoint("BOTTOMLEFT", panel, "BOTTOMLEFT", 0, 0) end
   if bottomRight then
-    bottomRight:SetTexCoord(1, 0, 0, 1)
+    if not bottomRightPath then bottomRight:SetTexCoord(1, 0, 0, 1) end
     bottomRight:SetPoint("BOTTOMRIGHT", panel, "BOTTOMRIGHT", 0, 0)
   end
 
@@ -641,7 +659,11 @@ function tal.BuildPanel(host, index)
 
   state.arrowFrame = CreateFrame("Frame", nil, panel)
   state.arrowFrame:SetAllPoints(panel)
-  pcall(state.arrowFrame.SetFrameLevel, state.arrowFrame, tal.Level(panel) + 3)
+  -- Over the advisor's marks, not under them: the buttons sit 2 levels above
+  -- this panel, so the arrows take that offset plus the advisor's own arrow
+  -- level (M.talentAdvisor.level).
+  pcall(state.arrowFrame.SetFrameLevel, state.arrowFrame,
+        tal.Level(panel) + 2 + M.talentAdvisor.level.arrow)
   pcall(state.arrowFrame.EnableMouse, state.arrowFrame, false)
 
   return state
@@ -657,6 +679,7 @@ function tal.RefreshPanel(state, unspent)
     return
   end
   pcall(state.frame.Show, state.frame)
+  state.background = background
 
   if state.name then pcall(state.name.SetText, state.name, name) end
   if state.icon then pcall(state.icon.SetTexture, state.icon, icon) end
@@ -724,6 +747,9 @@ function tal.RefreshPanel(state, unspent)
       local prereqsSet = tal.SetPrereqs(state, tier, column, forceDesaturated,
                                         tierUnlocked, id, i)
       tal.PaintButton(button, rank, maxRank, prereqsSet and meets)
+      if type(U.TalentAdvisorTalentState) == "function" then
+        U.TalentAdvisorTalentState(button, prereqsSet and meets)
+      end
       pcall(button.Show, button)
     elseif button then
       tal.Hide(button)
@@ -789,6 +815,10 @@ function tal.Refresh()
     if not ok then U.Error("talents modern-wow panel " .. i .. ": " .. tostring(err)) end
   end
   tal.RefreshStatus(unspent)
+  if type(U.RefreshTalentAdvisor) == "function" then
+    local ok, err = pcall(U.RefreshTalentAdvisor)
+    if not ok then U.Error("talent advisor refresh: " .. tostring(err)) end
+  end
 end
 
 function tal.OnEvent()
@@ -963,6 +993,15 @@ function U.ModernWowThinBorder(panel)
   return true
 end
 
+-- The same rim for a shared component whose caller has already chosen its
+-- Modern WoW path (core/dropdown.lua): no module gate here, the caller's
+-- theme decision is the gate. `size` overrides the drawn piece size.
+function U.ModernWowBuildThinBorder(panel, size, bottomRightPath)
+  if not panel then return false end
+  tal.BuildPanelBorder(panel, size, bottomRightPath)
+  return true
+end
+
 -- Builds once. Called from modules/talents.lua under pcall, only after
 -- U.ModernWowTalentsWanted.
 function U.BuildModernWowTalents(frame)
@@ -975,6 +1014,12 @@ function U.BuildModernWowTalents(frame)
   end
   tal.frame = frame
   tal.frameName = name
+
+  -- Before any panel or button exists: the advisor binds its highlights as
+  -- buttons are created, and those carry this window's theme media.
+  if type(U.TalentAdvisorStyle) == "function" then
+    U.TalentAdvisorStyle("modern-wow")
+  end
 
   local t = tal.Token()
   local d = t.design
@@ -1058,6 +1103,15 @@ function U.BuildModernWowTalents(frame)
 
   local controls = {}
   if close then table.insert(controls, close) end
+  if type(U.BuildTalentAdvisor) == "function" then
+    local ok, control = pcall(U.BuildTalentAdvisor,
+                              frame, chrome, tal.panels)
+    if ok and control then
+      table.insert(controls, control)
+    elseif not ok then
+      U.Error("talent advisor build: " .. tostring(control))
+    end
+  end
   U.MakeWindowDraggable("talents", frame, {
     headerHeight = inset.top,
     headerInset = t.dragInset,

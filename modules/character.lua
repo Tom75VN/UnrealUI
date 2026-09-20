@@ -37,19 +37,24 @@ local TAB_COUNT = 5
 -- right, rather than to a second set of numbers.
 -- Measurements from the last LayoutTabs pass, for /uui tabs.
 local tabFit
+local tabSlots = {}
+local SPELLBOOK_TAB = M.spellBook.professions.tab
 
 local PANEL_INSET_LEFT = 10
 local PANEL_INSET_RIGHT = 30
-local TAB_GAP = 3
+-- How far the panel's bottom edge sits above CharacterFrame's own bottom.
+-- Modern WoW's quadrant art was authored against a rim ending here
+-- (mw.character); Flat Modern's window surface ends at the same line, and its
+-- tab strip hangs directly off that edge rather than off the native frame's
+-- bottom -- anchoring the tabs down there left 71 units of empty surface
+-- between the window and its own tabs (user report, 2026-09-21).
+local PANEL_BOTTOM = 72
+local TAB_GAP = SPELLBOOK_TAB.gap
 -- Offset from the panel's bottom edge. Negative lifts the strip into that
 -- edge, which is the placement the sheet uses.
 local TAB_DROP = -1
--- Padding on each side of a tab's label. The Pet tab is the one conditional
--- tab in the run, and the tighter five-tab layout reads better with a little
--- more inset, so it gets the extra; U.FitStockTabStrip still reduces this if
--- the run would not fit.
-local TAB_PADDING = 10
-local TAB_PET_PADDING = 2
+-- Use the flat Spellbook strip itself as the geometry source.
+local TAB_PADDING = SPELLBOOK_TAB.padding
 
 local function G(name)
   return U.G(name)
@@ -526,10 +531,66 @@ local function HasPetTab()
   return shown >= TAB_COUNT
 end
 
--- Chain + fit. The Pet tab is the fifth in the run and pushed it past the
--- window edge; U.FitStockTabStrip rebuilds each tab as label + padding and
--- reduces that padding until the whole run fits between the window's insets,
--- so the tabs get tighter rather than the strip getting longer.
+-- Character's client-owned tabs are resized again after their click handler,
+-- unlike the addon-owned Spellbook tabs. Give the flat theme addon-owned
+-- geometry to anchor into: the native buttons keep every native click/page
+-- handler, but two opposing anchors make their rendered bounds follow the
+-- measured label + shared padding instead of the client's later SetWidth.
+-- Slots anchor only to the addon-owned panel and to each other; no addon frame
+-- is kept relative to a replaceable native widget.
+local function LockModernTabsToSlots(info)
+  if modernWowTabMode or not panel or not info or not info.rows then return end
+
+  local previous
+  local count = table.getn(info.rows)
+  local i
+  for i = 1, count do
+    local row = info.rows[i]
+    local tab = G(row.name)
+    local slot = tabSlots[i]
+    if not slot then
+      slot = CreateFrame("Frame", nil, frame)
+      pcall(slot.EnableMouse, slot, false)
+      tabSlots[i] = slot
+    end
+
+    pcall(slot.SetWidth, slot, row.target)
+    pcall(slot.SetHeight, slot, SPELLBOOK_TAB.height)
+    pcall(function()
+      slot:ClearAllPoints()
+      if previous then
+        slot:SetPoint("LEFT", previous, "RIGHT", TAB_GAP, 0)
+      else
+        -- Flush with the panel's own bottom-left corner, so the strip reads as
+        -- part of the window instead of floating in the native bottom band.
+        -- The panel is addon-owned, which also keeps this off a replaceable
+        -- native widget.
+        slot:SetPoint("TOPLEFT", panel, "BOTTOMLEFT", 0, -TAB_DROP)
+      end
+      slot:Show()
+    end)
+
+    if tab then
+      -- The slot owns this width now; keep the shared tab refresh from issuing
+      -- a competing SetWidth when hover/selection state repaints the label.
+      tab.uuiTabFitOwned = true
+      pcall(function()
+        tab:ClearAllPoints()
+        tab:SetPoint("TOPLEFT", slot, "TOPLEFT", 0, 0)
+        tab:SetPoint("BOTTOMRIGHT", slot, "BOTTOMRIGHT", 0, 0)
+      end)
+    end
+    previous = slot
+  end
+
+  for i = count + 1, table.getn(tabSlots) do
+    pcall(tabSlots[i].Hide, tabSlots[i])
+  end
+end
+
+-- Chain + measure. U.FitStockTabStrip supplies each visible label-based target;
+-- the flat theme then locks those targets into addon-owned slots so Character's
+-- delayed native resize cannot squeeze the shared Spellbook padding back out.
 local function LayoutTabs()
   local tabs = TabStrip()
 
@@ -540,32 +601,49 @@ local function LayoutTabs()
   -- 74/81/52/59), and the internal writes bypassed the Lua SetWidth methods.
   -- Restore the shared component's font state before measuring, otherwise the
   -- fit faithfully turns that native transition into a visibly resizing strip.
-  if modernWowTabMode then
-    local i
-    for i = 1, table.getn(tabs) do
-      local tab = tabs[i]
-      if tab and type(tab.uuiTabRefreshFont) == "function" then
-        tab.uuiTabRefreshFont()
-      end
+  --
+  -- Every theme, not just the one the probe happened to run under. The font
+  -- swap belongs to the client's selection pass, and the shared tab component
+  -- owns the label in all of them, so `modern` saw exactly the same strip
+  -- reflow on each click: this pass widened the run to the transient metrics
+  -- and the drift watcher pulled it back a fifth of a second later (user
+  -- report, 2026-09-20).
+  local i
+  for i = 1, table.getn(tabs) do
+    local tab = tabs[i]
+    if tab and type(tab.uuiTabRefreshFont) == "function" then
+      tab.uuiTabRefreshFont()
     end
   end
   U.ChainStockTabs(tabs, TAB_GAP)
 
+  -- One inset, the same one every other strip uses. The pet run used to add
+  -- TAB_PET_PADDING here; that made the Character tabs deliberately unlike the
+  -- Spellbook's, which is what the user asked to end (2026-09-20).
   local padding = TAB_PADDING
-  if HasPetTab() then padding = padding + TAB_PET_PADDING end
   -- The Dragonflight tab art needs more room inside its end caps.
   if modernWowTabMode then
     padding = M.modernWow.tab.padding
   end
 
-  -- Hung off the panel rather than the frame: the panel is the visible window
-  -- surface, and CharacterFrame extends well past its bottom edge, so a strip
-  -- placed against the frame overlapped the interface it belongs under.
+  -- Both themes hang the strip off the panel's bottom edge; only the Modern
+  -- WoW art needs its extra 5-unit inset. The run is still measured against
+  -- CharacterFrame's width with the shared insets, so the Spellbook-matched
+  -- padding is unchanged.
   local fits, info = U.FitStockTabStrip(tabs, frame or G("CharacterFrame"), {
     gap = TAB_GAP,
     left = PANEL_INSET_LEFT,
     right = PANEL_INSET_RIGHT,
     padding = padding,
+    -- Floored at the inset asked for, so this pass never reduces it. MEASURED
+    -- 2026-09-20 (/uui tabpad): this strip was the only one whose tabs sat
+    -- below the shared inset -- 4.89 / 4.33 / 7.06 / 6.36 a side against a
+    -- firm 10 on Social and the Spellbook -- because it is the only one whose
+    -- widths the fit owns, and it had been squeezing them to keep the run
+    -- inside the panel. The user asked for one inset everywhere, so the run
+    -- is allowed to run wide instead: `fits` comes back false in that case
+    -- and the Debug line below says so.
+    minPadding = padding,
     anchor = panel and {
       frame = panel,
       point = "TOPLEFT",
@@ -576,6 +654,7 @@ local function LayoutTabs()
   })
   tabFit = info
   if info then info.fits = fits end
+  LockModernTabsToSlots(info)
   if info and info.reason then
     U.Debug("character: tab strip not sized - " .. info.reason)
   end
@@ -625,6 +704,24 @@ local function TabFitDrifted()
     if tab and tab.GetWidth and tonumber(row.target) then
       local ok, width = pcall(tab.GetWidth, tab)
       if ok and tonumber(width) and math.abs(width - row.target) > 0.5 then
+        return true
+      end
+    end
+    if not modernWowTabMode then
+      local slot = tabSlots[i]
+      if not tab or not slot or not tab.GetLeft or not tab.GetRight or
+         not slot.GetLeft or not slot.GetRight then
+        return true
+      end
+      local tabLeftOk, tabLeft = pcall(tab.GetLeft, tab)
+      local tabRightOk, tabRight = pcall(tab.GetRight, tab)
+      local slotLeftOk, slotLeft = pcall(slot.GetLeft, slot)
+      local slotRightOk, slotRight = pcall(slot.GetRight, slot)
+      if not tabLeftOk or not tabRightOk or not slotLeftOk or not slotRightOk
+         or not tonumber(tabLeft) or not tonumber(tabRight)
+         or not tonumber(slotLeft) or not tonumber(slotRight)
+         or math.abs(tabLeft - slotLeft) > 0.5
+         or math.abs(tabRight - slotRight) > 0.5 then
         return true
       end
     end
@@ -1552,10 +1649,11 @@ local function BuildFrame()
     background = { 0.01, 0.01, 0.01, 0.78 },
   })
   panel:SetPoint("TOPLEFT", frame, "TOPLEFT", PANEL_INSET_LEFT, -10)
-  panel:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -PANEL_INSET_RIGHT, 72)
+  panel:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -PANEL_INSET_RIGHT,
+                 PANEL_BOTTOM)
   pcall(panel.EnableMouse, panel, false)
 
-  pcall(frame.SetHitRectInsets, frame, 10, 30, 10, 72)
+  pcall(frame.SetHitRectInsets, frame, 10, 30, 10, PANEL_BOTTOM)
 
   local frameLevelOk, frameLevel = pcall(frame.GetFrameLevel, frame)
   if frameLevelOk and tonumber(frameLevel) then
@@ -1655,12 +1753,17 @@ function CH:OnEnable()
   if not BuildFrame() then return end
   InstallModernWowCharacterToggle()
 
-  -- modern-wow's art follows the live tab geometry, so its watcher runs on
-  -- every rendered frame and repairs the client's delayed native selection
-  -- pass before it can be drawn. Other themes keep the existing low-rate
-  -- watcher; this theme-specific race must not alter their drawing path.
-  local tabFitInterval = modernWowTabMode and 0 or 0.2
-  U.RegisterUpdate("character.tab-fit", tabFitInterval, function()
+  -- Every rendered frame, and for every theme. The client's selection pass
+  -- writes its own tab widths several frames after the click, past the Lua
+  -- SetWidth methods this module can hook, so the repair has to land before
+  -- the next draw -- at the old 0.2s rate `modern` showed the native widths
+  -- for a fifth of a second after each click, which is the strip visibly
+  -- resizing (user report, 2026-09-20). The race is the client's, not
+  -- modern-wow's, even though that is the theme the probe ran under.
+  --
+  -- The cost is bounded: the body returns on the first check unless
+  -- CharacterFrame is open, and a pass that finds no drift writes nothing.
+  U.RegisterUpdate("character.tab-fit", 0, function()
     if not frame or not frame.IsShown then return end
     local ok, shown = pcall(frame.IsShown, frame)
     if not ok or not shown then return end

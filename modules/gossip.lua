@@ -30,6 +30,8 @@ local GS = U.RegisterModule("gossip")
 local WHITE = { 1.00, 1.00, 1.00, 1 }
 
 local frame, panel
+-- True when modules/questdesign.lua draws this window (modern-wow with its
+-- `questdialog` surface on): the quest giver's two windows share one design.
 local useModernWow = false
 
 local function G(name)
@@ -104,14 +106,16 @@ local function StyleTitleRows()
   end
 end
 
--- Theme-only row finish: warm readable option text at rest and quest gold on
--- hover.  Installed after the common white-text hooks so native enter/leave
--- refreshes cannot leave the Modern WoW row black or flatten its state.
+-- Theme-only row finish on parchment: heading ink at rest and the warmer
+-- red-brown on hover (M.modernWow.questDialog.row, shared with QuestFrame's
+-- greeting rows); each row's native glyph carries its quest state. Installed
+-- after the common white-text hooks so native enter/leave refreshes cannot
+-- leave the Modern WoW row black or flatten its state.
 local function StyleModernWowTitleRows()
   if not useModernWow then return end
 
-  local token = M.modernWow.npcDialog
-  if not token then return end
+  local colors = U.ModernWowQuestDialogRowColors()
+  if not colors then return end
 
   local rows = tonumber(G("NUMGOSSIPBUTTONS")) or 10
   local i
@@ -126,18 +130,19 @@ local function StyleModernWowTitleRows()
           local ok, fontstring = pcall(button.GetFontString, button)
           if ok and fontstring then
             SetGossipFont(fontstring, M.fontSize.normal, color)
+            U.ClearTextShadow(fontstring)
           end
         end
       end
 
-      PaintRow(token.optionText)
+      PaintRow(colors.available)
       if not button.uuiModernWowOptionHooks then
         button.uuiModernWowOptionHooks = true
         U.PostHookScript(button, "OnEnter", function()
-          PaintRow(token.optionHover)
+          PaintRow(colors.hover)
         end)
         U.PostHookScript(button, "OnLeave", function()
-          PaintRow(token.optionText)
+          PaintRow(colors.available)
         end)
       end
     end
@@ -148,16 +153,6 @@ local function StyleHeader()
   local portrait = G("GossipFramePortrait")
   if portrait then
     pcall(portrait.SetTexCoord, portrait, 0.08, 0.92, 0.08, 0.92)
-  end
-end
-
-local function ApplyModernWowDialog()
-  if useModernWow and type(U.ModernWowNpcDialog) == "function" then
-    U.ModernWowNpcDialog(frame, panel, G("GossipFramePortrait"),
-                         "GossipFrameCloseButton")
-  end
-  if useModernWow and type(U.ModernWowNpcActionButton) == "function" then
-    U.ModernWowNpcActionButton(G("GossipFrameGreetingGoodbyeButton"))
   end
 end
 
@@ -193,6 +188,15 @@ end
 -- rather than stripped once in BuildFrame. Reapply is now the single place
 -- that re-strips the greeting panel/scroll chrome too.
 local function Reapply()
+  -- Modern WoW: modules/questdesign.lua draws the window and inks the page;
+  -- the option rows and their glyphs stay here and run after it.
+  if useModernWow then
+    U.ModernWowQuestDialogRefresh("gossip")
+    StyleTitleRows()
+    StyleModernWowTitleRows()
+    return
+  end
+
   StripFrameChrome()
   U.StripStockTextures(G("GossipFrameGreetingPanel"))
   U.StripStockTextures(G("GossipGreetingScrollFrame"))
@@ -201,8 +205,6 @@ local function Reapply()
   ApplyNamedWhiteText()
   SetGossipFont(G("GossipFrameNpcNameText"), M.fontSize.large, WHITE)
   StyleTitleRows()
-  StyleModernWowTitleRows()
-  ApplyModernWowDialog()
 end
 
 local function BuildFrame()
@@ -212,7 +214,9 @@ local function BuildFrame()
     return false
   end
 
-  StripFrameChrome()
+  -- The Modern WoW path strips by name in modules/questdesign.lua instead:
+  -- this keep-table strip cannot actually protect the portrait.
+  if not useModernWow then StripFrameChrome() end
 
   -- Content backdrop inset from the real frame bounds, same shape as
   -- modules/trainer.lua's panel: leaves the bottom strip clear for the
@@ -234,27 +238,33 @@ local function BuildFrame()
     pcall(panel.SetFrameLevel, panel, frameLevel)
   end
 
-  U.MakeWindowDraggable("gossip", frame, { headerInset = 54 })
+  -- One position and group with QuestFrame (modules/quest.lua): the two
+  -- windows replace each other in place during one conversation.
+  U.MakeWindowDraggable("questgiver", frame,
+                        { headerInset = 54, group = "questgiver" })
 
   StyleHeader()
   Reposition(G("GossipFrameNpcNameText"), "TOP", panel, "TOP", 0, -10)
 
   U.StyleStockCloseButton(G("GossipFrameCloseButton"), panel, -6, -6)
 
-  U.StripStockTextures(G("GossipGreetingScrollFrame"))
-  if not useModernWow then
+  if useModernWow then
+    -- The complete themed path: the scrollbar and Goodbye button are never
+    -- given the flat treatment first (rules/unreal-ui-design.md).
+    U.ModernWowQuestDialogBind(frame, panel, "gossip")
+    Reapply()
+  else
+    U.StripStockTextures(G("GossipGreetingScrollFrame"))
     U.StyleStockScrollbar(G("GossipGreetingScrollFrameScrollBar"))
+    U.StripStockTextures(G("GossipFrameGreetingPanel"))
+
+    ForceWhiteText(frame)
+    ApplyNamedWhiteText()
+    SetGossipFont(G("GossipFrameNpcNameText"), M.fontSize.large, WHITE)
+    StyleTitleRows()
+
+    U.StyleStockButton(G("GossipFrameGreetingGoodbyeButton"))
   end
-  U.StripStockTextures(G("GossipFrameGreetingPanel"))
-
-  ForceWhiteText(frame)
-  ApplyNamedWhiteText()
-  SetGossipFont(G("GossipFrameNpcNameText"), M.fontSize.large, WHITE)
-  StyleTitleRows()
-  StyleModernWowTitleRows()
-
-  U.StyleStockButton(G("GossipFrameGreetingGoodbyeButton"))
-  ApplyModernWowDialog()
 
   -- No compact-DB record of a documented "gossip list changed" hook (no
   -- UpdateGossipFrame/GossipFrame_Update entry either). Reapply drives off
@@ -302,9 +312,17 @@ local function TryBuild()
 end
 
 function GS:OnEnable()
-  useModernWow = type(U.GetActiveThemeStyle) == "function" and
-                 U.GetActiveThemeStyle() == "modern-wow"
-  if U.ThemeStyleUsesClassicInteractionChrome() then return end
+  local modernWowTheme = type(U.GetActiveThemeStyle) == "function" and
+                         U.GetActiveThemeStyle() == "modern-wow"
+  -- User request (2026-09-19): under modern-wow the quest giver's gossip
+  -- window takes the same design as QuestFrame (modules/questdesign.lua).
+  -- Its `questdialog` surface switched off leaves the window native.
+  useModernWow = modernWowTheme and
+                 type(U.ModernWowQuestDialogActive) == "function" and
+                 U.ModernWowQuestDialogActive() or false
+  if U.ThemeStyleUsesNativeChrome() or (modernWowTheme and not useModernWow) then
+    return
+  end
   if TryBuild() then return end
 
   U.RegisterEvent("ADDON_LOADED", TryBuild)

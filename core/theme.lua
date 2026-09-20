@@ -186,7 +186,9 @@ end
 -- Modern WoW deliberately keeps stock interaction windows on the same path
 -- as classic-wow. Character, Quest Log and HUD surfaces still use the Modern
 -- WoW theme, but NPC/service dialogs and the mailbox retain the client's own
--- complete chrome, controls and layout.
+-- complete chrome, controls and layout. The quest giver's two windows are the
+-- exception (user requests, 2026-09-19): modules/quest.lua and
+-- modules/gossip.lua ask U.ModernWowQuestDialogActive instead of this.
 function U.ThemeStyleUsesClassicInteractionChrome()
   return U.ThemeStyleUsesNativeChrome() or
          U.GetActiveThemeStyle() == "modern-wow"

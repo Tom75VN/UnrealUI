@@ -58,6 +58,7 @@ local pw = {
   windows = {},
   eventsInstalled = false,
   polling = false,
+  pending = nil,
 }
 
 pw.KINDS = {
@@ -83,6 +84,7 @@ pw.KINDS = {
     tipReagent = "SetTradeSkillItem",
     create = "DoTradeSkill",
     repeatable = true,
+    wheelFrames = { "TradeSkillListScrollFrame", "TradeSkillDetailScrollFrame" },
   },
   {
     id = "craft",
@@ -105,6 +107,7 @@ pw.KINDS = {
     tipReagent = "SetCraftItem",
     create = "DoCraft",
     repeatable = false,
+    wheelFrames = { "CraftListScrollFrame", "CraftDetailScrollFrame" },
   },
 }
 
@@ -738,15 +741,14 @@ function pw.FillRow(win, row, entry, selectedIndex)
   pw.SetText(row.count, count)
 
   -- DF-main's label width: the text's own width, capped so the count still
-  -- fits inside the row.
+  -- fits inside the row. The label itself is never given a width -- see
+  -- U.FitLabelText for why measuring one is unreliable on this client.
   local r = t.recipe
   local room = pw.RowWidth() - r.labelX - r.padding
   if count ~= "" then room = room - pw.TextWidth(row.count) - r.countGap end
   if tracked then room = room - r.checkSize - r.checkGap end
   room = math.max(1, room)
-  pcall(row.label.SetWidth, row.label, room)
-  pw.SetText(row.label, name)
-  pcall(row.label.SetWidth, row.label, math.max(1, math.min(room, pw.TextWidth(row.label) + 1)))
+  U.FitLabelText(row.label, name, room)
 
   pw.ApplyRecipeColor(row)
 end
@@ -837,6 +839,37 @@ function pw.ReadScroll(win)
   if value == win.offset then return end
   win.offset = value
   pw.Queue(win)
+end
+
+-- One row per wheel tick, through the same clamped offset the scrollbar and
+-- its arrows drive. Wheel delivery needs a ScrollFrame on this client
+-- (knowledge.json / scripts.scrollframe_receives_mousewheel); U.CreateWheelCatcher
+-- supplies one under the rows without taking their clicks.
+function pw.WheelScroll(win, direction)
+  if not win.maxOffset or win.maxOffset <= 1 then return end
+  local target = win.offset - direction
+  if target < 1 then target = 1 end
+  if target > win.maxOffset then target = win.maxOffset end
+  if target == win.offset then return end
+  win.offset = target
+  pw.LayoutScroll(win)
+  pw.Queue(win)
+end
+
+-- This window is drawn inside the native TradeSkill/Craft frame, so the
+-- client's own list and detail scroll frames stay alive beneath our list.
+-- Being ScrollFrames they receive the wheel too, and their FauxScrollFrame
+-- handlers run the native update, repainting the stock skill buttons over our
+-- rows. Clearing the wheel flag is input-only: no Hide, no script replacement,
+-- no unregistered event.
+function pw.MuteNativeWheel(kind)
+  local names = kind.wheelFrames
+  if not names then return end
+  local i
+  for i = 1, table.getn(names) do
+    local frame = U.G(names[i])
+    if frame then pcall(frame.EnableMouseWheel, frame, false) end
+  end
 end
 
 function pw.BuildScroll(win)
@@ -1155,7 +1188,9 @@ function pw.ToggleTrack(win)
     if U.CraftTrackerIsTracked(rName) then
       tracked = U.CraftTrackerSetTracked(rName, nil)
     else
-      tracked = U.CraftTrackerSetTracked(rName, pw.RecipeReagents(win, index))
+      local profession = pw.Line(win)
+      tracked = U.CraftTrackerSetTracked(rName, pw.RecipeReagents(win, index),
+                                         profession, win.kind.id)
     end
   end
   if box then pcall(box.SetChecked, box, tracked and true or nil) end
@@ -1892,10 +1927,16 @@ function pw.Refresh(win)
 
   -- The visible list as the client reports it: headers and the recipes of
   -- expanded headers, in order.
+  local pending = pw.pending
+  local wantsPending = pending and
+                       (not pending.kind or pending.kind == win.kind.id) and
+                       (not pending.profession or pending.profession == name)
+  if wantsPending then pw.Call(win.kind.expand, 0) end
+
   local entries = {}
   local countOk, count = pw.Call(win.kind.count)
   count = (countOk and tonumber(count)) or 0
-  local firstRecipe
+  local firstRecipe, pendingEntry
   local i
   for i = 1, count do
     local rName, kind, available, expanded, sub, points, raw = pw.Info(win, i)
@@ -1905,6 +1946,13 @@ function pw.Refresh(win)
                       points = points, raw = raw }
       table.insert(entries, entry)
       if kind ~= "header" and not firstRecipe then firstRecipe = entry end
+      if kind ~= "header" and wantsPending and rName == pending.recipe then
+        pendingEntry = entry
+      end
+      if kind ~= "header" and type(U.CraftTrackerRememberSource) == "function" and
+         U.CraftTrackerIsTracked(rName) then
+        U.CraftTrackerRememberSource(rName, name, win.kind.id)
+      end
     end
   end
   -- A recipe directly followed by a category header ends its category; a
@@ -1917,6 +1965,13 @@ function pw.Refresh(win)
   win.entries = entries
 
   local selected = pw.Selected(win)
+  if pendingEntry then
+    selected = pendingEntry.index
+    pw.Call(win.kind.select, selected)
+    win.count = 1
+    win.reveal = true
+    pw.pending = nil
+  end
   local selectedEntry
   for i = 1, table.getn(entries) do
     if entries[i].index == selected and entries[i].kind ~= "header" then
@@ -1938,6 +1993,33 @@ function pw.Refresh(win)
   pw.LayoutList(win, selected)
   local creatable = pw.FillSchematic(win, selectedEntry)
   pw.FillControls(win, selectedEntry, creatable)
+end
+
+-- Arms selection before the profession spell is used. If the right window is
+-- already open, the same refresh selects immediately.
+function U.ModernWowProfessionsOpenRecipe(recipe, kind, profession)
+  if U.GetActiveThemeStyle() == "modern" and
+     type(U.ModernProfessionsOpenRecipe) == "function" then
+    return U.ModernProfessionsOpenRecipe(recipe, kind, profession)
+  end
+  if type(recipe) ~= "string" or recipe == "" then return false end
+  pw.pending = {
+    recipe = recipe,
+    kind = type(kind) == "string" and kind or nil,
+    profession = type(profession) == "string" and profession ~= "" and
+                 profession or nil,
+  }
+
+  local i
+  for i = 1, table.getn(pw.windows) do
+    local win = pw.windows[i]
+    if pw.Shown(win.frame) and
+       (not pw.pending.kind or pw.pending.kind == win.kind.id) then
+      pw.Refresh(win)
+      if not pw.pending then return true end
+    end
+  end
+  return false
 end
 
 function pw.RefreshAll()
@@ -1976,6 +2058,7 @@ function pw.Build(kind)
   -- addon-owned child.
   U.StripStockTextures(frame)
   pcall(frame.DisableDrawLayer, frame, "BACKGROUND")
+  pw.MuteNativeWheel(kind)
   pw.ApplySize(win)
   pcall(frame.SetHitRectInsets, frame, 0, 0, 0, 0)
 
@@ -1997,6 +2080,10 @@ function pw.Build(kind)
   local listBackground = pw.Atlas(win.list, "BACKGROUND", t.cells.listBackground)
   if listBackground then pcall(listBackground.SetAllPoints, listBackground, win.list) end
   if type(U.ModernWowThinBorder) == "function" then pcall(U.ModernWowThinBorder, win.list) end
+  -- Built before the rows so it stays underneath them.
+  win.wheel = U.CreateWheelCatcher(win.list, function(direction)
+    pw.WheelScroll(win, direction)
+  end)
   pw.BuildScroll(win)
 
   pw.BuildSchematic(win)
@@ -2085,6 +2172,10 @@ end
 -- Create All button and the gap to keep left of it, or nil. The Craft window
 -- (Enchanting, Beast Training) has no Create All and offers nothing.
 function U.ProfessionsCastBarAnchor()
+  if U.GetActiveThemeStyle() == "modern" and
+     type(U.ModernProfessionsCastBarAnchor) == "function" then
+    return U.ModernProfessionsCastBarAnchor()
+  end
   local i
   for i = 1, table.getn(pw.windows) do
     local win = pw.windows[i]

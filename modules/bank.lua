@@ -983,10 +983,10 @@ local function Build()
 
   frame = U.CreatePanel(anchor, { name = "UnrealUIBankFrame" })
   frame:SetAllPoints(anchor)
-  -- Above the client tooltip rather than MEDIUM: this client draws a world
-  -- object's tooltip over the window regardless of the UI covering the
-  -- cursor (core/style.lua carries the measurement and the trade-off).
-  U.RaiseWindowAboveTooltips(frame)
+  -- Below every interface window (user request, 2026-09-21), and inside that
+  -- strata above the carried-bag window's nested slot layers when the two
+  -- overlap. core/style.lua carries the trade-off this gives up.
+  U.LowerWindowBelowInterface(frame, 200)
   pcall(frame.EnableMouse, frame, true)
   frame:Hide()
 

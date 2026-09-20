@@ -222,7 +222,11 @@ local function StyleBookTabs()
   end
 
   U.ChainStockTabs(tabs, 3)
-  U.StyleStockTabGroup(tabs, 1, { height = 20 })
+  -- No height of its own. These native tabs share the row with the two the
+  -- modern Professions page adds (modules/spellbookmodernprof.lua), which
+  -- take the shared height; styling them shorter here left the Pet tab a
+  -- different size from the rest of the same strip.
+  U.StyleStockTabGroup(tabs, 1)
 end
 
 -- ---------------------------------------------------------------------------
@@ -766,6 +770,11 @@ function rank.BuildToggle()
     return
   end
   U.AddWindowDragInteractiveFrame(book, rank.box.box or rank.box)
+  if type(U.SpellBookProfessionsShown) == "function" and
+     U.SpellBookProfessionsShown() and
+     type(U.SetSpellBookBehaviorControlsShown) == "function" then
+    U.SetSpellBookBehaviorControlsShown(false)
+  end
 end
 
 -- Gap from the rank label to the bar-hint box: 10, widened by 5 under
@@ -1552,6 +1561,35 @@ function missing.Wanted(index)
   local slotOk, slot = pcall(mapper, index)
   if not slotOk or type(slot) ~= "number" then return false end
 
+  -- The slot has to belong to the skill line the page is actually showing.
+  --
+  -- The client's mapping is straight arithmetic over the whole book, and this
+  -- client's Spellbook is a two-column page: the second column's buttons are
+  -- handed slots past the end of the selected skill line, and the client
+  -- simply draws nothing on them. Those slots are still real slots -- the NEXT
+  -- skill line's -- so GetSpellName answers for a spell that is nowhere on the
+  -- page, and the mark was painted on a visibly empty button.
+  --
+  -- Measured, not inferred (behavior.json / spellbooktabmark,
+  -- BEHAVIOR_VERIFIED, 2026-09-21): with General selected (offset 0, 6 spells)
+  -- button 8 resolved to slot 10, Hunter's Mark, which belongs to
+  -- Marksmanship, while SpellButton8SpellName read "". That is the whole of
+  -- the reported "the pulse appears on the General tab" -- the verdict was
+  -- right about Hunter's Mark and wrong about where it was drawn.
+  --
+  -- The page's own first slot names the line on screen, so the range comes
+  -- from that rather than from a SpellBookFrame field, which is how
+  -- rank.Resolve reads the page too. A later page of a long skill line is
+  -- still inside the same range, so paging needs nothing here.
+  local pageOk, pageFirst = pcall(mapper, 1)
+  if pageOk and type(pageFirst) == "number" then
+    local pageOffset, pageSpells = rank.Range(bookType, pageFirst)
+    if pageOffset and
+       (slot <= pageOffset or slot > pageOffset + pageSpells) then
+      return false
+    end
+  end
+
   local spellName = G("GetSpellName")
   if type(spellName) ~= "function" then return false end
   local nameOk, name, rankText = pcall(spellName, slot, bookType)
@@ -1670,6 +1708,7 @@ function missing.ApplyAll()
   for i = 1, SpellCount() do missing.Apply(i) end
 end
 
+
 function missing.Commit(value)
   config.barHint = value and true or false
   missing.ApplyAll()
@@ -1773,6 +1812,26 @@ function missing.BuildToggle()
     return
   end
   U.AddWindowDragInteractiveFrame(book, missing.box.box or missing.box)
+  if type(U.SpellBookProfessionsShown) == "function" and
+     U.SpellBookProfessionsShown() and
+     type(U.SetSpellBookBehaviorControlsShown) == "function" then
+    U.SetSpellBookBehaviorControlsShown(false)
+  end
+end
+
+function U.SetSpellBookBehaviorControlsShown(shown)
+  local controls = {
+    { rank.box, rank.label or G("UnrealUISpellBookRankText") },
+    { missing.box, G("UnrealUISpellBookBarHintText") },
+  }
+  local i
+  for i = 1, table.getn(controls) do
+    local control, fallbackLabel = controls[i][1], controls[i][2]
+    local root = control and (control.row or control.box or control)
+    local label = control and control.label or fallbackLabel
+    if root then pcall(shown and root.Show or root.Hide, root) end
+    if label then pcall(shown and label.Show or label.Hide, label) end
+  end
 end
 
 function missing.Install()
@@ -1794,8 +1853,11 @@ function missing.Install()
   -- (knowledge.json /
   -- spellbook.rank_filter_redraw_requires_spellbutton_updatebutton), and it
   -- takes its button from the global `this`, so the mark is re-applied for
-  -- exactly the button the client just drew -- page turns, skill-line changes
-  -- and rank.Refresh all included.
+  -- exactly the button the client just drew. A focused probe confirmed that
+  -- includes a skill-line tab click: behavior.json / spellbooktabmark
+  -- (BEHAVIOR_VERIFIED, 2026-09-21) recorded twelve calls with `this` set to
+  -- SpellButton1..12 after every tab click, so the page is always re-marked
+  -- and no separate tab hook is needed.
   U.PostHookGlobal("SpellButton_UpdateButton", function()
     local button = G("this")
     if not button then return end
@@ -2994,6 +3056,13 @@ local function BuildFrame()
   local i
   for i = 1, SpellCount() do StyleSpellButton(i, false) end
   StyleSkillTabs()
+
+  if type(U.BuildModernSpellBookProfessions) == "function" then
+    local ok, err = pcall(U.BuildModernSpellBookProfessions, frame, panel)
+    if not ok then
+      U.Error("spellbook: modern professions tab: " .. tostring(err))
+    end
+  end
 
   U.StyleStockArrowButton(G("SpellBookPrevPageButton"), "left", 18)
   U.StyleStockArrowButton(G("SpellBookNextPageButton"), "right", 18)

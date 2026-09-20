@@ -270,7 +270,9 @@ function tm.BuildButton(state, index)
     height = t.rank.height,
     background = t.rankColor,
   })
-  pcall(box.SetFrameLevel, box, tm.Level(button) + 1)
+  -- Above every advisor mark, not one level above the button: the marks are
+  -- frames of their own and would otherwise cover the count.
+  pcall(box.SetFrameLevel, box, tm.Level(button) + M.talentAdvisor.level.badge)
   pcall(box.EnableMouse, box, false)
   pcall(box.SetPoint, box, "CENTER", button, "BOTTOMRIGHT", t.rank.x, t.rank.y)
 
@@ -292,6 +294,9 @@ function tm.BuildButton(state, index)
   button.uuiIcon = icon
   button.uuiRankBox = box
   button.uuiRank = rank
+  if type(U.TalentAdvisorBind) == "function" then
+    U.TalentAdvisorBind(button)
+  end
   state.buttons[index] = button
   return button
 end
@@ -434,7 +439,11 @@ function tm.BuildPanel(host, index)
 
   state.arrowFrame = CreateFrame("Frame", nil, panel)
   state.arrowFrame:SetAllPoints(panel)
-  pcall(state.arrowFrame.SetFrameLevel, state.arrowFrame, tm.Level(panel) + 3)
+  -- Over the advisor's marks, not under them: the buttons sit 2 levels above
+  -- this panel, so the arrows take that offset plus the advisor's own arrow
+  -- level (M.talentAdvisor.level).
+  pcall(state.arrowFrame.SetFrameLevel, state.arrowFrame,
+        tm.Level(panel) + 2 + M.talentAdvisor.level.arrow)
   pcall(state.arrowFrame.EnableMouse, state.arrowFrame, false)
 
   return state
@@ -462,6 +471,10 @@ function tm.RefreshPanel(state, unspent)
     tm.Hide(state.frame)
     return
   end
+  -- The advisor matches a panel to a catalog tree by this file name, not by
+  -- tab index (PaladinRetribution/PaladinCombat and the two Warlock trees do
+  -- not agree with the index on this client).
+  state.background = background
   pcall(state.frame.Show, state.frame)
 
   if state.name then pcall(state.name.SetText, state.name, name) end
@@ -493,6 +506,9 @@ function tm.RefreshPanel(state, unspent)
       local prereqsSet = TG.SetPrereqs(state.nodes, tier, column, forceDesaturated,
                                        tierUnlocked, id, i)
       tm.PaintButton(button, rank, maxRank, prereqsSet and meets)
+      if type(U.TalentAdvisorTalentState) == "function" then
+        U.TalentAdvisorTalentState(button, prereqsSet and meets)
+      end
       pcall(button.Show, button)
     elseif button then
       tm.Hide(button)
@@ -561,6 +577,10 @@ function tm.Refresh()
     if not ok then U.Error("talents modern panel " .. i .. ": " .. tostring(err)) end
   end
   tm.RefreshStatus(unspent)
+  if type(U.RefreshTalentAdvisor) == "function" then
+    local ok, err = pcall(U.RefreshTalentAdvisor)
+    if not ok then U.Error("talent advisor refresh: " .. tostring(err)) end
+  end
 end
 
 function tm.OnEvent()
@@ -586,6 +606,13 @@ function U.BuildModernTalents(frame)
   end
   tm.frame = frame
   tm.frameName = name
+
+  -- Before any panel or button exists: the advisor binds its highlights as
+  -- buttons are created, and under this theme those are flat outlines rather
+  -- than Modern WoW's glow atlas.
+  if type(U.TalentAdvisorStyle) == "function" then
+    U.TalentAdvisorStyle("modern")
+  end
 
   local t = tm.Token()
   local inset = t.inset
@@ -649,6 +676,15 @@ function U.BuildModernTalents(frame)
 
   local controls = {}
   if close then table.insert(controls, close) end
+  -- Parented to tm.panel, so the drawer and its arrow hide with the window.
+  if type(U.BuildTalentAdvisor) == "function" then
+    local ok, control = pcall(U.BuildTalentAdvisor, frame, panel, tm.panels)
+    if ok and control then
+      table.insert(controls, control)
+    elseif not ok then
+      U.Error("talent advisor build: " .. tostring(control))
+    end
+  end
   U.MakeWindowDraggable("talents", frame, {
     headerHeight = inset.top,
     headerInset = t.dragInset,

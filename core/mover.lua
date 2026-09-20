@@ -27,7 +27,7 @@ local trace = { on = false, samples = {}, max = 400, seq = 0, dropped = 0,
                 focus = {}, drift = {}, events = {}, rects = {},
                 maxLog = 300, lastFocus = nil, nextDrift = 0,
                 lockedAt = nil, afterLock = nil, LOCK_WATCH = 20 }
-local grid, editPanel, editKeys, alignmentGuides
+local grid, editPanel, editKeys, alignmentGuides, clickCatcher
 local IsEntryAvailable, IsEntryVisible
 local UpdateAlignmentGuides, HideAlignmentGuides
 local advanced = {
@@ -1593,68 +1593,105 @@ local handleCount = 0
 -- room above its complete child hierarchy for one continuous drag surface.
 local HANDLE_LEVEL_OFFSET = 100
 
--- A one-unit stepped falloff keeps the outer glow visually continuous without
--- introducing a new asset or blend-mode assumption. The total seven-unit
--- footprint and peak opacity match the original three-band treatment, but the
--- smaller alpha changes avoid visible rectangular bands.
-local MOVER_GLOW_RINGS = {
-  { spread = 1, thickness = 1, idleAlpha = 0.24, activeAlpha = 0.42 },
-  { spread = 2, thickness = 1, idleAlpha = 0.20, activeAlpha = 0.35 },
-  { spread = 3, thickness = 1, idleAlpha = 0.16, activeAlpha = 0.29 },
-  { spread = 4, thickness = 1, idleAlpha = 0.12, activeAlpha = 0.23 },
-  { spread = 5, thickness = 1, idleAlpha = 0.09, activeAlpha = 0.17 },
-  { spread = 6, thickness = 1, idleAlpha = 0.06, activeAlpha = 0.12 },
-  { spread = 7, thickness = 1, idleAlpha = 0.03, activeAlpha = 0.07 },
-}
+-- The anchor draws the client's own Edit Mode selection nine-slice
+-- (M.modernWow.moveUI) rather than a flat panel inside a stack of stepped
+-- glow strips. The art is Blizzard's, carries its own falloff, and already
+-- says what the strips were approximating: cyan for an anchor being pointed
+-- at, gold for the one that is selected.
+--
+-- Every piece is a 16-unit cell centred on the frame's own edge, so the
+-- border straddles it by `straddle` in each direction and the centre fill is
+-- inset by the same amount. Both kits share one sheet, so a state change is
+-- a texture coordinate change rather than a rebuild.
+local function CreateHandleArt(handle)
+  local token = M.modernWow.moveUI
+  if not token or not handle.CreateTexture then return nil end
 
-local function CreateHandleGlow(handle)
-  local glow, ringIndex = {}, nil
+  local piece, straddle = token.piece, token.straddle
+  local art = { pieces = {} }
 
-  for ringIndex = 1, table.getn(MOVER_GLOW_RINGS) do
-    local ring = MOVER_GLOW_RINGS[ringIndex]
-    local spread, thickness = ring.spread, ring.thickness
-    local strips, stripIndex = {}, nil
+  -- The fill covers the frame exactly, so it meets the border line rather
+  -- than stopping short of it. NineSlice.lua's SetupCenter anchors the Center
+  -- to the corner pieces, not to the frame: TOPLEFT to TopLeftCorner's
+  -- BOTTOMRIGHT plus the layout's (-8, 8). That corner straddles the frame
+  -- corner by `straddle`, so its BOTTOMRIGHT is already `straddle` inside the
+  -- frame and the offset puts the fill back on the frame's own edge. Reading
+  -- those offsets as frame-relative gives a fill inset or outset by a whole
+  -- straddle -- an unfilled band inside the rim, or art spilling past it.
+  art.fill = handle:CreateTexture(nil, "BACKGROUND")
+  art.fill:SetAllPoints(handle)
 
-    for stripIndex = 1, 4 do
-      local strip = handle:CreateTexture(nil, "ARTWORK")
-      strip:SetTexture(M.texture.plain)
-      strips[stripIndex] = strip
-    end
-
-    strips[1]:SetHeight(thickness)
-    strips[1]:SetPoint("TOPLEFT", handle, "TOPLEFT", -spread, spread)
-    strips[1]:SetPoint("TOPRIGHT", handle, "TOPRIGHT", spread, spread)
-
-    strips[2]:SetHeight(thickness)
-    strips[2]:SetPoint("BOTTOMLEFT", handle, "BOTTOMLEFT", -spread, -spread)
-    strips[2]:SetPoint("BOTTOMRIGHT", handle, "BOTTOMRIGHT", spread, -spread)
-
-    strips[3]:SetWidth(thickness)
-    strips[3]:SetPoint("TOPLEFT", handle, "TOPLEFT", -spread, spread)
-    strips[3]:SetPoint("BOTTOMLEFT", handle, "BOTTOMLEFT", -spread, -spread)
-
-    strips[4]:SetWidth(thickness)
-    strips[4]:SetPoint("TOPRIGHT", handle, "TOPRIGHT", spread, spread)
-    strips[4]:SetPoint("BOTTOMRIGHT", handle, "BOTTOMRIGHT", spread, -spread)
-
-    glow[ringIndex] = strips
+  -- `key` names the cell in whichever kit is current; `flipH`/`flipV` reverse
+  -- its coordinates, which is how core/media.lua's single authored top-left
+  -- corner becomes the other three (the same reversal U.ModernWowHorizontalBar
+  -- uses for its flipped divider).
+  local function Piece(path, key, flipH, flipV)
+    local texture = handle:CreateTexture(nil, "ARTWORK")
+    texture:SetTexture(path)
+    table.insert(art.pieces, {
+      texture = texture, key = key, flipH = flipH, flipV = flipV,
+    })
+    return texture
   end
 
-  return glow
+  local sheet, vertical = token.texture, token.textureVertical
+
+  local topLeft = Piece(sheet, "corner", false, false)
+  topLeft:SetWidth(piece)
+  topLeft:SetHeight(piece)
+  topLeft:SetPoint("TOPLEFT", handle, "TOPLEFT", -straddle, straddle)
+
+  local topRight = Piece(sheet, "corner", true, false)
+  topRight:SetWidth(piece)
+  topRight:SetHeight(piece)
+  topRight:SetPoint("TOPRIGHT", handle, "TOPRIGHT", straddle, straddle)
+
+  local bottomLeft = Piece(sheet, "corner", false, true)
+  bottomLeft:SetWidth(piece)
+  bottomLeft:SetHeight(piece)
+  bottomLeft:SetPoint("BOTTOMLEFT", handle, "BOTTOMLEFT", -straddle, -straddle)
+
+  local bottomRight = Piece(sheet, "corner", true, true)
+  bottomRight:SetWidth(piece)
+  bottomRight:SetHeight(piece)
+  bottomRight:SetPoint("BOTTOMRIGHT", handle, "BOTTOMRIGHT", straddle, -straddle)
+
+  local top = Piece(sheet, "top", false, false)
+  top:SetHeight(piece)
+  top:SetPoint("TOPLEFT", handle, "TOPLEFT", straddle, straddle)
+  top:SetPoint("TOPRIGHT", handle, "TOPRIGHT", -straddle, straddle)
+
+  local bottom = Piece(sheet, "bottom", false, false)
+  bottom:SetHeight(piece)
+  bottom:SetPoint("BOTTOMLEFT", handle, "BOTTOMLEFT", straddle, -straddle)
+  bottom:SetPoint("BOTTOMRIGHT", handle, "BOTTOMRIGHT", -straddle, -straddle)
+
+  local left = Piece(vertical, "left", false, false)
+  left:SetWidth(piece)
+  left:SetPoint("TOPLEFT", handle, "TOPLEFT", -straddle, -straddle)
+  left:SetPoint("BOTTOMLEFT", handle, "BOTTOMLEFT", -straddle, straddle)
+
+  local right = Piece(vertical, "right", false, false)
+  right:SetWidth(piece)
+  right:SetPoint("TOPRIGHT", handle, "TOPRIGHT", straddle, -straddle)
+  right:SetPoint("BOTTOMRIGHT", handle, "BOTTOMRIGHT", straddle, straddle)
+
+  return art
 end
 
-local function SetHandleGlowShown(entry, shown)
-  if not entry or not entry.handleGlow then return end
-  local ringIndex, stripIndex = nil, nil
-  for ringIndex = 1, table.getn(entry.handleGlow) do
-    for stripIndex = 1, table.getn(entry.handleGlow[ringIndex]) do
-      if shown then
-        entry.handleGlow[ringIndex][stripIndex]:Show()
-      else
-        entry.handleGlow[ringIndex][stripIndex]:Hide()
-      end
+local function SetHandleArtShown(entry, shown)
+  local art = entry and entry.handleArt
+  if not art then return end
+
+  local index = nil
+  for index = 1, table.getn(art.pieces) do
+    if shown then
+      art.pieces[index].texture:Show()
+    else
+      art.pieces[index].texture:Hide()
     end
   end
+  if shown then art.fill:Show() else art.fill:Hide() end
 end
 
 local function ApplyHandleState(entry)
@@ -1662,22 +1699,34 @@ local function ApplyHandleState(entry)
 
   local selected = activeMover == entry
   local highlighted = selected or entry.listHovered
-  local background = highlighted and M.color.accentFill or M.color.mover
-  local edge = highlighted and M.color.accent or
-               (entry.hovered and M.color.moverIdleHover or M.color.moverIdleEdge)
-  local glowColor = highlighted and M.color.accent or M.color.moverIdleGlow
+  local token = M.modernWow.moveUI
+  local art = entry.handleArt
 
-  U.SetBackgroundColor(entry.handle, M.Unpack(background))
-  U.SetBorderColor(entry.handle, M.Unpack(edge))
-
-  local ringIndex, stripIndex = nil, nil
-  for ringIndex = 1, table.getn(entry.handleGlow or {}) do
-    local ring = MOVER_GLOW_RINGS[ringIndex]
-    local alpha = highlighted and ring.activeAlpha or ring.idleAlpha
-    for stripIndex = 1, table.getn(entry.handleGlow[ringIndex]) do
-      U.SetColor(entry.handleGlow[ringIndex][stripIndex], glowColor[1],
-                 glowColor[2], glowColor[3], alpha)
+  if art and token then
+    local kit = highlighted and token.selected or token.hover
+    local state = "idle"
+    if highlighted then
+      state = "selected"
+    elseif entry.hovered then
+      state = "hover"
     end
+
+    local index = nil
+    for index = 1, table.getn(art.pieces) do
+      local part = art.pieces[index]
+      local cell = kit[part.key]
+      local u1, u2, v1, v2 = cell[1], cell[2], cell[3], cell[4]
+      if part.flipH then u1, u2 = u2, u1 end
+      if part.flipV then v1, v2 = v2, v1 end
+      -- knowledge.json / textures.rle_512_tga_atlas_four_arg_supported: only
+      -- the four-argument form is used, guarded like every other texture call
+      -- on this client.
+      pcall(part.texture.SetTexCoord, part.texture, u1, u2, v1, v2)
+      part.texture:SetAlpha(token.alpha[state])
+    end
+
+    art.fill:SetTexture(kit.fill)
+    art.fill:SetAlpha(token.fillAlpha[state])
   end
 
   if entry.handle.label then
@@ -1685,11 +1734,58 @@ local function ApplyHandleState(entry)
   end
 end
 
+-- Click-outside deselect.
+--
+-- A full-screen Button under everything edit mode draws: every anchor's drag
+-- input takes its strata from the frame it moves, and the edit panel, the
+-- contextual panel and the advanced drawer are ordinary windows, so all of
+-- them sit above BACKGROUND and take their own clicks first. What reaches
+-- this is a click on nothing -- which is the gesture that deselects.
+--
+-- It exists only while an anchor is selected, and that is deliberate. A
+-- mouse-enabled frame over UIParent also stops clicks reaching WorldFrame, so
+-- a catcher shown for all of edit mode would cost camera turning and
+-- targeting the whole time it is open. Bound to the selection instead, the
+-- capture lasts exactly until the click that ends it, and edit mode with
+-- nothing selected still behaves like the rest of the UI.
+--
+-- Every button deselects, not just the left one: the frame swallows a click
+-- whether or not that button can fire OnClick, so registering fewer would
+-- leave a right-click both unable to turn the camera and unable to clear the
+-- selection that is blocking it.
+--
+-- Shape taken from quickbind's shade (modules/quickbind.lua CreateShade),
+-- which swallows world clicks the same way and is known to work here: a
+-- Button over UIParent at BACKGROUND, frame level 0. This one draws nothing,
+-- so the alignment grid one level above it is unaffected.
+local function CreateClickCatcher(onOutsideClick)
+  local catcher = CreateFrame("Button", "UnrealUIMoverClickCatcher", UIParent)
+  pcall(catcher.SetAllPoints, catcher, UIParent)
+  pcall(catcher.SetFrameStrata, catcher, "BACKGROUND")
+  pcall(catcher.SetFrameLevel, catcher, 0)
+  pcall(catcher.EnableMouse, catcher, true)
+  pcall(catcher.RegisterForClicks, catcher, "LeftButtonUp", "RightButtonUp")
+  catcher:SetScript("OnClick", onOutsideClick)
+  catcher:Hide()
+  return catcher
+end
+
 local function SetActiveMover(entry)
   local previous = activeMover
   activeMover = entry
   ApplyHandleState(previous)
   if entry ~= previous then ApplyHandleState(entry) end
+
+  -- A local function is in scope inside its own body, so the catcher can call
+  -- straight back here to clear the selection it was created for.
+  if entry and unlocked then
+    if not clickCatcher then
+      clickCatcher = CreateClickCatcher(function() SetActiveMover(nil) end)
+    end
+    clickCatcher:Show()
+  elseif clickCatcher then
+    clickCatcher:Hide()
+  end
 
   -- The panel belongs to the anchor, not to the edit window: it is handed the
   -- addon-owned handle so it can sit beside that anchor and carry its label as
@@ -1798,12 +1894,10 @@ local function CreateHandle(entry)
   input:RegisterForDrag("LeftButton")
   pcall(input.EnableMouse, input, true)
 
-  U.CreateBackdrop(handle, {
-    background = M.color.mover,
-    border = M.color.moverIdleEdge,
-  })
-
-  entry.handleGlow = CreateHandleGlow(handle)
+  -- No U.CreateBackdrop here: the Edit Mode art carries its own centre fill
+  -- and border, and a flat panel under it would only show through the art's
+  -- transparent straddle.
+  entry.handleArt = CreateHandleArt(handle)
 
   -- knowledge.json / buttons.plain_settext_no_fontstring: an untemplated Button
   -- can accept SetText without ever showing a FontString, so the label is a
@@ -1865,6 +1959,10 @@ end
 
 local function HideHandle(entry)
   entry.handleShown = false
+  -- An anchor whose element a module has just switched off must not stay
+  -- selected: its highlight and panel would be gone, but the click catcher
+  -- holding the screen would not.
+  if activeMover == entry then SetActiveMover(nil) end
   if type(U.SetMoverSampleShown) == "function" then
     pcall(U.SetMoverSampleShown, entry.id, false)
   end
@@ -1876,7 +1974,7 @@ local function HideHandle(entry)
   entry.hovered = false
   entry.listHovered = false
   if entry.handle.label then entry.handle.label:Hide() end
-  SetHandleGlowShown(entry, false)
+  SetHandleArtShown(entry, false)
   if entry.dragInput then entry.dragInput:Hide() end
   entry.handle:Hide()
 end
@@ -1913,7 +2011,7 @@ local function ShowHandle(entry)
   if entry.dragInput then entry.dragInput:Show() end
   -- rendering.parent_alpha_not_propagated: children are shown and hidden
   -- explicitly rather than relying on the parent's visibility carrying.
-  SetHandleGlowShown(entry, true)
+  SetHandleArtShown(entry, true)
   ApplyHandleState(entry)
   entry.handleShown = true
 
@@ -3160,6 +3258,11 @@ function U.LockUI()
     U.Print("mover snap trace: watching " .. trace.LOCK_WATCH ..
             " s more (change target now), then it saves itself")
   end
+
+  -- Before `unlocked` goes false, so the selection is cleared through the same
+  -- path a click outside uses and the click catcher comes down with it. A
+  -- catcher left shown after edit mode closes would hold the whole screen.
+  SetActiveMover(nil)
 
   unlocked = false
   if U.db then U.db.locked = true end

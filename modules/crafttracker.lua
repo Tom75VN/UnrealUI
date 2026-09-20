@@ -31,10 +31,13 @@ local ct = {
   MAX_RECIPES = 10,
   REFRESH_KEY = "crafttracker.refresh",
   lines = {},
+  headers = {},
 }
 
 function ct.Config()
-  return U.ModuleConfig("crafttracker", { recipes = {}, reagents = {} })
+  return U.ModuleConfig("crafttracker", {
+    recipes = {}, reagents = {}, professions = {}, kinds = {},
+  })
 end
 
 function ct.Token()
@@ -85,7 +88,7 @@ end
 
 -- `reagents` is a list of { name, need }; nil stops tracking the recipe.
 -- Returns whether the recipe is tracked afterwards.
-function U.CraftTrackerSetTracked(recipe, reagents)
+function U.CraftTrackerSetTracked(recipe, reagents, profession, kind)
   if type(recipe) ~= "string" or recipe == "" then return false end
   local config = ct.Config()
   local index = ct.IndexOf(recipe)
@@ -94,6 +97,8 @@ function U.CraftTrackerSetTracked(recipe, reagents)
     if index then
       table.remove(config.recipes, index)
       ct.ClearReagents(recipe)
+      config.professions[recipe] = nil
+      config.kinds[recipe] = nil
     end
   else
     if not index then
@@ -110,10 +115,23 @@ function U.CraftTrackerSetTracked(recipe, reagents)
       config.reagents[recipe .. ct.SEP .. i] = r.name
       config.reagents[recipe .. ct.SEP .. i .. ct.SEP .. "need"] = tonumber(r.need) or 1
     end
+    if type(profession) == "string" and profession ~= "" then
+      config.professions[recipe] = profession
+    end
+    if kind == "trade" or kind == "craft" then config.kinds[recipe] = kind end
   end
 
   ct.Queue()
   return ct.IndexOf(recipe) ~= nil
+end
+
+function U.CraftTrackerRememberSource(recipe, profession, kind)
+  if not ct.IndexOf(recipe) then return end
+  local config = ct.Config()
+  if type(profession) == "string" and profession ~= "" then
+    config.professions[recipe] = profession
+  end
+  if kind == "trade" or kind == "craft" then config.kinds[recipe] = kind end
 end
 
 -- ---------------------------------------------------------------------------
@@ -158,6 +176,132 @@ function ct.Line(i)
   return line
 end
 
+function ct.Header(i)
+  local button = ct.headers[i]
+  if button then return button end
+  button = CreateFrame("Button", nil, ct.frame)
+  button:RegisterForClicks("LeftButtonUp")
+  local levelOk, level = pcall(ct.handle.GetFrameLevel, ct.handle)
+  if levelOk and tonumber(level) then
+    pcall(button.SetFrameLevel, button, level + 1)
+  end
+  button:SetScript("OnEnter", function()
+    if button.line then
+      pcall(button.line.SetTextColor, button.line,
+            M.Unpack(ct.Token().headerHoverColor))
+    end
+  end)
+  button:SetScript("OnLeave", function()
+    if button.line then
+      pcall(button.line.SetTextColor, button.line,
+            M.Unpack(ct.Token().headerColor))
+    end
+  end)
+  button:SetScript("OnMouseDown", function()
+    if button.line then
+      pcall(button.line.SetTextColor, button.line,
+            M.Unpack(ct.Token().headerPressedColor))
+    end
+  end)
+  button:SetScript("OnMouseUp", function()
+    if button.line then
+      pcall(button.line.SetTextColor, button.line,
+            M.Unpack(ct.Token().headerHoverColor))
+    end
+  end)
+  button:SetScript("OnClick", function()
+    if button.recipe then ct.OpenRecipe(button.recipe) end
+  end)
+  ct.headers[i] = button
+  return button
+end
+
+function ct.Call(name, a, b)
+  local fn = U.G(name)
+  if type(fn) ~= "function" then return false end
+  return pcall(fn, a, b)
+end
+
+function ct.Truthy(value)
+  return value ~= nil and value ~= false and value ~= 0
+end
+
+function ct.ActionForSpell(name)
+  if type(name) ~= "string" or type(U.ActionSlotSpellName) ~= "function" then
+    return nil
+  end
+  local slot
+  for slot = 1, 72 do
+    if U.ActionSlotSpellName(slot) == name then return slot end
+  end
+  return nil
+end
+
+function ct.ClearTemporaryAction(slot)
+  local ok, occupied = ct.Call("HasAction", slot)
+  if ok and ct.Truthy(occupied) then ct.Call("PickupAction", slot) end
+  ct.Call("ClearCursor")
+  ok, occupied = ct.Call("HasAction", slot)
+  return ok and not ct.Truthy(occupied)
+end
+
+-- UseAction is the verified unprotected casting route on this client. When a
+-- profession is not already on a bar, stage it only in an empty supported slot
+-- and remove it immediately after use.
+function ct.UseProfessionSpell(spell, book, name)
+  local action = ct.ActionForSpell(name)
+  if action then return ct.Call("UseAction", action) end
+
+  local _, hasSpell = ct.Call("CursorHasSpell")
+  local _, hasItem = ct.Call("CursorHasItem")
+  if ct.Truthy(hasSpell) or ct.Truthy(hasItem) then return false end
+
+  local target, slot
+  for slot = 72, 1, -1 do
+    local ok, occupied = ct.Call("HasAction", slot)
+    if ok and not ct.Truthy(occupied) then target = slot break end
+  end
+  if not target then return false end
+
+  if not ct.Call("PickupSpell", spell, book) then return false end
+  local cursorOk, cursorSpell = ct.Call("CursorHasSpell")
+  if not cursorOk or not ct.Truthy(cursorSpell) then
+    ct.Call("ClearCursor")
+    return false
+  end
+  ct.Call("PlaceAction", target)
+
+  local placedOk, placed = ct.Call("HasAction", target)
+  if not placedOk or not ct.Truthy(placed) or
+     U.ActionSlotSpellName(target) ~= name then
+    ct.ClearTemporaryAction(target)
+    return false
+  end
+
+  local used = ct.Call("UseAction", target)
+  if not ct.ClearTemporaryAction(target) then
+    U.Error("crafttracker: temporary profession action was not cleared")
+  end
+  return used
+end
+
+function ct.OpenRecipe(recipe)
+  if type(U.ModernWowProfessionsOpenRecipe) ~= "function" then return end
+  local config = ct.Config()
+  local profession = config.professions[recipe]
+  local kind = config.kinds[recipe]
+  if U.ModernWowProfessionsOpenRecipe(recipe, kind, profession) then return end
+  if not profession or type(U.ModernWowProfessionSpell) ~= "function" then return end
+
+  local spell, book, name = U.ModernWowProfessionSpell(profession)
+  if not spell then return end
+  if ct.UseProfessionSpell(spell, book, name) then
+    U.DeferOnce("crafttracker.open", function()
+      U.ModernWowProfessionsOpenRecipe(recipe, kind, profession)
+    end)
+  end
+end
+
 function ct.Queue()
   U.DeferOnce(ct.REFRESH_KEY, ct.Refresh)
 end
@@ -168,7 +312,7 @@ function ct.Refresh()
   local recipes = ct.Config().recipes
   local counts = table.getn(recipes) > 0 and ct.BagCounts() or {}
 
-  local used, height, previous = 0, 0, nil
+  local used, headerUsed, height, previous = 0, 0, 0, nil
   local function Add(text, size, color, indent, gap)
     used = used + 1
     local line = ct.Line(used)
@@ -191,6 +335,7 @@ function ct.Refresh()
     local ok, h = pcall(line.GetHeight, line)
     h = ok and tonumber(h) or 0
     if h <= 0 then h = size + 2 end
+    line.uuiHeight = h
     if previous then height = height + gap end
     height = height + h
     previous = line
@@ -200,6 +345,17 @@ function ct.Refresh()
   for i = 1, table.getn(recipes) do
     local recipe = recipes[i]
     Add(recipe, M.fontSize.normal, t.headerColor, 0, i > 1 and t.recipeGap or 0)
+    headerUsed = headerUsed + 1
+    local button = ct.Header(headerUsed)
+    button.recipe = recipe
+    button.line = previous
+    pcall(function()
+      button:ClearAllPoints()
+      button:SetPoint("TOPLEFT", previous, "TOPLEFT", 0, 0)
+      button:SetWidth(t.width)
+      button:SetHeight(previous.uuiHeight)
+      button:Show()
+    end)
     local reagents = ct.Reagents(recipe)
     for j = 1, table.getn(reagents) do
       local r = reagents[j]
@@ -211,6 +367,11 @@ function ct.Refresh()
 
   for i = used + 1, table.getn(ct.lines) do
     pcall(ct.lines[i].Hide, ct.lines[i])
+  end
+  for i = headerUsed + 1, table.getn(ct.headers) do
+    ct.headers[i].recipe = nil
+    ct.headers[i].line = nil
+    pcall(ct.headers[i].Hide, ct.headers[i])
   end
   pcall(ct.frame.SetHeight, ct.frame, math.max(t.minHeight, height))
   -- An empty tracker draws nothing, so it must not catch clicks either.

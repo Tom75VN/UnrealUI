@@ -10,7 +10,7 @@
 --
 -- Only the look and the call shapes are taken from pfUI. None of its bar
 -- architecture is reproduced: no config schema, no secure/TBC state driver, no
--- hoverbind, no reagent counter, no animations, no stance/pet bars. A page
+-- hoverbind, no animations, no stance/pet bars. A page
 -- owned by this character's class/stance is reached only by paging Bar 1 and
 -- is omitted from the independent static bars.
 --
@@ -894,6 +894,140 @@ end
 
 local function Has(name)
   return ResolveApiFn(name) and true or false
+end
+
+-- Reagent spells have no direct reagent API on this client. UnrealPfUI's
+-- working path reads the localized reagent name from the action tooltip, then
+-- counts that item in bags 0-4. Cache the tooltip result per action slot so the
+-- regular one-second slot refresh only performs the cheap count lookup.
+local reagent = {
+  scannerName = "UnrealUIActionBarReagentScanner",
+  scannerBuilt = false,
+  scanner = nil,
+  slots = {},
+  counts = {},
+}
+
+function reagent.Scanner()
+  if reagent.scannerBuilt then return reagent.scanner end
+  reagent.scannerBuilt = true
+
+  local ok, tip = pcall(CreateFrame, "GameTooltip", reagent.scannerName, nil,
+                        "GameTooltipTemplate")
+  if not ok or not tip then return nil end
+  pcall(tip.SetOwner, tip, U.G("WorldFrame") or UIParent, "ANCHOR_NONE")
+  reagent.scanner = tip
+  return tip
+end
+
+function reagent.LineText(line, side)
+  local region = U.G(reagent.scannerName .. "Text" .. side .. line)
+  if not region or type(region.GetText) ~= "function" then return nil end
+
+  if side == "Right" and type(region.IsVisible) == "function" then
+    local visibleOk, visible = pcall(region.IsVisible, region)
+    if visibleOk and not visible then return nil end
+  end
+
+  local ok, text = pcall(region.GetText, region)
+  if not ok or type(text) ~= "string" or text == "" then return nil end
+  return text
+end
+
+function reagent.NameFromLine(text)
+  local prefix = U.G("SPELL_REAGENTS")
+  if type(prefix) ~= "string" or prefix == "" or
+     type(text) ~= "string" or string.find(text, prefix, 1, true) ~= 1 then
+    return nil
+  end
+
+  local name = string.sub(text, string.len(prefix) + 1)
+  name = string.gsub(name, " %((.+)%)", "")
+  name = string.gsub(name, "^%s+", "")
+  name = string.gsub(name, "%s+$", "")
+  if name == "" then return nil end
+  return name
+end
+
+function reagent.CountItem(itemName)
+  local total = 0
+  local bag
+  for bag = 0, 4 do
+    local slots = tonumber(Call("GetContainerNumSlots", bag)) or 0
+    local slot
+    for slot = 1, slots do
+      local _, count = Call("GetContainerItemInfo", bag, slot)
+      count = tonumber(count)
+      if count and count > 0 then
+        local link = Call("GetContainerItemLink", bag, slot)
+        local name = link and Call("GetItemInfo", link) or nil
+        if name == itemName then total = total + count end
+      end
+    end
+  end
+  return total
+end
+
+function reagent.ScanSlot(slot)
+  local tip = reagent.Scanner()
+  if not tip or type(tip.SetAction) ~= "function" then
+    reagent.slots[slot] = false
+    return nil
+  end
+
+  pcall(tip.ClearLines, tip)
+  pcall(tip.SetOwner, tip, U.G("WorldFrame") or UIParent, "ANCHOR_NONE")
+  if not pcall(tip.SetAction, tip, slot) then
+    reagent.slots[slot] = false
+    return nil
+  end
+
+  local ok, lineCount = pcall(tip.NumLines, tip)
+  lineCount = ok and tonumber(lineCount) or 0
+  local line
+  for line = 1, lineCount do
+    local name = reagent.NameFromLine(reagent.LineText(line, "Left")) or
+                 reagent.NameFromLine(reagent.LineText(line, "Right"))
+    if name then
+      reagent.slots[slot] = name
+      if reagent.counts[name] == nil then
+        reagent.counts[name] = reagent.CountItem(name)
+      end
+      return name
+    end
+  end
+
+  reagent.slots[slot] = false
+  return nil
+end
+
+function reagent.GetCount(slot)
+  local name = reagent.slots[slot]
+  if name == nil then name = reagent.ScanSlot(slot) end
+  if not name then return nil end
+
+  local count = reagent.counts[name]
+  if count == nil then
+    count = reagent.CountItem(name)
+    reagent.counts[name] = count
+  end
+  return count
+end
+
+function reagent.Invalidate(slot)
+  slot = tonumber(slot)
+  if slot and slot >= 1 and slot <= BAR_COUNT * SLOTS_PER_BAR then
+    reagent.slots[slot] = nil
+  else
+    reagent.slots = {}
+  end
+end
+
+function reagent.RefreshCounts()
+  local name
+  for name in pairs(reagent.counts) do
+    reagent.counts[name] = reagent.CountItem(name)
+  end
 end
 
 local function ConfigureBarOwnership()
@@ -1908,14 +2042,17 @@ local function UpdateSlot(button)
     button.uuiTint = nil
   end
 
-  -- GetActionCount is zero for spells, macros and empty slots, so it is the
-  -- authoritative item check as well as the quantity.  IsConsumableAction
-  -- excludes valid stackable items such as bandages, which left their action
-  -- buttons without a count.
+  -- GetActionCount supplies item stacks. Reagent spells report zero here, so
+  -- their localized tooltip reagent is counted from bags instead.
   local count = ""
   if cfg.showCount then
     local n = tonumber(Call("GetActionCount", slot))
-    if n and n > 0 then count = tostring(n) end
+    if n and n > 0 then
+      count = tostring(n)
+    else
+      local reagentCount = reagent.GetCount(slot)
+      if reagentCount ~= nil then count = tostring(reagentCount) end
+    end
   end
   -- Built only when non-empty. A slot that never carries a stack count never
   -- creates the fontstring; one that already has it still clears it correctly,
@@ -2976,6 +3113,15 @@ local function RegisterEvents()
   end
   U.RegisterEvent("UPDATE_BINDINGS", RefreshBindings)
   U.RegisterEvent("PLAYER_ENTERING_WORLD", RefreshBindings)
+  U.RegisterEvent("PLAYER_ENTERING_WORLD", function()
+    reagent.Invalidate()
+  end)
+  U.RegisterEvent("ACTIONBAR_SLOT_CHANGED", function(_, slot)
+    reagent.Invalidate(slot)
+  end)
+  U.RegisterEvent("BAG_UPDATE", function()
+    reagent.RefreshCounts()
+  end)
   U.RegisterEvent("PLAYER_LEAVE_COMBAT", function()
     if bindingsDirty then ApplyOverrideBindings() end
   end)

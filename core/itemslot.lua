@@ -116,6 +116,40 @@ function U.QuestRewardColor(source, itemType, index)
   return U.ItemLinkQualityColor(link)
 end
 
+-- Narrows one native quest item slot (QuestItemTemplate: QuestDetailItemN,
+-- QuestRewardItemN, QuestLogItemN, ...) to `width`, once. The name box
+-- texture (<slot>NameFrame) and the name text have fixed native widths, so
+-- they shrink by the same amount as the slot; the icon keeps its size. Used by
+-- the Modern WoW quest-giver window and Quest Log, whose parchment pages are
+-- narrower than the 300-wide page the native two-column grid was laid out for
+-- (user reports, 2026-09-19). Returns true once the slot is at or under width.
+function U.FitQuestItemSlot(name, width)
+  local button = U.G(name)
+  width = tonumber(width)
+  if not button or not width then return false end
+  if button.uuiQuestItemFitted then return true end
+
+  local okW, native = pcall(button.GetWidth, button)
+  native = okW and tonumber(native) or 0
+  if native <= 0 then return false end
+  button.uuiQuestItemFitted = true
+  if native <= width then return true end
+
+  local delta = native - width
+  pcall(button.SetWidth, button, width)
+  local parts = { U.G(name .. "NameFrame"), U.G(name .. "Name") }
+  local i
+  for i = 1, table.getn(parts) do
+    local part = parts[i]
+    if part then
+      local ok, partWidth = pcall(part.GetWidth, part)
+      partWidth = ok and tonumber(partWidth) or 0
+      if partWidth > delta then pcall(part.SetWidth, part, partWidth - delta) end
+    end
+  end
+  return true
+end
+
 -- Tints a reward button's Name FontString. The button's own identity is used
 -- ("choice"/"reward" in button.type, 1-based index in GetID()) -- the same pair
 -- its native OnEnter feeds the tooltip -- so a translated name still resolves.

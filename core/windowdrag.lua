@@ -278,7 +278,11 @@ local function AvoidOverlap(state)
   local i
   for i = 1, table.getn(windowStates) do
     local other = windowStates[i]
-    if other ~= state and other.avoidOverlap and IsShown(other) then
+    -- A window of the same group replaces this one in place rather than
+    -- sitting beside it, so it is never a blocker.
+    local sameGroup = state.group and other.group == state.group
+    if other ~= state and other.avoidOverlap and not sameGroup and
+       IsShown(other) then
       local bounds = WindowBounds(other, CurrentPosition(other))
       if bounds then
         bounds.state = other
@@ -416,6 +420,22 @@ local function ApplyStoredPosition(state)
   return U.ApplyFramePoint(state.frame, saved)
 end
 
+-- A grouped window opening while another of its group is still on screen
+-- takes that window's exact placement: the client swaps GossipFrame for
+-- QuestFrame when a quest is picked, and the two are one conversation.
+local function ApplyGroupPosition(state)
+  if not state.group then return false end
+  local i
+  for i = 1, table.getn(windowStates) do
+    local other = windowStates[i]
+    if other ~= state and other.group == state.group and IsShown(other) then
+      local position = CurrentPosition(other)
+      if position then return U.ApplyFramePoint(state.frame, position) end
+    end
+  end
+  return false
+end
+
 local function RaiseHandle(state)
   if not state or not state.handle then return false end
   local levelOk, level = pcall(state.frame.GetFrameLevel, state.frame)
@@ -456,11 +476,18 @@ end
 --          with core/mover.lua's own position ids.
 -- frame    the native frame to move.
 -- options  { headerHeight, headerInset, headerLevelOffset, interactiveFrames,
---            interactiveFrameOffsets, avoidOverlap } -- headerInset reserves
---          space on the right edge for a close button. interactiveFrames are
---          kept one frame level above the drag handle unless their frame-keyed
---          offset table says otherwise. avoidOverlap defaults to true; modal
---          child windows can opt out explicitly.
+--            interactiveFrameOffsets, avoidOverlap, group, preserveHeight }
+--          headerInset reserves space on the right edge for a close button.
+--          interactiveFrames are kept one frame level above the drag handle
+--          unless their frame-keyed offset table says otherwise. avoidOverlap
+--          defaults to true; modal child windows can opt out explicitly.
+--          group names windows that replace each other in place (the quest
+--          giver's gossip and quest windows): they never push each other
+--          aside, and one opening while another is shown takes its position.
+--          Such windows should also share one `id`, so a drag moves them all.
+--          preserveHeight keeps the height measured here through later native
+--          panel-manager updates. It defaults on for the flat Modern theme;
+--          Modern WoW's owning modules already enforce their authored sizes.
 function U.MakeWindowDraggable(id, frame, options)
   if type(id) ~= "string" or not frame then
     U.Error("MakeWindowDraggable requires an id and a frame")
@@ -470,11 +497,30 @@ function U.MakeWindowDraggable(id, frame, options)
   options = options or {}
   if frameStates[frame] then return frameStates[frame] end
 
+  local preserveHeight = options.preserveHeight
+  if preserveHeight == nil then
+    preserveHeight = type(U.GetActiveThemeStyle) == "function" and
+                     U.GetActiveThemeStyle() == "modern"
+  end
+  local fixedHeight
+  if preserveHeight and frame.GetHeight then
+    local heightOk, height = pcall(frame.GetHeight, frame)
+    local scaleOk, scale = false, 1
+    if frame.GetScale then scaleOk, scale = pcall(frame.GetScale, frame) end
+    height = heightOk and tonumber(height) or nil
+    scale = scaleOk and tonumber(scale) or 1
+    if height and height > 0 and scale and scale > 0 then
+      fixedHeight = height / scale
+    end
+  end
+
   local state = {
     id = "window." .. id,
     frame = frame,
     dragging = false,
     avoidOverlap = options.avoidOverlap ~= false,
+    group = options.group,
+    fixedHeight = fixedHeight,
     handleLevelOffset = tonumber(options.headerLevelOffset) or HANDLE_LEVEL_OFFSET,
     interactiveFrames = options.interactiveFrames,
     interactiveFrameOffsets = options.interactiveFrameOffsets,
@@ -511,6 +557,7 @@ function U.MakeWindowDraggable(id, frame, options)
     -- receives the next mouse press.
     RaiseHandle(state)
     ApplyStoredPosition(state)
+    ApplyGroupPosition(state)
     -- Fits and clamps before the overlap check measures it. A saved position
     -- that ended up off screen (resolution or UI-scale change) is corrected
     -- and re-saved by core/screenguard.lua.
@@ -539,9 +586,11 @@ function U.MakeWindowDraggable(id, frame, options)
   -- open, on drop and on the guard's sweep (core/screenguard.lua).
   U.GuardOnScreen(frame, {
     id = state.id,
+    fixedHeight = state.fixedHeight,
     suspended = function() return state.dragging end,
   })
   if IsShown(state) then
+    RaiseHandle(state)
     U.CheckOnScreen(frame)
     ScheduleOverlapCheck(state, false)
   end

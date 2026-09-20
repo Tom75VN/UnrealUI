@@ -178,33 +178,36 @@ function U.CreatePanel(parent, options)
   return U.CreateBackdrop(frame, options)
 end
 
--- Draw a window above the client's tooltip.
+-- Keep a bag-family window under the rest of the interface (user request,
+-- 2026-09-21).
 --
--- This client shows a world object's tooltip whenever the cursor is over that
--- object in 3D, without regard for the UI covering the cursor. Probe
--- worldhover.suppression.v1 measured five ways to stop it and none worked:
--- raising the window to HIGH left 56 of 58 samples showing the object's name,
--- DIALOG 58 of 58, a dedicated mouse-enabled cover frame 58 of 58, and
--- WorldFrame:EnableMouse(false) 58 of 58, with both controls leaking as they
--- should. The window was never actually on top in any of those: GameTooltip
--- sits at the TOOLTIP strata, above HIGH and DIALOG alike, so this is the one
--- rung that puts a window over it.
+-- These windows used to be raised to the TOOLTIP strata so a world object's
+-- tooltip could not draw over them (probe worldhover.suppression.v1: HIGH left
+-- 56 of 58 samples showing the object's name, DIALOG 58 of 58, a mouse-enabled
+-- cover frame 58 of 58, WorldFrame:EnableMouse(false) 58 of 58 -- only TOOLTIP
+-- put the window on top, because GameTooltip lives there). The cost was that
+-- the bag also covered every window, dropdown and dialog, which is the reverse
+-- of what is wanted: interface windows must be on top of the bags.
 --
--- Understand what it does and does not do. It changes DRAW ORDER, not what the
--- tooltip says, and the world tooltip and the item tooltip are the same frame
--- -- so where the window covers GameTooltip, nothing shows: the wrong tooltip
--- is hidden and so is the right one. It also lifts the window above dropdowns,
--- dialogs and the game menu, which share the strata order it is jumping.
+-- BACKGROUND, not LOW and not MEDIUM. Within one strata the frame level
+-- decides, so only a strictly lower strata guarantees the window is under
+-- everything. LOW was tried first and was not enough -- the Social window
+-- still came out underneath the bag in game on 2026-09-21 -- because this
+-- client's own panels are not all MEDIUM. BACKGROUND is the bottom rung, so
+-- nothing on screen can end up below these windows.
 --
--- Removing the call restores the window to its normal MEDIUM strata; nothing
--- else depends on it.
-function U.RaiseWindowAboveTooltips(frame)
+-- The level argument only orders the bag family against itself (the bank has
+-- to stay above the carried bag's nested slot layers); it never crosses a
+-- strata.
+--
+-- Consequences, accepted with the request: a world object's tooltip can draw
+-- over these windows again, and so can any LOW element they overlap -- chat,
+-- the main bar, unit frames -- which then takes the clicks over that area.
+function U.LowerWindowBelowInterface(frame, level)
   if not frame then return false end
 
-  local ok = pcall(frame.SetFrameStrata, frame, "TOOLTIP")
-  -- Above GameTooltip within the shared strata as well, since strata alone
-  -- only ties them.
-  pcall(frame.SetFrameLevel, frame, 100)
+  local ok = pcall(frame.SetFrameStrata, frame, "BACKGROUND")
+  pcall(frame.SetFrameLevel, frame, level or 100)
   return ok and true or false
 end
 

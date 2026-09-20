@@ -2,7 +2,7 @@
 ## Title: |cffffffffUnreal |cfff5ae0aUI
 ## Notes: Unreal Azeroth native UI addon.
 ## Author: unrealUI
-## Version: 0.8.0
+## Version: 0.9.0
 ## X-License: MIT
 ## SavedVariables: UnrealUIDB, UnrealUIProfiles, UnrealUIDiagDB, UnrealUIPriceDB
 ## SavedVariablesPerCharacter: UnrealUIProfileDB, UnrealUIFavoriteDB, UnrealUIBankCountDB, UnrealUIBankCacheDB
@@ -48,6 +48,7 @@ Database\unit_names.lua
 Database\unit_names_ruRU.lua
 Database\unit_names_zhCN.lua
 Database\item_sort.lua
+Database\talent_advisor.lua
 core\unitvitals.lua
 
 core\compat.lua
@@ -63,6 +64,9 @@ core\itemsort.lua
 core\itemstack.lua
 core\widgets.lua
 core\stockui.lua
+# The one Modern WoW scrollbar (MinimalScrollBar art over a stock Slider),
+# used by every Modern WoW surface that draws one. Needs core\stockui.lua.
+core\modernwowscrollbar.lua
 # Talent-tree client data and the prerequisite-branch node walk, shared by
 # every theme's talent drawing path. No drawing of its own.
 core\talentgrid.lua
@@ -151,8 +155,11 @@ modules\spellbook.lua
 # modules\spellbook.lua decides in its own OnEnable whether to call them, for
 # the full Modern WoW theme or Classic's explicit Spellbook selection.
 modules\spellbookmodernwow.lua
-# Its Professions tab and page. Built only by that drawing path.
+# Shared Professions-tab behavior and data for each Spellbook drawing path.
 modules\spellbookprofessions.lua
+# The same page under the flat Modern theme: shared behavior, modern tabs and
+# reversible placement of the native profession spell buttons.
+modules\spellbookmodernprof.lua
 # The classic-wow Spellbook's "Not on action bars" glow. Entry point only;
 # modules\spellbook.lua calls it when the modern-wow book is not drawn.
 modules\spellbookclassicglow.lua
@@ -161,20 +168,27 @@ modules\spellbookclassicglow.lua
 # builds it on classic-wow's native chrome path.
 modules\spellbookclassicprof.lua
 
-# The Talent window's two complete drawing paths: DF-main's three-panel
-# frame for modern-wow, and the same three-tree interface in the modern
-# theme's own flat language. Entry points only; modules\talents.lua
-# picks one.
+# The optional talent build drawer, shared by every path below and named by
+# whichever one builds: it binds a highlight to every talent button as that
+# button is created, so it has to load first. Entry points only.
+modules\talentadvisor.lua
+
+# The Talent window's three complete drawing paths: DF-main's three-panel
+# frame for modern-wow, the same three-tree interface in the modern theme's
+# own flat language, and the same interface again in the client's own chrome
+# for classic-wow. Entry points only; modules\talents.lua picks one.
 modules\talentsmodernwow.lua
 modules\talentsmodern.lua
+modules\talentsclassic.lua
 modules\talents.lua
 
-# The profession (TradeSkill / Craft) window's modern-wow drawing path
-# (DF-main's profession frame). Also serves Classic's explicit Crafting
-# selection and otherwise builds nothing. After
+# The profession (TradeSkill / Craft) window's two complete drawing paths:
+# UnrealUI's flat interface for modern, then DF-main's profession frame for
+# modern-wow (also used by Classic's explicit Crafting selection). After
 # spellbookprofessions.lua and talentsmodernwow.lua, whose shared profession
 # lookup and panel rim it calls, and before modules\modernwow.lua, which
 # checks that it built.
+modules\professionsmodern.lua
 modules\professions.lua
 # The tracked-recipe HUD the profession window's "Track this recipe" box
 # feeds. Theme-independent; professions.lua only calls its U.* entry points.
@@ -185,6 +199,10 @@ modules\friends.lua
 modules\merchant.lua
 modules\trainer.lua
 modules\mail.lua
+# The quest giver's Modern WoW design for QuestFrame and GossipFrame (the
+# `questdialog` surface): entry points only, bound and called by
+# modules\gossip.lua and modules\quest.lua.
+modules\questdesign.lua
 modules\gossip.lua
 modules\quest.lua
 modules\windowmove.lua

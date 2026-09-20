@@ -145,6 +145,7 @@ local DIAGNOSTIC_HELP = {
   "  |cffffff00/uui bagcat|r - dump what the client calls each bag item and " ..
     "which category it lands in",
   "  |cffffff00/uui tabs|r - dump what the character-sheet tab strip measured and wrote",
+  "  |cffffff00/uui tabpad|r - measured left/right inset of every tab, character vs spellbook",
   "  |cffffff00/uui sb|r - dump why a spellbook entry is marked off the action bars",
   "  |cffffff00/uui sb trace|r - record what the mark does as a spell goes on/off a bar",
   "  |cffffff00/uui sb ranks|r - dump the spell list layout the highest-rank filter reads",
@@ -1318,6 +1319,122 @@ handlers["tabs"] = function()
             " after=" .. tostring(row.after) ..
             " live=" .. tostring(row.live))
   end
+end
+
+-- Measured left/right inset of every styled tab strip, so a strip that looks
+-- wrong can be compared against one that looks right instead of reasoned
+-- about. Reads the RENDERED edges (GetLeft/GetRight of the tab and of its
+-- label) rather than the widths unrealUI asked for: padLeft/padRight are what
+-- is actually on screen, and they are the only numbers that settle whether a
+-- tab has an inset.
+--
+-- Also dumps what the shared component believes -- the owned label, the
+-- remembered inset, whether a strip fit claimed the tab -- so a zero inset can
+-- be traced to the right cause: no owned label means the client is still
+-- drawing its own, fitOwned means U.FitStockTabStrip computed the padding
+-- instead, and a padding that disagrees with padLeft means something resized
+-- the tab after the component wrote it.
+handlers["tabpad"] = function()
+  local strips = {
+    { "character", "CharacterFrameTab", 5 },
+    { "spellbook", "SpellBookFrameTabButton", 3 },
+    { "social", "FriendsFrameTab", 5 },
+  }
+  local named = {
+    { "spellbook", "UnrealUISpellBookSpellsTab" },
+    { "spellbook", "UnrealUISpellBookProfessionsTab" },
+  }
+
+  local dump, i, n = {}, nil, nil
+
+  local function Number(object, method)
+    if not object or not object[method] then return nil end
+    local ok, value = pcall(object[method], object)
+    if ok and tonumber(value) then return value end
+    return nil
+  end
+
+  local function Measure(strip, name)
+    local tab = U.G(name)
+    if not tab then return end
+
+    local shown = false
+    if tab.IsShown then
+      local ok, value = pcall(tab.IsShown, tab)
+      shown = ok and value and true or false
+    end
+
+    local label = tab.uuiTabLabel
+    if not label and tab.GetFontString then
+      local ok, value = pcall(tab.GetFontString, tab)
+      if ok then label = value end
+    end
+
+    local row = {
+      strip = strip,
+      name = name,
+      shown = shown,
+      width = Number(tab, "GetWidth"),
+      height = Number(tab, "GetHeight"),
+      tabLeft = Number(tab, "GetLeft"),
+      tabRight = Number(tab, "GetRight"),
+      labelLeft = Number(label, "GetLeft"),
+      labelRight = Number(label, "GetRight"),
+      stringWidth = Number(label, "GetStringWidth"),
+      labelWidth = Number(label, "GetWidth"),
+      owned = tab.uuiTabLabel and true or false,
+      padding = tab.uuiTabPadding,
+      fitOwned = tab.uuiTabFitOwned and true or false,
+      styled = tab.uuiTabStyled and true or false,
+      active = tab.uuiTabActive and true or false,
+    }
+    if row.tabLeft and row.labelLeft then
+      row.padLeft = row.labelLeft - row.tabLeft
+    end
+    -- MEASURED 2026-09-20: FontString:GetRight() returns GetLeft()'s value on
+    -- this client -- every row of the first tabpad run had labelLeft ==
+    -- labelRight while labelWidth was a real number -- so the right edge is
+    -- derived from the left edge plus the width instead of read directly.
+    -- labelRight is still dumped, as the evidence for that.
+    if row.tabRight and row.labelLeft and row.labelWidth then
+      row.padRight = row.tabRight - (row.labelLeft + row.labelWidth)
+    end
+    table.insert(dump, row)
+  end
+
+  for i = 1, table.getn(strips) do
+    for n = 1, strips[i][3] do
+      Measure(strips[i][1], strips[i][2] .. n)
+    end
+  end
+  for i = 1, table.getn(named) do
+    Measure(named[i][1], named[i][2])
+  end
+
+  U.SaveDiagnostic("tabPadding", dump)
+
+  if table.getn(dump) == 0 then
+    U.Print("tabpad: no tab resolved - open the windows first")
+    return
+  end
+
+  U.Print("tabpad: padLeft/padRight are measured from the rendered edges; " ..
+          "open Character and Spellbook first for a like-for-like read")
+  for i = 1, table.getn(dump) do
+    local row = dump[i]
+    U.Print("  " .. row.strip .. " " .. row.name ..
+            (row.shown and "" or " |cff808080(hidden)|r") ..
+            " w=" .. tostring(row.width) ..
+            " str=" .. tostring(row.stringWidth) ..
+            " padL=" .. tostring(row.padLeft) ..
+            " padR=" .. tostring(row.padRight) ..
+            " pad=" .. tostring(row.padding) ..
+            " owned=" .. tostring(row.owned) ..
+            " fit=" .. tostring(row.fitOwned) ..
+            " styled=" .. tostring(row.styled))
+  end
+  U.Print("  saved to UnrealUIDiagDB.tabPadding - " ..
+          U.SavedVariablesHint() .. " after |cffffff00/reload|r")
 end
 
 -- Why a spellbook entry is, or is not, marked as absent from the action bars.

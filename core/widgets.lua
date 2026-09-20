@@ -2018,11 +2018,10 @@ end
 -- Money readout
 --
 -- One denomination (number plus coin icon) and a gold/silver/copper row built
--- from three of them, both driven by core/media.lua's M.money so colours cannot
--- drift between callers. The confirmed rendering path is one UI-MoneyIcons
--- atlas sliced horizontally; the separate per-denomination texture paths were
--- the paths that failed, not the atlas (knowledge.json /
--- textures.separate_coin_paths_not_rendered).
+-- from three of them, both driven by core/media.lua's M.money so the art and
+-- colours cannot drift between callers. Each coin is UnrealUI's own
+-- media/icons texture, the same under every theme, so there is no atlas slice
+-- to apply here (see the M.money comment in core/media.lua).
 -- ---------------------------------------------------------------------------
 local function LabelWidth(label)
   if not label then return 0 end
@@ -2033,8 +2032,7 @@ end
 -- denom: "gold" | "silver" | "copper"
 function U.CreateMoneyCoin(parent, denom, size)
   local spec = M.money[denom]
-  local coords = spec and spec.coords
-  if not spec or not coords then return nil end
+  if not spec or not spec.texture then return nil end
 
   size = size or 14
   local holder = CreateFrame("Frame", nil, parent)
@@ -2045,12 +2043,11 @@ function U.CreateMoneyCoin(parent, denom, size)
   local icon = holder:CreateTexture(nil, "ARTWORK")
   icon:SetWidth(iconSize)
   icon:SetHeight(iconSize)
-  -- The artwork sits low inside each atlas slice; raise the texture while the
-  -- number remains on the common text baseline used by bags and status.
-  icon:SetPoint("RIGHT", holder, "RIGHT", 0, 2)
-  pcall(icon.SetTexture, icon, M.moneyTexture)
-  pcall(icon.SetTexCoord, icon,
-        coords[1], coords[2], coords[3], coords[4])
+  -- The coin fills its own texture, so it centres on the holder rather than
+  -- being raised to compensate for an atlas slice. The number keeps the common
+  -- text baseline used by bags and status.
+  icon:SetPoint("RIGHT", holder, "RIGHT", 0, 0)
+  pcall(icon.SetTexture, icon, spec.texture)
   holder.icon = icon
   holder.iconWidth = iconSize
 
@@ -2060,7 +2057,7 @@ function U.CreateMoneyCoin(parent, denom, size)
     inherits = "GameFontNormalSmall",
   })
   if holder.label then
-    holder.label:SetPoint("RIGHT", icon, "LEFT", -1, -2)
+    holder.label:SetPoint("RIGHT", icon, "LEFT", -1, 0)
   end
 
   return holder
@@ -3060,5 +3057,91 @@ function U.HideConfirm(owner)
   for i = 1, 2 do
     local dialog = dialogs[i]
     if dialog and (not owner or dialog.uuiOwner == owner) then dialog:Hide() end
+  end
+end
+
+-- Mouse-wheel scrolling for an addon-owned list.
+--
+-- Wheel input is confirmed dead on a plain addon Frame here: it is swallowed by
+-- the binding/camera layer before any OnMouseWheel script runs
+-- (knowledge.json / scripts.addon_wheel_binding_unavailable). The widget type
+-- is what decides it. A focused probe on 2026-09-20
+-- (professionwheel.plain_scrollframe_lua.v1, BEHAVIOR_VERIFIED) measured that a
+-- ScrollFrame created by this addon -- no template needed -- does receive the
+-- wheel through a Lua-set OnMouseWheel, with zero camera zooms while the cursor
+-- was over it. professionwheel.template_scrollframe_covered.v1 measured that
+-- the delivery survives a mouse-enabled Button drawn on top, so the catcher can
+-- sit under a list's own rows without taking their clicks.
+--
+-- The catcher is therefore a ScrollFrame with a scroll child (the construction
+-- the probe verified), never mouse-enabled, kept below the rows. It scrolls
+-- nothing itself: it only reports direction, because the list it serves paints
+-- rows from an offset rather than moving a scroll child.
+--
+-- `onDelta` is called with 1 for a wheel-up tick and -1 for wheel-down. This
+-- client reports arg1 as a raw delta (-15 was measured, not vanilla's -1), so
+-- only its sign is used.
+function U.CreateWheelCatcher(parent, onDelta)
+  if not parent or type(onDelta) ~= "function" then return nil end
+  local ok, frame = pcall(CreateFrame, "ScrollFrame", nil, parent)
+  if not ok or not frame then return nil end
+  pcall(function()
+    frame:SetAllPoints(parent)
+    frame:SetFrameLevel(parent:GetFrameLevel())
+  end)
+  local childOk, child = pcall(CreateFrame, "Frame", nil, frame)
+  if childOk and child then
+    pcall(function()
+      child:SetWidth(1)
+      child:SetHeight(1)
+      frame:SetScrollChild(child)
+    end)
+  end
+  pcall(frame.EnableMouseWheel, frame, true)
+  pcall(frame.SetScript, frame, "OnMouseWheel", function()
+    local delta = tonumber(arg1)
+    if not delta or delta == 0 then return end
+    pcall(onDelta, delta > 0 and 1 or -1)
+  end)
+  return frame
+end
+
+-- Size a list label to its own text without ever giving it a width.
+--
+-- FontString:GetStringWidth is CLAMPED by the width currently set on this
+-- client, and does not settle until the next frame
+-- (knowledge.json / widgets.fontstring_stringwidth_clamped_by_setwidth,
+-- BEHAVIOR_VERIFIED 2026-09-20: 108 unconstrained, 39 at width 40; after
+-- SetWidth(245) the same string still measured 37).
+--
+-- The measure-then-shrink idiom -- SetWidth(room), then
+-- SetWidth(min(room, GetStringWidth() + 1)) -- therefore latches: a recycled
+-- row measures the width its PREVIOUS entry left behind, shrinks to it, and
+-- because a set width wraps rather than truncates here (no SetWordWrap,
+-- SetMaxLines or GetNumLines exist), the name folds into a one-word-per-line
+-- column that spills over neighbouring rows.
+--
+-- So no width is set at all. An unconstrained FontString auto-sizes to its
+-- text (GetWidth 210.49 against a string width of 210, measured), which is
+-- exactly what a trailing count or icon needs to anchor against, and it can
+-- never wrap. A name genuinely too long for the row is trimmed with an
+-- ellipsis instead, measured the only way that reads true here: with no width
+-- set.
+function U.FitLabelText(label, text, room)
+  if not label then return end
+  text = text or ""
+  pcall(label.SetWidth, label, 0)
+  pcall(label.SetText, label, text)
+  if type(room) ~= "number" or room < 1 then return end
+  local function Width()
+    local ok, value = pcall(label.GetStringWidth, label)
+    return (ok and tonumber(value)) or 0
+  end
+  if Width() <= room then return end
+  local trimmed = text
+  while string.len(trimmed) > 1 do
+    trimmed = string.sub(trimmed, 1, string.len(trimmed) - 1)
+    pcall(label.SetText, label, trimmed .. "...")
+    if Width() <= room then return end
   end
 end

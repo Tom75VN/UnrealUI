@@ -87,7 +87,7 @@ local function LayoutText(dropdown, button)
     -- upstream expects.
     text:SetPoint("LEFT", dropdown, "LEFT", 5, CONTROL_TEXT_Y)
     text:SetPoint("RIGHT", arrow or dropdown, arrow and "LEFT" or "RIGHT", -4, CONTROL_TEXT_Y)
-    text:SetHeight(CONTROL_HEIGHT)
+    text:SetHeight(dropdown.uuiDropdownHeight or CONTROL_HEIGHT)
     text:SetJustifyH("LEFT")
     if text.SetJustifyV then text:SetJustifyV("CENTER") end
   end)
@@ -106,7 +106,7 @@ local function LockControlHeight(dropdown)
   local native = dropdown.SetHeight
   local ok = pcall(function()
     dropdown.SetHeight = function(self, _)
-      return native(self, CONTROL_HEIGHT)
+      return native(self, self.uuiDropdownHeight or CONTROL_HEIGHT)
     end
   end)
   if ok then dropdown.uuiDropdownHeightLock = native end
@@ -114,7 +114,20 @@ end
 
 local function ApplyControlHeight(dropdown)
   if not dropdown then return end
-  pcall(dropdown.uuiDropdownHeightLock or dropdown.SetHeight, dropdown, CONTROL_HEIGHT)
+  pcall(dropdown.uuiDropdownHeightLock or dropdown.SetHeight, dropdown,
+        dropdown.uuiDropdownHeight or CONTROL_HEIGHT)
+end
+
+-- A caller whose control must fit a fixed band (the Who list's header) may
+-- lower this one control's height; the lock above then holds that value
+-- instead of the component default.
+function D.SetControlHeight(dropdown, height)
+  height = tonumber(height)
+  if not dropdown or not height or height <= 0 then return end
+  dropdown.uuiDropdownHeight = height
+  ApplyControlHeight(dropdown)
+  local name = dropdown.GetName and dropdown:GetName()
+  LayoutText(dropdown, name and U.G(name .. "Button"))
 end
 
 -- Selection handlers can continue changing the native FontString after their
@@ -306,6 +319,59 @@ local function WantsCheckboxes()
   return dropdown and dropdown.uuiDropdownCheckboxes and true or false
 end
 
+-- Modern WoW chrome (M.modernWow.dropdown): an addon-owned frame over the
+-- control or list, below its buttons, carrying the ThinBorder eight-slice. It
+-- is a CHILD frame, so StyleList's per-toggle strip of the list itself never
+-- reaches it (rules/unreal-ui.md, region walks never match by identity).
+local function ModernWowChrome(host)
+  if host.uuiDropdownModernWow then return host.uuiDropdownModernWow end
+  local ok, chrome = pcall(CreateFrame, "Frame", nil, host)
+  if not ok or not chrome then return nil end
+  pcall(chrome.SetAllPoints, chrome, host)
+  pcall(chrome.EnableMouse, chrome, false)
+  local levelOk, level = pcall(host.GetFrameLevel, host)
+  if levelOk and tonumber(level) then pcall(chrome.SetFrameLevel, chrome, level) end
+  if type(U.ModernWowBuildThinBorder) ~= "function" or
+     not U.ModernWowBuildThinBorder(chrome, M.modernWow.dropdown.borderSize) then
+    pcall(chrome.Hide, chrome)
+    return nil
+  end
+  host.uuiDropdownModernWow = chrome
+  return chrome
+end
+
+-- The flat 1-unit edges are hidden, never faded: vertex alpha is not honoured
+-- on this client (knowledge.json rendering.texture_setalpha_darkens_not_translucent).
+-- The dark fill, inset inside the border (M.modernWow.dropdown.fillInset).
+-- A plain texture instead of the frame backdrop, which always fills to the
+-- frame's outer edge. Solid colour: vertex alpha is not honoured here.
+local function ModernWowFill(parent, host, color)
+  local fill = parent.uuiDropdownFill
+  if not fill then
+    local ok, created = pcall(parent.CreateTexture, parent, nil, "BACKGROUND")
+    if not ok or not created then return end
+    fill = created
+    parent.uuiDropdownFill = fill
+    local inset = M.modernWow.dropdown.fillInset
+    pcall(function()
+      fill:SetTexture(M.texture.plain)
+      fill:SetPoint("TOPLEFT", host, "TOPLEFT", inset, -inset)
+      fill:SetPoint("BOTTOMRIGHT", host, "BOTTOMRIGHT", -inset, inset)
+    end)
+  end
+  U.SetColor(fill, M.Unpack(color))
+  pcall(fill.Show, fill)
+end
+
+local function ShowFlatEdges(frame, shown)
+  if not frame or not frame.uuiEdges then return end
+  local i
+  for i = 1, table.getn(frame.uuiEdges) do
+    local edge = frame.uuiEdges[i]
+    if shown then pcall(edge.Show, edge) else pcall(edge.Hide, edge) end
+  end
+end
+
 StyleList = function(level)
   local name = "DropDownList" .. level
   local list = U.G(name)
@@ -324,7 +390,26 @@ StyleList = function(level)
       U.HideRegion(nativeBackdrop)
     end
   end
-  U.CreateBackdrop(list, { background = { 0.03, 0.03, 0.03, 0.95 } })
+  -- The list is one shared native pool, so its chrome follows whichever
+  -- dropdown opened it: Modern WoW for a control styled on that path, flat
+  -- otherwise.
+  local owner = OwningDropdown()
+  local modern = level == 1 and owner and owner.uuiDropdownModernWowStyled
+  if modern then
+    -- No backdrop: the fill lives on the chrome child, because the list
+    -- itself is region-stripped on every toggle.
+    pcall(list.SetBackdrop, list, nil)
+    ShowFlatEdges(list, false)
+    local chrome = ModernWowChrome(list)
+    if chrome then
+      ModernWowFill(chrome, list, M.modernWow.dropdown.listFill)
+      pcall(chrome.Show, chrome)
+    end
+  else
+    U.CreateBackdrop(list, { background = { 0.03, 0.03, 0.03, 0.95 } })
+    ShowFlatEdges(list, true)
+    if list.uuiDropdownModernWow then pcall(list.uuiDropdownModernWow.Hide, list.uuiDropdownModernWow) end
+  end
 
   local max = tonumber(U.G("UIDROPDOWNMENU_MAXBUTTONS")) or 8
   local checkboxes = WantsCheckboxes()
@@ -406,6 +491,11 @@ function D.EnsureTextLayout()
   end
 end
 
+-- options.modernWow: the caller has chosen its Modern WoW drawing path
+-- (rules/unreal-ui-design.md branching rule); the control and its list take
+-- the ThinBorder chrome instead of the flat edge. The caller decides the
+-- theme once; this component never reads it.
+--
 -- options.checkboxes: the entries are independent on/off filters (the class
 -- trainer's Filter menu), so each row gets an owned tick box. Leave it unset for
 -- an ordinary single-select dropdown such as the Who list's zone/guild filter.
@@ -428,7 +518,15 @@ function D.StyleStock(dropdown, width, options)
   U.HideRegion(U.G(name .. "Middle"))
   U.HideRegion(U.G(name .. "Right"))
   U.HideRegion(U.G(name .. "Icon"))
-  U.CreateBackdrop(dropdown, { background = { 0.03, 0.03, 0.03, 0.85 } })
+  if options.modernWow then
+    dropdown.uuiDropdownModernWowStyled = true
+    -- The fill sits on the control itself, BACKGROUND, so its text (ARTWORK)
+    -- stays above it; the border rides on the chrome child.
+    ModernWowFill(dropdown, dropdown, M.modernWow.dropdown.fill)
+    ModernWowChrome(dropdown)
+  else
+    U.CreateBackdrop(dropdown, { background = { 0.03, 0.03, 0.03, 0.85 } })
+  end
   LockControlHeight(dropdown)
   ApplyControlHeight(dropdown)
   if width then pcall(dropdown.SetWidth, dropdown, width) end
@@ -443,6 +541,14 @@ function D.StyleStock(dropdown, width, options)
     end)
     RemoveButtonArt(button)
     StyleArrow(button)
+    if options.modernWow and button.uuiDropdownArrow then
+      local arrow = button.uuiDropdownArrow
+      pcall(arrow.SetTextColor, arrow, M.Unpack(M.modernWow.dropdown.arrowColor))
+      pcall(function()
+        arrow:ClearAllPoints()
+        arrow:SetPoint("RIGHT", button, "RIGHT", M.modernWow.dropdown.arrowX, 0)
+      end)
+    end
     AttachPlacement(dropdown, button)
   end
 

@@ -8,10 +8,14 @@
 --   modules/talentsmodernwow.lua  the `modern-wow` theme (and Classic's
 --                                 explicit Talents selection)
 --   modules/talentsmodern.lua     the `modern` theme
+--   modules/talentsclassic.lua    `classic-wow` (user request, 2026-09-21),
+--                                 whenever that Talents selection is off
 --
 -- The client keeps owning talent data, ranks, tooltips, prerequisites and
--- LearnTalent in both. `classic-wow` keeps the native window untouched unless
--- its Talents module is selected.
+-- LearnTalent in all three. Under `classic-wow` the Talents Classic -> Modern
+-- WoW module chooses between the Dragonflight housing and the client's own,
+-- exactly as the Quest Log's module chooses between its two designs; neither
+-- setting leaves the native single-tree window in place.
 --
 -- A path is entered once and never falls back to another: by the time one can
 -- fail the window may already be partly rebuilt, so the failure is reported
@@ -63,10 +67,19 @@ local function BuildFrame()
   if Wanted(U.ModernTalentsWanted) then
     return Build("modern", U.BuildModernTalents, frame)
   end
+  if Wanted(U.ClassicTalentsWanted) then
+    return Build("classic-wow", U.BuildClassicTalents, frame)
+  end
 
   -- No path claims this theme: the native window is left exactly as it is.
   built = true
   return true
+end
+
+local function AnyPathWanted()
+  return Wanted(U.ModernWowTalentsWanted) or
+         Wanted(U.ModernTalentsWanted) or
+         Wanted(U.ClassicTalentsWanted)
 end
 
 -- TalentFrame may be created by Blizzard_TalentUI after unrealUI's own module
@@ -77,8 +90,9 @@ local function TryBuild()
 end
 
 function TL:OnEnable()
-  if U.ThemeStyleUsesNativeChrome() and
-     not Wanted(U.ModernWowTalentsWanted) then return end
+  -- Native chrome no longer means "leave this window alone": classic-wow has a
+  -- path of its own, so the question is only whether any path claims it.
+  if not AnyPathWanted() then return end
   if BuildFrame() then return end
 
   U.RegisterEvent("ADDON_LOADED", TryBuild)

@@ -103,7 +103,6 @@ IMPORTS = [
     ("media/tex/ui/top_ui_header.tga", "ui/header"),
     ("media/tex/ui/top_ui_header_left.tga", "ui/header-left"),
     ("media/tex/ui/top_ui_header_right.tga", "ui/header-right"),
-    ("media/tex/ui/UI-Classes-Circles.tga", "ui/class-portraits"),
 
     # -- Action bars -------------------------------------------------------
     ("media/tex/actionbars/HDActionBar.tga", "actionbar/bar"),
@@ -235,16 +234,66 @@ IMPORTS = [
 #
 # (destination name, the filename it was supplied as, note[, on-disk input])
 USER_SUPPLIED = [
+    ("unitframes/health-fill-full",
+     "UI-HUD-UnitFrame-Player-PortraitOn-Bar-Health-Status.tga",
+     "WoW-DragonflightUI (DF-main) "
+     "`Textures/Unitframe/UI-HUD-UnitFrame-Player-PortraitOn-Bar-Health-"
+     "Status.tga`: Blizzard's Dragonflight player health fill at 128x32, "
+     "greyscale for vertex colouring. Opaque edge to edge -- unlike the "
+     "DFRL `health-fill` it replaces, which carries its own transparent "
+     "padding -- so the dressed bar insets the fill itself from "
+     "M.modernWow.unitFrame.healthFillInset. Its top and bottom shading "
+     "ramps over seven rows instead of cutting off at an alpha edge, which "
+     "is why it was chosen. `health-fill` stays shipped for a revert.",
+     "UI-HUD-UnitFrame-Player-PortraitOn-Bar-Health-Status.tga"),
+    ("ui/class-portraits", "ui-classes-circles.png",
+     "Blizzard UI-Classes-Circles class-icon atlas at 256x256: 64px "
+     "cells, four per row, in CLASS_ICON_TCOORDS order (WARRIOR, MAGE, "
+     "ROGUE, DRUID / HUNTER, SHAMAN, PRIEST, WARLOCK / PALADIN, "
+     "DEATHKNIGHT, MONK, DEMONHUNTER / EVOKER). Replaces the "
+     "DFRL-imported copy of the same atlas; the nine cells UnrealUI "
+     "draws keep their authored positions, so `M.modernWow.classCell` "
+     "is unchanged.",
+     "ui-classes-circles.png"),
     ("ui/golden-square-border", "golden-square-border.png",
      "Gold square icon frame at 256x256 with a transparent opening at "
      "x 32-223, y 30-220. Drawn around each talent tree's header icon in the "
      "modern-wow Talent window; geometry is tokenised in core/media.lua.",
      "golden-square-border.png"),
+    ("ui/borders/raidborder-bottomright", "raidborder-bottomright.png",
+     "Blizzard's raid-frame border, bottom-right corner, 32x32. Same metal "
+     "rim family as the ThinBorder pieces beside it, and the corner they do "
+     "not ship: tal.BuildPanelBorder otherwise flips the bottom-left piece, "
+     "which reads wrong on a control as small as the talent advisor's drawer "
+     "arrow (user report, 2026-09-20).",
+     "raidborder-bottomright.png"),
+    ("buttons/setting-ui", "5412379.png",
+     "Blizzard's dark settings-UI control atlas at 512x512, imported whole: "
+     "octagonal panels, sliders, checkboxes, dropdown beds and a set of solid "
+     "yellow and grey arrow glyphs. Cells are addressed by texture "
+     "coordinates rather than cut out, so one file serves every control that "
+     "borrows from it. The talent advisor's drawer arrow draws the yellow "
+     "left and right glyphs (M.talentAdvisor.styles, toggle).",
+     "5412379.png"),
+    ("ui/icon-alert-ants", "iconalertants.png",
+     "Blizzard `Interface/SpellActivationOverlay/IconAlertAnts`, the marching "
+     "ants that ring an alerted icon, at its own 256x256. It is a flipbook "
+     "grid rather than one image: 48x48 cells, 5 per row, of which Blizzard "
+     "plays the first 22 (Blizzard_CommentatorSpell.lua calls "
+     "TextureUtil.AnimateTexCoords(self.Ants, 256, 256, 48, 48, 22, elapsed, "
+     "0.01)). The last 16 pixels of each axis are outside the grid.",
+     "iconalertants.png"),
     ("ui/combo-points", "combo-points.png",
      "Rogue and Cat Form combo-point atlas at 128x56: the left 57x56 "
      "circle is inactive and the right 57x56 circle is active. Drawn on "
      "the player or target frame opposite the configured aura position.",
      "combo-points.png"),
+    ("ui/swing-bar", "swing-bar.png",
+     "Blizzard Forever swing-timer atlas from build 1.60.1.69913, "
+     "FileDataID 8344036, at 512x256. UnrealUI reproduces the exact FrameXML "
+     "cells for the frame, background, main-hand, off-hand and ranged fills, "
+     "title shadow and moving pip under the modern-wow theme.",
+     "swing-bar.png"),
     ("ui/minimal-scrollbar-proportional", "MinimalScrollbarProportional.PNG",
      "Blizzard MinimalScrollBar proportional atlas at 64x64: up/down arrow "
      "states plus the track and thumb caps. The Modern WoW Skills scrollbar "
@@ -264,7 +313,7 @@ USER_SUPPLIED = [
      "DragonflightUI has the script for this animation "
      "(modules/unit/player.lua Setup:RestingZZZ) but ships no such texture, "
      "so there was nothing to import."),
-    ("ui/red-button", "redbutton2x.blp",
+    ("buttons/red-button", "redbutton2x.blp",
      "Dragonflight octagonal button atlas: a 5x3 grid of 34x38 cells on a "
      "256x128 canvas -- minimize / close / maximize / minus glyphs across, "
      "normal / disabled / pushed down. The close column is what modern-wow "
@@ -272,7 +321,7 @@ USER_SUPPLIED = [
      "as the separate `close_normal` / `close_pushed` files, and without its "
      "disabled face.",
      "redbutton2x.blp"),
-    ("ui/128RedButton", "128RedButton.tga",
+    ("buttons/128RedButton", "128RedButton.tga",
      "Modern rectangular red-button atlas at 512x2048. NPC actions use the "
      "UnrealQuest-measured three-slice normal and hover cells: fixed-aspect "
      "left/right bevels with only the middle stretched. Their geometry is "
@@ -289,6 +338,11 @@ USER_SUPPLIED = [
      "portraits. Its transparent corners keep the background inside the "
      "Modern WoW portrait ring.",
      "unit-frame-portrait-background.png"),
+    ("unitframes/target-reaction", "target-reaction.png",
+     "Reaction-colour wash drawn beneath the Modern WoW target name. Its "
+     "neutral greyscale is vertex-coloured red for hostile targets, yellow "
+     "for neutral targets and green for allies.",
+     "target-reaction.png"),
     ("ui/frame-tabs", "uiframetabs.png",
      "Dragonflight bottom window-tab atlas, 64x256: active middle (rows "
      "0-41) and inactive middle (44-79) span the full width; below them the "
@@ -314,10 +368,16 @@ USER_SUPPLIED = [
      "rows 0-493, and joins `spellbook-page-1` at its right edge.",
      "Spellbook-Page-2.png"),
     ("ui/spellbook/spellbook-parts", "Spellbook-Parts.png",
-     "Spellbook atlas at 256x256: spell slot frame, slot background and the "
-     "soft name shadow are drawn on each spell button; cells are tokenised in "
+     "Spellbook atlas at 256x256: the slot background and soft name shadow "
+     "are drawn on each spell button; its former slot frame remains in the "
+     "atlas but is superseded by 8116691. Cells are tokenised in "
      "core/media.lua.",
      "Spellbook-Parts.png"),
+    ("ui/spellbook/8116691", "8116691.png",
+     "User-supplied Blizzard spell-border atlas at 256x256. The Modern WoW "
+     "Spellbook draws its ornate top-left cell around each spell icon; the "
+     "cell and half-size geometry are tokenised in core/media.lua.",
+     "8116691.png"),
     ("ui/spellbook/skillline-tab", "spellbook-skilllinetab.png",
      "Spellbook skill-line side tab frame at 64x64, drawn 64x64 at (-3, 11) "
      "from its 32px tab button.",
@@ -437,6 +497,34 @@ USER_SUPPLIED = [
      "LFGRole strip: four 16x16 cells at 64x16 -- leader, damage, tank, "
      "healer. Drawn as the role icons on each Modern WoW talent tree header.",
      "lfgrole.png"),
+    ("ui/questbackgroundparchment", "questbackgroundparchment.png",
+     "WoW-DragonflightUI (DF-main) `Textures/UI/questbackgroundparchment.png`: "
+     "five opaque 300x408 parchment pages on a 1024x1024 canvas. DF-main "
+     "draws only the top-left tan page (texels 1-300 x 1-408), for both its "
+     "QuestFrame and GossipFrame; the other four are unused material "
+     "variants. The Modern WoW quest-giver window draws that same page; its "
+     "cell is tokenised in core/media.lua M.modernWow.questDialog.",
+     "questbackgroundparchment.png"),
+    ("ui/questlog-dualpane-right", "ui-questlogdualpane-right.png",
+      "WoW-DragonflightUI (DF-main) `Textures/UI/ui-questlogdualpane-right.png`, "
+      "Blizzard's Classic dual-pane Quest Log right page at 256x512. Only its "
+     "dark scrollbar channel (texels x 139-163, y 74-407, metal brackets at "
+     "y 90 and 391) is drawn, by texture coordinates, beside the parchment of "
+     "the Modern WoW quest-giver windows; the parchment half is unused. Cell "
+      "tokenised in core/media.lua M.modernWow.questDialog.channel.",
+      "ui-questlogdualpane-right.png"),
+    ("ui/borders/ui-classtrainer-horizontalbar",
+     "ui-classtrainer-horizontalbar.png",
+     "Blizzard Class Trainer horizontal separator at 256x64. Its left cap "
+     "and long run occupy rows 0-15; its right cap occupies x 68-74, rows "
+     "17-34. Retained as an alternate separator texture.",
+     "ui-classtrainer-horizontalbar.png"),
+    ("ui/borders/ui-dialogbox-divider", "ui-dialogbox-divider.png",
+     "Blizzard Dialog Box divider at 256x32, with its 193x16 authored bar in "
+     "the top-left of the canvas. UnrealUI draws it as a three-slice bar in "
+     "the Modern WoW Social and quest-giver windows; geometry is tokenised "
+     "in core/media.lua M.modernWow.horizontalBar.",
+     "ui-dialogbox-divider.png"),
     # ThinBorder is the authored modern inset used around the three talent
     # trees. Its 32px source canvases are drawn at 16 units; the opaque rim is
     # roughly 5 units at that scale, matching the panel's content inset.
@@ -477,6 +565,60 @@ USER_SUPPLIED = [
      "Achievement metal border horizontal edge at 512x16: a 9-texel bar at "
      "y 0-8 running to x 453; mirrored for the bottom edge.",
      "UI-Achievement-MetalBorder-Top.PNG"),
+    # Edit Mode selection art, from the client's own Forever build
+    # 1.60.1.69913 (Blizzard_EditMode/Shared/EditModeSystemTemplates.xml). The
+    # nine-slice EditModeSystemSelectionLayout has two texture kits -- the cyan
+    # `editmode-actionbar-highlight` and the gold `editmode-actionbar-selected`
+    # -- and UnrealUI's mover anchors draw them instead of a hand-built glow.
+    # This is the client's own art, not DragonflightUI chrome, so it is drawn
+    # under every theme; cells live in core/media.lua M.modernWow.moveUI.
+    ("ui/move-ui/editmodeui", "editmodeui.png",
+     "Blizzard Forever Edit Mode nine-slice atlas at 32x256, FileDataID "
+     "4554359 (atlas 1960). Top-down: highlight edge bottom (y 1-17) and top "
+     "(19-35), selected edge bottom (37-53) and top (55-71), highlight corner "
+     "(x 1-17, y 73-89), selected corner (91-107), then the new-layout plus "
+     "and stepper glyphs UnrealUI does not draw. Each corner cell is authored "
+     "top-left and mirrored for the other three.",
+     "editmodeui.png"),
+    ("ui/move-ui/editmodeuivertical", "editmodeuivertical.png",
+     "Blizzard Forever Edit Mode vertical edge atlas at 128x16, FileDataID "
+     "4554389 (atlas 1963): highlight left (x 1-17) and right (19-35), "
+     "selected left (37-53) and right (55-71), each 16x16 and constant down "
+     "its length.",
+     "editmodeuivertical.png"),
+    ("ui/move-ui/editmodeuihighlightbackground",
+     "editmodeuihighlightbackground.png",
+     "Blizzard Forever Edit Mode highlight centre fill at 16x16, FileDataID "
+     "4554383 (atlas 1961): one flat colour, RGBA 150/224/255/128.",
+     "editmodeuihighlightbackground.png"),
+    ("ui/move-ui/editmodeuiselectedbackground",
+     "editmodeuiselectedbackground.png",
+     "Blizzard Forever Edit Mode selected centre fill at 16x16, FileDataID "
+     "4554386 (atlas 1962): one flat colour, RGBA 255/245/105/128.",
+     "editmodeuiselectedbackground.png"),
+]
+
+
+# User-supplied greyscale art whose shape is carried by its RGB luminance
+# instead of an alpha channel, because it was supplied as a 24-bit TGA. The
+# plain USER_SUPPLIED path would `convert("RGBA")` that into a fully opaque
+# rectangle, so the luminance becomes the alpha here and the RGB is flattened
+# to the same neutral grey the other vertex-coloured washes use. The peak is
+# normalised, because these sources are authored at different intensities and
+# the M.modernWow token alphas are written against a full-strength shape.
+#
+# (destination name, the filename it was supplied as, peak alpha, note)
+LUMA_ALPHA = [
+    ("unitframes/target-reaction-type",
+     "UI-HUD-UnitFrame-Target-PortraitOn-Type.tga",
+     248,
+     "Blizzard's Dragonflight target name-type strip at 128x16, supplied as a "
+     "24-bit TGA: an upward gradient plateauing over rows 8-10, cut flat at "
+     "row 11, with the last five rows and the right ~6% of the width empty. "
+     "Alternative to `target-reaction.tga` (the same asset at 172x29); "
+     "luminance moved into the alpha channel, peak normalised from 159 to "
+     "248 and RGB flattened to 203 so both files answer the same "
+     "M.modernWow.targetReaction alpha."),
 ]
 
 
@@ -582,6 +724,48 @@ NINE_SLICE = (
         ("bottomRight",  (1298, 856, 1448, 1086), (267, 109)),
     ],
 )
+
+
+# One region cut out of a larger user-supplied sheet, then re-encoded like
+# everything else here. A flipbook grid is cropped to exactly columns x cell
+# by rows x cell so its cell UVs are plain fractions of the shipped texture,
+# with no sheet padding for a module to carry; a single cell is cropped to
+# itself so the module needs no texture coordinates at all.
+#
+# (destination name, source file beside it, crop box, output size or None,
+# note)
+SHEET_CROPS = [
+    ("ui/talents/icon-alert", "iconalert.png", (0, 68, 68, 136), None,
+     "The middle, gold alert icon from the user-supplied three-icon strip. "
+     "The modern-wow Talent Advisor keeps its authored thickness, tints it "
+     "red and pulses it over talents with ranks outside the selected build."),
+    ("ui/spell-alert-loop", "spell-alert.png", (1277, 0, 1782, 606), None,
+     "Blizzard `UI-HUD-ActionBar-Proc-Loop-Flipbook`, the looping gold border "
+     "of a proc'd action button, cut from the 2048x2048 spell-alert sheet at "
+     "its authored pixels: a 5x6 grid of 101px cells, 30 frames. The modern-"
+     "wow Talent window's advisor runs it around the next talent to learn."),
+    ("ui/spell-alert-start", "spell-alert.png", (0, 0, 1275, 1530), (640, 768),
+     "Blizzard `UI-HUD-ActionBar-Proc-Start-Flipbook`, the one-shot burst that "
+     "settles into the loop above, from the same sheet: a 5x6 grid of 255px "
+     "cells, 30 frames. Halved to 128px cells (640x768) because it is drawn at "
+     "roughly 120 units and no shipped texture here is larger; the grid, its "
+     "cell fractions and the art are otherwise unchanged."),
+]
+
+
+def luma_to_alpha(image, peak, grey=203):
+    """Move a greyscale shape out of RGB and into the alpha channel.
+
+    The result is the neutral grey wash form every vertex-coloured modern-wow
+    texture uses: flat RGB, shape in alpha, peak scaled to `peak`.
+    """
+    alpha = image.convert("L")
+    top = max(alpha.getdata())
+    if peak and top:
+        scale = float(peak) / float(top)
+        alpha = alpha.point(lambda v: min(255, int(round(v * scale))))
+    flat = Image.new("L", image.size, grey)
+    return Image.merge("RGBA", (flat, flat, flat, alpha))
 
 
 def apply_mask(image, mask):
@@ -805,21 +989,44 @@ def main():
         })
         print("%-34s %-9s user-supplied" % (dest_name, user_rows[-1]["size"]))
 
+    for dest_name, supplied_as, peak, note in LUMA_ALPHA:
+        dst = os.path.join(dest_root, dest_name.replace("/", os.sep) + ".tga")
+        src = os.path.join(os.path.dirname(dst), supplied_as)
+        if not os.path.isfile(src):
+            sys.stderr.write("user-supplied texture missing: %s\n" % src)
+            return 1
+
+        image, _ = open_source(src)
+        width, height = write_rle_tga(luma_to_alpha(image, peak), dst)
+        image.close()
+
+        user_rows.append({
+            "dest": dest_name + ".tga",
+            "size": "%dx%d" % (width, height),
+            "supplied": supplied_as,
+            "note": note,
+        })
+        print("%-34s %-9s user-supplied, luminance to alpha"
+              % (dest_name, user_rows[-1]["size"]))
+
     for dest_name, fill_name, mask_name, note in MASKED:
         dst = os.path.join(dest_root, dest_name.replace("/", os.sep) + ".tga")
         folder = os.path.dirname(dst)
         fill_path = os.path.join(folder, fill_name)
         mask_path = os.path.join(folder, mask_name)
-        for path in (fill_path, mask_path):
-            if not os.path.isfile(path):
-                sys.stderr.write("user-supplied texture missing: %s\n" % path)
-                return 1
-
-        fill, _ = open_source(fill_path)
-        mask, _ = open_source(mask_path)
-        width, height = write_rle_tga(apply_mask(fill, mask), dst)
-        fill.close()
-        mask.close()
+        if os.path.isfile(fill_path) and os.path.isfile(mask_path):
+            fill, _ = open_source(fill_path)
+            mask, _ = open_source(mask_path)
+            width, height = write_rle_tga(apply_mask(fill, mask), dst)
+            fill.close()
+            mask.close()
+        elif os.path.isfile(dst):
+            image, _ = open_source(dst)
+            width, height = image.size
+            image.close()
+        else:
+            sys.stderr.write("user-supplied texture missing: %s\n" % fill_path)
+            return 1
 
         user_rows.append({
             "dest": dest_name + ".tga",
@@ -872,6 +1079,39 @@ def main():
         "note": "The cast-bar mask as a drawable texture, used to shape the "
                 "status-bar pulse on the cast bar.",
     })
+
+    for dest_name, supplied_as, box, size, note in SHEET_CROPS:
+        dst = os.path.join(dest_root, dest_name.replace("/", os.sep) + ".tga")
+        src = os.path.join(os.path.dirname(dst), supplied_as)
+        if os.path.isfile(src):
+            image, _ = open_source(src)
+            grid = image.crop(box).convert("RGBA")
+            image.close()
+            if size:
+                # Premultiplied while resampling, so the transparent canvas
+                # around each frame's glow cannot fringe it.
+                grid = grid.convert("RGBa").resize(size, Image.LANCZOS)
+                grid = grid.convert("RGBA")
+            width, height = write_rle_tga(grid, dst)
+            grid.close()
+        elif os.path.isfile(dst):
+            # The sheet is the only input this can be cut from; without it the
+            # shipped grid is kept as it is.
+            image, _ = open_source(dst)
+            width, height = image.size
+            image.close()
+        else:
+            sys.stderr.write("user-supplied texture missing: %s\n" % src)
+            return 1
+
+        user_rows.append({
+            "dest": dest_name + ".tga",
+            "size": "%dx%d" % (width, height),
+            "supplied": supplied_as,
+            "note": note,
+        })
+        print("%-34s %-9s user-supplied, sheet crop"
+              % (dest_name, user_rows[-1]["size"]))
 
     write_attribution(dest_root, rows, user_rows)
     print("")

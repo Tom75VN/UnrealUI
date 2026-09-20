@@ -5,8 +5,10 @@
 --
 -- The map surface and its behavior stay native. Under the full Modern WoW
 -- theme or Classic's explicit Minimap selection, the stock decorative ring,
--- zone bed, zoom-button faces and mail art are replaced with that theme's
--- authored textures, and the close button and clock are removed. knowledge.json /
+-- zone bed and zoom-button faces are replaced with that theme's authored
+-- textures, and the close button and clock are removed. The pending-mail
+-- letter is not part of that: it is unrealUI's animated flipbook under every
+-- theme (see "The pending-mail letter" below). knowledge.json /
 -- minimap.render_pass_under_ordinary_frames says the map surface is drawn in a
 -- special pass beneath ordinary frames, which is why the new shadow is alpha-
 -- only over the map and the settings button remains outside the ring.
@@ -226,16 +228,14 @@ local function DressModernWowMinimap()
       art.minimapZoomOutPush, art.minimapZoomOutOff)
   end
 
+  -- Only where the letter sits. Its art is the shared flipbook every theme
+  -- draws (`mail` below), so nothing theme-specific is applied to the icon
+  -- itself here.
   local mailFrame = U.G("MiniMapMailFrame")
-  local mailIcon = U.G("MiniMapMailIcon")
-  if mailFrame and mailIcon then
+  if mailFrame then
     pcall(mailFrame.ClearAllPoints, mailFrame)
     pcall(mailFrame.SetPoint, mailFrame, "TOPLEFT", panel, "BOTTOMLEFT",
       layout.mailX, layout.mailY)
-    pcall(mailIcon.SetTexture, mailIcon, art.minimapMail)
-    pcall(mailIcon.SetWidth, mailIcon, layout.mailSize)
-    pcall(mailIcon.SetHeight, mailIcon, layout.mailSize)
-    U.HideRegion(U.G("MiniMapMailBorder"))
   end
 
   modernWowMinimap.dressed = true
@@ -243,6 +243,147 @@ local function DressModernWowMinimap()
   modernWowMinimap.shadow = shadow
   modernWowMinimap.topPanel = panel
   U.Debug("modern-wow minimap chrome applied")
+  return true
+end
+
+-- ---------------------------------------------------------------------------
+-- The pending-mail letter
+--
+-- Requested for every theme, not just modern-wow: the native envelope beside
+-- the minimap is replaced by unrealUI's animated one (M.minimapMail), so the
+-- letter folds itself shut when mail arrives and then keeps sparkling while it
+-- is still waiting. MiniMapMailFrame stays the client-owned state and mouse
+-- owner; the art is an addon-owned texture.
+--
+-- The focused minimapmail comparison verified that the 256x512 atlas travels
+-- when SetTexCoord changes even on an addon-owned Texture, while the same 32
+-- cells animate in place as separate files. Keep the visual parented to
+-- UIParent and place it from bounded numeric geometry; a native object is never
+-- retained as its relative anchor.
+-- ---------------------------------------------------------------------------
+local mail = { updateId = "minimap.mail", cell = 1, cellTime = 0 }
+
+function mail.SetCell(index)
+  local icon = mail.art
+  if not icon then return end
+  pcall(icon.SetTexture, icon,
+    string.format(M.minimapMail.framePattern, index))
+end
+
+function mail.HideNativeArt()
+  U.HideRegion(U.G("MiniMapMailIcon"))
+  U.HideRegion(U.G("MiniMapMailBorder"))
+end
+
+function mail.Place(frame)
+  local visual = mail.visual
+  if not visual or not frame then return false end
+
+  local leftOk, left = pcall(frame.GetLeft, frame)
+  local bottomOk, bottom = pcall(frame.GetBottom, frame)
+  local widthOk, width = pcall(frame.GetWidth, frame)
+  local heightOk, height = pcall(frame.GetHeight, frame)
+  if not leftOk or not bottomOk or not widthOk or not heightOk or
+     type(left) ~= "number" or type(bottom) ~= "number" or
+     type(width) ~= "number" or type(height) ~= "number" then
+    return false
+  end
+
+  local cfg = M.minimapMail
+  local x = left + (width - cfg.size) / 2
+  local y = bottom + (height - cfg.size) / 2
+  if x == mail.x and y == mail.y then return true end
+  mail.x, mail.y = x, y
+  pcall(visual.ClearAllPoints, visual)
+  pcall(visual.SetPoint, visual, "BOTTOMLEFT", UIParent, "BOTTOMLEFT", x, y)
+  return true
+end
+
+-- Run on every hidden -> visible transition: restarts the intro, and re-asserts
+-- the two things a native refresh is able to put back.
+function mail.Rewind()
+  mail.HideNativeArt()
+  pcall(mail.visual.Show, mail.visual)
+  mail.cell = 1
+  mail.cellTime = 0
+  mail.lastTick = GetTime()
+  mail.SetCell(mail.cell)
+end
+
+function mail.Tick()
+  local frame = U.G("MiniMapMailFrame")
+  if not frame then
+    mail.shown = false
+    pcall(mail.visual.Hide, mail.visual)
+    return
+  end
+
+  mail.HideNativeArt()
+  local ok, visible = pcall(frame.IsVisible, frame)
+  if not ok or not visible then
+    mail.shown = false
+    pcall(mail.visual.Hide, mail.visual)
+    return
+  end
+
+  if not mail.Place(frame) then
+    pcall(mail.visual.Hide, mail.visual)
+    mail.shown = false
+    return
+  end
+
+  if not mail.shown then
+    mail.shown = true
+    mail.Rewind()
+    return
+  end
+
+  -- Stepped off elapsed time rather than one cell per fire, so a frame the
+  -- shared driver skips under load costs the animation its timing and not its
+  -- position. The clamp keeps a long stall (a loading screen) from fast-
+  -- forwarding through several cycles at once.
+  local now = GetTime()
+  local elapsed = now - (mail.lastTick or now)
+  mail.lastTick = now
+  if elapsed < 0 then elapsed = 0 end
+  if elapsed > 0.25 then elapsed = 0.25 end
+
+  local cfg = M.minimapMail
+  mail.cellTime = mail.cellTime + elapsed
+  while mail.cellTime >= cfg.interval do
+    mail.cellTime = mail.cellTime - cfg.interval
+    mail.cell = mail.cell + 1
+    -- The intro is played once per arrival; the loop is what repeats.
+    if mail.cell > cfg.frames then mail.cell = cfg.intro + 1 end
+    mail.SetCell(mail.cell)
+  end
+end
+
+local function DressMailIcon()
+  local frame = U.G("MiniMapMailFrame")
+  if not frame then
+    U.Debug("minimap: no MiniMapMailFrame; mail letter left native")
+    return false
+  end
+
+  local cfg = M.minimapMail
+  local visual = CreateFrame("Frame", "UnrealUIMinimapMail", UIParent)
+  visual:SetWidth(cfg.size)
+  visual:SetHeight(cfg.size)
+  pcall(visual.EnableMouse, visual, false)
+
+  local art = visual:CreateTexture("UnrealUIMinimapMailArt", "ARTWORK")
+  art:SetAllPoints(visual)
+  mail.visual = visual
+  mail.art = art
+
+  mail.Place(frame)
+  mail.HideNativeArt()
+  mail.SetCell(mail.cell)
+  visual:Hide()
+
+  U.RegisterUpdate(mail.updateId, cfg.interval, mail.Tick)
+  U.Debug("minimap: mail letter drawn from separate frame textures")
   return true
 end
 
@@ -563,4 +704,13 @@ function MM:OnEnable()
 
   RegisterMinimapMover()
   HookPingPlacement()
+
+  -- Last, and inside its own pcall. RunModulePhase already wraps OnEnable, so
+  -- an error raised here would abort the whole method -- and everything above
+  -- it, the settings button included, would silently not exist. The mail
+  -- letter is decoration; nothing else in this module may depend on it.
+  local dressed, err = pcall(DressMailIcon)
+  if not dressed then
+    U.Error("minimap mail letter: " .. tostring(err))
+  end
 end

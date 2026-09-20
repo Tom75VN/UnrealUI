@@ -18,6 +18,9 @@
 --     on drop. Registered windows are then re-checked on a slow sweep while
 --     shown, which covers content that resizes after opening, a native
 --     re-anchor after OnShow, and a resolution or UI-scale change.
+--     Flat Modern windows also provide their authored height here, because the
+--     native panel manager can resize an already-open window when another
+--     interface opens.
 --   * The stock client windows in NATIVE_WINDOWS below are guarded by exact
 --     name, resolved lazily because several load on demand. They are covered
 --     whatever theme or per-module override is active, so a stock window does
@@ -99,6 +102,29 @@ local function FrameSize(frame)
   width, height = wOk and tonumber(width), hOk and tonumber(height)
   if not width or not height or width <= 0 or height <= 0 then return nil end
   return width, height
+end
+
+local function FrameScale(frame)
+  if not frame or not frame.GetScale then return 1 end
+  local ok, scale = pcall(frame.GetScale, frame)
+  scale = ok and tonumber(scale) or nil
+  return scale and scale > 0 and scale or 1
+end
+
+-- Restores a window's authored height before any fit or clamp measurement.
+-- GetHeight reports the scaled result on this client, while SetHeight takes
+-- the frame's own units, so compare against fixedHeight * current scale.
+local function RestoreFixedHeight(frame, options)
+  local fixedHeight = options and tonumber(options.fixedHeight)
+  if not fixedHeight or fixedHeight <= 0 or not frame.SetHeight then return false end
+
+  local ok, height = pcall(frame.GetHeight, frame)
+  local current = ok and tonumber(height) or nil
+  if current and math.abs(current - fixedHeight * FrameScale(frame)) <
+     sg.OFFSET_EPSILON then
+    return false
+  end
+  return pcall(frame.SetHeight, frame, fixedHeight)
 end
 
 local function IsShown(frame)
@@ -349,16 +375,17 @@ function U.CheckOnScreen(frame)
     return false
   end
 
+  local restored = RestoreFixedHeight(frame, options)
   local fitted = options.fit ~= false and U.FitFrameToScreen(frame)
   local position = U.ClampFrameToScreen(frame)
   if position and options.id and U.GetPosition(options.id) then
     U.SavePosition(options.id, position.point, position.relativePoint,
                    position.x, position.y)
   end
-  if (fitted or position) and type(options.onChanged) == "function" then
+  if (restored or fitted or position) and type(options.onChanged) == "function" then
     options.onChanged(frame)
   end
-  return fitted or position and true or false
+  return restored or fitted or position and true or false
 end
 
 local function ResolveNativeWindows()
@@ -391,6 +418,7 @@ end
 -- frame    a UIParent-anchored window.
 -- options  { id = "position store key" (saved when a correction moves it),
 --            fit = false to never scale it,
+--            fixedHeight = authored height in the frame's own units,
 --            suspended = function() return true while it must be left alone end,
 --            onChanged = function(frame) end }
 -- Registering a frame again merges the new options over the old, so a module

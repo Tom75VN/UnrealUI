@@ -287,10 +287,52 @@ local function PlaceModernWowPanes()
   end
 end
 
+-- Reward slots: the native two-column grid was laid out for a 300-wide page
+-- and its right column ran past the details page into the scroll channel
+-- (user request, 2026-09-19, the same fix as the quest-giver window). The
+-- column width is measured once from the live layout: from the first slot's
+-- left edge to the channel's left edge less `itemPageMargin`, minus the
+-- native gap between the two columns, halved. Every slot then takes it
+-- through the shared U.FitQuestItemSlot. Retried on each refresh until the
+-- slots have readable rects.
+function design.FitRewardItems()
+  if not design.itemWidth then
+    if type(U.ModernWowQuestLogScrollRect) ~= "function" then return end
+    local channelLeft = U.ModernWowQuestLogScrollRect()
+    local function Edge(object, method)
+      if not object then return nil end
+      local ok, value = pcall(object[method], object)
+      return ok and tonumber(value) or nil
+    end
+    local frameLeft = Edge(design.frame, "GetLeft")
+    local first, second = G("QuestLogItem1"), G("QuestLogItem2")
+    local firstLeft, firstRight = Edge(first, "GetLeft"), Edge(first, "GetRight")
+    if not channelLeft or not frameLeft or not firstLeft or not firstRight then
+      return
+    end
+    local gap = 0
+    local secondLeft = Edge(second, "GetLeft")
+    if secondLeft and secondLeft >= firstRight then gap = secondLeft - firstRight end
+
+    local limit = frameLeft + channelLeft -
+                  (M.modernWow.questLog.itemPageMargin or 0)
+    local width = math.floor((limit - firstLeft - gap) / 2)
+    if width <= 0 then return end
+    design.itemWidth = width
+  end
+
+  local maxItems = tonumber(G("MAX_NUM_ITEMS")) or 10
+  local i
+  for i = 1, maxItems do
+    U.FitQuestItemSlot("QuestLogItem" .. i, design.itemWidth)
+  end
+end
+
 local function RefreshModernWow()
   if not design.Active() then return false end
   PlaceModernWowPanes()
   PlaceModernWowButtons()
+  design.FitRewardItems()
   -- Re-hidden on every refresh: the shared toggle path restyles and re-places
   -- this control whenever the pane changes, so once is not enough.
   HideModernWowExpand(G("UnrealUIQuestLogExpand"))
@@ -300,13 +342,14 @@ end
 -- The native QuestLogMoneyFrame does not travel with this client's detail
 -- scroll child under this design. When UnrealQuest is absent, replace it with
 -- the same owned denomination row that UnrealQuest uses: a number followed by
--- a slice of Interface\MoneyFrame\UI-MoneyIcons for each non-zero coin value.
+-- UnrealUI's own coin texture (core/media.lua M.money) for each non-zero coin
+-- value.
 --
 -- The row is deliberately parented to QuestLogDetailScrollChildFrame and
 -- anchored to QuestLogItemReceiveText. Focused questrewardlayout probes verify
 -- those exact objects and this scrolling ownership on the current client. The
--- named container also lets the first guaranteed reward item be restored only
--- when it is still anchored to this row; GetPoint returns fresh wrappers here,
+-- first guaranteed reward item is pushed below the row but stays anchored to
+-- the label (see money.PlaceRewardItem); GetPoint returns fresh wrappers here,
 -- so object identity must not be used.
 --
 -- UnrealQuest is the sole owner whenever its runtime global exists. That keeps
@@ -316,6 +359,8 @@ end
 local money = {
   name = "UnrealUIQuestLogRewardMoney",
   itemGap = 5,
+  rowGap = 2,
+  rowHeight = 14,
   row = nil,
   readout = nil,
   movedItem = nil,
@@ -339,8 +384,13 @@ function money.RestoreMovedItem()
   money.movedItem = nil
   if not item or type(item.GetPoint) ~= "function" then return false end
 
-  local ok, point, relative, relativePoint, x = pcall(item.GetPoint, item, 1)
-  if not ok or money.RelativeName(relative) ~= money.name then
+  local ok, point, relative, relativePoint, x, y = pcall(item.GetPoint, item, 1)
+  if not ok then return false end
+  local relativeName = money.RelativeName(relative)
+  if relativeName ~= money.name
+      and not (relativeName == "QuestLogItemReceiveText"
+               and type(y) == "number"
+               and math.abs(math.abs(y) - money.ItemOffset()) < 0.5) then
     return false
   end
 
@@ -361,7 +411,7 @@ function money.Create(dock)
     return nil
   end
 
-  pcall(row.SetHeight, row, 14)
+  pcall(row.SetHeight, row, money.rowHeight)
   pcall(row.SetWidth, row, 1)
   local readout = U.CreateMoneyReadout(row, { gap = 1 })
   if not readout then
@@ -409,9 +459,16 @@ function money.RewardCounts()
 end
 
 -- Native quest-detail refreshes can restore the guaranteed-item anchor after
--- unrealUI's synchronous post-hook has returned. Read the live anchor and
--- write only when it has moved back to QuestLogItemReceiveText; a stable item
--- already attached to the owned row is left completely untouched.
+-- unrealUI's synchronous post-hook has returned. The item stays anchored to
+-- QuestLogItemReceiveText and is only pushed past the coin row: a button hung
+-- from the owned row itself stopped following the detail scroll
+-- (questrewarditem.scroll_follow.v1, measured with UnrealQuest's identical
+-- row). GetPoint's Y sign is unreliable here, so the offset is compared by
+-- magnitude and a stable item receives no write.
+function money.ItemOffset()
+  return money.itemGap + money.rowGap + money.rowHeight
+end
+
 function money.PlaceRewardItem(row)
   local choices, rewards = money.RewardCounts()
   if rewards <= 0 then return money.RestoreMovedItem() end
@@ -422,20 +479,26 @@ function money.PlaceRewardItem(row)
     money.RestoreMovedItem()
   end
 
-  local ok, point, relative, relativePoint, x = pcall(item.GetPoint, item, 1)
+  local ok, point, relative, relativePoint, x, y = pcall(item.GetPoint, item, 1)
   if not ok then return false end
   local relativeName = money.RelativeName(relative)
-  if relativeName == money.name then
+  if relativeName ~= money.name
+      and relativeName ~= "QuestLogItemReceiveText" then
+    return false
+  end
+  local offset = money.ItemOffset()
+  if relativeName == "QuestLogItemReceiveText" and type(y) == "number"
+      and math.abs(math.abs(y) - offset) < 0.5 then
     money.movedItem = item
     return false
   end
-  if relativeName ~= "QuestLogItemReceiveText" then return false end
 
+  local label = G("QuestLogItemReceiveText")
+  if not label then return false end
   local placed = pcall(function()
     item:ClearAllPoints()
-    item:SetPoint(point or "TOPLEFT", row, relativePoint or "BOTTOMLEFT",
-                  type(x) == "number" and x or 0,
-                  -money.itemGap)
+    item:SetPoint(point or "TOPLEFT", label, relativePoint or "BOTTOMLEFT",
+                  type(x) == "number" and x or 0, -offset)
   end)
   if placed then money.movedItem = item end
   return placed and true or false
@@ -549,7 +612,7 @@ function money.Refresh()
   if not money.anchored then
     money.anchored = pcall(function()
       row:ClearAllPoints()
-      row:SetPoint("TOPLEFT", label, "BOTTOMLEFT", 0, -2)
+      row:SetPoint("TOPLEFT", label, "BOTTOMLEFT", 0, -money.rowGap)
     end)
     changed = money.anchored or changed
   end

@@ -28,8 +28,13 @@ local WINDOWS = {
   { id = "questlog", frame = "QuestLogFrame" },
   { id = "merchant", frame = "MerchantFrame", interaction = true },
   { id = "trainer", frame = "ClassTrainerFrame", interaction = true },
-  { id = "gossip", frame = "GossipFrame", interaction = true },
-  { id = "quest", frame = "QuestFrame", interaction = true },
+  -- The quest giver's two windows swap in place during one conversation:
+  -- one stored position and one group (core/windowdrag.lua), as in
+  -- modules/quest.lua and modules/gossip.lua.
+  { id = "gossip", frame = "GossipFrame", interaction = true,
+    dragId = "questgiver", group = "questgiver" },
+  { id = "quest", frame = "QuestFrame", interaction = true,
+    dragId = "questgiver", group = "questgiver" },
   { id = "mail", frame = "MailFrame", interaction = true },
 }
 local interactionOnly = false
@@ -67,10 +72,19 @@ local function TryRegister()
   local i
   for i = 1, table.getn(WINDOWS) do
     local entry = WINDOWS[i]
+    -- The quest giver's two windows under their Modern WoW design are built
+    -- by modules/quest.lua and modules/gossip.lua, which register their own
+    -- drag handles.
+    if (entry.id == "quest" or entry.id == "gossip") and not entry.registered and
+       type(U.ModernWowQuestDialogActive) == "function" and
+       U.ModernWowQuestDialogActive() then
+      entry.registered = true
+    end
     if not entry.registered and (entry.interaction or not interactionOnly) then
       local frame = ResolveFrame(entry)
       if frame then
-        U.MakeWindowDraggable(entry.id, frame, { headerInset = 40 })
+        U.MakeWindowDraggable(entry.dragId or entry.id, frame,
+                              { headerInset = 40, group = entry.group })
         entry.registered = true
       else
         pending = true

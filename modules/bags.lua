@@ -627,18 +627,14 @@ end
 --
 -- Number then coin, gold to copper left-to-right, laid out right-to-left so
 -- the whole readout keeps its right edge fixed as the amounts change. The
--- coin icon is the single UI-MoneyIcons atlas sliced with texture
--- coordinates -- the same recipe modules/status.lua uses for the status
--- overlay's coin readout, which is USER_CONFIRMED_INGAME to render. The
--- separate per-denomination icon files this used to reference did not.
+-- coin art and its colour come from core/media.lua's M.money: UnrealUI's own
+-- per-denomination texture, the same one the status overlay draws, under
+-- every theme.
 -- ---------------------------------------------------------------------------
-local MONEY_TEXTURE = "Interface\\MoneyFrame\\UI-MoneyIcons"
-local COIN_GOLD   = { 0.00, 0.25, 0, 1 }
-local COIN_SILVER = { 0.25, 0.50, 0, 1 }
-local COIN_COPPER = { 0.50, 0.75, 0, 1 }
 local COIN_GAP = 1
 
-local function BuildCoin(parent, texCoords, color)
+local function BuildCoin(parent, denom)
+  local spec = M.money[denom]
   local holder = CreateFrame("Frame", nil, parent)
   holder:SetHeight(14)
   holder:SetWidth(26)
@@ -646,22 +642,20 @@ local function BuildCoin(parent, texCoords, color)
   local icon = holder:CreateTexture(nil, "ARTWORK")
   icon:SetWidth(12)
   icon:SetHeight(12)
-  -- The coin artwork sits low inside the atlas slice. Raise only the texture
-  -- while keeping the number on the common text baseline.
-  icon:SetPoint("RIGHT", holder, "RIGHT", 0, 2)
-  pcall(icon.SetTexture, icon, MONEY_TEXTURE)
-  pcall(icon.SetTexCoord, icon,
-        texCoords[1], texCoords[2], texCoords[3], texCoords[4])
+  -- The coin fills its own texture, so it centres on the holder and the
+  -- number keeps the common text baseline.
+  icon:SetPoint("RIGHT", holder, "RIGHT", 0, 0)
+  pcall(icon.SetTexture, icon, spec.texture)
   holder.icon = icon
 
   -- fonts.stretched_justification_ignored: anchored to the one edge it belongs
   -- to rather than stretched between two corners with a justify.
   holder.label = U.CreateLabel(holder, {
     size = M.fontSize.small,
-    color = color,
+    color = spec.color,
     inherits = "GameFontNormalSmall",
   })
-  if holder.label then holder.label:SetPoint("RIGHT", icon, "LEFT", -1, -2) end
+  if holder.label then holder.label:SetPoint("RIGHT", icon, "LEFT", -1, 0) end
 
   return holder
 end
@@ -671,9 +665,9 @@ local function BuildMoneyDisplay(parent)
   money:SetHeight(16)
   money:SetWidth(150)
 
-  money.copper = BuildCoin(money, COIN_COPPER, { 0.80, 0.47, 0.29 })
-  money.silver = BuildCoin(money, COIN_SILVER, { 0.75, 0.75, 0.75 })
-  money.gold   = BuildCoin(money, COIN_GOLD, { 1.00, 0.82, 0.00 })
+  money.copper = BuildCoin(money, "copper")
+  money.silver = BuildCoin(money, "silver")
+  money.gold   = BuildCoin(money, "gold")
 
   money.copper:SetPoint("RIGHT", money, "RIGHT", 0, 0)
   money.silver:SetPoint("RIGHT", money.copper, "LEFT", -COIN_GAP, 0)
@@ -1897,10 +1891,10 @@ local function Build()
   frame:SetAllPoints(anchor)
   classicBag.StylePanel(frame, true)
   local modernPanel = modernBag.StylePanel(frame)
-  -- Above the client tooltip rather than MEDIUM: this client draws a world
-  -- object's tooltip over the window regardless of the UI covering the
-  -- cursor (core/style.lua carries the measurement and the trade-off).
-  U.RaiseWindowAboveTooltips(frame)
+  -- Below every interface window (user request, 2026-09-21): LOW strata, and
+  -- lifted inside it so the bag still draws over chat and the main bar.
+  -- core/style.lua carries the measurement and the trade-off it gives up.
+  U.LowerWindowBelowInterface(frame, 100)
   pcall(frame.EnableMouse, frame, true)
   frame:Hide()
 

@@ -108,6 +108,21 @@ function mw.Active()
           U.ClassicModernAnyEnabled())
 end
 
+-- May a *generic media builder* below draw theme art right now? Wider than
+-- mw.Active by exactly one case: the classic-wow talent window's build-advisor
+-- drawer and arrow are the Modern WoW ones by user request (2026-09-21), and
+-- that window draws only while every Classic -> Modern WoW module is off,
+-- which is precisely when mw.Active is false. The caller has already decided
+-- it wants the art; this only says the art may be built.
+--
+-- Surface-owning entry points keep mw.Active plus their own mw.Enabled check,
+-- so nothing here turns an optional surface on.
+function mw.MediaAllowed()
+  if mw.Active() then return true end
+  return type(U.ClassicTalentsWanted) == "function" and
+         U.ClassicTalentsWanted() and true or false
+end
+
 function MW:OnInit()
   local config = mw.Config()
   -- The action-bar surface used to be a disabled no-op roadmap entry. Turn it
@@ -191,6 +206,58 @@ function mw.Dimension(frame, method)
   if not frame or not frame[method] then return 0 end
   local ok, value = pcall(frame[method], frame)
   return (ok and tonumber(value)) or 0
+end
+
+-- Builds Blizzard's Dialog Box divider as three slices, stretching its long
+-- centre without distorting either ornamental end cap.
+function U.ModernWowHorizontalBar(parent, width, height, layer, flipped)
+  local token = M.modernWow.horizontalBar
+  local path = M.modernWow.texture.horizontalBar
+  width = tonumber(width) or 0
+  height = tonumber(height) or (token and token.height) or 0
+  if not parent or not token or not path or width <= 0 or height <= 0 then
+    return nil
+  end
+
+  local bar = CreateFrame("Frame", nil, parent)
+  local scale = height / token.sourceHeight
+  local leftWidth = token.left.width * scale
+  local rightWidth = token.right.width * scale
+  if width < leftWidth + rightWidth then return nil end
+
+  pcall(function()
+    bar:SetWidth(width)
+    bar:SetHeight(height)
+    if bar.EnableMouse then bar:EnableMouse(false) end
+  end)
+
+  local function Piece(cell)
+    local v1, v2 = cell.v1 / token.atlasHeight,
+                         cell.v2 / token.atlasHeight
+    if flipped then v1, v2 = v2, v1 end
+    local texture = mw.Texture(bar, layer or "OVERLAY", path,
+      cell.u1 / token.atlasWidth, cell.u2 / token.atlasWidth, v1, v2)
+    if texture then
+      pcall(texture.SetHeight, texture, cell.height * scale)
+    end
+    return texture
+  end
+
+  local left = Piece(token.left)
+  local middle = Piece(token.middle)
+  local right = Piece(token.right)
+  if not left or not middle or not right then return nil end
+
+  pcall(function()
+    left:SetWidth(leftWidth)
+    left:SetPoint("LEFT", bar, "LEFT", 0, 0)
+    right:SetWidth(rightWidth)
+    right:SetPoint("RIGHT", bar, "RIGHT", 0, 0)
+    middle:SetPoint("LEFT", left, "RIGHT", 0, 0)
+    middle:SetPoint("RIGHT", right, "LEFT", 0, 0)
+  end)
+  bar.uuiPieces = { left, middle, right }
+  return bar
 end
 
 -- Takes UnrealUI's flat outline off a frame this theme is about to cover with
@@ -409,7 +476,7 @@ end
 -- yet; without it the owner's own height is read. `gold` selects the
 -- gold-rimmed atlas; it is fixed by the owner's first call.
 function U.ModernWowRedButtonFace(owner, height, gold)
-  if not mw.Active() or not owner then return false end
+  if not mw.MediaAllowed() or not owner then return false end
 
   local token = M.modernWow.button128Red
   local path = M.modernWow.texture.button128Red
@@ -510,6 +577,9 @@ function U.StyleModernWowActionButton(button, options)
     local ok, value = pcall(button.IsEnabled, button)
     if ok then enabled = value == true or value == 1 end
   end
+  -- `options.disabled` pins the disabled face on a control its owner keeps
+  -- inert whatever the client's own Enable/Disable says (Remove Friend).
+  if options.disabled then enabled = false end
   U.ModernWowSetRedButtonDisabled(face, not enabled)
   U.ModernWowPaintRedButton(face, skin.hovered and enabled)
 
@@ -571,7 +641,7 @@ function mw.MetalSlice(texture, slice, token)
 end
 
 function U.ModernWowMetalFrame(frame, width, height)
-  if not mw.Active() or not frame then return false end
+  if not mw.MediaAllowed() or not frame then return false end
 
   local token = M.modernWow.metalFrame
   if not token then return false end
@@ -677,22 +747,30 @@ end
 -- supplies a narrow warm rim and near-black bed without touching the bar's
 -- state machine, regions, anchors or mouse handling.
 function mw.QuestProgressBarBackground(bar)
+  return mw.ScrollBarBed(bar, M.modernWow.npcDialog and
+                              M.modernWow.npcDialog.progressBarBackground,
+                         "UnrealUIQuestProgressBarBackground")
+end
+
+-- The same channel for any native scrollbar on quadrant art that has no
+-- recess of its own. `name` is optional; a named bed must be unique.
+function mw.ScrollBarBed(bar, token, name)
   if not bar then return false end
   if bar.uuiModernWowProgressBackground then return true end
-
-  local token = M.modernWow.npcDialog and
-                M.modernWow.npcDialog.progressBarBackground
   if not token then return false end
 
-  local parent = nil
-  if bar.GetParent then
-    local ok, value = pcall(bar.GetParent, bar)
-    if ok then parent = value end
-  end
-  if not parent then return false end
-
-  local ok, background = pcall(CreateFrame, "Frame",
-                                "UnrealUIQuestProgressBarBackground", parent)
+  -- Parented to the BAR, not to the scroll frame, so the channel simply
+  -- inherits the bar's visibility and nothing has to show or hide it.
+  --
+  -- RUNTIME_PROBE 2026-09-19 (social.tab_click_watch.v1): the earlier form
+  -- parented it to the scroll frame and drove it from the bar's OnShow/OnHide.
+  -- Hiding that child from inside the client's own FriendsFrame_ShowSubFrame
+  -- made the client recompute the scroll and fire
+  -- FauxScrollFrame_OnVerticalScroll -> WhoList_Update, and this client's
+  -- WhoList_Update calls PanelTemplates_SetTab(FriendsFrame, 2). Switching
+  -- from the Who tab back to Friends therefore re-selected Who inside the
+  -- switch itself and took two clicks.
+  local ok, background = pcall(CreateFrame, "Frame", name, bar)
   if not ok or not background then return false end
   pcall(background.EnableMouse, background, false)
   pcall(background.SetPoint, background, "TOPLEFT", bar, "TOPLEFT",
@@ -706,32 +784,30 @@ function mw.QuestProgressBarBackground(bar)
     pcall(background.SetFrameLevel, background, math.max(0, level - 1))
   end
 
-  local outer = mw.Texture(background, "BACKGROUND", M.texture.plain)
+  -- A token without `outer` asks for the channel alone, with no rim: the
+  -- Friends lists draw the MinimalScrollBar, which brings its own track, so
+  -- a rim round it only reads as a stray bronze outline.
+  local outer = nil
+  if token.outer then
+    outer = mw.Texture(background, "BACKGROUND", M.texture.plain)
+  end
   local inner = mw.Texture(background, "ARTWORK", M.texture.plain)
-  if not outer or not inner then
+  if (token.outer and not outer) or not inner then
     pcall(background.Hide, background)
     return false
   end
-  pcall(outer.SetAllPoints, outer, background)
+  local inset = token.outer and token.inset or 0
   pcall(inner.SetPoint, inner, "TOPLEFT", background, "TOPLEFT",
-        token.inset, -token.inset)
+        inset, -inset)
   pcall(inner.SetPoint, inner, "BOTTOMRIGHT", background, "BOTTOMRIGHT",
-        -token.inset, token.inset)
-  U.SetColor(outer, M.Unpack(token.outer))
+        -inset, inset)
+  if outer then
+    pcall(outer.SetAllPoints, outer, background)
+    U.SetColor(outer, M.Unpack(token.outer))
+  end
   U.SetColor(inner, M.Unpack(token.inner))
 
   bar.uuiModernWowProgressBackground = background
-  U.PostHookScript(bar, "OnShow", function()
-    pcall(background.Show, background)
-  end)
-  U.PostHookScript(bar, "OnHide", function()
-    pcall(background.Hide, background)
-  end)
-
-  if bar.IsShown then
-    local shownOk, shown = pcall(bar.IsShown, bar)
-    if shownOk and not shown then pcall(background.Hide, background) end
-  end
   return true
 end
 
@@ -803,11 +879,18 @@ mw.units = {
     shiftLabels = true,
     -- The target health fill only overruns the rim at its left edge.
     healthLeftInset = 2,
+    -- The power bar reaches 2 units further right (user request, 2026-09-20).
+    -- Width only: the bar is anchored by its LEFT edge, and that anchor is
+    -- computed from the layout's own bar rectangle rather than from this
+    -- width, so the left edge and the health bar above it do not move.
+    powerWidthExtra = 2,
     -- Extra rightward nudge for the power bar's percentage only.
     powerPercentX = 2,
     -- Extra upward nudge for the power bar's percentage only.
     powerPercentY = 2,
-    header = { name = -5, level = 6 } },
+    -- The name is anchored by its RIGHT edge only (no width), so its last
+    -- letter always ends here, just left of the portrait ring.
+    header = { name = -9, level = 6 } },
   -- Portrait LEFT, by request: the housing is flipped so the ring sits on the
   -- left. The bed takes the player file, whose opaque region lies under the
   -- portrait-left bar rectangle; the target bed only fits portrait-right.
@@ -1024,7 +1107,7 @@ end
 -- Strips one of UnrealUI's bar boxes back to just its fill, and moves it to an
 -- art-space rectangle. Edge-only removal plus a cleared backdrop: the art
 -- supplies both the outline and the bed, so the box must contribute neither.
-function mw.PlaceBar(box, frame, s, x, y, w, h)
+function mw.PlaceBar(box, frame, s, x, y, w, h, fillInset)
   if not box then return end
 
   mw.HideFlatEdges(box)
@@ -1040,10 +1123,24 @@ function mw.PlaceBar(box, frame, s, x, y, w, h)
   -- resized too or the fill keeps the old geometry.
   local bar = box.bar
   if bar then
+    -- `fillInset` is how much of the box the fill leaves empty at the top and
+    -- bottom, as a fraction of its height. The health fill this surface draws
+    -- is opaque to its canvas edge, where the one it replaced carried that
+    -- padding inside the texture, so the band has to be reproduced here or the
+    -- bar fills the whole recess (core/media.lua
+    -- M.modernWow.unitFrame.healthFillInset). The box keeps its full size and
+    -- every label anchors to the box, so nothing but the fill moves.
+    local insetTop, insetBottom = 0, 0
+    if fillInset then
+      insetTop = h * (tonumber(fillInset.top) or 0)
+      insetBottom = h * (tonumber(fillInset.bottom) or 0)
+      if insetTop + insetBottom >= h then insetTop, insetBottom = 0, 0 end
+    end
+
     bar:SetWidth(w)
-    bar:SetHeight(h)
+    bar:SetHeight(h - insetTop - insetBottom)
     bar:ClearAllPoints()
-    bar:SetPoint("TOPLEFT", box, "TOPLEFT", 0, 0)
+    bar:SetPoint("TOPLEFT", box, "TOPLEFT", 0, -insetTop)
 
     -- U.CreateStatusBar gives every bar its own dark BACKGROUND texture for the
     -- depleted portion. The source art already draws that recess, so leaving
@@ -1457,7 +1554,8 @@ function mw.BuildHousing(frame, entry)
               FlipX(barX, barW) + healthLeftInset +
                 (tonumber(entry.healthX) or 0), healthY,
               barW - healthLeftInset - healthRightInset +
-                (tonumber(entry.healthWidthExtra) or 0), healthH)
+                (tonumber(entry.healthWidthExtra) or 0), healthH,
+              M.modernWow.unitFrame.healthFillInset)
   if frame.power then
     local powerInset = tonumber(entry.powerInset) or 0
     mw.PlaceBar(frame.power, frame, s,
@@ -1547,9 +1645,31 @@ function mw.BuildHousing(frame, entry)
     textLayer:SetAllPoints(frame)
     if level > 0 then pcall(textLayer.SetFrameLevel, textLayer, level + 21) end
 
+    local reaction = nil
+    if entry.id == "target" and M.modernWow.targetReaction then
+      local token = M.modernWow.targetReaction
+      reaction = mw.Texture(textLayer, "ARTWORK",
+                            M.modernWow.texture.targetReaction)
+      if reaction then
+        reaction:SetHeight(token.height)
+        reaction:SetPoint("BOTTOMLEFT", frame.health, "TOPLEFT",
+                          token.left, token.y)
+        reaction:SetPoint("BOTTOMRIGHT", frame.health, "TOPRIGHT",
+                          -token.right, token.y)
+        mw.BuildReactionPulse(textLayer, reaction)
+      end
+    end
+
+    -- The player and the target carry the theme's warm gold on their own
+    -- name; every other dressed frame keeps the neutral text. Resolved once
+    -- here and remembered on the header table below, so the refresh does not
+    -- re-decide per unit which colour this row owns.
+    local nameColor = (entry.id == "player" or entry.id == "target")
+                      and M.modernWow.text.nameColor or nil
+
     local name = U.CreateLabel(textLayer, {
       size = headerSize,
-      color = M.color.text,
+      color = nameColor or M.color.text,
       inherits = "GameFontNormalSmall",
       fontRole = "unitframe",
       justify = outer,
@@ -1587,6 +1707,8 @@ function mw.BuildHousing(frame, entry)
                           tonumber(M.modernWow.text.levelReserve) or 0)
 
     frame.uuiModernWowHeaderText = { name = name, level = levelText,
+                                     reaction = reaction,
+                                     nameColor = nameColor,
                                      nameBudget = nameBudget }
   end
 
@@ -1768,16 +1890,38 @@ function U.ModernWowRefreshHeader(frame)
   if not text then return end
 
   local data = frame.data or {}
+  local reactionR, reactionG, reactionB
 
   if text.name then
     local value = data.name
     if data.connected == false or type(value) ~= "string" then value = "" end
     if frame.spec and frame.spec.targetReactionName and
        type(U.UnitFrameNameColor) == "function" then
-      local r, g, b = U.UnitFrameNameColor(data, true)
-      pcall(text.name.SetTextColor, text.name, r, g, b, 1)
+      reactionR, reactionG, reactionB = U.UnitFrameNameColor(data, true)
+      -- A row with its own name colour keeps it: the reaction is carried by
+      -- the reaction bar below, coloured just after this. Only a row with
+      -- neither -- no owned colour and no reaction art -- falls back to
+      -- tinting the name itself, which is the one place the reaction would
+      -- otherwise go unshown.
+      if text.nameColor then
+        pcall(text.name.SetTextColor, text.name, M.Unpack(text.nameColor))
+      elseif text.reaction then
+        pcall(text.name.SetTextColor, text.name, M.Unpack(M.color.text))
+      else
+        pcall(text.name.SetTextColor, text.name,
+              reactionR, reactionG, reactionB, 1)
+      end
     end
     text.name:SetText(mw.FitName(text, value))
+  end
+
+  if text.reaction then
+    pcall(text.reaction.SetVertexColor, text.reaction,
+          reactionR or 1, reactionG or 1, reactionB or 1,
+          tonumber(M.modernWow.targetReaction.alpha) or 1)
+    -- Same grouping as U.UnitFrameNameColor: reactions 1-3 are the enemy.
+    mw.SetReactionPulse(type(data.reaction) == "number" and
+                        data.reaction <= 3)
   end
 
   if text.level then
@@ -2117,6 +2261,90 @@ function mw.PlayerFXTick()
       if fx.cell > cfg.restColumns * cfg.restRows then fx.cell = 1 end
       mw.ShowRestingCell(fx.cell)
     end
+  end
+end
+
+-- ---------------------------------------------------------------------------
+-- Target reaction pulse
+--
+-- While the target is an enemy, the reaction wash behind its name breathes the
+-- way the player's combat halo does: a copy of the wash, additive, whose alpha
+-- ping-pongs through U.EaseInOutCubic over M.modernWow.playerFX.pulsePeriod,
+-- then fades out at that surface's fadeSpeed when the target stops being
+-- hostile. Only the peak is its own (M.modernWow.targetReaction.pulseMax), so
+-- it stays softer than the player halo. The updater runs only while the pulse
+-- is visible and unregisters itself once it has faded out.
+-- ---------------------------------------------------------------------------
+mw.reactionPulse = {
+  updateId = "modernwow.reactionpulse",
+  alpha = 0,
+  pulseTime = 0,
+  active = false,
+}
+
+function mw.BuildReactionPulse(parent, wash)
+  local glow = mw.Texture(parent, "OVERLAY",
+                          M.modernWow.texture.targetReaction)
+  if not glow then return end
+  glow:SetAllPoints(wash)
+  pcall(glow.SetBlendMode, glow, "ADD")
+  local c = M.modernWow.playerFX.combatColor
+  pcall(glow.SetVertexColor, glow, c[1], c[2], c[3])
+  pcall(glow.SetAlpha, glow, 0)
+  pcall(glow.Hide, glow)
+  mw.reactionPulse.glow = glow
+  mw.reactionPulse.layer = parent
+end
+
+function mw.SetReactionPulse(active)
+  local fx = mw.reactionPulse
+  if not fx.glow or fx.active == active then return end
+  fx.active = active
+  if active then
+    fx.pulseTime = 0
+    fx.lastTick = nil
+    U.RegisterUpdate(fx.updateId, 0, mw.ReactionPulseTick)
+  end
+end
+
+function mw.ReactionPulseTick()
+  local fx = mw.reactionPulse
+  local cfg = M.modernWow.playerFX
+
+  local now = mw.PlayerFXNow()
+  if not now then return end
+  local elapsed = now - (fx.lastTick or now)
+  fx.lastTick = now
+  if elapsed < 0 then elapsed = 0 end
+  if elapsed > 0.25 then elapsed = 0.25 end
+
+  -- With no target the frame hides and the header stops refreshing, so the
+  -- last hostile reading would otherwise keep this updater running unseen.
+  local ok, shown = pcall(fx.layer.IsVisible, fx.layer)
+  if ok and not shown and fx.active then
+    fx.active = false
+    fx.alpha = 0
+  end
+
+  if fx.active then
+    fx.pulseTime = math.mod(fx.pulseTime + elapsed, cfg.pulsePeriod)
+    local progress = fx.pulseTime / cfg.pulsePeriod
+    local swing = progress < 0.5 and progress * 2 or (1 - progress) * 2
+    fx.alpha = (tonumber(M.modernWow.targetReaction.pulseMax) or 0.5) *
+               U.EaseInOutCubic(swing)
+  else
+    fx.alpha = fx.alpha - elapsed * cfg.fadeSpeed
+    if fx.alpha <= 0 then
+      fx.alpha = 0
+      U.UnregisterUpdate(fx.updateId)
+    end
+  end
+
+  if fx.alpha ~= fx.shownAlpha then
+    fx.shownAlpha = fx.alpha
+    pcall(fx.glow.SetAlpha, fx.glow, fx.alpha)
+    if fx.alpha > 0 then pcall(fx.glow.Show, fx.glow)
+    else pcall(fx.glow.Hide, fx.glow) end
   end
 end
 
@@ -2687,9 +2915,17 @@ mw.questLogWindow = {
   ownSurface = true,
 }
 
+-- The Social window's art is taller than the rim the generic entry draws, so
+-- it is dressed only by its own `social` surface.
+mw.socialWindow = {
+  name = "FriendsFrame",
+  extend = M.modernWow.social.extend,
+  ownSurface = true,
+}
+
 mw.windows = {
   { name = "CharacterFrame" },
-  { name = "FriendsFrame" },
+  mw.socialWindow,
   -- Quest Log remains in this inventory for shared header/close diagnostics,
   -- but owns an enabled-by-default surface so its theme art is not gated by
   -- the optional generic window-chrome surface.
@@ -2789,6 +3025,11 @@ function mw.DressWindow(frame, entry)
   local leftWidth = width * mw.quadrant.split
   local rightWidth = width - leftWidth
   local halfHeight = height / 2
+  -- `entry.extend` lengthens the art for a window whose content runs lower
+  -- than the rim (M.modernWow.social): the bottom pair drops that far and
+  -- the top pair's last rows repeat 1:1 in the gap, so no piece is scaled.
+  local extend = (entry and tonumber(entry.extend)) or 0
+  if extend < 0 or extend >= halfHeight then extend = 0 end
 
   local tl = mw.Texture(chrome, "BACKGROUND", M.modernWow.texture.panelTopLeft)
   if tl then
@@ -2809,7 +3050,7 @@ function mw.DressWindow(frame, entry)
   if bl then
     bl:SetWidth(leftWidth)
     bl:SetHeight(halfHeight)
-    bl:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", 0, 0)
+    bl:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", 0, -extend)
   end
 
   local br = mw.Texture(chrome, "BACKGROUND",
@@ -2817,7 +3058,25 @@ function mw.DressWindow(frame, entry)
   if br then
     br:SetWidth(rightWidth)
     br:SetHeight(halfHeight)
-    br:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", 0, 0)
+    br:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", 0, -extend)
+  end
+
+  if extend > 0 then
+    local v1 = 1 - extend / halfHeight
+    local ml = mw.Texture(chrome, "BACKGROUND",
+                          M.modernWow.texture.panelTopLeft, 0, 1, v1, 1)
+    if ml then
+      ml:SetWidth(leftWidth)
+      ml:SetHeight(extend)
+      ml:SetPoint("TOPLEFT", frame, "TOPLEFT", 0, -halfHeight)
+    end
+    local mr = mw.Texture(chrome, "BACKGROUND",
+                          M.modernWow.texture.panelTopRight, 0, 1, v1, 1)
+    if mr then
+      mr:SetWidth(rightWidth)
+      mr:SetHeight(extend)
+      mr:SetPoint("TOPRIGHT", frame, "TOPRIGHT", 0, -halfHeight)
+    end
   end
 
   mw.HideFlatEdges(frame)
@@ -2934,6 +3193,51 @@ function U.ModernWowNpcDialog(frame, panel, portrait, closeName)
   return mw.DressNpcDialog(frame, panel, portrait, closeName)
 end
 
+-- The quest-giver window is the one NPC dialog taken off the native path
+-- (user request, 2026-09-19). modules/questdesign.lua owns its layout and
+-- parchment; these two calls give it the shared window chrome (quadrants,
+-- portrait ring, close button) and the measured red action button, gated by
+-- the window's own `questdialog` surface rather than the retired
+-- `npcdialogs` one, which gossip, merchant and trainer still read.
+function U.ModernWowQuestDialogChrome(frame, panel, portrait, closeName)
+  if not U.ModernWowSurfaceEnabled("questdialog") then return false end
+  return mw.DressNpcDialog(frame, panel, portrait, closeName)
+end
+
+-- The anchor is handed over rather than read back. mw.LiftActionButton reads
+-- it through U.GetFramePoint, which negates Y, but GetPoint keeps SetPoint's
+-- sign (knowledge.json / frames.getpoint_y_same_sign_as_setpoint): a
+-- requested BOTTOMLEFT y=+78 came back as -78 and the button landed 68 below
+-- QuestFrame (in-game readback, 2026-09-19). The lift is still added here.
+function U.ModernWowQuestActionButton(button, point, relative, x, y)
+  if not U.ModernWowSurfaceEnabled("questdialog") then return false end
+  if not button then return false end
+  if type(button.uuiModernWowAction) == "table" then
+    return mw.DressActionButton(button)
+  end
+  if not mw.DressActionButton(button) then return false end
+  local state = button.uuiModernWowAction
+  state.anchor = {
+    point = point,
+    relative = relative,
+    relativePoint = point,
+    x = x,
+    y = y,
+    ready = true,
+  }
+  mw.PlaceActionButton(button)
+  return true
+end
+
+-- The window's chrome frame, for art that must draw above the quadrants but
+-- below the window's content. QuestFrame sits at level 1, so DressWindow
+-- cannot drop the chrome below it and a sibling frame at the window's level
+-- draws underneath the quadrants (in-game level readback, 2026-09-19).
+function U.ModernWowWindowChrome(frame)
+  local state = frame and frame.uuiModernWowWindow
+  return state and state.chrome or nil
+end
+
 function mw.BuildNpcDialogs()
   local i
   for i = 1, table.getn(mw.npcDialogs) do
@@ -2999,15 +3303,20 @@ mw.inspect = {
   },
 }
 
-function mw.TabSet(tab, layer, prefix)
+-- `flip` draws the art upside down for a tab that stands on a list rather
+-- than hanging under a window (the Social Friends/Ignore toggles): the same
+-- cells with their rows swapped, pinned to the tab's bottom edge instead.
+function mw.TabSet(tab, layer, prefix, flip)
   local token = M.modernWow.tab
   local path = M.modernWow.texture.frameTabs
   local middle = token[prefix .. "Middle"]
+  local mTop, mBottom = middle[3], middle[4]
+  if flip then mTop, mBottom = mBottom, mTop end
   local set = {
     prefix = prefix,
+    flip = flip and true or false,
     left = mw.Texture(tab, layer, path),
-    middle = mw.Texture(tab, layer, path, middle[1], middle[2], middle[3],
-                        middle[4]),
+    middle = mw.Texture(tab, layer, path, middle[1], middle[2], mTop, mBottom),
     right = mw.Texture(tab, layer, path),
   }
   if not set.left or not set.middle or not set.right then return nil end
@@ -3019,7 +3328,7 @@ end
 -- (not squeezed) from its inner side, so the rim and rounded corner survive.
 function mw.PlaceTabSet(tab, set, alpha)
   local token = M.modernWow.tab
-  local scale = token.scale
+  local scale = set.scale or token.scale
   local left = token[set.prefix .. "Left"]
   local right = token[set.prefix .. "Right"]
   local width = mw.Dimension(tab, "GetWidth")
@@ -3032,24 +3341,30 @@ function mw.PlaceTabSet(tab, set, alpha)
   if cap < 0 then cap = 0 end
   local span = math.min(cap / scale, left.w) / token.atlasWidth
   local lift = token.lift
+  local edge = "TOP"
+  local lTop, lBottom, rTop, rBottom = left[3], left[4], right[3], right[4]
+  if set.flip then
+    edge, lift = "BOTTOM", -lift
+    lTop, lBottom, rTop, rBottom = lBottom, lTop, rBottom, rTop
+  end
 
   pcall(function()
     set.left:ClearAllPoints()
     set.left:SetWidth(cap)
     set.left:SetHeight(height)
-    set.left:SetTexCoord(left[1], left[1] + span, left[3], left[4])
-    set.left:SetPoint("TOPLEFT", tab, "TOPLEFT", 0, lift)
+    set.left:SetTexCoord(left[1], left[1] + span, lTop, lBottom)
+    set.left:SetPoint(edge .. "LEFT", tab, edge .. "LEFT", 0, lift)
 
     set.right:ClearAllPoints()
     set.right:SetWidth(cap)
     set.right:SetHeight(height)
-    set.right:SetTexCoord(right[2] - span, right[2], right[3], right[4])
-    set.right:SetPoint("TOPRIGHT", tab, "TOPRIGHT", 0, lift)
+    set.right:SetTexCoord(right[2] - span, right[2], rTop, rBottom)
+    set.right:SetPoint(edge .. "RIGHT", tab, edge .. "RIGHT", 0, lift)
 
     set.middle:ClearAllPoints()
     set.middle:SetHeight(height)
-    set.middle:SetPoint("TOPLEFT", tab, "TOPLEFT", cap, lift)
-    set.middle:SetPoint("TOPRIGHT", tab, "TOPRIGHT", -cap, lift)
+    set.middle:SetPoint(edge .. "LEFT", tab, edge .. "LEFT", cap, lift)
+    set.middle:SetPoint(edge .. "RIGHT", tab, edge .. "RIGHT", -cap, lift)
   end)
 
   local pieces = { set.left, set.middle, set.right }
@@ -3090,28 +3405,58 @@ function mw.RefreshTab(tab)
   if tab.GetFontString then
     local ok, label = pcall(tab.GetFontString, tab)
     if ok and label then
+      local textY = M.modernWow.tab.textY
+      if state.flip then textY = -textY end
+      if state.textY then textY = state.textY end
       pcall(function()
         label:ClearAllPoints()
-        label:SetPoint("CENTER", tab, "CENTER", 0, M.modernWow.tab.textY)
+        label:SetPoint("CENTER", tab, "CENTER", 0, textY)
       end)
     end
   end
 end
 
-function mw.DressTab(tab)
+-- `size` (optional) overrides the art's `scale` and the tab's `height` for
+-- a smaller tab than the window's bottom row (the Social list toggles).
+function mw.DressTab(tab, flip, size)
   if not tab or tab.uuiModernWowTab then return end
 
   -- Inactive under active, so the hover wash lands on top of the resting art;
   -- both stay below the label's ARTWORK layer.
   local state = {
-    inactive = mw.TabSet(tab, "BACKGROUND", "inactive"),
-    active = mw.TabSet(tab, "BORDER", "active"),
+    flip = flip and true or false,
+    inactive = mw.TabSet(tab, "BACKGROUND", "inactive", flip),
+    active = mw.TabSet(tab, "BORDER", "active", flip),
   }
   if not state.inactive or not state.active then
     error("modern-wow tab art could not be created")
   end
+  if size then
+    state.inactive.scale = size.scale
+    state.active.scale = size.scale
+    -- Label centre offset from the tab's centre, replacing the row's own.
+    state.textY = size.textY
+  end
   tab.uuiModernWowTab = state
-  pcall(tab.SetHeight, tab, M.modernWow.tab.height)
+  pcall(tab.SetHeight, tab, (size and size.height) or M.modernWow.tab.height)
+
+  -- The shared flat tab greys an unselected label (M.tab), which is the
+  -- Modern strip's answer to "which tab am I on". Here the art answers that,
+  -- so this theme's own label face replaces it before the first repaint: a
+  -- light neutral label on every tab the player is not reading, and no white
+  -- hover -- the hover is the art wash.
+  if type(tab.uuiTabFace) == "table" then
+    tab.uuiTabFace.activeText = M.modernWow.tab.activeTextColor
+    tab.uuiTabFace.inactiveText = M.modernWow.tab.inactiveTextColor
+    tab.uuiTabFace.hoverText = M.modernWow.tab.hoverTextColor
+    -- This art's end caps are wider than the flat tab's, so the label needs
+    -- this theme's own inset rather than the shared one -- the same value
+    -- U.FitStockTabStrip already uses for the Character strip here.
+    if type(U.SizeStockTabToLabel) == "function" then
+      pcall(U.SizeStockTabToLabel, tab, M.modernWow.tab.padding)
+    end
+    if type(tab.uuiTabRefresh) == "function" then tab.uuiTabRefresh() end
+  end
 
   -- Wrapped, not replaced, the way core/stockui.lua wraps SetChecked: the
   -- shared component still owns selection, and U.FitStockTabStrip still owns
@@ -3399,7 +3744,6 @@ end
 -- failing (knowledge: rendering.backdrop_edge_fractional_not_rasterized). A
 -- backdrop the client refuses leaves that box undrawn rather than erroring.
 function mw.StatBox(parent, left, top, width, height)
-  local token = M.modernWow.statBoxes
   local box = CreateFrame("Frame", nil, parent)
   -- A child frame lands one level above its parent, which can lift the box's
   -- 80% black fill over the stock stat text. Keep it at the holder's level,
@@ -3409,16 +3753,7 @@ function mw.StatBox(parent, left, top, width, height)
   box:SetPoint("TOPLEFT", parent, "TOPLEFT", left, -top)
   box:SetWidth(width)
   box:SetHeight(height)
-  if pcall(box.SetBackdrop, box, {
-    bgFile = token.background,
-    edgeFile = token.edge,
-    tile = true, tileSize = token.tileSize, edgeSize = token.edgeSize,
-    insets = { left = token.inset, right = token.inset,
-               top = token.inset, bottom = token.inset },
-  }) then
-    pcall(box.SetBackdropColor, box, M.Unpack(token.fill))
-    pcall(box.SetBackdropBorderColor, box, M.Unpack(token.border))
-  end
+  mw.InsetBackdrop(box)
   return box
 end
 
@@ -3631,7 +3966,6 @@ function mw.ClassIcon(frame, unit, stateKey)
     return
   end
 
-  local ring = M.modernWow.characterRing
   if not icon then
     icon = mw.Texture(state.chrome, "ARTWORK",
                       M.modernWow.texture.classPortraits)
@@ -3639,6 +3973,17 @@ function mw.ClassIcon(frame, unit, stateKey)
   end
   if not icon then return end
 
+  mw.PlaceRingIcon(frame, icon)
+  pcall(function()
+    icon:SetTexCoord(cell[1], cell[2], cell[3], cell[4])
+    icon:Show()
+  end)
+end
+
+-- Seats an icon inside the paperdoll art's gold portrait ring
+-- (M.modernWow.characterRing), scaled with the live window.
+function mw.PlaceRingIcon(frame, icon)
+  local ring = M.modernWow.characterRing
   local sx = mw.Dimension(frame, "GetWidth") / ring.designWidth
   local sy = mw.Dimension(frame, "GetHeight") / ring.designHeight
   local size = ring.size - 2 * ring.inset
@@ -3649,8 +3994,6 @@ function mw.ClassIcon(frame, unit, stateKey)
     icon:SetPoint("TOPLEFT", frame, "TOPLEFT",
                   (ring.left + ring.inset) * sx,
                   -(ring.top + ring.inset) * sy)
-    icon:SetTexCoord(cell[1], cell[2], cell[3], cell[4])
-    icon:Show()
   end)
 end
 
@@ -3660,6 +4003,230 @@ end
 
 function mw.InspectClassIcon(frame)
   mw.ClassIcon(frame, frame and frame.unit, "inspectClassIcon")
+end
+
+-- ---------------------------------------------------------------------------
+-- Surface: Social window
+--
+-- FriendsFrame on the Character archetype (user request, 2026-09-19): the
+-- paperdoll quadrants lengthened by M.modernWow.social.extend, the stock
+-- Friends portrait in the gold ring, Dragonflight bottom tabs, the
+-- Friends/Ignore toggles as the same tabs standing on their list, and the
+-- atlas close buttons on the window and its two guild docks.
+--
+-- modules/friends.lua owns content, layout and every control's state. It
+-- reads U.ModernWowSocialActive once and takes its own Modern WoW path for
+-- action buttons, list channels, inset boxes and docks before styling
+-- anything; this pass only swaps what the window and its tabs draw. Friend
+-- and ignore rows are never touched (knowledge.json /
+-- frames.friendsframe_row_touch_crashes_client).
+-- ---------------------------------------------------------------------------
+mw.social = {
+  panel = "UnrealUIFriendsPanel",
+  tabPrefix = "FriendsFrameTab",
+  tabCount = 5,
+  toggleTabs = {
+    "FriendsFrameToggleTab1", "FriendsFrameToggleTab2",
+    "IgnoreFrameToggleTab1", "IgnoreFrameToggleTab2",
+  },
+  closeButtons = {
+    "FriendsFrameCloseButton",
+    "GuildMemberDetailCloseButton",
+    "GuildInfoCloseButton",
+  },
+}
+
+function mw.SocialPortrait(frame)
+  local state = frame and frame.uuiModernWowWindow
+  if not state or not state.chrome then return end
+  -- Drawn UNDER the window art (user request 2026-09-20): on its own
+  -- mouse-transparent frame one level below the chrome, so the gold ring
+  -- overlaps the icon's edge. The art's ring centre is transparent
+  -- (panel-top-left.tga alpha 0 inside the rim), so the icon shows through.
+  if not state.socialPortrait then
+    local ok, holder = pcall(CreateFrame, "Frame", nil, frame)
+    if ok and holder then
+      pcall(holder.SetAllPoints, holder, frame)
+      pcall(holder.EnableMouse, holder, false)
+      local okL, level = pcall(state.chrome.GetFrameLevel, state.chrome)
+      if okL and tonumber(level) then
+        pcall(holder.SetFrameLevel, holder, math.max(0, level - 1))
+      end
+      state.socialPortrait = mw.Texture(holder, "ARTWORK",
+                                        M.modernWow.social.portrait)
+    end
+  end
+  local icon = state.socialPortrait
+  if not icon then return end
+  -- Its own placement (M.modernWow.social.portraitRect), not the shared
+  -- mw.PlaceRingIcon: that scales y by the window's height, which the
+  -- `extend` rows stretch, so the icon slid down in the ring; and its 5-unit
+  -- inset left the scroll art small inside the rim (user request
+  -- 2026-09-20). The top rows are drawn 1:1, so one scale serves both axes.
+  local r = M.modernWow.social.portraitRect
+  local scale = mw.Dimension(frame, "GetWidth") /
+                M.modernWow.characterRing.designWidth
+  pcall(function()
+    icon:ClearAllPoints()
+    icon:SetWidth(r.size * scale)
+    icon:SetHeight(r.size * scale)
+    icon:SetPoint("TOPLEFT", frame, "TOPLEFT", r.left * scale, -r.top * scale)
+  end)
+  pcall(icon.Show, icon)
+end
+
+function mw.BuildSocial()
+  local frame = U.G(mw.socialWindow.name)
+  if not frame then error("modern-wow Social frame is unavailable") end
+  if not frame.uuiModernWowWindow and
+     not mw.DressWindow(frame, mw.socialWindow) then
+    error("modern-wow Social texture could not be applied")
+  end
+  frame.uuiModernWowWindow.social = true
+
+  -- modules/friends.lua keeps this panel as the anchor for its title, close
+  -- button and tab row; only its near-black sheet comes off.
+  local panel = U.G(mw.social.panel)
+  if panel then mw.HideFlatSurface(panel) end
+  mw.SocialPortrait(frame)
+
+  local i
+  for i = 1, mw.social.tabCount do
+    mw.DressTab(U.G(mw.social.tabPrefix .. i))
+  end
+  for i = 1, table.getn(mw.social.toggleTabs) do
+    mw.DressTab(U.G(mw.social.toggleTabs[i]), true,
+                M.modernWow.social.toggleTab)
+  end
+  for i = 1, table.getn(mw.social.closeButtons) do
+    mw.DressCloseButton(mw.social.closeButtons[i])
+  end
+end
+
+-- Read once by modules/friends.lua at OnEnable, before it styles a control.
+function U.ModernWowSocialActive()
+  return mw.Active() and mw.Enabled("social") and true or false
+end
+
+function U.ModernWowSocialScrollBed(bar)
+  if not U.ModernWowSocialActive() then return false end
+  return mw.ScrollBarBed(bar, M.modernWow.social.scrollBed)
+end
+
+-- The restrained dark inset box of Character's statistics
+-- (M.modernWow.statBoxes), drawn as the backdrop of an existing frame: an
+-- input bed, a note or message box. Replaces UnrealUI's flat fill there.
+function mw.InsetBackdrop(frame)
+  local token = M.modernWow.statBoxes
+  if not frame or not frame.SetBackdrop then return false end
+  if not pcall(frame.SetBackdrop, frame, {
+    bgFile = token.background,
+    edgeFile = token.edge,
+    tile = true, tileSize = token.tileSize, edgeSize = token.edgeSize,
+    insets = { left = token.inset, right = token.inset,
+               top = token.inset, bottom = token.inset },
+  }) then
+    return false
+  end
+  pcall(frame.SetBackdropColor, frame, M.Unpack(token.fill))
+  pcall(frame.SetBackdropBorderColor, frame, M.Unpack(token.border))
+  return true
+end
+
+-- The Friends window's footer section (user request, 2026-09-19): a
+-- translucent dark wash over the window art with the shared Dialog Box
+-- separator across its top edge, separating the action buttons from the friend
+-- list above them.
+--
+-- `plate` is an addon-owned frame the caller has already anchored around the
+-- four actions. Nothing here takes the mouse, and the wash darkens the
+-- artwork rather than replacing it, so the quadrants still read through.
+-- The rock is sampled 1:1 from the atlas rather than stretched, so its grain
+-- reads at the authored scale whatever the plate measures. Recomputed rather
+-- than fixed: the plate follows the four buttons, which follow their tokens.
+function mw.SocialFooterGrain(plate, wash)
+  local token = M.modernWow.social.footerPlate
+  local width = mw.Dimension(plate, "GetWidth")
+  local height = mw.Dimension(plate, "GetHeight")
+  if width <= 0 or height <= 0 then return end
+  pcall(wash.SetTexCoord, wash, 0, width / token.atlas, 0, height / token.atlas)
+end
+
+-- `edge` is where the metal rule runs: "TOP" (default, the footer: rule
+-- between list and actions) or "BOTTOM" (the Who header: rule between the
+-- header and the list below it).
+function U.ModernWowSocialFooterPlate(plate, edge)
+  if not U.ModernWowSocialActive() or not plate then return false end
+  local bottom = edge == "BOTTOM"
+  local token = M.modernWow.social.footerPlate
+  if plate.uuiSocialFooterPlate then
+    -- Already built: only re-sample the grain, in case the run resized.
+    if plate.uuiSocialFooterWash then
+      mw.SocialFooterGrain(plate, plate.uuiSocialFooterWash)
+    end
+    if plate.uuiSocialFooterRule then
+      pcall(plate.uuiSocialFooterRule.SetWidth,
+            plate.uuiSocialFooterRule, mw.Dimension(plate, "GetWidth"))
+    end
+    return true
+  end
+  if not token then return false end
+
+  -- ARTWORK, not BACKGROUND: RUNTIME_PROBE 2026-09-19 measured this region as
+  -- 322x65, two anchors, shown, on a visible level-2 frame whose OVERLAY rule
+  -- drew correctly -- and it still rendered nothing on BACKGROUND.
+  local rock = M.modernWow.texture.questFooter
+  local wash = mw.Texture(plate, "ARTWORK", rock)
+  if not wash then return false end
+  -- Anchored corner to corner rather than with SetAllPoints: the wash drew
+  -- nothing while the rule on the same frame drew correctly
+  -- (USER_CONFIRMED_INGAME 2026-09-19, with every region forced opaque), so
+  -- the region was sized by an anchor call that did not take.
+  pcall(function()
+    wash:ClearAllPoints()
+    wash:SetPoint("TOPLEFT", plate, "TOPLEFT", 0, 0)
+    wash:SetPoint("BOTTOMRIGHT", plate, "BOTTOMRIGHT", 0, 0)
+  end)
+  U.SetColor(wash, token.shade, token.shade, token.shade, 1)
+  plate.uuiSocialFooterWash = wash
+  mw.SocialFooterGrain(plate, wash)
+
+  -- The dedicated Dialog Box divider is centred on the plate edge. The
+  -- bottom-edge form is mirrored so its ornament faces into the header.
+  local bar = U.ModernWowHorizontalBar(
+    plate, mw.Dimension(plate, "GetWidth"), nil, "OVERLAY", bottom)
+  if not bar then return false end
+  local i
+  for i = 1, table.getn(bar.uuiPieces or {}) do
+    U.SetColor(bar.uuiPieces[i], token.ruleShade, token.ruleShade,
+               token.ruleShade, 1)
+  end
+  pcall(function()
+    bar:SetPoint("CENTER", plate, bottom and "BOTTOM" or "TOP", 0, 0)
+  end)
+  plate.uuiSocialFooterRule = bar
+
+  plate.uuiSocialFooterPlate = true
+  return true
+end
+
+-- Scales an already-drawn metal housing's backing alpha, for a window that
+-- wants a lighter fill than the shared token without changing it for every
+-- other housing (the guild member detail dock, user request 2026-09-20).
+function U.ModernWowMetalFrameFill(frame, scale)
+  local state = frame and frame.uuiModernWowMetal
+  if type(state) ~= "table" or not state.fill then return false end
+  local token = M.modernWow.metalFrame
+  if not token or not token.fill then return false end
+  local fill = token.fill
+  U.SetColor(state.fill, fill[1], fill[2], fill[3],
+             (fill[4] or 1) * (tonumber(scale) or 1))
+  return true
+end
+
+function U.ModernWowInsetBox(frame)
+  if not mw.Active() then return false end
+  return mw.InsetBackdrop(frame)
 end
 
 -- Where the Quest Log art draws its three button beds, in the window's own
@@ -3746,10 +4313,12 @@ function mw.BuildHeaders()
     local frame = U.G(entry.name)
     -- The Spellbook's housing already carries its header bar
     -- (modules/spellbookmodernwow.lua), and the Talent window draws its own
-    -- (modules/talentsmodernwow.lua).
+    -- (modules/talentsmodernwow.lua). The Social art carries its own title
+    -- strip, which a header bar would cover along with the portrait ring.
     local ownHeader = frame and frame.uuiModernWowWindow and
                       (frame.uuiModernWowWindow.spellBook or
-                       frame.uuiModernWowWindow.talents)
+                       frame.uuiModernWowWindow.talents or
+                       frame.uuiModernWowWindow.social)
     if frame and not entry.classicInteraction and not ownHeader then
       mw.DressHeader(frame)
     end
@@ -4027,6 +4596,9 @@ mw.RegisterSurface("playerfx", "Player combat and rest glow", true,
                    mw.BuildPlayerFX)
 mw.RegisterSurface("questlog", "Quest Log texture", true, mw.BuildQuestLog)
 mw.RegisterSurface("character", "Character window", true, mw.BuildCharacter)
+-- Before `windows` and `headers`, so both find the Social window already
+-- claimed by its own art.
+mw.RegisterSurface("social", "Social window", true, mw.BuildSocial)
 mw.RegisterSurface("windows", "Window chrome", false, mw.BuildWindows)
 mw.RegisterSurface("headers", "Window headers", false, mw.BuildHeaders)
 mw.RegisterSurface("close", "Close buttons", false, mw.BuildCloseButtons)
@@ -4091,6 +4663,20 @@ mw.RegisterSurface("bags", "Bag window", true, mw.BuildBags)
 function mw.BuildLoot()
 end
 mw.RegisterSurface("loot", "Loot window", true, mw.BuildLoot)
+
+-- modules/questdesign.lua draws the quest-giver window itself, bound by
+-- modules/quest.lua once the lazily created QuestFrame exists. A window that
+-- does not exist yet is not a failure; one that exists without the drawing
+-- path is.
+function mw.BuildQuestDialog()
+  if U.G("QuestFrame") and
+     (type(U.ModernWowQuestDialogActive) ~= "function" or
+      not U.ModernWowQuestDialogActive()) then
+    error("modern-wow quest-giver drawing path did not activate")
+  end
+end
+mw.RegisterSurface("questdialog", "Quest giver windows (quest, gossip)", true,
+                   mw.BuildQuestDialog)
 
 -- Planned surfaces: art imported and tokenised in core/media.lua, no drawing
 -- path yet. Registered with no build function so `/uui mw list` states the

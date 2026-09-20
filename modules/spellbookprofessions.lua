@@ -1,9 +1,9 @@
 -- unrealUI :: modules/spellbookprofessions.lua
 --
--- The modern-wow Spellbook's Professions tab and page: a bottom tab beside
--- Spellbook that swaps the spell pages for the Dragonflight professions pages,
--- with two primary rows (icon ring, name, rank, skill bar) and four secondary
--- rows (Poisons, Fishing, Cooking, First Aid).
+-- The Spellbook's Professions tab and page: a bottom tab beside Spellbook,
+-- with two primary rows and four secondary rows (Poisons, Fishing, Cooking,
+-- First Aid). The host supplies the complete drawing path: Dragonflight art
+-- under modern-wow/classic-wow, flat rows under modern.
 --
 -- Built by the window drawing path that hosts it (prof.host):
 --  * modules/spellbookmodernwow.lua, which asks for the tabs while dressing
@@ -12,8 +12,9 @@
 --  * modules/spellbookclassicprof.lua, the classic-wow native window
 --    (U.ClassicSpellBookExtraTabs; user request, 2026-09-17), which draws the
 --    same page inside the client's own window with native-template tabs.
--- The page itself is identical under both; only geometry, page art, button
--- placement and tabs come from the host.
+--  * modules/spellbookmodernprof.lua, the flat-modern window
+--    (U.ModernSpellBookExtraTabs), which uses the same data and interaction
+--    lifecycle with UnrealUI's shared flat components.
 --
 -- Mechanism is WORKING_SOURCE from WoW-DragonflightUI (Mixin/UI.mixin.lua
 -- SpellbookEraProfessions, Mixin/ProfessionSpellbook.mixin.lua,
@@ -56,6 +57,7 @@ local prof = {
   placeByIndex = {},
   shown = {},
   title = nil,
+  titleColor = nil,
   -- The hosting drawing path, set once by prof.Install:
   --   Active() -> bool
   --   PagePoint(x, y) -> left, top   page-art texel as TOPLEFT window units
@@ -149,6 +151,10 @@ prof.ICONS = {
 }
 
 function prof.Token()
+  if prof.host and type(prof.host.Token) == "function" then
+    local token = prof.host.Token()
+    if token then return token end
+  end
   return M.modernWow.spellBook.professions
 end
 
@@ -267,6 +273,30 @@ function prof.FindSpells(entry, spells)
     end
   end
   return found
+end
+
+-- The profession spell that opens `profession`'s TradeSkill/Craft window.
+-- Returned as spellbook slot, book type, localized spell name.
+function U.ModernWowProfessionSpell(profession)
+  if type(profession) ~= "string" or profession == "" then return nil end
+  local rows = prof.Scan()
+  local i
+  for i = 1, table.getn(rows.ordered) do
+    local entry = rows.ordered[i]
+    if entry and entry.name == profession and entry.spells and entry.spells[1] then
+      local spell = entry.spells[1]
+      return spell.slot, prof.BookType(), spell.name
+    end
+  end
+
+  -- Beast Training is a Craft window but not a profession skill line.
+  local spells = prof.GeneralSpells()
+  for i = 1, table.getn(spells) do
+    if spells[i].name == profession then
+      return spells[i].slot, prof.BookType(), spells[i].name
+    end
+  end
+  return nil
 end
 
 function prof.Scan()
@@ -524,11 +554,12 @@ function prof.ConfirmUnlearn(row)
   local entry = row.entry
   if not entry then return end
   local name = entry.name
+  local token = prof.Token()
   U.ShowConfirm({
     owner = prof,
     centered = true,
-    modernWow = true,
-    modernWowModule = "spellbook",
+    modernWow = not token.flat,
+    modernWowModule = not token.flat and "spellbook" or nil,
     text = string.format(U.L("SPELLBOOK_PROF_UNLEARN_CONFIRM"), name),
     detail = U.L("SPELLBOOK_PROF_UNLEARN_DETAIL"),
     acceptText = U.L("SPELLBOOK_PROF_UNLEARN"),
@@ -549,6 +580,12 @@ end
 -- cropped rather than squeezed so the rounded end keeps its shape, and the
 -- fill takes over past it.
 function prof.SetProgress(bar, rank, maxRank)
+  if bar.flat then
+    bar:SetMinMaxValues(0, math.max(1, maxRank))
+    bar:SetValue(math.max(0, math.min(rank, math.max(1, maxRank))))
+    return
+  end
+
   local cap, width = bar.endCap, bar.runWidth
   local share = 0
   if maxRank > 0 then share = math.min(math.max(rank / maxRank, 0), 1) end
@@ -573,6 +610,96 @@ function prof.SetProgress(bar, rank, maxRank)
     region:SetWidth(capShown)
     region:Show()
   end)
+end
+
+function prof.BuildFlatRow(page, top, primary, missingKey)
+  local t = prof.Token()
+  local cfg, barCfg = t.row, t.bar
+  local row = { primary = primary and true or false, missingKey = missingKey }
+
+  row.panel = U.CreatePanel(page, {
+    width = cfg.width,
+    height = cfg.height,
+    background = cfg.background,
+    border = M.color.border,
+  })
+  prof.Place(row.panel, t.rowLeft, top, cfg.width, cfg.height)
+
+  local textX = primary and cfg.primaryTextX or cfg.secondaryTextX
+  if primary then
+    row.iconFrame = U.CreatePanel(row.panel, {
+      width = cfg.icon,
+      height = cfg.icon,
+      background = M.color.background,
+      border = M.color.border,
+    })
+    pcall(row.iconFrame.SetPoint, row.iconFrame, "TOPLEFT", row.panel,
+          "TOPLEFT", cfg.iconInset, -cfg.iconInset)
+    row.icon = row.iconFrame:CreateTexture(nil, "ARTWORK")
+    pcall(function()
+      row.icon:SetPoint("TOPLEFT", row.iconFrame, "TOPLEFT", 1, -1)
+      row.icon:SetPoint("BOTTOMRIGHT", row.iconFrame, "BOTTOMRIGHT", -1, 1)
+      row.icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+    end)
+  end
+
+  row.name = prof.Text(row.panel, M.fontSize.normal, t.nameColor)
+  pcall(row.name.SetPoint, row.name, "TOPLEFT", row.panel, "TOPLEFT",
+        textX, cfg.nameY)
+  row.rank = prof.Text(row.panel, M.fontSize.tiny, t.rankColor)
+  pcall(row.rank.SetPoint, row.rank, "TOPLEFT", row.panel, "TOPLEFT",
+        textX, cfg.rankY)
+
+  row.bar = U.CreateStatusBar(row.panel, {
+    width = barCfg.width,
+    height = barCfg.height,
+    color = barCfg.fill,
+    background = barCfg.background,
+  })
+  row.bar.flat = true
+  row.bar.track = {}
+  U.CreateBorder(row.bar)
+  pcall(row.bar.SetPoint, row.bar, "TOPLEFT", row.panel, "TOPLEFT",
+        barCfg.x, barCfg.y)
+  row.bar.text = prof.Text(row.bar, M.fontSize.tiny, t.barTextColor)
+  pcall(row.bar.text.SetPoint, row.bar.text, "LEFT", row.bar, "LEFT",
+        barCfg.textInset, -1)
+
+  if primary then
+    row.unlearn = U.CreateButton(row.panel, {
+      text = "X",
+      width = t.unlearn.size,
+      height = t.unlearn.size,
+      size = M.fontSize.tiny,
+      textColor = { 1.00, 0.25, 0.25, 1.00 },
+      onClick = function() prof.ConfirmUnlearn(row) end,
+    })
+    pcall(row.unlearn.SetPoint, row.unlearn, "TOPLEFT", row.panel,
+          "TOPLEFT", t.unlearn.x, t.unlearn.y)
+  end
+
+  row.missingHeader = prof.Text(row.panel, M.fontSize.normal,
+                                t.missingHeaderColor)
+  pcall(row.missingHeader.SetPoint, row.missingHeader, "TOPLEFT", row.panel,
+        "TOPLEFT", textX, cfg.missingY)
+  row.missingText = prof.Text(row.panel, M.fontSize.small,
+                              t.missingTextColor, cfg.width - textX - 12)
+  pcall(row.missingText.SetPoint, row.missingText, "TOPLEFT", row.panel,
+        "TOPLEFT", textX, cfg.missingDetailY)
+  return row
+end
+
+function prof.BuildFlatPage(page)
+  local t = prof.Token()
+  prof.rows = {
+    prof.BuildFlatRow(page, t.primaryTop[1], true, "SPELLBOOK_PROF_FIRST"),
+    prof.BuildFlatRow(page, t.primaryTop[2], true, "SPELLBOOK_PROF_SECOND"),
+    prof.BuildFlatRow(page, t.secondaryTop[1], false, nil),
+    prof.BuildFlatRow(page, t.secondaryTop[2], false, "SPELLBOOK_PROF_FISHING"),
+    prof.BuildFlatRow(page, t.secondaryTop[3], false, "SPELLBOOK_PROF_COOKING"),
+    prof.BuildFlatRow(page, t.secondaryTop[4], false,
+                      "SPELLBOOK_PROF_FIRST_AID"),
+  }
 end
 
 function prof.BuildPrimary(page, top, missingKey)
@@ -641,6 +768,12 @@ function prof.BuildPage()
 
   local t = prof.Token()
 
+  if t.flat then
+    prof.BuildFlatPage(page)
+    prof.page = page
+    return
+  end
+
   -- The book in the gold ring, over the hidden class portrait. On this page
   -- frame rather than the window: the window's own redress hides every
   -- region whose path is not the addon's (book.StripForeign).
@@ -676,10 +809,44 @@ function prof.SetShown(region, shown)
   end
 end
 
+-- Poisons is class-specific. On characters without it, remove its otherwise
+-- empty outlined row and pull Fishing/Cooking/First Aid up by one slot. Keep
+-- the slot in the data model so the native spell-button mapping stays stable.
+function prof.FlatSecondaryTop(rowIndex)
+  local t = prof.Token()
+  local topIndex = rowIndex - 2
+  if not prof.flatPoisonsVisible and rowIndex > 3 then
+    topIndex = topIndex - 1
+    local firstTop = t.primaryTop[2] + t.row.height + t.secondaryGap
+    return t.secondaryTop[topIndex] + firstTop - t.secondaryTop[1]
+  end
+  return t.secondaryTop[topIndex]
+end
+
+function prof.LayoutFlatRows(rows)
+  local t = prof.Token()
+  if not t.flat then return end
+
+  prof.flatPoisonsVisible = rows.ordered[3] and true or false
+  local i
+  for i = 3, 6 do
+    local row = prof.rows[i]
+    local top = prof.FlatSecondaryTop(i)
+    if row and row.panel and top then
+      prof.Place(row.panel, t.rowLeft, top,
+                 t.row.width, t.row.height)
+    end
+  end
+end
+
 function prof.FillRow(row, entry)
   local t = prof.Token()
   local learned = entry and true or false
   row.entry = entry
+
+  if t.flat and row.panel then
+    prof.SetShown(row.panel, learned or row.missingKey ~= nil)
+  end
 
   prof.SetShown(row.unlearn, learned)
   prof.SetShown(row.name, learned)
@@ -729,6 +896,7 @@ function prof.FillRow(row, entry)
     pcall(row.icon.SetDesaturated, row.icon, not learned)
     pcall(row.icon.SetAlpha, row.icon, learned and 1 or t.missingIconAlpha)
   end
+  if row.iconFrame then prof.SetShown(row.iconFrame, learned) end
 end
 
 -- ---------------------------------------------------------------------------
@@ -743,7 +911,12 @@ function prof.ButtonPlace(rowIndex, position)
   local t = prof.Token()
   local cfg = t.button
   local x, y
-  if rowIndex <= 2 then
+  if t.flat then
+    x = position == 1 and cfg.x or cfg.leftX
+    local rowTop = rowIndex <= 2 and t.primaryTop[rowIndex] or
+                   prof.FlatSecondaryTop(rowIndex)
+    y = rowTop + cfg.y
+  elseif rowIndex <= 2 then
     x = cfg.x
     y = t.primaryTop[rowIndex] + (position == 1 and cfg.primaryY or cfg.y)
   else
@@ -754,6 +927,12 @@ function prof.ButtonPlace(rowIndex, position)
   local left, top = prof.host.PagePoint(x, y)
   local kx = prof.host.PageScale()
   if not left or not kx then return nil end
+
+  if t.flat then
+    return { x = left, y = top, size = cfg.size * kx,
+             textWidth = cfg.textWidth, subColor = t.subSpellColor,
+             iconOnly = cfg.iconOnly and true or false }
+  end
 
   -- The name plate, sized off the live button against the template's.
   local cell, plate = t.parts.nameFrame, cfg.nameFrame
@@ -812,10 +991,14 @@ function prof.SuppressControls()
   for i = 1, count do
     prof.SetShown(U.G("SpellBookSkillLineTab" .. i), false)
   end
+  if type(U.SetSpellBookBehaviorControlsShown) == "function" then
+    U.SetSpellBookBehaviorControlsShown(false)
+  end
 
   local title = U.G("SpellBookTitleText")
   if title then
     pcall(title.SetText, title, U.L("SPELLBOOK_PROFESSIONS"))
+    pcall(title.SetTextColor, title, M.Unpack(M.color.textAccent))
   end
 end
 
@@ -829,6 +1012,10 @@ function prof.HideControls()
   if title and title.GetText then
     local ok, text = pcall(title.GetText, title)
     prof.title = ok and text or nil
+    if title.GetTextColor then
+      local colorOk, r, g, b, a = pcall(title.GetTextColor, title)
+      if colorOk then prof.titleColor = { r, g, b, a } end
+    end
   end
   prof.SuppressControls()
 end
@@ -839,8 +1026,14 @@ function prof.RestoreControls()
   for i = 1, table.getn(prof.CONTROLS) do
     if prof.shown[i] then prof.SetShown(U.G(prof.CONTROLS[i]), true) end
   end
+  if type(U.SetSpellBookBehaviorControlsShown) == "function" then
+    U.SetSpellBookBehaviorControlsShown(true)
+  end
   local title = U.G("SpellBookTitleText")
   if title and prof.title then pcall(title.SetText, title, prof.title) end
+  if title and prof.titleColor then
+    pcall(title.SetTextColor, title, M.Unpack(prof.titleColor))
+  end
 end
 
 -- ---------------------------------------------------------------------------
@@ -854,6 +1047,7 @@ end
 
 function prof.Fill()
   local rows = prof.Scan()
+  prof.LayoutFlatRows(rows)
   prof.Assign(rows)
   local i
   for i = 1, 6 do prof.FillRow(prof.rows[i], rows.ordered[i]) end
@@ -989,22 +1183,22 @@ function prof.CreateTab(frame, name, text, onClick)
   local ok, tab = pcall(CreateFrame, "Button", name, frame)
   if not ok or not tab then return nil end
 
-  -- Button:SetFontString is not in this client's documentation; the label is
-  -- handed back directly when the button does not report it.
+  -- Keep the owned label independent from Button:SetFontString. The client
+  -- repaints a registered button font string from its normal/disabled font
+  -- state after clicks, which can overwrite the active tab's accent colour.
+  -- The shared tab styler explicitly prefers uuiTabLabel, so this label keeps
+  -- the colour selected by unrealUI throughout the native button updates.
   local label = tab:CreateFontString(nil, "ARTWORK", "GameFontNormal")
-  pcall(tab.SetFontString, tab, label)
-  local ownOk, own = false, nil
-  if tab.GetFontString then ownOk, own = pcall(tab.GetFontString, tab) end
-  if not ownOk or not own then
-    tab.GetFontString = function() return label end
-  end
+  tab.uuiTabLabel = label
+  tab.GetFontString = function() return label end
   pcall(label.SetText, label, text)
   pcall(label.SetPoint, label, "CENTER", tab, "CENTER", 0, 0)
 
   local widthOk, width = pcall(label.GetStringWidth, label)
   if not widthOk or not tonumber(width) or width <= 0 then width = 60 end
-  pcall(tab.SetWidth, tab, math.floor(width + 2 * M.modernWow.tab.padding + 0.5))
-  pcall(tab.SetHeight, tab, M.modernWow.tab.height)
+  local tabToken = (prof.host and prof.host.tab) or M.modernWow.tab
+  pcall(tab.SetWidth, tab, math.floor(width + 2 * tabToken.padding + 0.5))
+  pcall(tab.SetHeight, tab, tabToken.height)
   pcall(tab.RegisterForClicks, tab, "LeftButtonUp")
   tab:SetScript("OnClick", onClick)
   return tab
@@ -1030,17 +1224,19 @@ function prof.Install(frame, host, createTab)
   end
   if not frame or not host then return nil end
 
+  prof.host = host
   local professions = createTab(frame, "UnrealUISpellBookProfessionsTab",
                                 U.L("SPELLBOOK_PROFESSIONS"),
                                 function() prof.Enter() end)
   local spellbook = createTab(frame, "UnrealUISpellBookSpellsTab",
                               prof.SpellTabText(), prof.OnSpellTabClick)
   if not professions or not spellbook then
+    prof.host = nil
     prof.SetShown(professions, false)
     prof.SetShown(spellbook, false)
     return nil
   end
-  prof.frame, prof.host = frame, host
+  prof.frame = frame
   prof.tab, prof.spellTab = professions, spellbook
 
   prof.HideNativeSpellTab()
@@ -1070,6 +1266,16 @@ function U.ModernWowSpellBookExtraTabs(frame)
     return { professions = prof.tab, spellbook = prof.spellTab }
   end
   return prof.Install(frame, prof.ModernWowHost(), prof.CreateTab)
+end
+
+-- The flat `modern` Spellbook supplies its own host for placement and tab
+-- chaining, but uses the same data, spell mapping and page lifecycle.
+function U.ModernSpellBookExtraTabs(frame, host)
+  if prof.tab and prof.spellTab then
+    return { professions = prof.tab, spellbook = prof.spellTab }
+  end
+  if not host then return nil end
+  return prof.Install(frame, host, prof.CreateTab)
 end
 
 -- Called once by modules/spellbookclassicprof.lua for the classic-wow native

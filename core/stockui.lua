@@ -461,6 +461,10 @@ local function ClearButtonFaces(button, keep)
   pcall(button.SetBackdropBorderColor, button, 0, 0, 0, 0)
 end
 
+-- Shared with core/modernwowscrollbar.lua, whose arrow steppers drop their
+-- native faces the same way before the owned face is added.
+U.ClearStockButtonFaces = ClearButtonFaces
+
 function U.StyleStockButton(button, options)
   if not button then return nil end
   options = options or {}
@@ -627,317 +631,6 @@ function U.StyleStockScrollbar(scrollbar)
   return scrollbar
 end
 
--- Applies the imported Dragonflight MinimalScrollBar atlas to an existing
--- native vertical Slider. The Slider keeps its range, value and native scroll
--- scripts, and its arrow buttons keep their click handling; every visible
--- piece is addon-owned and redrawn from those values. Atlas cells and authored
--- sizes live centrally in core/media.lua.
---
--- USER_CONFIRMED_INGAME 2026-09-16 (Character Skills, modern-wow): the first
--- version hung this art on the client's own state regions and failed three
--- ways, so none of those routes is used here.
---  * There is no Button:GetDisabledTexture (the client's Button method list
---    has no such getter), so a disabled arrow kept the native art at either
---    end of the list.
---  * Art anchored to the stock thumb texture did not follow the height given
---    to it: the drawn thumb left the track, and grabbing it often missed the
---    real thumb, so the list could not be dragged.
---  * A post-hook on SkillFrame_Update never fired on a scroll. `options.
---    onChange` is called on every value or range change instead.
---  * The range stays the owner's to set. FOCUSED_RUNTIME_PROBE
---    (skillscroll.first_open_range.v1): UpdateScrollChildRect is no repair
---    for an empty FauxScrollFrame range -- it recomputes the max from the
---    child's overflow, and that is 0 when the pane is taller than its rows.
--- The owned thumb is dragged with the GetCursorPosition / GetEffectiveScale
--- pair (knowledge.json / api.getcursorposition_usable_for_hit_testing) and
--- moves the list through Slider:SetValue, the call the arrows and the mouse
--- wheel already use.
-function U.StyleModernWowScrollbar(scrollbar, options)
-  local token = M.modernWow and M.modernWow.scrollbar
-  if not scrollbar or not token then return nil end
-  options = options or {}
-
-  local state = scrollbar.uuiModernWow
-  if state then
-    state.onChange = options.onChange
-    return scrollbar
-  end
-
-  local name
-  if scrollbar.GetName then
-    local ok, value = pcall(scrollbar.GetName, scrollbar)
-    if ok then name = value end
-  end
-
-  local created, thumb = pcall(CreateFrame, "Button", nil, scrollbar)
-  if not created or not thumb then return nil end
-
-  state = {
-    onChange = options.onChange,
-    -- Read by UnrealRuntimeProbe's skillscroll capture; nothing here uses it.
-    thumb = thumb,
-    extent = token.thumb.minExtent,
-    arrows = {},
-  }
-  scrollbar.uuiModernWow = state
-
-  local function SetCell(texture, path, cell, alpha)
-    pcall(texture.SetTexture, texture, path)
-    pcall(texture.SetTexCoord, texture, M.Unpack(cell))
-    pcall(texture.SetAlpha, texture, alpha or 1)
-  end
-
-  -- Arrows. Their native faces come off the way every stock button's do
-  -- (ClearButtonFaces) before the owned face is added, and each stepper sits
-  -- MinimalScrollBar's gap beyond its end of the Slider.
-  local function StyleArrow(button, cells, point, relativePoint, offsetY)
-    if not button or not cells or not button.CreateTexture then return end
-    ClearButtonFaces(button, U.StockRegionKeep(button))
-    if button.uuiArrowGlyph then pcall(button.uuiArrowGlyph.Hide, button.uuiArrowGlyph) end
-    pcall(function()
-      button:SetWidth(token.arrow.width)
-      button:SetHeight(token.arrow.height)
-      button:ClearAllPoints()
-      button:SetPoint(point, scrollbar, relativePoint, 0, offsetY)
-    end)
-    pcall(button.SetHitRectInsets, button, -3, -3, -3, -3)
-
-    local face = button:CreateTexture(nil, "ARTWORK")
-    face:SetAllPoints(button)
-    local arrow = { button = button, face = face, cells = cells }
-    U.PostHookScript(button, "OnEnter", function() arrow.hover = true end)
-    U.PostHookScript(button, "OnLeave", function() arrow.hover = false end)
-    table.insert(state.arrows, arrow)
-  end
-
-  local function PaintArrow(arrow)
-    local button = arrow.button
-    local key = "normal"
-    -- IsEnabled returns 1 / 0 on this client, not a boolean (documentation).
-    local okEnabled, enabled = pcall(button.IsEnabled, button)
-    if okEnabled and enabled ~= 1 and enabled ~= true then
-      key = "disabled"
-    else
-      local okState, buttonState = pcall(button.GetButtonState, button)
-      if okState and buttonState == "PUSHED" then
-        key = "pushed"
-      elseif arrow.hover then
-        key = "hover"
-      end
-    end
-    if key == arrow.key then return end
-    arrow.key = key
-    if key == "disabled" then
-      SetCell(arrow.face, token.proportional, arrow.cells.normal,
-              token.arrow.disabledAlpha)
-    else
-      SetCell(arrow.face, token.proportional, arrow.cells[key])
-    end
-  end
-
-  StyleArrow(name and U.G(name .. "ScrollUpButton"), token.arrow.up,
-             "BOTTOM", "TOP", token.arrow.gap)
-  StyleArrow(name and U.G(name .. "ScrollDownButton"), token.arrow.down,
-             "TOP", "BOTTOM", -token.arrow.gap)
-
-  if scrollbar.uuiTrack then pcall(scrollbar.uuiTrack.Hide, scrollbar.uuiTrack) end
-  if scrollbar.CreateTexture then
-    local track = token.track
-    local top = scrollbar:CreateTexture(nil, "BACKGROUND")
-    local middle = scrollbar:CreateTexture(nil, "BACKGROUND")
-    local bottom = scrollbar:CreateTexture(nil, "BACKGROUND")
-
-    SetCell(top, token.proportional, track.top)
-    top:SetWidth(track.width)
-    top:SetHeight(track.cap)
-    top:SetPoint("TOP", scrollbar, "TOP", 0, 0)
-
-    SetCell(bottom, token.proportional, track.bottom)
-    bottom:SetWidth(track.width)
-    bottom:SetHeight(track.cap)
-    bottom:SetPoint("BOTTOM", scrollbar, "BOTTOM", 0, 0)
-
-    SetCell(middle, token.vertical, track.middle)
-    middle:SetWidth(track.width)
-    middle:SetPoint("TOP", top, "BOTTOM", 0, 0)
-    middle:SetPoint("BOTTOM", bottom, "TOP", 0, 0)
-  end
-
-  -- The stock thumb stays where the Slider puts it, only invisible; the owned
-  -- thumb above it is what is drawn and grabbed.
-  if scrollbar.GetThumbTexture then
-    local ok, native = pcall(scrollbar.GetThumbTexture, scrollbar)
-    if ok and native then pcall(native.SetAlpha, native, 0) end
-  end
-
-  pcall(thumb.EnableMouse, thumb, true)
-  local art = {
-    top = thumb:CreateTexture(nil, "ARTWORK"),
-    middle = thumb:CreateTexture(nil, "ARTWORK"),
-    bottom = thumb:CreateTexture(nil, "ARTWORK"),
-  }
-  art.top:SetWidth(token.thumb.width)
-  art.top:SetHeight(token.thumb.topExtent)
-  art.top:SetPoint("TOP", thumb, "TOP", 0, 0)
-  art.bottom:SetWidth(token.thumb.width)
-  art.bottom:SetHeight(token.thumb.bottomExtent)
-  art.bottom:SetPoint("BOTTOM", thumb, "BOTTOM", 0, 0)
-  art.middle:SetWidth(token.thumb.width)
-  art.middle:SetPoint("TOP", art.top, "BOTTOM", 0, 0)
-  art.middle:SetPoint("BOTTOM", art.bottom, "TOP", 0, 0)
-
-  local function PaintThumb()
-    local key = "normal"
-    if state.drag then key = "pushed" elseif state.hover then key = "hover" end
-    if key == state.thumbKey then return end
-    state.thumbKey = key
-    local cells = token.thumb[key]
-    SetCell(art.top, token.proportional, cells.top)
-    SetCell(art.middle, token.vertical, cells.middle)
-    SetCell(art.bottom, token.proportional, cells.bottom)
-  end
-
-  local function Number(ok, value)
-    if ok and value ~= nil then return tonumber(value) end
-    return nil
-  end
-
-  local function Measure()
-    local okValue, value = pcall(scrollbar.GetValue, scrollbar)
-    local okRange, low, high = pcall(scrollbar.GetMinMaxValues, scrollbar)
-    local okHeight, height = pcall(scrollbar.GetHeight, scrollbar)
-    value, low = Number(okValue, value), Number(okRange, low)
-    high, height = Number(okRange, high), Number(okHeight, height)
-    if not value or not low or not high or not height then return nil end
-    return value, low, high, math.max(0, height)
-  end
-
-  local getCursor = U.G("GetCursorPosition")
-  local function CursorY()
-    if type(getCursor) ~= "function" then return nil end
-    local ok, _, y = pcall(getCursor)
-    local okScale, scale = pcall(scrollbar.GetEffectiveScale, scrollbar)
-    y, scale = Number(ok, y), Number(okScale, scale)
-    if not y or not scale or scale <= 0 then return nil end
-    return y / scale
-  end
-
-  local function PlaceThumb(value, low, high, height)
-    local extent = math.min(height, state.extent)
-    local travel = height - extent
-    local offset = 0
-    if travel > 0 and high > low then
-      offset = math.floor((value - low) / (high - low) * travel + 0.5)
-    end
-    pcall(function()
-      thumb:ClearAllPoints()
-      thumb:SetPoint("TOPLEFT", scrollbar, "TOPLEFT", 0, -offset)
-      thumb:SetPoint("TOPRIGHT", scrollbar, "TOPRIGHT", 0, -offset)
-      thumb:SetHeight(extent)
-    end)
-  end
-
-  local function Tick()
-    local value, low, high, height = Measure()
-    if not value then return end
-
-    local drag = state.drag
-    if drag then
-      local y = CursorY()
-      local travel = height - math.min(height, state.extent)
-      if y and travel > 0 and high > low then
-        -- Cursor Y grows upward; the Slider's value grows down the list.
-        local target = drag.value + (drag.y - y) / travel * (high - low)
-        if target < low then target = low end
-        if target > high then target = high end
-        if target ~= value then
-          pcall(scrollbar.SetValue, scrollbar, target)
-          value, low, high, height = Measure()
-          if not value then return end
-        end
-      end
-    end
-
-    local moved = value ~= state.value or low ~= state.low or high ~= state.high
-    if moved or height ~= state.height or state.extent ~= state.placedExtent then
-      state.value, state.low, state.high = value, low, high
-      state.height, state.placedExtent = height, state.extent
-      PlaceThumb(value, low, high, height)
-      if moved and type(state.onChange) == "function" then
-        local ok, err = pcall(state.onChange)
-        if not ok then U.Error("modern-wow scrollbar: " .. tostring(err)) end
-      end
-    end
-
-    local i
-    for i = 1, table.getn(state.arrows) do PaintArrow(state.arrows[i]) end
-  end
-
-  -- Polled only while the bar is on screen: the thumb is its child, so it is
-  -- hidden with it whenever the list fits and the native code hides the bar.
-  local updateId = "modernwow.scrollbar." .. tostring(name or scrollbar)
-
-  thumb:SetScript("OnEnter", function()
-    state.hover = true
-    PaintThumb()
-  end)
-  thumb:SetScript("OnLeave", function()
-    state.hover = false
-    PaintThumb()
-  end)
-  thumb:SetScript("OnMouseDown", function()
-    local y = CursorY()
-    local value = Measure()
-    if y and value then state.drag = { y = y, value = value } end
-    PaintThumb()
-  end)
-  thumb:SetScript("OnMouseUp", function()
-    state.drag = nil
-    PaintThumb()
-  end)
-  thumb:SetScript("OnShow", function()
-    U.RegisterUpdate(updateId, 0, Tick)
-  end)
-  thumb:SetScript("OnHide", function()
-    state.drag = nil
-    -- Re-place and refresh the owner as soon as the bar comes back.
-    state.value = nil
-    U.UnregisterUpdate(updateId)
-    PaintThumb()
-  end)
-
-  PaintThumb()
-  local okVisible, visible = pcall(thumb.IsVisible, thumb)
-  if okVisible and visible and visible ~= 0 then
-    U.RegisterUpdate(updateId, 0, Tick)
-  end
-
-  return scrollbar
-end
-
--- Gives the owned thumb MinimalScrollBar's proportional extent. The Slider is
--- the whole track (see M.modernWow.scrollbar); the scrollbar's next tick
--- re-places the thumb at the new size.
-function U.SetModernWowScrollbarProportion(scrollbar, visibleCount, totalCount)
-  local token = M.modernWow and M.modernWow.scrollbar
-  local state = scrollbar and scrollbar.uuiModernWow
-  if not token or not state then return nil end
-
-  visibleCount = tonumber(visibleCount or 0) or 0
-  totalCount = tonumber(totalCount or 0) or 0
-  local ok, height = pcall(scrollbar.GetHeight, scrollbar)
-  height = ok and height ~= nil and tonumber(height) or nil
-  if not height then return nil end
-  height = math.max(0, height)
-
-  local extent = height
-  if totalCount > visibleCount and totalCount > 0 then
-    extent = math.floor((height * visibleCount / totalCount) + 0.5)
-  end
-  state.extent = math.min(height, math.max(token.thumb.minExtent, extent))
-  return state.extent
-end
-
 -- Retargets a native StatusBar's fill to unrealUI's flat texture and strips
 -- every other native texture off it, keeping the fill itself.
 --
@@ -999,9 +692,12 @@ function U.StyleStockStatusBar(bar, options)
 end
 
 local function AlignTabText(button)
-  if not button or not button.GetFontString then return end
+  if not button then return end
 
-  local ok, fontstring = pcall(button.GetFontString, button)
+  local ok, fontstring = true, button.uuiTabLabel
+  if not fontstring and button.GetFontString then
+    ok, fontstring = pcall(button.GetFontString, button)
+  end
   if not ok or not fontstring then return end
 
   pcall(function()
@@ -1013,7 +709,9 @@ end
 function U.StyleStockTab(button)
   if not button then return nil end
   U.StyleStockButton(button)
-  pcall(button.SetHeight, button, 20)
+  -- The plain stock tab's own height. A tab in a real group is taller
+  -- (M.tab.height), taken from the Spellbook strip.
+  pcall(button.SetHeight, button, 22)
   AlignTabText(button)
   return button
 end
@@ -1043,38 +741,298 @@ end
 -- sibling inactive, so the flat highlight always matches the click that
 -- produced it regardless of what the native frame does underneath.
 -- ---------------------------------------------------------------------------
+-- Stripping the template art once is not enough. PanelTemplates_SelectTab and
+-- its deselect counterpart Show() the tab template's Left/Middle/Right pieces
+-- and their *Disabled twins every time the client changes the window's page,
+-- and that call belongs to the client -- so the beveled native tab comes back
+-- under unrealUI's flat one on the first page switch. (The comment above is
+-- the same defect seen from the other side: the Character sheet's Honor tab
+-- reading native after it had been styled.)
+--
+-- The re-strip cannot use a keep table. GetRegions() hands back a fresh
+-- wrapper on every walk, so `keep[region]` never matches the fill and edges
+-- unrealUI put on this button -- knowledge.json /
+-- widgets.region_walk_wrapper_lacks_setters, and rules/unreal-ui.md's
+-- "region walks never match by identity" -- and a keep-table re-strip would
+-- hide unrealUI's own outline along with the native art.
+--
+-- So the two are told apart by a reader, the way modules/spellbookmodernwow.lua
+-- tells its book art from the client's: unrealUI draws this tab with WHITE8X8
+-- and, under modern-wow, with its own media, while every piece of the template
+-- is a client texture path. Anything else with a readable path is native and
+-- goes; a region whose path cannot be read is left alone rather than guessed
+-- at.
+-- The tab template's own pieces, by the names FrameXML gives them. The
+-- deselected face is Left/Middle/Right and the selected face is the *Disabled
+-- trio; PanelTemplates_SelectTab and PanelTemplates_DeselectTab do nothing but
+-- Show one set and Hide the other, which is why a one-time strip loses to the
+-- first page switch.
+local TAB_ART_SUFFIX = {
+  "Left", "Middle", "Right",
+  "LeftDisabled", "MiddleDisabled", "RightDisabled",
+  "HighlightTexture",
+}
+
+-- Takes the template's art away for good, rather than hiding it once and
+-- waiting for the client to Show it again.
+--
+-- The pieces are resolved by NAME, not by walking the button: a walked region
+-- is a fresh wrapper whose writers do not reach the underlying widget
+-- (knowledge.json / widgets.region_walk_wrapper_lacks_setters), so a method
+-- replaced on one is thrown away with it. The named global is the real object
+-- -- modules/spellbook.lua already neutralises SpellButtonNHighlight's
+-- SetTexture this way -- so Show, SetTexture and SetAlpha replaced here stay
+-- replaced, and PanelTemplates_SelectTab's Show() becomes a no-op instead of
+-- a repaint.
+--
+-- Every step is guarded and every name is optional: a client whose tab
+-- template names its pieces differently simply finds nothing here and is left
+-- to the region walk below. Nothing is created, nothing is unregistered, and
+-- no native frame is hidden -- only the texture objects the template draws its
+-- own chrome with.
+local function SuppressNamedTabArt(button)
+  if not button or not button.GetName then return end
+
+  local nameOk, name = pcall(button.GetName, button)
+  if not nameOk or type(name) ~= "string" or name == "" then return end
+
+  local i
+  for i = 1, table.getn(TAB_ART_SUFFIX) do
+    local piece = U.G(name .. TAB_ART_SUFFIX[i])
+    local typeOk, kind = false, nil
+    if piece and piece.GetObjectType then
+      typeOk, kind = pcall(piece.GetObjectType, piece)
+    end
+    if typeOk and kind == "Texture" and not piece.uuiTabArtSuppressed then
+      U.HideRegion(piece)
+      pcall(function()
+        piece.uuiTabArtSuppressed = true
+        piece.Show = function() return end
+        piece.SetTexture = function() return end
+        piece.SetAlpha = function() return end
+      end)
+    end
+  end
+end
+
+local function StripNativeTabArt(button)
+  if not button or not button.GetRegions then return end
+
+  local ok, regions = pcall(function() return { button:GetRegions() } end)
+  if not ok or type(regions) ~= "table" then return end
+
+  local i
+  for i = 1, table.getn(regions) do
+    local region = regions[i]
+    local typeOk, kind = false, nil
+    if region and region.GetObjectType then
+      typeOk, kind = pcall(region.GetObjectType, region)
+    end
+    if typeOk and kind == "Texture" and region.GetTexture then
+      local pathOk, path = pcall(region.GetTexture, region)
+      if pathOk and type(path) == "string" and path ~= "" then
+        path = string.gsub(string.lower(path), "/", "\\")
+        local ours = string.find(path, "white8x8", 1, true) or
+                     string.find(path, "unrealui", 1, true)
+        if not ours then U.HideRegion(region) end
+      end
+    end
+  end
+end
+
+-- Gives a native tab an addon-owned label, because a registered one cannot
+-- hold a colour here.
+--
+-- A stock Button's font string is repainted by the client from the button's
+-- own normal/disabled font state after clicks and page switches, past the Lua
+-- SetTextColor this component calls -- so a native tab kept reading the
+-- template's gold, and white once selected, however often it was recoloured.
+-- The Buttons on this client expose no SetNormalFontObject /
+-- SetDisabledFontObject / SetHighlightFontObject to redirect that repaint
+-- either (knowledge.json / widgets.button_lacks_state_fontobject_setters), so
+-- the registered font string cannot be made to keep unrealUI's colour at all.
+--
+-- modules/spellbookprofessions.lua already solved this for the tabs it builds
+-- itself (prof.CreateTab): create a FontString, never register it with
+-- Button:SetFontString, and point GetFontString at it. The client has no
+-- handle on an unregistered label, so the colour survives. This is that same
+-- answer applied to the client's own tabs -- the addon label takes over the
+-- text and position, and the registered one is retired underneath it.
+--
+-- The native label is kept (not destroyed) as the text source: the client
+-- still writes tab text through it, and RefreshFont mirrors it across.
+local function OwnTabLabel(button)
+  if button.uuiTabLabel then return button.uuiTabLabel end
+  if not button.CreateFontString then return nil end
+
+  local nativeOk, native = false, nil
+  if button.GetFontString then
+    nativeOk, native = pcall(button.GetFontString, button)
+  end
+
+  local ok, label = pcall(button.CreateFontString, button, nil, "ARTWORK",
+                          "GameFontNormal")
+  if not ok or not label then return nil end
+
+  local text
+  if nativeOk and native and native.GetText then
+    local textOk, value = pcall(native.GetText, native)
+    if textOk then text = value end
+  end
+  if (not text or text == "") and button.GetText then
+    local textOk, value = pcall(button.GetText, button)
+    if textOk then text = value end
+  end
+  pcall(label.SetText, label, text or "")
+
+  -- Retired rather than removed, and held down for good: the object came from
+  -- GetFontString, not from a region walk, so replacing its methods reaches
+  -- the real widget (the same reason SuppressNamedTabArt resolves its pieces
+  -- by name). GetText is deliberately left working.
+  if nativeOk and native then
+    button.uuiTabNativeLabel = native
+    U.HideRegion(native)
+    pcall(function()
+      native.Show = function() return end
+      native.SetAlpha = function() return end
+    end)
+  end
+
+  button.uuiTabLabel = label
+  button.GetFontString = function() return label end
+  return label
+end
+
+-- Sizes a tab to its own label plus `padding` on each side, the way
+-- modules/spellbookprofessions.lua builds the Spellbook's tabs. Stock tab
+-- templates bake in a width of their own, which is why an untouched strip's
+-- tabs sit at inconsistent insets next to the Spellbook's.
+--
+-- Re-applied from the component's own refresh rather than once at styling
+-- time, for the same reason the tab art is: the client resizes a tab from its
+-- own metrics when the window changes page, which otherwise took the inset
+-- straight back off again. It also has to run AFTER the label's font is set,
+-- or it measures the inherited template font and sizes the tab for text that
+-- is then drawn smaller.
+--
+-- A window whose run must be squeezed to fit owns its own padding instead:
+-- U.FitStockTabStrip claims every tab it sizes with uuiTabFitOwned, and this
+-- leaves those alone rather than fighting it every frame.
+local function SizeTabToLabel(button, padding)
+  if button.uuiTabFitOwned then return end
+  -- Remembered on the button, so the refresh can re-apply the inset without
+  -- knowing whose it is: a theme that re-sizes a tab with its own value
+  -- (mw.DressTab passes the wider modern-wow inset) sets it here once and
+  -- every later pass keeps it instead of reverting to the shared one.
+  padding = tonumber(padding) or button.uuiTabPadding or M.tab.padding
+  button.uuiTabPadding = padding
+
+  local label = button.uuiTabLabel
+  if not label and button.GetFontString then
+    local ok, value = pcall(button.GetFontString, button)
+    if ok then label = value end
+  end
+  if not label or not label.GetStringWidth then return end
+
+  local ok, width = pcall(label.GetStringWidth, label)
+  if not ok or not tonumber(width) or width <= 0 then return end
+
+  pcall(button.SetWidth, button, math.floor(width + (padding * 2) + 0.5))
+end
+
+U.SizeStockTabToLabel = SizeTabToLabel
+
 local function StyleGroupTab(button, options)
   if not button or button.uuiTabStyled then return button end
   button.uuiTabStyled = true
 
   ClearButtonFaces(button, {})
   U.StripTextures(button, U.StockRegionKeep(button, {}))
+  SuppressNamedTabArt(button)
 
-  local inactiveBg = options.background or { 0.03, 0.03, 0.03, 0.82 }
+  local inactiveBg = options.background or M.tab.background
+  local activeBg = options.activeBackground or inactiveBg
   U.CreateBackdrop(button, { background = inactiveBg, border = M.color.border })
-  pcall(button.SetHeight, button, options.height or 22)
+  pcall(button.SetHeight, button, options.height or M.tab.height)
+  OwnTabLabel(button)
   AlignTabText(button)
 
   button.uuiTabActive = false
+  button.uuiTabPadding = tonumber(options.padding) or M.tab.padding
 
+  -- The three label colours a tab's states use, kept on the button rather
+  -- than closed over so a theme that dresses this tab in its own art
+  -- afterwards can replace them and repaint, instead of having to re-run the
+  -- whole component with different options. Only
+  -- modules/modernwow.lua does that (mw.DressTab); everything else leaves the
+  -- Modern face in place.
+  button.uuiTabFace = {
+    activeText = options.activeTextColor or M.tab.activeTextColor,
+    inactiveText = options.textColor or M.tab.inactiveTextColor,
+    hoverText = options.hoverTextColor or M.tab.hoverTextColor,
+  }
+
+  -- The label is the only thing a tab's state changes. Active takes the
+  -- accent, every other tab the dim grey (10% off in its own alpha), and a
+  -- hovered tab plain white -- all three as a colour on the addon-owned
+  -- FontString, never as chrome or as frame alpha (user request,
+  -- 2026-09-20).
+  --
+  -- RUNTIME_PROBE 2026-09-20: this client's Buttons expose no
+  -- SetNormalFontObject / SetDisabledFontObject / SetHighlightFontObject (all
+  -- three read nil on FriendsFrameTab1 while CreateFont is a function), so
+  -- there is no font-object route to a tab's state colours and SetTextColor
+  -- is the whole mechanism. Do not reintroduce one without new evidence.
   local function RefreshFont()
-    local ok, fontstring = false, nil
-    if button.GetFontString then
+    local face = button.uuiTabFace
+    local size = options.fontSize or M.fontSize.small
+    local resting = button.uuiTabActive and face.activeText or face.inactiveText
+    local color = button.uuiTabHover and face.hoverText or resting
+
+    local ok, fontstring = true, button.uuiTabLabel
+    if not fontstring and button.GetFontString then
       ok, fontstring = pcall(button.GetFontString, button)
     end
-    if ok and fontstring then
-      U.SetStockFont(fontstring, options.fontSize or M.fontSize.small,
-        button.uuiTabActive and M.color.textAccent or M.color.text)
+    if not ok or not fontstring then return end
+
+    -- The client still writes tab text into the registered label it can no
+    -- longer draw, so carry it over whenever it has moved on.
+    local native = button.uuiTabNativeLabel
+    if native and native.GetText and fontstring.SetText then
+      local textOk, text = pcall(native.GetText, native)
+      if textOk and type(text) == "string" and text ~= "" then
+        local ownOk, own = pcall(fontstring.GetText, fontstring)
+        if not ownOk or own ~= text then
+          pcall(fontstring.SetText, fontstring, text)
+        end
+      end
     end
+
+    U.SetStockFont(fontstring, size, color)
+    pcall(fontstring.SetTextColor, fontstring, M.Unpack(color))
   end
   button.uuiTabRefreshFont = RefreshFont
 
   local function Refresh()
-    -- Selection is intentionally communicated through the label alone: every
-    -- tab retains the same neutral surface and border in both states.
-    U.SetBackgroundColor(button, M.Unpack(inactiveBg))
-    U.SetBorderColor(button, M.Unpack(M.color.border))
+    -- Ahead of the recolour, so a page switch that restored the template's
+    -- pieces cannot leave them drawing over the flat fill this paints.
+    StripNativeTabArt(button)
+
+    local border = button.uuiTabActive and options.activeBorder or
+                   M.color.border
+    local background = button.uuiTabActive and activeBg or inactiveBg
+    U.SetBackgroundColor(button, M.Unpack(background))
+    U.SetBorderColor(button, M.Unpack(border or M.color.border))
+    if button.uuiTabActive and options.activeTopBorder == false and
+       button.uuiEdges and button.uuiEdges[1] then
+      U.SetColor(button.uuiEdges[1], M.Unpack(M.color.border))
+    end
+    -- Never a frame alpha. Fading the button faded its fill and outline with
+    -- the label, which reads as a greyed-out tab rather than a tab with grey
+    -- text (user report, 2026-09-20); the inactive tab's 10% now lives in its
+    -- label colour alone (M.tab.inactiveTextColor).
     RefreshFont()
+    SizeTabToLabel(button)
   end
   button.uuiTabRefresh = Refresh
 
@@ -1083,12 +1041,20 @@ local function StyleGroupTab(button, options)
     Refresh()
   end
 
+  -- Hover moves the label to white and nothing else: no border colour, no
+  -- outline, no size (user request, 2026-09-20).
   button:SetScript("OnEnter", function()
-    if not button.uuiTabActive then
-      U.SetBorderColor(button, M.Unpack(M.color.accentDim))
-    end
+    button.uuiTabHover = true
+    RefreshFont()
   end)
-  button:SetScript("OnLeave", Refresh)
+  button:SetScript("OnLeave", function()
+    button.uuiTabHover = false
+    Refresh()
+  end)
+  -- The window reopening is the other moment the client repaints its tabs,
+  -- and it happens without a click or a hover. Post-hooked rather than set,
+  -- so a template that needs its own OnShow keeps it.
+  U.PostHookScript(button, "OnShow", Refresh)
 
   Refresh()
   return button
@@ -1267,6 +1233,7 @@ function U.FitStockTabStrip(tabs, frame, options)
 
   -- One padding value for the whole run, so the tabs keep a consistent inset
   -- rather than each shrinking by a different amount.
+  local requested = padding
   local room = math.floor((available - labelTotal) / (count * 2))
   local fits = true
   if room < padding then
@@ -1278,11 +1245,28 @@ function U.FitStockTabStrip(tabs, frame, options)
   end
   info.padding = padding
 
+  -- Ownership is only claimed when this pass actually had to depart from the
+  -- inset it was asked for. MEASURED 2026-09-20 (/uui tabpad): claiming it
+  -- unconditionally left the Character sheet's tabs at four different insets
+  -- (4.89 / 4.33 / 7.06 / 6.36) while Social and the Spellbook sat at a firm
+  -- 10, because uuiTabFitOwned switches off the per-tab re-assert in
+  -- StyleGroupTab's Refresh -- and that re-assert is the only thing undoing
+  -- the client's own tab resize. A run that did not need squeezing is better
+  -- served by the shared path.
+  local owned = padding ~= requested
+  info.fitOwned = owned
+
   for i = 1, count do
     local tab = shown[i]
-    local target = math.floor(labels[i] + (padding * 2))
+    -- Match prof.CreateTab's nearest-pixel rounding, so the fitted Character
+    -- tabs preserve the same per-side inset as the Spellbook tabs.
+    local target = math.floor(labels[i] + (padding * 2) + 0.5)
 
     local beforeOk, before = pcall(tab.GetWidth, tab)
+    -- Whatever this pass settled on is what the shared re-assert should keep
+    -- writing, so the inset is handed over rather than recomputed there.
+    tab.uuiTabPadding = padding
+    tab.uuiTabFitOwned = owned
     pcall(tab.SetWidth, tab, target)
     local afterOk, after = pcall(tab.GetWidth, tab)
 

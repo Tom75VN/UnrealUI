@@ -59,13 +59,12 @@ local POP_REFRESH_INTERVAL = 60
 local COLOR_GOOD = { 0.33, 0.93, 0.33, 1.00 }
 local COLOR_WARN = { 0.96, 0.68, 0.04, 1.00 }
 local COLOR_BAD  = { 1.00, 0.28, 0.20, 1.00 }
-local COLOR_GOLD = { 1.00, 0.82, 0.00, 1.00 }
-local COLOR_SILVER = { 0.75, 0.75, 0.75, 1.00 }
-local COLOR_COPPER = { 0.80, 0.47, 0.29, 1.00 }
-local MONEY_TEXTURE = "Interface\\MoneyFrame\\UI-MoneyIcons"
-local COIN_GOLD = { 0.00, 0.25, 0, 1 }
-local COIN_SILVER = { 0.25, 0.50, 0, 1 }
-local COIN_COPPER = { 0.50, 0.75, 0, 1 }
+-- Coin art and colours come from core/media.lua's M.money, so the overlay,
+-- the bag total and every shared readout draw the same three UnrealUI coin
+-- textures under every theme rather than keeping module-local copies.
+local COLOR_GOLD = M.money.gold.color
+local COLOR_SILVER = M.money.silver.color
+local COLOR_COPPER = M.money.copper.color
 
 local anchor
 local display
@@ -98,7 +97,7 @@ local function ThresholdColor(value, good, warning, higherIsBetter)
   return COLOR_BAD
 end
 
-local function BuildCoin(parent, texCoords, color, width)
+local function BuildCoin(parent, denom, color, width)
   local holder = CreateFrame("Frame", nil, parent)
   holder:SetWidth(width or 40)
   holder:SetHeight(14)
@@ -106,12 +105,10 @@ local function BuildCoin(parent, texCoords, color, width)
   holder.icon = holder:CreateTexture(nil, "ARTWORK")
   holder.icon:SetWidth(12)
   holder.icon:SetHeight(12)
-  -- The coin artwork sits low inside the atlas slice. Raise only the texture
-  -- while keeping the number on the common text baseline.
-  holder.icon:SetPoint("RIGHT", holder, "RIGHT", 0, 2)
-  pcall(holder.icon.SetTexture, holder.icon, MONEY_TEXTURE)
-  pcall(holder.icon.SetTexCoord, holder.icon,
-        texCoords[1], texCoords[2], texCoords[3], texCoords[4])
+  -- The coin fills its own texture, so it centres on the holder and the
+  -- number keeps the common text baseline.
+  holder.icon:SetPoint("RIGHT", holder, "RIGHT", 0, 0)
+  pcall(holder.icon.SetTexture, holder.icon, M.money[denom].texture)
 
   holder.label = U.CreateLabel(holder, {
     shadow = false, privateFont = true,
@@ -119,7 +116,7 @@ local function BuildCoin(parent, texCoords, color, width)
     color = color,
     inherits = "GameFontNormalSmall",
   })
-  if holder.label then holder.label:SetPoint("RIGHT", holder.icon, "LEFT", -1, -2) end
+  if holder.label then holder.label:SetPoint("RIGHT", holder.icon, "LEFT", -1, 0) end
   return holder
 end
 
@@ -213,9 +210,9 @@ local function Build()
 
   -- Chain the denominations directly after the clock. Their widths follow
   -- the rendered values, so short values do not leave empty columns.
-  display.gold = BuildCoin(anchor, COIN_GOLD, COLOR_GOLD, 26)
-  display.silver = BuildCoin(anchor, COIN_SILVER, COLOR_SILVER, 26)
-  display.copper = BuildCoin(anchor, COIN_COPPER, COLOR_COPPER, 26)
+  display.gold = BuildCoin(anchor, "gold", COLOR_GOLD, 26)
+  display.silver = BuildCoin(anchor, "silver", COLOR_SILVER, 26)
+  display.copper = BuildCoin(anchor, "copper", COLOR_COPPER, 26)
   display.gold:SetPoint("LEFT", display.timeValue, "RIGHT", MODULE_GAP, 0)
   display.silver:SetPoint("LEFT", display.gold, "RIGHT", COIN_GAP, 0)
   display.copper:SetPoint("LEFT", display.silver, "RIGHT", COIN_GAP, 0)

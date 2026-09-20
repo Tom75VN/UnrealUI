@@ -52,6 +52,9 @@ local QUEST_ROW_TEXTURES = {
 }
 
 local frame, panel
+-- True when modules/questdesign.lua draws this window (modern-wow with its
+-- `questdialog` surface on). Every other modern-wow case keeps the native
+-- window, like the other NPC dialogs.
 local useModernWow = false
 
 local function G(name)
@@ -450,15 +453,15 @@ local function StyleTitleRows()
 end
 
 -- Modern WoW keeps the same verified row-state detection and the same three
--- quest-marker textures, but gives the labels the warmer retail hierarchy:
--- available/complete are quest gold and an accepted, unfinished quest follows
--- ActiveQuestIcon's cool grey.  This is a complete theme pass after the common
--- white-row styling, so the `modern` path above remains unchanged.
+-- quest-marker textures, but the labels sit on parchment: available/complete
+-- take the heading ink and an accepted, unfinished quest a faded ink, next to
+-- ActiveQuestIcon's grey glyph (M.modernWow.questDialog.row).  This is a
+-- complete theme pass after the common row styling, so the `modern` path above
+-- remains unchanged.
 local function StyleModernWowTitleRows()
   if not useModernWow then return end
 
-  local token = M.modernWow.npcDialog
-  local colors = token and token.questState
+  local colors = U.ModernWowQuestDialogRowColors()
   if not colors then return end
 
   local rows = tonumber(G("MAX_NUM_QUESTS")) or 32
@@ -482,6 +485,7 @@ local function StyleModernWowTitleRows()
         end
         if fontOk and fontstring then
           SetQuestFont(fontstring, M.fontSize.normal, color)
+          U.ClearTextShadow(fontstring)
         end
       end
 
@@ -883,24 +887,6 @@ local function StyleHeader()
   end
 end
 
-local function ApplyModernWowDialog()
-  if useModernWow and type(U.ModernWowNpcDialog) == "function" then
-    U.ModernWowNpcDialog(frame, panel, G("QuestFramePortrait"),
-                         "QuestFrameCloseButton")
-  end
-  if useModernWow and type(U.ModernWowNpcActionButton) == "function" then
-    local i
-    for i = 1, table.getn(BUTTONS) do
-      U.ModernWowNpcActionButton(G(BUTTONS[i]))
-    end
-  end
-  if useModernWow and
-     type(U.ModernWowQuestProgressBarBackground) == "function" then
-    U.ModernWowQuestProgressBarBackground(
-      G("QuestProgressScrollFrameScrollBar"))
-  end
-end
-
 -- Strings that keep the `large` size after the uniform white pass flattens
 -- everything to `normal`. Colour is unchanged -- still the same white as the
 -- rest of the window -- this only restores hierarchy, matching how
@@ -925,6 +911,16 @@ local function ApplyTitleSizes()
 end
 
 local function Reapply()
+  -- Modern WoW: modules/questdesign.lua draws the window and inks the page;
+  -- the rows' state glyphs and the reward hooks stay here and run after it.
+  if useModernWow then
+    U.ModernWowQuestDialogRefresh()
+    StyleTitleRows()
+    StyleModernWowTitleRows()
+    StyleItemSlots()
+    return
+  end
+
   StripFrameChrome()
   StripPanels()
   StyleHeader()
@@ -933,9 +929,7 @@ local function Reapply()
   ApplyTitleSizes()
   ApplySectionHeadingColors()
   StyleTitleRows()
-  StyleModernWowTitleRows()
   StyleItemSlots()
-  ApplyModernWowDialog()
 end
 
 -- Native quest handlers can continue assigning their FontObjects after panel
@@ -954,7 +948,9 @@ local function BuildFrame()
     return false
   end
 
-  StripFrameChrome()
+  -- The Modern WoW path strips by name in modules/questdesign.lua instead:
+  -- this keep-table strip cannot actually protect the portrait.
+  if not useModernWow then StripFrameChrome() end
 
   -- Content backdrop inset from the real frame bounds, using the same insets as
   -- modules/gossip.lua so the quest-giver and gossip windows are the same size
@@ -977,7 +973,11 @@ local function BuildFrame()
     pcall(panel.SetFrameLevel, panel, frameLevel)
   end
 
-  U.MakeWindowDraggable("quest", frame, { headerInset = 54 })
+  -- One position and group with GossipFrame (modules/gossip.lua): picking a
+  -- quest from gossip swaps the two windows in place (user request,
+  -- 2026-09-19), so the quest window must not shift or be pushed aside.
+  U.MakeWindowDraggable("questgiver", frame,
+                        { headerInset = 54, group = "questgiver" })
 
   StyleHeader()
   Reposition(G("QuestFrameNpcNameText"), "TOP", panel, "TOP", 0, -10)
@@ -999,19 +999,24 @@ local function BuildFrame()
                      ReapplyAfterNative)
   end
 
-  for i = 1, table.getn(BUTTONS) do
-    U.StyleStockButton(G(BUTTONS[i]))
-  end
+  if useModernWow then
+    -- The complete themed path: native scrollbars and button state art are
+    -- never given the flat treatment first (rules/unreal-ui-design.md).
+    U.ModernWowQuestDialogBind(frame, panel)
+    Reapply()
+  else
+    for i = 1, table.getn(BUTTONS) do
+      U.StyleStockButton(G(BUTTONS[i]))
+    end
 
-  StripPanels()
-  ForceWhiteText(frame)
-  ApplyNamedWhiteText()
-  ApplyTitleSizes()
-  ApplySectionHeadingColors()
-  StyleTitleRows()
-  StyleModernWowTitleRows()
-  StyleItemSlots()
-  ApplyModernWowDialog()
+    StripPanels()
+    ForceWhiteText(frame)
+    ApplyNamedWhiteText()
+    ApplyTitleSizes()
+    ApplySectionHeadingColors()
+    StyleTitleRows()
+    StyleItemSlots()
+  end
 
   -- Native item rebuilds also restore their owning panels' FontObjects. Apply
   -- the complete pass after each native update, matching the Quest Log's
@@ -1219,9 +1224,16 @@ local function ApplyNativeHeadingFonts()
 end
 
 function QF:OnEnable()
-  useModernWow = type(U.GetActiveThemeStyle) == "function" and
-                 U.GetActiveThemeStyle() == "modern-wow"
-  if U.ThemeStyleUsesClassicInteractionChrome() then
+  local modernWowTheme = type(U.GetActiveThemeStyle) == "function" and
+                         U.GetActiveThemeStyle() == "modern-wow"
+  -- User request (2026-09-19): under modern-wow the quest-giver window is
+  -- drawn by modules/questdesign.lua instead of staying native like the other
+  -- NPC dialogs. Its `questdialog` surface switched off restores the native
+  -- path below.
+  useModernWow = modernWowTheme and
+                 type(U.ModernWowQuestDialogActive) == "function" and
+                 U.ModernWowQuestDialogActive() or false
+  if U.ThemeStyleUsesNativeChrome() or (modernWowTheme and not useModernWow) then
     -- The stock quest frame is left exactly as the client draws it. Only the
     -- reward price and equipped-item comparison are added, matching what the
     -- modern themes get from StyleItemSlots, plus reward rarity colour, and
@@ -1236,7 +1248,7 @@ function QF:OnEnable()
     -- more after the native refresh has settled.
     local function nativeTextPass()
       ColorNativeRewardNames()
-      if useModernWow then
+      if modernWowTheme then
         ApplyNativeHeadingFonts()
         StyleNativeQuestRowIcons()
       end
@@ -1247,7 +1259,7 @@ function QF:OnEnable()
     end
     U.PostHookGlobal("QuestFrameItems_Update", colorAfterNative)
     U.PostHookGlobal("QuestFrameRewardItems_Update", colorAfterNative)
-    if useModernWow then
+    if modernWowTheme then
       U.PostHookGlobal("QuestFrameProgressItems_Update", colorAfterNative)
       local greeting = G("QuestFrameGreetingPanel")
       if greeting then

@@ -551,11 +551,11 @@ end
 
 function view.Build()
   local frame = U.CreatePanel(UIParent, { name = "UnrealUIBankViewFrame" })
-  -- HIGH, not U.RaiseWindowAboveTooltips like the live bank: this window's
-  -- only hover content is the item tooltip, which has to draw above it. The
-  -- cost is the one that helper exists for -- a world object's tooltip can
-  -- also draw over this window (user request, 2026-09-19).
-  pcall(frame.SetFrameStrata, frame, "HIGH")
+  -- Below every interface window, like the live bank (user request,
+  -- 2026-09-21). Previously HIGH so the item tooltip could draw over it; LOW
+  -- keeps that and additionally puts every window on top. A world object's
+  -- tooltip can draw over this window, as before (user request, 2026-09-19).
+  U.LowerWindowBelowInterface(frame, 150)
   pcall(frame.EnableMouse, frame, true)
   frame:Hide()
   view.frame = frame

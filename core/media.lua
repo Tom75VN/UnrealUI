@@ -181,6 +181,35 @@ M.texture = {
 -- inside it; modules/questlogextended.lua measures its row count against them
 -- rather than assuming the source layout's fixed 27.
 -- ---------------------------------------------------------------------------
+-- ---------------------------------------------------------------------------
+-- Minimap pending-mail animation (modules/minimap.lua)
+--
+-- User-supplied art (Blizzard file id 5201351), extracted by
+-- tools/make_minimap_mail_flipbook.py into 32 separate 64x64 textures. The
+-- focused minimapmail comparison confirmed that this client's SetTexCoord
+-- sampling makes the 256x512 atlas travel, while the identical separate files
+-- animate in place. Keep the per-frame path; this is not a native-HUD issue.
+--
+-- Frames run left to right then down in the source sheet. It is two movements,
+-- not one loop: frames 1..`intro` are
+-- the letter folding itself into the envelope, played once each time the mail
+-- icon appears, and `intro`+1..`frames` are the two sparkle bursts it settles
+-- into, looped for as long as mail is pending. Restarting the intro on every
+-- show is deliberate -- new mail should announce itself.
+--
+-- `size` is the drawn square. The envelope itself is only about 17 of the 64
+-- cell pixels wide, the rest being the sparkle halo, so 56 puts a ~15px letter
+-- on the map edge: the same reading weight as the 32px modern-wow mail.tga it
+-- replaces, with room for the sparks around it.
+-- ---------------------------------------------------------------------------
+M.minimapMail = {
+  size = 56,
+  framePattern = "Interface\\AddOns\\unrealUI\\media\\minimap-mail-frames\\frame-%02d",
+  frames = 32,
+  intro = 11,
+  interval = 0.05,
+}
+
 M.classicWow = {}
 M.classicWow.path = "Interface\\AddOns\\unrealUI\\media\\Textures\\classic-wow\\questLog\\"
 
@@ -259,6 +288,21 @@ M.modernWow.unitFrame = {
   -- mixing cannot mutate that shared token without recolouring native Classic
   -- surfaces, so the dressed unit-frame path reads this scoped copy instead.
   healthFull = { 0.10, 0.80, 0.10, 1.00 },
+
+  -- `texture.healthFill` (DF-main's player health status fill) is opaque from
+  -- its canvas top to its canvas bottom, where the DFRL fill this surface
+  -- shipped first (`texture.healthFillPadded`) carried its own transparent
+  -- padding: measured on that file, its opaque band is rows 5-24 of 32, and
+  -- rows 4 and 25-26 are a near-invisible 8/255 shadow. The StatusBar is
+  -- therefore inset inside its box by those same fractions, so the drawn fill
+  -- keeps the band the authored housing recess was placed around while its
+  -- shading ramps to the edge instead of cutting off at an alpha edge. Labels
+  -- anchor to the box and not to the bar, so the inset moves no text
+  -- (modules/modernwow.lua mw.PlaceBar).
+  --
+  -- Reverting to the padded fill means pointing `texture.healthFill` back at
+  -- `texture.healthFillPadded` and setting both fractions here to 0.
+  healthFillInset = { top = 5 / 32, bottom = 7 / 32 },
 }
 M.modernWow.path = "Interface\\AddOns\\unrealUI\\media\\Textures\\modern-wow\\"
 
@@ -267,6 +311,13 @@ M.modernWow.texture = {
   playerFrameBg   = M.modernWow.path .. "unitframes\\player-frame-bg",
   targetFrame     = M.modernWow.path .. "unitframes\\target-frame-large",
   targetFrameBg   = M.modernWow.path .. "unitframes\\target-frame-bg",
+  -- Target name wash. Two cuts of the same Blizzard strip are shipped:
+  -- `target-reaction-type` is the 128x16 original (supplied 24-bit, its
+  -- shape moved into alpha by tools/import_modern_wow_media.py), and
+  -- `target-reaction` is the 172x29 cut kept beside it. Swapping the file
+  -- here also means swapping the geometry in M.modernWow.targetReaction,
+  -- whose two sets are recorded there.
+  targetReaction  = M.modernWow.path .. "unitframes\\target-reaction-type",
   frameRare       = M.modernWow.path .. "unitframes\\frame-rare",
   frameElite      = M.modernWow.path .. "unitframes\\frame-elite",
   frameRareElite  = M.modernWow.path .. "unitframes\\frame-rare-elite",
@@ -276,7 +327,11 @@ M.modernWow.texture = {
   restingFlipbook = M.modernWow.path .. "unitframes\\resting-flipbook",
   portraitBackground = M.modernWow.path ..
                        "unitframes\\unit-frame-portrait-background",
-  healthFill      = M.modernWow.path .. "unitframes\\health-fill",
+  -- Both authored health fills are shipped. `healthFill` is the one every
+  -- dressed frame draws; `healthFillPadded` is the DFRL fill it replaced,
+  -- kept so the choice can be reverted -- see unitFrame.healthFillInset.
+  healthFill      = M.modernWow.path .. "unitframes\\health-fill-full",
+  healthFillPadded = M.modernWow.path .. "unitframes\\health-fill",
   healthFillMinus = M.modernWow.path .. "unitframes\\health-fill-minus",
   powerFill       = M.modernWow.path .. "unitframes\\power-fill-player",
   powerFillTarget = M.modernWow.path .. "unitframes\\power-fill-target",
@@ -312,17 +367,45 @@ M.modernWow.texture = {
   header           = M.modernWow.path .. "ui\\header",
   headerLeft       = M.modernWow.path .. "ui\\header-left",
   headerRight      = M.modernWow.path .. "ui\\header-right",
-  button128Red     = M.modernWow.path .. "ui\\128RedButton",
-  button128GoldRed = M.modernWow.path .. "ui\\128GoldRedButton",
-  redButton        = M.modernWow.path .. "ui\\red-button",
+  button128Red     = M.modernWow.path .. "buttons\\128RedButton",
+  button128GoldRed = M.modernWow.path .. "buttons\\128GoldRedButton",
+  redButton        = M.modernWow.path .. "buttons\\red-button",
+  -- Blizzard's settings-UI control atlas, 512x512, imported whole: its
+  -- cells are addressed by texture coordinates, never cut out. The talent
+  -- advisor draws its yellow arrows (M.talentAdvisor.styles, toggle).
+  settingUI        = M.modernWow.path .. "buttons\\setting-ui",
   comboPoints      = M.modernWow.path .. "ui\\combo-points",
   classPortraits   = M.modernWow.path .. "ui\\class-portraits",
   frameTabs        = M.modernWow.path .. "ui\\frame-tabs",
   frameBorder      = M.modernWow.path .. "ui\\frame-border",
+  swingTimer       = M.modernWow.path .. "ui\\swing-bar",
+  questParchment   = M.modernWow.path .. "ui\\questbackgroundparchment",
+  questScrollChannel = M.modernWow.path .. "ui\\questlog-dualpane-right",
+  horizontalBar    = M.modernWow.path .. "ui\\borders\\ui-dialogbox-divider",
+  questFooter      = M.modernWow.path .. "ui\\frame\\background-rock",
+
+  -- Blizzard's action-button proc alert, as two flipbook grids: the one-shot
+  -- burst and the loop it settles into. Both are 5 columns x 6 rows of 30
+  -- frames, cropped so one cell is a plain fraction of the texture rather
+  -- than a rectangle inside a padded sheet. The talent advisor runs them
+  -- around the next talent to learn (M.talentAdvisor.styles, next).
+  spellAlertStart  = M.modernWow.path .. "ui\\spell-alert-start",
+  spellAlertLoop   = M.modernWow.path .. "ui\\spell-alert-loop",
+  -- A flipbook, not one image: 256x256 with 48x48 cells, 5 per row, of which
+  -- Blizzard plays the first 22 (M.modernWow.iconAlertAnts). The talent
+  -- advisor marches them around every talent its build still wants.
+  iconAlertAnts    = M.modernWow.path .. "ui\\icon-alert-ants",
+  -- Middle cell of the supplied talent alert strip, cropped to its own square.
+  -- The advisor keeps its authored thickness, tints it red and pulses it over
+  -- ranks spent outside the selected build.
+  talentIconAlert  = M.modernWow.path .. "ui\\talents\\icon-alert",
 
   minimapBorder      = M.modernWow.path .. "minimap\\uiminimapborder",
   minimapShadow      = M.modernWow.path .. "minimap\\uiminimapshadow",
   minimapTopPanel    = M.modernWow.path .. "minimap\\uiminimap_toppanel",
+  -- Superseded by the shared animated letter (M.minimapMail), which every
+  -- theme draws. Kept shipped and attributed for a revert, as `health-fill`
+  -- is; no surface reads this token now.
   minimapMail        = M.modernWow.path .. "minimap\\mail",
   minimapZoomIn      = M.modernWow.path .. "minimap\\ZoomIn32",
   minimapZoomInOver  = M.modernWow.path .. "minimap\\ZoomIn32-over",
@@ -364,6 +447,92 @@ M.modernWow.texture = {
 
   chatArrowUp   = M.modernWow.path .. "chat\\arrow-up",
   chatArrowDown = M.modernWow.path .. "chat\\arrow-down",
+}
+
+-- Forever 1.60.1.69913 Blizzard_SwingTimer.xml. The source atlas is 512x256;
+-- these are the exact UiTextureAtlasMember rectangles for FileDataID 8344036.
+M.modernWow.swingTimer = {
+  width = 213,
+  height = 15,
+  -- Every lane is drawn four units shorter than the authored art, which keeps
+  -- the pair compact now that they no longer overlap (user requests,
+  -- 2026-09-21). height stays the art's own measurement.
+  heightTrim = 4,
+  bottomPadding = -6,
+  -- Blizzard's own -6 stacks the lanes flush, because the authored art carries
+  -- transparent margins. That overlap is given back and then some, so stacked
+  -- lanes read as clearly separate bars (user requests, 2026-09-21).
+  laneGap = 7,
+  -- The lane fill sits 2 units inside the framed art on every edge, and the
+  -- frame texture redraws above it, so the rim stays visible at full fill.
+  fillInset = 2,
+  labelInset = 10,
+  -- The lane labels sit one unit below centre (user request, 2026-09-21).
+  labelDrop = -1,
+  -- While the two melee lanes are drawn as a stacked pair each one's text
+  -- takes a further offset of its own, away from the seam between them
+  -- (user request, 2026-09-21).
+  stackedLabelDrop = { main = 0, off = -1 },
+  shadowWidth = 171,
+  pipWidth = 5,
+  pipHeight = 27,
+  background = { 1 / 512, 423 / 512, 33 / 256, 59 / 256 },
+  frame = { 1 / 512, 427 / 512, 1 / 256, 31 / 256 },
+  pip = { 1 / 512, 11 / 512, 156 / 256, 210 / 256 },
+  shadow = { 1 / 512, 172 / 512, 133 / 256, 154 / 256 },
+  fill = {
+    main = { 1 / 512, 419 / 512, 61 / 256, 83 / 256 },
+    off = { 1 / 512, 419 / 512, 85 / 256, 107 / 256 },
+    ranged = { 1 / 512, 419 / 512, 109 / 256, 131 / 256 },
+  },
+}
+
+-- The client's own Edit Mode selection nine-slice, from Forever build
+-- 1.60.1.69913 (Blizzard_EditMode/Shared/EditModeSystemTemplates.xml). Like
+-- the swing bar above this is Blizzard art rather than imported Dragonflight
+-- chrome, so core/mover.lua draws it under every theme; it is not a
+-- modern-wow surface and has no Classic -> Modern WoW module.
+--
+-- EditModeSystemSelectionLayout places every piece as a 16-unit cell centred
+-- on the frame's own edge -- `straddle` out, `straddle` in -- and covers the
+-- frame itself with the centre fill, which therefore meets the border line on
+-- every side. The two texture kits are Blizzard's
+-- `editmode-actionbar-highlight` (cyan) and `editmode-actionbar-selected`
+-- (gold); both live on one sheet, as do all four vertical edges, while each
+-- centre is its own flat file. Only the top-left corner is authored, exactly
+-- as the layout's mirrorLayout says, so the other three reverse its
+-- coordinates.
+--
+-- The `_`/`!` prefixes on Blizzard's edge atlas names mark tiling, which this
+-- client cannot do from an atlas cell. Stretching is identical here: every
+-- edge cell is constant along the axis it runs.
+M.modernWow.moveUI = {
+  texture = M.modernWow.path .. "ui\\move-ui\\editmodeui",
+  textureVertical = M.modernWow.path .. "ui\\move-ui\\editmodeuivertical",
+  piece = 16,
+  straddle = 8,
+  -- Every anchor is drawn at once in edit mode, so an idle one is held back
+  -- from the full-strength selection Blizzard uses for its single system.
+  alpha = { idle = 0.75, hover = 1.00, selected = 1.00 },
+  -- The centre fills are authored at alpha 128; these scale that down so the
+  -- moved element stays readable under its own anchor.
+  fillAlpha = { idle = 0.35, hover = 0.45, selected = 0.55 },
+  hover = {
+    fill = M.modernWow.path .. "ui\\move-ui\\editmodeuihighlightbackground",
+    corner = { 1 / 32, 17 / 32, 73 / 256, 89 / 256 },
+    top = { 0, 16 / 32, 19 / 256, 35 / 256 },
+    bottom = { 0, 16 / 32, 1 / 256, 17 / 256 },
+    left = { 1 / 128, 17 / 128, 0, 1 },
+    right = { 19 / 128, 35 / 128, 0, 1 },
+  },
+  selected = {
+    fill = M.modernWow.path .. "ui\\move-ui\\editmodeuiselectedbackground",
+    corner = { 1 / 32, 17 / 32, 91 / 256, 107 / 256 },
+    top = { 0, 16 / 32, 55 / 256, 71 / 256 },
+    bottom = { 0, 16 / 32, 37 / 256, 53 / 256 },
+    left = { 37 / 128, 53 / 128, 0, 1 },
+    right = { 55 / 128, 71 / 128, 0, 1 },
+  },
 }
 
 -- Blizzard's Dragonflight MinimalScrollBar art, supplied as the original
@@ -413,6 +582,10 @@ M.modernWow.scrollbar = {
     minExtent = 44,
     topExtent = 8,
     bottomExtent = 36,
+    -- The bottom cap fades in over its first 28 rows (alpha 1 at row 27 to
+    -- ~250 at row 54 of the sheet) and is drawn over the body, which runs this
+    -- far down under it (core/modernwowscrollbar.lua).
+    bottomFade = 28,
     normal = {
       top    = { 39 / 64, 47 / 64, 1 / 64, 9 / 64 },
       middle = { 31 / 64, 39 / 64, 1 / 1024, 716 / 1024 },
@@ -468,7 +641,9 @@ M.modernWow.minimap = {
   zoomY = 47.8,  -- 40 plus 5 screen px up
   mailX = -2,
   mailY = -1,
-  mailSize = 32,
+  -- No mail size here any more: the letter is the shared flipbook
+  -- (M.minimapMail), which every theme draws at one size. This theme only
+  -- still decides where the native mail frame sits.
 }
 
 -- Bottom window tabs from ui/frame-tabs.tga (64x256). Cells are measured off
@@ -494,6 +669,8 @@ M.modernWow.tab = {
   -- the flat tab's 10 crowds the rim. The strip fit still reduces it to fit.
   padding = 14,
   hoverAlpha = 0.45,
+  -- activeTextColor / inactiveTextColor / hoverTextColor are filled in
+  -- beside M.tab, once M.color exists.
   activeMiddle   = { 0,       1,       0 / 256,  42 / 256, w = 64, h = 42 },
   activeRight    = { 0,      37 / 64, 82 / 256, 124 / 256, w = 37, h = 42 },
   activeLeft     = { 0,      37 / 64, 126 / 256, 168 / 256, w = 37, h = 42 },
@@ -560,6 +737,342 @@ M.modernWow.npcDialog = {
   },
 }
 
+-- The Social window (FriendsFrame) under the `social` surface (user request,
+-- 2026-09-19): the 384x512 paperdoll quadrants, the Character window's
+-- archetype. Rectangles are in that 384x512 design space.
+--
+-- `extend`: the art's visible rim ends 73 units above its bottom edge
+-- (alpha rows 0..439 of 512), where Character's panel ends. modules/friends.lua
+-- lays the Social content down to 48 above the bottom, and its FauxScrollFrame
+-- rows must not be resized (knowledge.json /
+-- frames.friendsframe_row_touch_crashes_client), so the art grows instead:
+-- the bottom quadrants drop `extend` units and the gap is filled 1:1 with the
+-- top quadrants' last `extend` rows. Ring, rims and corners keep their
+-- authored aspect; only plain body rows are repeated.
+--
+-- `portrait`: the stock Friends window's own round portrait, shown natively
+-- under classic-wow. WORKING_SOURCE (the 1.12 FrameXML path); no probe has
+-- read this client's region, so an absent file leaves the ring empty.
+--
+-- The title centres on the art's title strip: gold rims at rows 15 and 33,
+-- from the portrait ring's right edge (x 72) to the right rim (x 351).
+-- The guild player-status view's four columns -- Name, Rank, Note, Last
+-- Online -- as `x` from the list's left edge plus a width each, with the last
+-- column's value ending `onlineRight` inside the list. Layout, not chrome, so
+-- it lives outside M.modernWow and both themes lay that view out the same way
+-- (user request, 2026-09-20).
+M.guildStatusColumns = { x = 9, width = { 79, 67, 80, 61 }, onlineRight = 4 }
+
+-- Blizzard's Dialog Box divider occupies x 0-192, rows 0-15 of its 256x32
+-- canvas. Its end caps keep their aspect and only the long centre stretches.
+-- Shared by the Social and quest-giver windows.
+M.modernWow.horizontalBar = {
+  atlasWidth = 256,
+  atlasHeight = 32,
+  sourceHeight = 16,
+  height = 12,
+  left = { u1 = 0, u2 = 12, v1 = 0, v2 = 16, width = 12, height = 16 },
+  middle = { u1 = 12, u2 = 181, v1 = 0, v2 = 16, height = 16 },
+  right = { u1 = 181, u2 = 193, v1 = 0, v2 = 16, width = 12, height = 16 },
+}
+
+M.modernWow.social = {
+  extend = 25,
+  portrait = "Interface\\FriendsFrame\\FriendsFrameScrollIcon",
+  -- Where that portrait draws, in the 384-wide design space from the
+  -- window's top-left: larger than the shared 54 (ring 64, inset 5) so the
+  -- scroll art fills the gold ring, and nudged up-left because the art sits
+  -- low-right in its canvas (user request 2026-09-20).
+  portraitRect = { left = 9, top = 5, size = 62 },  -- left +2, down 2 (user, 2026-09-20)
+  -- The bottom tab row's x from the window's bottom-left (5, then 3 more
+  -- right: user request 2026-09-20).
+  tabX = 8,
+  -- Guild "Show Player/Guild Status" toggle: the client's own next-page
+  -- button art (as the Modern WoW Spellbook keeps). The 32x32 art carries a
+  -- transparent margin, so it is drawn at 24 (user request 2026-09-20);
+  -- `rightPad` pulls it right by that margin so its visible edge stays where
+  -- the 16-unit control's was.
+  -- `aspect` is the art's own width:height (the client's
+  -- UI-SpellbookIcon-NextPage-*.blp are 32x32, and Blizzard's own page
+  -- buttons draw them square), so the state textures are sized from `size`
+  -- rather than stretched over the native button's rect -- that rect is
+  -- narrower than tall and squeezed the arrow (user report 2026-09-21).
+  statusArrow = {
+    size = 24,
+    aspect = 1,
+    rightPad = 4,
+    normal = "Interface\\Buttons\\UI-SpellbookIcon-NextPage-Up",
+    pushed = "Interface\\Buttons\\UI-SpellbookIcon-NextPage-Down",
+    disabled = "Interface\\Buttons\\UI-SpellbookIcon-NextPage-Disabled",
+    highlight = "Interface\\Buttons\\UI-Common-MouseHilight",
+  },
+  titleX = 211,
+  titleY = -18,
+  -- Warm gold for the short title, column headings and field labels; body
+  -- values stay light neutral (rules/unreal-ui-design.md text hierarchy).
+  titleColor = { 1.00, 0.82, 0.00, 1.00 },
+  headingColor = { 1.00, 0.82, 0.00, 1.00 },
+  -- Guild detail / guild info docks sit this far right of the art's rim.
+  dockGap = 4,
+  -- The guild member detail dock carries a lighter backing than the shared
+  -- metal housing: its fill alpha times this (user request, 2026-09-20).
+  guildDetailFill = 0.8,
+  -- Friends/Ignore toggles: the tab atlas at a smaller scale than the bottom
+  -- row (0.75 / 27 high), and started `ringGap` right of the portrait ring's
+  -- right edge (x `ringRight`) so the first tab clears the gold rim.
+  -- `textY` is the label's centre offset (positive up); the flipped art
+  -- would otherwise give -2.
+  toggleTab = { scale = 0.6, height = 21, textY = -5 },
+  ringRight = 72,
+  ringGap = 6,
+  -- The toggle run's lift above its list's top edge (the flat design uses 3).
+  toggleY = 6,
+  -- The Friends list's four footer actions: fixed width (the flat design's
+  -- 158 less 6) and the native height plus `heightGrow`. `x`/`y` move the
+  -- whole run relative to where the flat design puts it -- positive x right,
+  -- negative y down -- by offsetting the two column heads only, since Remove
+  -- and Group Invite chain off them.
+  -- `pull` closes the gap between the two columns: the left column moves
+  -- this far right and the right column the same distance left, so the run
+  -- narrows by twice this without either column changing width.
+  -- `raise`: the Friends footer buttons alone sit this much higher (user,
+  -- 2026-09-20); the footer plate keeps its place.
+  footerButton = { width = 152, heightGrow = 4, x = 3, y = -11, pull = 2,
+                   raise = 2 },
+  -- The Guild tab's three actions, moved as one row (positive x right,
+  -- negative y down; user, 2026-09-20).
+  -- `motdX`: the message box above them moves this much right on its own.
+  -- `motdGrow`: the message box grows this much taller at its bottom.
+  -- `motdY`: the message box moves this much (negative is down).
+  -- `listGrow`: the roster list grows this much taller at its bottom.
+  -- Guild player-status headers (Name, Rank, Note, Last Online): the first
+  -- one's x from the list's left edge and each one's width, so each label
+  -- starts over its value column. Re-measured off the user's 2026-09-20
+  -- screenshot with the headers in place (1.87 px per unit): the values
+  -- start at about 9 / 88 / 155 / 235 from the list's left edge.
+  -- `onlineRight`: the Last Online values end this far inside the list.
+  -- Shared with every theme; see M.guildStatusColumns.
+  guildStatusColumns = M.guildStatusColumns,
+  guildButtons = { x = 3, y = -20, motdX = 3, motdGrow = 4, motdY = -9,
+                   listGrow = 10,
+                   -- `barDrop`: the roster's scrollbar sits this much lower.
+                   barDrop = 4,
+                   -- `totalsY`: "n Guild Members" alone, off the toggle line.
+                   totalsY = -2,
+                   -- `statusGap`: the status toggle row's bottom above the box.
+                   statusGap = 5,
+                   -- `leftTextY`: both member-count texts, off that line.
+                   leftTextY = -3,
+                   -- `rowsDrop`: the 13 roster rows, moved down as a block.
+                   rowsDrop = 4,
+                   -- `offlineDrop`: "Show Offline Members", moved down.
+                   offlineDrop = 6,
+                   -- `statusLabelY`: "Show Player Status" alone (positive up).
+                   statusLabelY = 3 },
+  -- The Who tab's header band (dropdown + column headers): the footer's own
+  -- rock wash and metal rule (footerPlate), with the rule on its BOTTOM edge,
+  -- between the header and the list (user request 2026-09-19). Its sides and
+  -- top are the paperdoll art's inner recess, in the 384x512 design space
+  -- from the window's top-left (x 24-340, y 73: inside the left/right dark
+  -- rims at x 23/341 and just under the portrait ring -- the same recess
+  -- M.modernWow.questDialog measures). The band's bottom is the list's scroll
+  -- frame top, where the rule is centred.
+  -- `ruleHalf` is the half of the rule that reaches up into the band; the
+  -- header labels and the dropdown centre on what is left above it, and the
+  -- dropdown keeps `pad` clear of both edges (at most the normal 28 high).
+  -- `dropdownGrow` is added on top of that fitted height (user, 2026-09-19).
+  headerPlate = { left = 24, right = 340, top = 73, ruleHalf = 3, pad = 3,
+                  headerHeight = 24, dropdownGrow = 6,
+                  -- Headers and dropdown together, off that centre line
+                  -- (negative is down; user, 2026-09-19).
+                  contentY = -2 },
+  -- The section the four footer actions sit on: a translucent dark wash over
+  -- the window art, closed at the top by M.modernWow.horizontalBar, the same
+  -- authored Dialog Box divider used between the quest page and footer.
+  -- `padX`/`padTop`/`padBottom` are how far the wash reaches past the buttons
+  -- it wraps.
+  footerPlate = {
+    -- DF-main's dark rock window body, the same surface the quest dialog's
+    -- footer uses, sampled 1:1 so its grain keeps the authored scale and
+    -- shaded to `shade` of its brightness. NOT a tinted WHITE8X8 at partial
+    -- alpha: vertex alpha is not honoured for textures on this client
+    -- (knowledge.json rendering.texture_setalpha_darkens_not_translucent),
+    -- so every "translucent" wash drew as solid black. Lower `shade` is
+    -- darker; 1.0 is the rock's own brightness.
+    shade = 0.55,
+    ruleShade = 0.8,
+    atlas = 1024,
+    padX = 4,
+    padTop = 7,
+    padBottom = 0,  -- was 4: covered the window's bottom rim (user, 2026-09-20)
+    -- Guild tab only: the rule's lower edge this far above the action row.
+    guildGap = 3,
+    -- Raid tab: no plate; its Convert to Raid / Raid Info buttons this much
+    -- lower instead (user, 2026-09-20).
+    raidButtonsDrop = 6,
+    -- Who tab only: the plate's top reaches this much higher (user request
+    -- 2026-09-19). Friends/Ignore keep `padTop`, clear of their lists.
+    whoGrow = 8,
+    -- The rule between list and footer is M.modernWow.horizontalBar. On the
+    -- Who header's bottom edge it is mirrored vertically so its ornament faces
+    -- into the header rather than the list.
+  },
+  -- Friend rows stack edge to edge, so their hover/selection highlight
+  -- (Interface/QuestFrame/UI-QuestTitleHighlight, one CENTER anchor filling
+  -- the 298x31 row) reads as one unbroken bar down the list. Lifting its
+  -- bottom edge by this much separates consecutive rows. Applied once, off
+  -- any list-update path -- see modules/friends.lua.
+  rowGap = 1,
+  -- The row button is narrower than the list bed it sits in, so a highlight
+  -- anchored flush to it leaves bare parchment down the right-hand side.
+  -- Positive units push the highlight's right edge past the row.
+  rowExtend = 18,
+  -- The row's own name/info text, nudged to sit centred on the shortened
+  -- highlight bar. Negative units move it down.
+  rowTextY = -2,
+  -- Same restrained channel as the NPC progress bar: the quadrants have no
+  -- authored recess behind a list's native scrollbar.
+  -- The channel behind each list's scrollbar. No `outer` rim: these lists
+  -- draw the shared MinimalScrollBar, which carries its own track, so the
+  -- bronze outline the rim used to add sat around finished art (user
+  -- request, 2026-09-19).
+  scrollBed = {
+    padding = 3,
+    -- The Friends list's channel only: shifted this much up (user,
+    -- 2026-09-20). The other lists keep their placement.
+    friendsBedY = 6,
+    -- ...and its top edge alone this much further (negative is down).
+    friendsBedTopY = -2,
+    -- ...and its bottom edge alone this much further (negative is down).
+    friendsBedBottomY = -5,
+    -- ...and its up arrow alone this much higher.
+    friendsUpY = 2,
+    -- Friends thumb range: its top stop / bottom stop this much lower, and
+    -- the down arrow this much lower in total (user, 2026-09-20).
+    friendsThumbTop = 2,
+    friendsThumbBottom = 1,
+    friendsDownY = 5,
+    -- Friends, Who and Guild channels: drawn at this opacity (40% less, user
+    -- 2026-09-20). Frame alpha, not the fill's: texture alpha is unreliable
+    -- here (knowledge.json rendering.texture_setalpha_darkens_not_translucent)
+    -- while whole-frame alpha is what the loot window's fade relies on.
+    listAlpha = 0.6,
+    inset = 1,
+    inner = { 0.018, 0.014, 0.010, 0.94 },
+  },
+}
+
+-- The quest-giver window (QuestFrame) under the `questdialog` surface
+-- (modules/questdesign.lua): the 384x512 paperdoll quadrants plus DF-main's
+-- quest parchment. All rectangles are in that 384x512 design space and are
+-- scaled by the live frame size. Measured off the composed quadrants:
+--   visible art    x 12-352, y 13-437
+--   title strip    y 14-35 (right of the portrait ring, which ends at x 72)
+--   inner recess   x 24-340, y 73-426 (its dark rim is x 23 / 341, y 72 / 427)
+-- The recess holds, top to bottom (user requests, 2026-09-19): the parchment
+-- page with, flush with the recess's right rim, the dark scrollbar channel
+-- of Blizzard's Classic dual-pane Quest Log -- both ending where the text
+-- area ends -- then the Dialog Box divider, then a darker footer across
+-- the full
+-- recess width holding the 30-high red action buttons.
+M.modernWow.questDialog = {
+  designWidth = 384,
+  designHeight = 512,
+  -- Hit rect and the retained UnrealUI panel (the close button's anchor):
+  -- the art's visible bounds, as insets from the frame edges.
+  art = { left = 12, top = 13, right = 32, bottom = 75 },
+  -- DF-main's page: the top-left cell of questbackgroundparchment (texels
+  -- 1-300 x 1-408 of 1024; DF-main ChangeQuestFrame and ChangeGossipFrame both
+  -- use only this cell). It is opaque and runs from the recess's left rim to
+  -- the channel (300 -> 291 wide); the torn top and bottom `edge` rows keep
+  -- their authored height while only the plain middle is compressed.
+  parchment = {
+    atlas = 1024,
+    u1 = 1, u2 = 301, v1 = 1, v2 = 409,
+    edge = 24,
+    left = 24, top = 73, width = 291, bottom = 388,
+  },
+  -- The scrollbar channel: texels x 139-163, y 74-407 of DF-main's
+  -- ui-questlogdualpane-right (256x512), grey rim on its left, dark interior
+  -- from x 142. Drawn 1:1 in width, as tall as the page, flush right. The
+  -- `cap` rows at each end hold the metal brackets (texel y 90 and 391) and
+  -- keep their height; only the plain middle is compressed (334 -> 315), so
+  -- the brackets land at design y 89 and 371.
+  channel = {
+    width = 256, height = 512,
+    u1 = 139, u2 = 164, v1 = 74, v2 = 408,
+    cap = 24,
+    left = 315, top = 73, bottom = 388,
+  },
+  -- The footer under page and channel: DF-main's dark rock window body
+  -- (ui/frame/background-rock, the texture its FrameBackgroundSolid draws),
+  -- sampled 1:1 from its top-left and shaded to about half brightness so it
+  -- reads darker than the recess around it (rock mean 48, recess 33).
+  footer = {
+    atlas = 1024,
+    left = 24, top = 388, right = 340, bottom = 426,
+    shade = 0.5,
+  },
+  -- The dedicated Dialog Box divider between page and footer.
+  -- M.modernWow.horizontalBar owns its atlas cells and three-slice geometry;
+  -- this token owns only its placement across the page, centred on the
+  -- footer's top edge.
+  divider = {
+    -- Across the page only; the channel closes its own bottom square below.
+    left = 24, right = 315, y = 388,
+  },
+  -- The channel's end squares have no outer edge in the source (the
+  -- dual-pane window's frame closed them), so each is closed with the
+  -- channel-width bracket (texel rows 87-92, x 139-163): its line (texel
+  -- row 90) sits at `bottomLine` under the bottom square and, flipped
+  -- vertically, at `topLine` over the top square (user request, 2026-09-19).
+  channelEnds = {
+    v1 = 87, v2 = 93, line = 90,
+    topLine = 73, bottomLine = 388,
+  },
+  -- The native scroll frame over the page, clear of the channel and the
+  -- button row, and the Slider of the Modern WoW scrollbar
+  -- (U.StyleModernWowScrollbar) centred in the channel's dark interior
+  -- (x 318-340; the Slider is 16 wide, nudged 1 left of the measured centre
+  -- 329 after an in-game check, 2026-09-19). The channel's two end
+  -- compartments -- texel rows 74-89 and 392-407, outside the brackets, drawn
+  -- at design y 73-88 and 372-387 -- hold the arrows (user request,
+  -- 2026-09-19). The Slider is the track; its 11-high steppers hang
+  -- M.modernWow.scrollbar.arrow.gap (8) beyond each end, so these ends centre
+  -- them in the compartments (75-86, 374-385) and run the track between the
+  -- brackets. The text ends 10 above the page's bottom so the torn edge
+  -- stays clear of it.
+  scroll = { left = 24, top = 78, width = 288, height = 300 },
+  -- Reward / required item slots: the native two-column grid was laid out for
+  -- a 300-wide page and the right column ran past this narrower one (user
+  -- report, 2026-09-19). Each slot is `width` wide; its name box and name
+  -- text shrink by the same amount, the icon keeps its size.
+  items = { width = 138 },
+  -- downArrowY: the down arrow alone sits 2 lower in its compartment (in-game
+  -- check, 2026-09-19); positive is up.
+  scrollBar = { left = 320, top = 94, bottom = 366, downArrowY = -2 },
+  -- Action buttons in the footer: bottom edge of the 30-high button in design
+  -- units (6 clear of the divider above, 2 of the recess rim below, after an
+  -- in-game check, 2026-09-19), and the outer edges of the left and right
+  -- buttons.
+  buttons = { bottom = 424, left = 28, right = 336 },
+  -- NPC name, centred in the title strip between the ring and the close
+  -- button; close button inset from the art's top-right corner.
+  title = { x = 203, y = 24, color = { 1.00, 0.82, 0.00, 1.00 } },
+  close = { right = 6, top = 5 },
+  -- Greeting-row labels on parchment. The dark-panel questState gold is
+  -- illegible here: available and ready-to-turn-in quests take the heading
+  -- ink, an accepted unfinished quest a faded ink (ActiveQuestIcon's grey
+  -- carries the state), and hover a warmer red-brown.
+  row = {
+    available = { 0.30, 0.13, 0.02, 1.00 },
+    complete  = { 0.30, 0.13, 0.02, 1.00 },
+    active    = { 0.36, 0.32, 0.27, 1.00 },
+    unknown   = { 0.16, 0.12, 0.08, 1.00 },
+    hover     = { 0.62, 0.22, 0.02, 1.00 },
+  },
+}
+
 -- The high-resolution Quest Log art keeps transparent padding on the right
 -- and bottom of its two source canvases. Crop that padding and split the live
 -- frame at the artwork's measured seam, so the visible chrome fills the same
@@ -589,6 +1102,9 @@ M.modernWow.questLog.buttonWidthGrow = 4
 M.modernWow.questLog.buttonHeightGrow = 4
 M.modernWow.questLog.buttonOffsetX = -2
 M.modernWow.questLog.buttonOffsetY = -2
+-- Clearance between the details page's reward grid and the scroll channel's
+-- left edge (modules/questlogdesign.lua design.FitRewardItems).
+M.modernWow.questLog.itemPageMargin = 6
 
 -- The gold portrait ring the left page draws in its top-left corner. Measured
 -- from questlog-left-large-v2.tga's own gold pixels: the ring's outer bounds are
@@ -708,13 +1224,15 @@ M.modernWow.spellBook = {
   page = { width = 512, edgeWidth = 21, edgeCanvas = 32, height = 494,
            canvas = 512 },
 
-  -- Spell buttons: two columns of six. `textGap` separates the icon from its
-  -- name; the name column is what is left of the column pitch.
+  -- Spell buttons: two columns of six. `textGap` separates the ornate border
+  -- from its name; `placedTextGap` preserves the Professions page's spacing,
+  -- where that border is hidden. The name column is what remains.
   -- `buttonScale` shrinks the spell button, and with it the slot frame,
   -- background and name shadow sized from it (user request, 2026-09-13: 30%
   -- smaller than the client's own button).
   grid = { left = 90, top = 36, columnPitch = 200, rowPitch = 64,
-           columns = 2, textGap = 11, textInset = 4, nameY = -3,
+           columns = 2, textGap = 1, placedTextGap = 18,
+           textInset = 4, nameY = -3,
            -- Rank/subtext (Racial, Passive, Apprentice...) below the name;
            -- 4 units higher than the old -2 (user request, 2026-09-13).
            subY = 2,
@@ -728,17 +1246,22 @@ M.modernWow.spellBook = {
 
   -- Spellbook-Parts.tga (256x256) cells in texels: WORKING_SOURCE,
   -- WoW-DragonflightUI Mixin/UI.mixin.lua's own SetTexCoord values for this
-  -- atlas, converted from fractions. They were authored around a 37-unit
-  -- spell button (`designButton`); sizes and offsets scale with the live one.
+  -- atlas, converted from fractions. The spell border instead uses the
+  -- top-left cell of the user-supplied 8116691 atlas, reduced to half its
+  -- authored size. They are all measured around a 37-unit spell button
+  -- (`designButton`); sizes and offsets scale with the live one.
   parts = {
     atlas = 256,
     designButton = 37,
-    slotFrame      = { left = 1,   top = 113, right = 71,  bottom = 178,
-                       width = 70, height = 65, x = 1.5,
-                       -- Centrelines of its thin gold square, measured off
-                       -- the file (luma peaks x 15-16 / 52, y 127 / 163-164).
-                       square = { left = 15.5, right = 52.5,
-                                  top = 127, bottom = 163.5 } },
+    slotFrame      = { texture = M.modernWow.path ..
+                                 "ui\\spellbook\\8116691",
+                       left = 0, top = 0, right = 140, bottom = 136,
+                       width = 70, height = 68, x = -6, y = -4,
+                       centerX = 35, centerY = 34,
+                       -- The transparent icon opening, expressed in the
+                       -- half-size drawing space used by width/height.
+                       square = { left = 22.5, right = 59.5,
+                                  top = 12, bottom = 48.5 } },
     slotBackground = { left = 203, top = 1,   right = 246, bottom = 44,
                        width = 43, height = 43 },
     nameShadow     = { left = 80,  top = 95,  right = 247, bottom = 134,
@@ -760,11 +1283,30 @@ M.modernWow.spellBook = {
     barGlow        = { left = 0,   top = 0,   right = 200, bottom = 95,
                        square = { left = 34, right = 74.5,
                                   top = 34.5, bottom = 74.5 },
-                       -- The burst and the text streak meet at atlas x=80 but
+                       -- The burst and the text streak meet at atlas x=79 but
                        -- need different vertical anchors. Keeping them as one
                        -- region puts the streak above the name shadow when the
                        -- burst's square is correctly centred on slotFrame.
-                       burst = { left = 0, top = 0, right = 80, bottom = 95 },
+                       --
+                       -- The atlas packs the streak hard against the burst at
+                       -- that seam: the retail effect is one continuous flame,
+                       -- so the burst's own right-hand glow is simply cut off
+                       -- there, at full alpha across the square's rows. Any
+                       -- crop of the whole cell therefore ends on lit texels
+                       -- and draws a bright 1-unit line down the icon's right
+                       -- edge (user report, 2026-09-20).
+                       --
+                       -- Only the half from the cell's faded left edge to the
+                       -- square's centre is authored cleanly, so the burst is
+                       -- that half drawn twice: once as measured, once with
+                       -- its texture coordinates swapped left-for-right (the
+                       -- flip idiom used by questdesign's channel ends). The
+                       -- two meet on the square's centre line and rebuild a
+                       -- symmetric burst whose outer edges carry the authored
+                       -- fade on both sides. `right` is that mirror axis, and
+                       -- must stay equal to the square's horizontal centre.
+                       burst = { left = 0, top = 0, right = 54.25,
+                                 bottom = 95 },
                        streak = { left = 80, top = 0, right = 200, bottom = 95,
                                   -- Vertical offset from nameShadow's centre,
                                   -- in design-button units. This aligns their
@@ -776,7 +1318,14 @@ M.modernWow.spellBook = {
   -- (M.modernWow.playerFX): additive, alpha ping-pongs through
   -- U.EaseInOutCubic over `pulsePeriod`. `alphaMin` stays above zero so the
   -- mark never vanishes at the bottom of the cycle.
-  barGlowPulse = { pulsePeriod = 2.5, alphaMin = 0.25, alphaMax = 0.675 },
+  --
+  -- `streakMax` is the name streak's own peak, 20% under the burst's (user
+  -- request, 2026-09-21): the streak is a far larger lit area than the burst,
+  -- so at a shared peak it out-read the icon it belongs to. Both halves of
+  -- the burst keep `alphaMax`, and the two share `alphaMin` and the phase, so
+  -- the mark still breathes as one.
+  barGlowPulse = { pulsePeriod = 2.5, alphaMin = 0.25, alphaMax = 0.675,
+                   streakMax = 0.54 },
 
   -- Skill-line side tabs: 32-unit native CheckButtons, their 64x64 frame
   -- drawn from (-3, 11) as the source template does. `left` hooks the art's
@@ -1066,6 +1615,185 @@ M.talentTree = {
     WarlockAffliction = { "DAMAGER" },
     WarlockDemonology = { "DAMAGER" },
   },
+
+  -- The client's own talent art, named once for every drawing path. The tree
+  -- background is knowledge.json / talent.tab_info_background_textures
+  -- (BEHAVIOR_VERIFIED); the rest are the files the stock 1.12 TalentFrame
+  -- templates name, which DF-main also loads by these exact paths
+  -- (WoW-DragonflightUI-main/XML/Talents.xml DFTalentBranchTemplate,
+  -- DFTalentArrowTemplate). They are not runtime-verified here, and a missing
+  -- texture is invisible rather than an error
+  -- (textures.gettexture_echoes_missing_path).
+  texture = {
+    backgroundBase = "Interface\\TalentFrame\\",
+    branches   = "Interface\\TalentFrame\\UI-TalentBranches",
+    arrows     = "Interface\\TalentFrame\\UI-TalentArrows",
+    slot       = "Interface\\Buttons\\UI-EmptySlot-White",
+    rankBorder = "Interface\\TalentFrame\\TalentFrame-RankBorder",
+    highlight  = "Interface\\Buttons\\ButtonHilight-Square",
+  },
+
+  -- Blizzard TALENT_BRANCH_TEXTURECOORDS / TALENT_ARROW_TEXTURECOORDS, keyed
+  -- 1 = requirements met, -1 = not met. Game data on Blizzard's own branch and
+  -- arrow sheets, so every talent path that draws those sheets -- or an
+  -- imported copy of them -- reads this one table.
+  branchCoords = {
+    up = { [1] = { 0.12890625, 0.25390625, 0, 0.484375 }, [-1] = { 0.12890625, 0.25390625, 0.515625, 1.0 } },
+    down = { [1] = { 0, 0.125, 0, 0.484375 }, [-1] = { 0, 0.125, 0.515625, 1.0 } },
+    left = { [1] = { 0.2578125, 0.3828125, 0, 0.5 }, [-1] = { 0.2578125, 0.3828125, 0.5, 1.0 } },
+    right = { [1] = { 0.2578125, 0.3828125, 0, 0.5 }, [-1] = { 0.2578125, 0.3828125, 0.5, 1.0 } },
+    topright = { [1] = { 0.515625, 0.640625, 0, 0.5 }, [-1] = { 0.515625, 0.640625, 0.5, 1.0 } },
+    topleft = { [1] = { 0.640625, 0.515625, 0, 0.5 }, [-1] = { 0.640625, 0.515625, 0.5, 1.0 } },
+    bottomright = { [1] = { 0.38671875, 0.51171875, 0, 0.5 }, [-1] = { 0.38671875, 0.51171875, 0.5, 1.0 } },
+    bottomleft = { [1] = { 0.51171875, 0.38671875, 0, 0.5 }, [-1] = { 0.51171875, 0.38671875, 0.5, 1.0 } },
+    tdown = { [1] = { 0.64453125, 0.76953125, 0, 0.5 }, [-1] = { 0.64453125, 0.76953125, 0.5, 1.0 } },
+    tup = { [1] = { 0.7734375, 0.8984375, 0, 0.5 }, [-1] = { 0.7734375, 0.8984375, 0.5, 1.0 } },
+  },
+  arrowCoords = {
+    top = { [1] = { 0, 0.5, 0, 0.5 }, [-1] = { 0, 0.5, 0.5, 1.0 } },
+    right = { [1] = { 1.0, 0.5, 0, 0.5 }, [-1] = { 1.0, 0.5, 0.5, 1.0 } },
+    left = { [1] = { 0.5, 1.0, 0, 0.5 }, [-1] = { 0.5, 1.0, 0.5, 1.0 } },
+  },
+}
+
+
+-- Talent window, classic-wow (modules/talentsclassic.lua): the same
+-- three-tree interface the other two paths draw, housed in the client's own
+-- chrome (user request, 2026-09-21).
+--
+-- The tree headers are the modern-wow headers (user request, 2026-09-21) and
+-- carry that theme's imported art; everything else here is the client's own.
+-- The window is Blizzard's DialogBox frame, each
+-- tree sits in Blizzard's tooltip-bordered inset, and the tree background,
+-- talent slot, rank border, highlight, branch and arrow sheets are the client's
+-- own files named once in M.talentTree.texture. Only the drag-band, rule and
+-- text colours come from UnrealUI, which is what rules/unreal-ui-design.md
+-- asks of a classic-wow addon-owned extra.
+--
+-- The grid and background numbers are deliberately the same measurements the
+-- modern-wow path uses, because both measure the *client's* tree artwork: the
+-- 198-wide painted column of <background>-TopLeft/-BottomLeft, a 46-unit node
+-- pitch and 30-unit buttons. Only the housing differs.
+M.classicWow.talents = {
+  texture = {
+    -- Blizzard's generic dialog housing (DialogBorderTemplate) and the tooltip
+    -- inset every stock window puts a list or tree inside. Backdrop edge art
+    -- does draw on this client -- what fails is a fractional edgeSize
+    -- (rendering.backdrop_edge_fractional_not_rasterized), so both edges below
+    -- are whole units, the way M.modernWow.statBoxes already ships.
+    windowBackground = "Interface\\DialogFrame\\UI-DialogBox-Background",
+    windowBorder     = "Interface\\DialogFrame\\UI-DialogBox-Border",
+    insetBackground  = "Interface\\Tooltips\\UI-Tooltip-Background",
+    insetBorder      = "Interface\\Tooltips\\UI-Tooltip-Border",
+    -- Header art (user request, 2026-09-21): the tree header is the same
+    -- header the modern-wow path draws -- the TalentFrame-Parts parchment cell
+    -- vertex coloured with the tree's TALENT_INFO colour under its gold rim,
+    -- the golden-square icon frame, the portrait-ring spent-points ring over
+    -- the stone disc, and the role icons at the top right. This is the one
+    -- place imported theme media enters the classic-wow talent window; the
+    -- housing, the tree inset and every sheet below the header stay the
+    -- client's own art. Paths are named here, never in the module.
+    talentFrameParts = M.modernWow.path .. "ui\\talents\\talent-frame-parts",
+    iconBorder       = M.modernWow.path .. "ui\\golden-square-border",
+    roleIcons        = M.modernWow.path .. "ui\\talents\\role-icons",
+    portraitRing     = M.modernWow.path .. "ui\\frame\\portrait-ring",
+    pointsBackground = M.modernWow.texture.portraitBackground,
+  },
+  -- Three 208-wide panels, 12 units of dialog border each side, 1 between.
+  design = { width = 650, height = 448 },
+  -- `top` is the dialog's title band above the trees; `left`/`right`/`bottom`
+  -- clear the 32-unit DialogBox edge.
+  inset = { left = 12, top = 58, right = 12, bottom = 14 },
+  window = { tileSize = 32, edgeSize = 32, inset = 11 },
+  panelInset = { tileSize = 16, edgeSize = 16, inset = 4 },
+  title = { y = 17 },
+  status = { y = 38 },
+  -- The client's own close button, moved to the dialog's corner and left in its
+  -- native art: classic-wow never restyles a stock control.
+  close = { x = -8, y = -8 },
+  dragInset = 40,
+
+  trees = 3,
+  panel = { width = 208, height = 376, gap = 1 },
+  -- The tree art, cropped to its painted columns exactly as the modern-wow
+  -- path crops the same client files. `y` is where it starts below the header,
+  -- which is also where the tree inset's content begins.
+  background = {
+    x = 5, y = 40, width = 198, topHeight = 256, bottomHeight = 75,
+    topTexCoord = { 0.19921875, 0.97265625, 0, 1 },
+    bottomTexCoord = { 0.19921875, 0.97265625, 0, 0.4140625 },
+    -- The 1-unit light rule along the art's top edge, as the stock talent
+    -- panel has.
+    ruleAlpha = 0.25,
+  },
+  -- Header band above each tree inset. Every number below is the one
+  -- M.modernWow.talents.header carries, because this is deliberately the same
+  -- header (user request, 2026-09-21) measured against the same artwork. See
+  -- that table for the provenance of each cell and crop, and keep the two in
+  -- step when either is re-measured.
+  header = {
+    x = 5, y = 5, width = 198, height = 33,
+    -- Where the tree inset starts below the header: the band's own bottom.
+    bedTop = 38,
+    texCoord = { 0.00390625, 0.77734375, 0.546875, 0.61132813 },
+    borderTexCoord = { 0.00390625, 0.77734375, 0.61523438, 0.67968750 },
+    iconX = 1, iconY = 1, iconSize = 32,
+    iconBorder = { canvas = 256, left = 32, top = 30, right = 224, bottom = 221 },
+    pointsSize = 23, pointsX = 10, pointsY = -6,
+    -- The portrait ring's square crop, as the modern-wow window's own portrait
+    -- takes it (M.modernWow.talents.frame.portrait.ringTexCoord); this path has
+    -- no themed window portrait to read it from.
+    ringTexCoord = { 0.0078125, 0.6171875, 0.0078125, 0.6171875 },
+    pointsDisc = { crop = 156, left = 19, top = 19, right = 131, bottom = 131 },
+    pointsTextY = -2,
+    nameX = 47, nameY = 9, nameRight = 32,
+    roleIcon = {
+      size = 16, x = -6, y = -9, gap = 1,
+      cells = {
+        DAMAGER = { 0.25, 0.5, 0, 1 },
+        TANK    = { 0.5, 0.75, 0, 1 },
+        HEALER  = { 0.75, 1, 0, 1 },
+      },
+    },
+  },
+  -- Node capacity matches the other paths; Vanilla fills 7 of the 11 rows.
+  grid = { left = 20, top = 52, pitch = 46, button = 30, designButton = 37,
+           rows = 11, columns = 4 },
+  slot = { size = 64 },
+  rankBorder = { size = 32, x = 0, y = 0 },
+  icon = { crop = { 0.08, 0.92, 0.08, 0.92 } },
+
+  -- Blizzard's own dialog colours: gold title and headings, white body, and
+  -- the dark fills its DialogBox and tooltip insets are drawn over.
+  titleColor = { 1.00, 0.82, 0.00, 1.00 },
+  statusColor = { 1.00, 1.00, 1.00, 1.00 },
+  nameColor = { 1.00, 0.82, 0.00, 1.00 },
+  pointsColor = { 1.00, 1.00, 1.00, 1.00 },
+  -- The window body reads at 90% (user requests, 2026-09-21: 80, then 90 --
+  -- 80 left the world showing through). This is the backdrop's own colour on
+  -- the DialogBox background texture, so only the body fades: the border keeps
+  -- its own alpha below, and the tree insets draw their own fill over it.
+  windowFill = { 1.00, 1.00, 1.00, 0.90 },
+  windowEdge = { 1.00, 1.00, 1.00, 1.00 },
+  insetFill = { 0.00, 0.00, 0.00, 0.80 },
+  insetEdge = { 0.40, 0.40, 0.40, 1.00 },
+  -- Rank readout: the game's own talent-state colours, as the stock talent
+  -- button uses -- green while learnable and not maxed, gold at max, grey when
+  -- locked.
+  rankColor = {
+    normal    = { 1.00, 0.82, 0.00, 1.00 },
+    available = { 0.10, 1.00, 0.10, 1.00 },
+    maxed     = { 1.00, 0.82, 0.00, 1.00 },
+    disabled  = { 0.50, 0.50, 0.50, 1.00 },
+  },
+  -- A locked talent's icon is desaturated and dimmed to this tint.
+  disabledIcon = { 0.65, 0.65, 0.65 },
+
+  pointsPerTier = M.talentTree.pointsPerTier,
+  firstTalentLevel = M.talentTree.firstTalentLevel,
+  maxLevel = M.talentTree.maxLevel,
+  branchCoords = M.talentTree.branchCoords,
+  arrowCoords = M.talentTree.arrowCoords,
 }
 
 
@@ -1083,16 +1811,18 @@ M.talentTree = {
 -- is invisible rather than an error (textures.gettexture_echoes_missing_path).
 M.modernWow.talents = {
   texture = {
-    backgroundBase = "Interface\\TalentFrame\\",
+    -- The client's own talent files come from the one shared table; only the
+    -- branch and arrow sheets are the theme's imported copies of them.
+    backgroundBase = M.talentTree.texture.backgroundBase,
+    slot       = M.talentTree.texture.slot,
+    rankBorder = M.talentTree.texture.rankBorder,
+    highlight  = M.talentTree.texture.highlight,
     branches   = M.modernWow.path .. "ui\\talents\\talent-branches",
     iconBorder = M.modernWow.path .. "ui\\golden-square-border",
     pointsBackground = M.modernWow.texture.portraitBackground,
     roleIcons  = M.modernWow.path .. "ui\\talents\\role-icons",
     arrows     = M.modernWow.path .. "ui\\talents\\talent-arrows",
     talentFrameParts = M.modernWow.path .. "ui\\talents\\talent-frame-parts",
-    slot       = "Interface\\Buttons\\UI-EmptySlot-White",
-    rankBorder = "Interface\\TalentFrame\\TalentFrame-RankBorder",
-    highlight  = "Interface\\Buttons\\ButtonHilight-Square",
     metalCorners    = M.modernWow.path .. "ui\\frame\\metal-corners",
     metalHorizontal = M.modernWow.path .. "ui\\frame\\metal-horizontal",
     metalVertical   = M.modernWow.path .. "ui\\frame\\metal-vertical",
@@ -1232,26 +1962,12 @@ M.modernWow.talents = {
     maxed     = { 1.00, 0.82, 0.00, 1.00 },
     disabled  = { 0.50, 0.50, 0.50, 1.00 },
   },
-
-  -- DF-main TALENT_BRANCH_TEXTURECOORDS / TALENT_ARROW_TEXTURECOORDS, keyed
-  -- 1 = requirements met, -1 = not met.
-  branchCoords = {
-    up = { [1] = { 0.12890625, 0.25390625, 0, 0.484375 }, [-1] = { 0.12890625, 0.25390625, 0.515625, 1.0 } },
-    down = { [1] = { 0, 0.125, 0, 0.484375 }, [-1] = { 0, 0.125, 0.515625, 1.0 } },
-    left = { [1] = { 0.2578125, 0.3828125, 0, 0.5 }, [-1] = { 0.2578125, 0.3828125, 0.5, 1.0 } },
-    right = { [1] = { 0.2578125, 0.3828125, 0, 0.5 }, [-1] = { 0.2578125, 0.3828125, 0.5, 1.0 } },
-    topright = { [1] = { 0.515625, 0.640625, 0, 0.5 }, [-1] = { 0.515625, 0.640625, 0.5, 1.0 } },
-    topleft = { [1] = { 0.640625, 0.515625, 0, 0.5 }, [-1] = { 0.640625, 0.515625, 0.5, 1.0 } },
-    bottomright = { [1] = { 0.38671875, 0.51171875, 0, 0.5 }, [-1] = { 0.38671875, 0.51171875, 0.5, 1.0 } },
-    bottomleft = { [1] = { 0.51171875, 0.38671875, 0, 0.5 }, [-1] = { 0.51171875, 0.38671875, 0.5, 1.0 } },
-    tdown = { [1] = { 0.64453125, 0.76953125, 0, 0.5 }, [-1] = { 0.64453125, 0.76953125, 0.5, 1.0 } },
-    tup = { [1] = { 0.7734375, 0.8984375, 0, 0.5 }, [-1] = { 0.7734375, 0.8984375, 0.5, 1.0 } },
-  },
-  arrowCoords = {
-    top = { [1] = { 0, 0.5, 0, 0.5 }, [-1] = { 0, 0.5, 0.5, 1.0 } },
-    right = { [1] = { 1.0, 0.5, 0, 0.5 }, [-1] = { 1.0, 0.5, 0.5, 1.0 } },
-    left = { [1] = { 0.5, 1.0, 0, 0.5 }, [-1] = { 0.5, 1.0, 0.5, 1.0 } },
-  },
+  -- DF-main TALENT_BRANCH_TEXTURECOORDS / TALENT_ARROW_TEXTURECOORDS. Those are
+  -- Blizzard's own cells on Blizzard's own sheets, and the theme's imported
+  -- copies of those sheets keep their layout, so the one table in M.talentTree
+  -- serves this path and the classic one alike.
+  branchCoords = M.talentTree.branchCoords,
+  arrowCoords = M.talentTree.arrowCoords,
 
   -- Theme-neutral tree data (M.talentTree) under this table's own field
   -- names, so tal.TreeLookup keeps reading `defaultColor`/`treeColor`/
@@ -1276,6 +1992,26 @@ M.modernWow.talents = {
 -- opaque rim surrounds a transparent opening at `slotOpening`.
 -- The Quest Log count boxes share the talent panels' ThinBorder rim.
 M.modernWow.questLog.countBox.border = M.modernWow.talents.texture.panelBorder
+
+-- The Modern WoW dropdown (core/dropdown.lua, user request 2026-09-19): the
+-- closed control and its popup list framed with the same ThinBorder
+-- eight-slice as the talent panels, over a dark fill. `borderSize` is the
+-- drawn corner size: the panels' 16 would overlap on the 28-high control
+-- (16 + 16 > 28), so the dropdown draws the square pieces at 12. The value
+-- stays light neutral and the owned arrow glyph takes the warm heading gold.
+M.modernWow.dropdown = {
+  border = M.modernWow.talents.texture.panelBorder,
+  borderSize = 12,
+  -- The fill stops this far inside the outer edge, so nothing dark shows
+  -- past the border's transparent outer pixels and rounded corners.
+  fillInset = 3,
+  fill = { 0.02, 0.02, 0.02, 0.92 },
+  listFill = { 0.02, 0.02, 0.02, 0.97 },
+  arrowColor = { 1.00, 0.82, 0.00, 1.00 },
+  -- The arrow glyph's offset from the control's right edge (the flat
+  -- component uses -4; user asked 3 further left, 2026-09-19).
+  arrowX = -7,
+}
 
 M.modernWow.professions = {
   texture = {
@@ -1517,11 +2253,13 @@ M.modernWow.craftTracker = {
   width = 220, minHeight = 20, indent = 8, lineGap = 2, recipeGap = 8,
   handleLevel = 2,
   headerColor  = { 1.00, 0.82, 0.00, 1.00 },
+  headerHoverColor = { 1.00, 1.00, 1.00, 1.00 },
+  headerPressedColor = { 1.00, 0.65, 0.00, 1.00 },
   doneColor    = { 1.00, 1.00, 1.00, 1.00 },
   pendingColor = { 0.60, 0.60, 0.60, 1.00 },
 }
 
--- UnrealQuest-measured three-slice action-button cells in ui/128RedButton.tga
+-- UnrealQuest-measured three-slice action-button cells in buttons/128RedButton.tga
 -- (512x2048). Each state combines the left bevel from a short 114x125 button
 -- with the middle and right bevel from a 291x125 bar. At runtime the caps keep
 -- their source aspect and only the middle stretches, exactly like UQ's three
@@ -1542,7 +2280,7 @@ M.modernWow.button128Red = {
   disabled = { barTop = 653, capLeft = 262, capTop = 1043 },
 }
 
--- The gold-rimmed sibling, ui/128GoldRedButton.tga (512x1024), with the same
+-- The gold-rimmed sibling, buttons/128GoldRedButton.tga (512x1024), with the same
 -- bar/cap geometry. Each state's short button sits on the bar's own row, so
 -- capTop equals barTop. Normal and hover are UnrealQuest's cells; the grey
 -- row between them is opaque at y 653-777 on the file's alpha (> 8).
@@ -1557,7 +2295,7 @@ M.modernWow.button128GoldRed = {
   disabled = { barTop = 653, capLeft = 296, capTop = 653 },
 }
 
--- Cells in ui/red-button, the octagonal button atlas: a 5x3 grid of 34x38
+-- Cells in buttons/red-button, the octagonal button atlas: a 5x3 grid of 34x38
 -- cells on a 256x128 canvas, the first at (2,2), stepping 38 across and 40
 -- down. Those numbers are measured from the file's own alpha channel (the
 -- occupied column runs are 2-35, 40-73, 78-111, 116-149, 154-187 and the row
@@ -2046,6 +2784,45 @@ M.modernWow.sourceLayout = {
   authoredRight = true,
 }
 
+-- User-supplied reaction wash behind the target's name. Placed the way
+-- DF-main places its TargetFrame NameBackground (Target.mixin.lua: 135 wide on
+-- a 126-wide health bar, bottom edge on the bar's top edge): it spans the whole
+-- health opening, left edge to right edge, so it reads as the housing's name
+-- strip instead of a short patch. The portrait ring is part of the housing
+-- art, which draws BELOW this wash (overlay +20, text layer +21), so the wash
+-- stops at the ring's outer edge rather than running under it. Only the width
+-- is stretched. left/right are insets from the bar's edges (negative extends
+-- outward), y is positive up.
+--
+-- Height and y belong to the file M.modernWow.texture.targetReaction names,
+-- because the two shipped cuts spend different fractions of their canvas on
+-- the empty rows below the strip's flat cut. The pair below each place the
+-- strip's flat cut 2.2 units below the health bar's top edge; `height` is then
+-- trimmed from the top, so the value here draws the strip 4 units shorter than
+-- the cut's own proportions (a requested trim, 2026-09-19).
+--
+--   target-reaction-type  128x16, strip rows 0-11:  height 21,   y -7.5
+--   target-reaction       172x29, strip rows 0-25:  height 17.5, y -4
+--
+-- `left` and `right` place the strip's open end on the bar's left edge and run
+-- its notched end 7 units past the bar's right edge (requested, 2026-09-19).
+-- The target frame reads portrait-right, and this wash draws above the housing
+-- art, so that overhang crosses the portrait ring's outer edge rather than
+-- stopping at it. Widening from here grows this same end unless `left` is
+-- given a negative value.
+M.modernWow.targetReaction = {
+  height = 17,
+  left = 0,
+  right = -7,
+  y = -7.5,
+  -- Wash opacity: 60% so the housing texture shows through.
+  alpha = 0.6,
+  -- Peak alpha of the additive red pulse over the wash while the target is
+  -- an enemy (modules/modernwow.lua mw.ReactionPulseTick). Timing is shared
+  -- with M.modernWow.playerFX; this peak is kept lower so it reads soft.
+  pulseMax = 0.5,
+}
+
 -- ---------------------------------------------------------------------------
 -- The SMALL 128x64 canvas (unitframes/party-frame), in its own art pixels.
 --
@@ -2245,6 +3022,12 @@ M.modernWow.text = {
   -- before it reaches the level rather than running under it. Two or three
   -- digits plus a gap.
   levelReserve = 26,
+  -- The player's and target's own name, in the warm gold this theme's titles
+  -- use (#eeb901, user request 2026-09-20). Those two frames only: a party row
+  -- keeps the shared neutral text, where several names are read side by side
+  -- and gold on every one of them carries no hierarchy. The target's reaction
+  -- is still shown by the reaction bar's vertex colour, which is unchanged.
+  nameColor = { 0.93, 0.73, 0.00, 1.00 },
   -- The power bar's percentage, relative to the value at the other end of that
   -- same row. Nominally they share a Y, but a LEFT/RIGHT anchor pins a
   -- FontString's vertical centre rather than its baseline, so two readouts of
@@ -2360,6 +3143,27 @@ M.modernWow.portraitModelScale = 1.1
 -- frame art. Centred on the portrait ring's x and floated above the frame's
 -- top edge, which is where the classic resting glyph sits.
 -- ---------------------------------------------------------------------------
+-- Blizzard's IconAlertAnts flipbook. Its own call site is
+-- Blizzard_CommentatorSpell.lua:
+--
+--   TextureUtil.AnimateTexCoords(self.Ants, 256, 256, 48, 48, 22, elapsed, 0.01)
+--
+-- which walks the grid row-major and 1-based: for frame f,
+-- left = mod(f - 1, columns) * cell / sheet and top = the row above
+-- ceil(f / columns) * cell / sheet. `interval` is Blizzard's throttle, one
+-- frame per hundredth of a second; a surface driving it off a coarser ticker
+-- steps by elapsed time instead and simply runs the cycle slower.
+--
+-- Only 22 of the 25 cells are played, and the sheet's last 16 pixels on each
+-- axis are outside the grid, so this cannot be treated as a plain 5x5 sheet.
+M.modernWow.iconAlertAnts = {
+  sheet = 256,
+  cell = 48,
+  columns = 5,
+  frames = 22,
+  interval = 0.01,
+}
+
 M.modernWow.playerFX = {
   glowLeft = 2, glowRight = 387, glowTop = 0, glowBottom = 141,
   glowWidth = 512, glowHeight = 256,
@@ -2522,14 +3326,11 @@ M.color = {
 
   highlight  = { 0.96, 0.68, 0.04, 0.22 },
 
-  -- Edit-mode anchors stay cool blue until selected. The active anchor then
-  -- uses the ordinary accent tokens, so selection reads like every other
-  -- focused UnrealUI control without making all of edit mode compete for the
-  -- eye at once.
-  mover      = { 0.04, 0.36, 0.58, 0.32 },
-  moverIdleEdge = { 0.18, 0.68, 0.92, 1.00 },
-  moverIdleHover = { 0.36, 0.82, 1.00, 1.00 },
-  moverIdleGlow = { 0.10, 0.62, 0.95, 1.00 },
+  -- Edit-mode anchors stay cool blue until selected, then turn gold. The
+  -- anchor itself no longer carries that as flat colour: it draws the
+  -- client's own Edit Mode nine-slice, which is authored in exactly those two
+  -- states (M.modernWow.moveUI). This token remains for the hover edge the
+  -- shared button style takes from the same family.
   moverEdge  = { 0.96, 0.68, 0.04, 1.00 },
 
   -- Placeholder content drawn inside an anchor that is empty while edit mode
@@ -2542,6 +3343,131 @@ M.color = {
   grid       = { 0.45, 0.45, 0.45, 0.30 },
   gridAxis   = { 0.96, 0.68, 0.04, 0.55 },
   moverGuide = { 1.00, 0.20, 0.20, 0.90 },
+}
+
+-- The flat tab strip every `modern` stock window wears through
+-- U.StyleStockTabGroup (core/stockui.lua): Character, Social, Spellbook, Mail
+-- and Merchant all read their tab face from here rather than passing their own
+-- colours, so one window can never drift from the rest.
+--
+-- `height` is the Spellbook strip's height, adopted for every window on
+-- 2026-09-20: the modern Spellbook's Spellbook/Professions row had been the
+-- one strip drawn taller than the rest, the user picked it over the shared
+-- size, and every other window now matches it. It is deliberately larger than
+-- the 22-unit shared control height -- a tab carries a label against a window
+-- edge rather than sitting inside a panel, and reads better with the room.
+--
+-- A tab's state is carried by its LABEL COLOUR and nothing else: the active
+-- tab takes the addon accent, every other tab the neutral dim grey at 90%
+-- opacity, and a hovered tab plain white. The tab's fill, outline and size do
+-- not move between states -- an earlier build faded the whole inactive button
+-- to 90% and it read as a greyed-out tab instead (user report, 2026-09-20).
+--
+-- `modern-wow` overrides these from M.modernWow.tab when it dresses a tab in
+-- its own art (mw.DressTab); the greying is this flat family's and must not
+-- reach that one.
+M.tab = {
+  height = 29,
+  -- Space each side of a label. A tab is sized to its own text plus this on
+  -- the left and the right, which is how the Spellbook's tabs have always
+  -- been built (prof.CreateTab); every strip now does the same instead of
+  -- keeping whatever width the client's template baked in (user request,
+  -- 2026-09-20). U.FitStockTabStrip may still reduce it on a window whose
+  -- run would not otherwise fit, as the Character sheet's does with a pet out.
+  padding = 10,
+  background = { 0.03, 0.03, 0.03, 0.82 },
+  activeTextColor = M.color.accent,
+  -- textDim with the 10% taken out of the label's own alpha, not the tab's.
+  inactiveTextColor = { 0.60, 0.60, 0.60, 0.90 },
+  -- Hover is plain white on any tab, and changes nothing else -- no border
+  -- move, no accent outline (user request, 2026-09-20). Brighter than
+  -- M.color.text on purpose: this is the one tab state that has to read as
+  -- "the cursor is here" against both the accent and the grey.
+  hoverTextColor = { 1.00, 1.00, 1.00, 1.00 },
+}
+
+-- The label face modern-wow keeps once mw.DressTab takes one of those flat
+-- tabs over. Named rather than inherited so the Modern strip's dim-grey
+-- inactive label and its faded inactive tab cannot reach the DF art, which
+-- already carries the inactive state in the texture itself: warm gold on the
+-- active tab, light neutral on the rest, no fade. Assigned here because
+-- M.modernWow.tab is built well above M.color.
+M.modernWow.tab.activeTextColor = M.color.textAccent
+M.modernWow.tab.inactiveTextColor = M.color.text
+-- No white hover either: this theme's hover is the art wash (hoverAlpha), so
+-- the label holds still.
+M.modernWow.tab.hoverTextColor = M.color.text
+
+-- The `modern` Spellbook's Professions page. The page reuses the shared
+-- profession scan and native spell-button mapping from
+-- modules/spellbookprofessions.lua, but all of its chrome is the flat modern
+-- system: six compact rows, one outline per surface and semantic green skill
+-- progress. Coordinates are window units from SpellBookFrame's TOPLEFT.
+M.spellBook = {
+  professions = {
+    flat = true,
+    texture = {
+      unlearn = "Interface\\Buttons\\UI-GroupLoot-Pass-Up",
+    },
+    rowLeft = 24,
+    primaryTop = { 58, 114 },
+    secondaryTop = { 170, 226, 282, 338 },
+    secondaryGap = 16,
+    row = {
+      -- SpellBook's flat panel runs from frame x=12 to x=354. Starting rows
+      -- at x=24 leaves 12 px on the left; 318 ends them at x=342 and gives
+      -- the same 12 px on the right.
+      width = 318,
+      height = 50,
+      icon = 34,
+      iconInset = 8,
+      primaryTextX = 52,
+      secondaryTextX = 8,
+      nameY = -8,
+      rankY = -27,
+      missingY = -10,
+      missingDetailY = -29,
+      background = { 0.025, 0.025, 0.025, 0.90 },
+    },
+    bar = {
+      x = 120,
+      y = -20,
+      width = 90,
+      height = 10,
+      textInset = 5,
+      background = { 0.10, 0.10, 0.10, 0.90 },
+      fill = { 0.25, 0.75, 0.30, 1.00 },
+    },
+    unlearn = { size = 18, x = 222, y = -16 },
+    button = {
+      size = 32,
+      -- Keep the right-most profession spell 8 px inside the narrower row.
+      x = 302,
+      leftX = 264,
+      y = 9,
+      primaryY = 9,
+      textWidth = 1,
+      iconOnly = true,
+    },
+    tab = {
+      -- This row is where the shared tab height and padding came from, so it
+      -- reads the shared tokens rather than keeping the numbers twice.
+      padding = M.tab.padding,
+      height = M.tab.height,
+      gap = 3,
+      background = { 0.07, 0.07, 0.07, 1.00 },
+      activeBackground = { 0.03, 0.03, 0.03, 1.00 },
+    },
+    nameColor = M.color.textAccent,
+    subSpellColor = M.color.text,
+    rankColor = M.color.textDim,
+    barTextColor = M.color.text,
+    missingHeaderColor = M.color.textDim,
+    missingTextColor = M.color.textDim,
+    missingIcon = "Interface\\Icons\\INV_Scroll_04",
+    missingIconAlpha = 0.45,
+    ranks = { 75, 150, 225, 300 },
+  },
 }
 
 -- Loot window animation, shared by every theme (modules/lootdesign.lua). These
@@ -2594,6 +3520,96 @@ M.loot.flat = {
   -- the accent fill on press. Nothing else replaces the stock state squares.
   hoverFill = { M.color.accent[1], M.color.accent[2], M.color.accent[3], 0.16 },
   pressFill = M.color.accentFill,
+}
+
+-- Profession window, modern theme (modules/professionsmodern.lua). The data
+-- and interaction model matches the modern-wow profession window, while every
+-- surface uses UnrealUI's flat design primitives and shared colour tokens.
+M.professions = {
+  design = { width = 720, height = 500 },
+  title = { y = 9 },
+  close = { x = -6, y = -6 },
+  drag = { headerHeight = 44, inset = 28 },
+  levels = { cover = 10, content = 1, handle = 10, close = 22 },
+
+  professionIcon = { x = 10, y = 9, size = 28, crop = { 0.08, 0.92, 0.08, 0.92 } },
+  rank = { width = 250, height = 8, y = 31 },
+  rankText = { y = 30 },
+  -- The skill number sits on the rank bar itself, over both the dark track and
+  -- the green fill. White rather than M.color.text (user request, 2026-09-20)
+  -- so it stays legible on the fill, matching the modern-wow window's own
+  -- rankTextColor.
+  rankTextColor = { 1.00, 1.00, 1.00, 1.00 },
+
+  list = {
+    x = 10, y = 50, width = 276, bottom = 42,
+    inset = 6, rowHeight = 22, headerHeight = 24,
+    headerGap = 3, groupGap = 3,
+    scrollWidth = 16, scrollArrow = 16, scrollPad = 3, scrollRight = 4,
+  },
+  -- User-requested exception: recipe difficulty uses the exact Modern WoW
+  -- profession-atlas glyphs, while the surrounding list remains flat Modern.
+  difficultyIcon = {
+    texture = M.modernWow.professions.texture.atlas,
+    atlasWidth = M.modernWow.professions.atlas.width,
+    atlasHeight = M.modernWow.professions.atlas.height,
+    x = 4, width = 13, height = 15, labelX = 21,
+    countGap = 4, countFontSize = M.fontSize.normal + 2,
+    padding = 7, trackedGap = 4,
+    cells = {
+      optimal = M.modernWow.professions.cells.skillOptimal,
+      medium = M.modernWow.professions.cells.skillMedium,
+      easy = M.modernWow.professions.cells.skillEasy,
+    },
+  },
+  tracked = { width = 3, inset = 4, right = 4 },
+  detail = {
+    x = 292, y = 50, right = 10, bottom = 42, inset = 12,
+    icon = 46, nameGap = 10, lineGap = 4, sectionGap = 10,
+    reagentIcon = 26, reagentRow = 32, reagentTextGap = 7,
+    reagentColumn = 4, reagentGap = 8, maxReagents = 8,
+    -- Top of the reagent block inside the detail pane: its heading, then the
+    -- first row of reagent buttons. Both were inline literals (108 / 126) and
+    -- moved up together (user requests, 2026-09-20: 10, then a further 14), so
+    -- they stay one block.
+    reagentLabelY = 84, reagentTop = 102,
+  },
+  track = { right = 10, top = 10, width = 128, height = 18 },
+  stats = {
+    width = 190, right = 10, top = 36, padding = 8,
+    lineGap = 2, columnGap = 8, nameGap = 8,
+    maxLines = 28, maxHeight = 362, level = 12,
+  },
+  statsSkipEquipLoc = { INVTYPE_BAG = true, INVTYPE_QUIVER = true,
+                        INVTYPE_AMMO = true },
+  controls = {
+    right = 10, bottom = 10, width = 96, height = 22,
+    gap = 4, step = 22, count = 34, maxCount = 999,
+    castBarGap = 6, castBarShiftX = 0, castBarShiftY = 0,
+  },
+
+  panelColor = { 0.025, 0.025, 0.025, 0.94 },
+  insetColor = { 0.04, 0.04, 0.04, 0.86 },
+  headerColor = { 0.08, 0.08, 0.08, 0.96 },
+  rowState = {
+    hoverFillAlpha = 0.10, hoverBorderAlpha = 0.55,
+    focusFillAlpha = 0.22, focusBorderAlpha = 1.00,
+  },
+  rankBackground = { 0.10, 0.10, 0.10, 0.90 },
+  rankFill = { 0.25, 0.75, 0.30, 1.00 },
+  missingColor = { 0.90, 0.25, 0.20, 1.00 },
+  cooldownColor = { 0.45, 0.75, 1.00, 1.00 },
+  difficultyColor = {
+    optimal = { 1.00, 0.35, 0.20, 1.00 },
+    medium = { 1.00, 0.78, 0.20, 1.00 },
+    easy = { 0.30, 0.85, 0.35, 1.00 },
+    trivial = M.color.textDim,
+    used = M.color.textDim,
+  },
+  texture = {
+    missingIcon = "Interface\\Icons\\INV_Misc_QuestionMark",
+    beastTrainingIcon = "Interface\\Icons\\Ability_Hunter_BeastCall02",
+  },
 }
 
 -- Midway between the warmer #FFD200 and pure #FFFF00: clearly yellow without
@@ -2761,6 +3777,8 @@ M.craftTracker = {
   -- Direct-drag Button above the text frame (modules/crafttracker.lua).
   handleLevel = 2,
   headerColor  = { 1.00, 0.82, 0.00, 1.00 },
+  headerHoverColor = { 1.00, 0.78, 0.18, 1.00 },
+  headerPressedColor = { 1.00, 1.00, 1.00, 1.00 },
   doneColor    = { 1.00, 1.00, 1.00, 1.00 },
   pendingColor = { 0.80, 0.80, 0.80, 1.00 },
 }
@@ -2913,27 +3931,481 @@ M.slot = {
 -- ---------------------------------------------------------------------------
 -- Money
 --
--- One coin atlas, one set of texture coordinates and one colour per
--- denomination, shared by every readout in the addon (the status overlay and,
--- since it needs the identical look, the bank purchase price). Centralised so
--- a second consumer cannot drift from the first; see
--- .claude/rules/unreal-ui.md on shared media/state placement.
+-- One coin face and one colour per denomination, shared by every readout in
+-- the addon (the status overlay and, since it needs the identical look, the
+-- bank purchase price and the bag total). Centralised so a second consumer
+-- cannot drift from the first; see .claude/rules/unreal-ui.md on shared
+-- media/state placement.
 -- ---------------------------------------------------------------------------
--- USER_CONFIRMED_INGAME: UI-MoneyIcons renders when the path uses valid Lua
--- backslashes and the atlas is sliced horizontally. The separate UI-GoldIcon,
--- UI-SilverIcon and UI-CopperIcon paths do not render on this client.
-M.moneyTexture = "Interface\\MoneyFrame\\UI-MoneyIcons"
+-- User request (2026-09-20): the coin faces are UnrealUI's own art under
+-- media/icons, one file per denomination, drawn the same way under every
+-- theme. The stock Interface\MoneyFrame\UI-MoneyIcons atlas and its
+-- horizontal slice coordinates are no longer used, so a coin now fills its
+-- own texture and needs no SetTexCoord.
+--
+-- The knowledge record textures.separate_coin_paths_not_rendered is about the
+-- *stock* UI-GoldIcon/UI-SilverIcon/UI-CopperIcon paths, which are blank on
+-- this client; it says nothing about addon files. These are 16x16 32-bit RLE
+-- TGAs referenced without the extension, which is the addon-texture contract
+-- textures.addon_tga_paths_require_extensionless confirms and every other
+-- media/icons entry above already uses.
 M.money = {
   gold = {
-    coords = { 0.00, 0.25, 0, 1 },
+    texture = "Interface\\AddOns\\unrealUI\\media\\icons\\coin-gold",
     color = { 1.00, 0.82, 0.00, 1.00 },
   },
   silver = {
-    coords = { 0.25, 0.50, 0, 1 },
+    texture = "Interface\\AddOns\\unrealUI\\media\\icons\\coin-silver",
     color = { 0.75, 0.75, 0.75, 1.00 },
   },
   copper = {
-    coords = { 0.50, 0.75, 0, 1 },
+    texture = "Interface\\AddOns\\unrealUI\\media\\icons\\coin-copper",
     color = { 0.80, 0.47, 0.29, 1.00 },
   },
 }
+
+-- ---------------------------------------------------------------------------
+-- Talent Build Advisor (modules/talentadvisor.lua)
+--
+-- One component, two styles. Each style owns a `drawer` table with the same
+-- token names, so the drawer's layout -- width, header, row pitch, rule
+-- placement, footer block -- is one set of measurements written twice rather
+-- than two layouts: `modern-wow` draws it in the theme's artwork, `modern`
+-- draws the identical geometry with the flat system's own surfaces and rules
+-- and carries `flat = true`, the single marker the module branches on.
+--
+-- The talent-button marks, by contrast, are one set for both styles (user
+-- request, 2026-09-21) and are assigned after the table below: marching ants
+-- on a talent the build still wants, the spell-alert flipbook on the one to
+-- spend the point on now, and a pulsing red rim on a rank spent outside the
+-- build. The three states differ by animation rather than by colour, which is
+-- what the flat style's three static outlines could not do.
+--
+-- `released` is the single gate the module reads; both talent drawing paths
+-- reach it only through the U.*TalentAdvisor* entry points.
+-- ---------------------------------------------------------------------------
+M.talentAdvisor = {
+  released = true,
+
+  -- The drawer's open/close motion (user request, 2026-09-21). It runs on the
+  -- shared easing helper (core/easing.lua), which is this addon's one value
+  -- animator: one curve drives both the fade and a short slide out of the
+  -- talent window's edge, so the two cannot drift apart. Opening uses the
+  -- quick ease-out, closing the softer ease-in/out, as everywhere else here.
+  -- `distance` is how far behind the toggle the drawer starts: it slides out
+  -- of the window to open and back into it to close (user request,
+  -- 2026-09-21). The toggle draws a frame level above the drawer, so the
+  -- arrow stays visible and clickable through the whole motion.
+  drawerAnim = {
+    distance = 26,
+    openDuration = 0.20,
+    closeDuration = 0.16,
+  },
+
+  -- Frame levels the advisor's three marks take above the talent button, and
+  -- the level a talent window must give its rank badge to stay readable over
+  -- them. The marks are frames of their own, so every region drawn on the
+  -- button itself -- the rank border and its count -- is under all of them
+  -- until the window lifts the badge out (user report, 2026-09-20: the next
+  -- mark's flipbook covered the count).
+  level = {
+    soft = 10,
+    wrong = 11,
+    next = 12,
+    -- The prerequisite arrow that points at a talent from the rank above it
+    -- overlaps that talent's rim, so it needs a level over the next mark's
+    -- animated border too (user report, 2026-09-21). Its frame is a sibling
+    -- of the talent buttons rather than a child, so a window adds its own
+    -- button offset to this number.
+    arrow = 13,
+    badge = 16,
+  },
+
+  styles = {
+    ["modern-wow"] = {
+      -- Blizzard's marching ants (user request, 2026-09-20): every talent
+      -- the build still wants gets them, and the one to spend on now gets the
+      -- spell alert instead, so the two marks differ by animation rather than
+      -- by colour. The gold square this replaced is no longer shipped.
+      --
+      -- `ants` makes this a flipbook: the advisor steps one shared playhead
+      -- (M.modernWow.iconAlertAnts) and carries the cell to every mark, so
+      -- the whole build marches in step. grow 2 is geometry, not padding --
+      -- the ring spans 0.875 of its cell, so drawing it at 34 units lays it
+      -- on a 30-unit icon's rim.
+      soft = {
+        texture = M.modernWow.texture.iconAlertAnts,
+        ants = true,
+        antsInterval = 0.03,
+        grow = 2,
+        color = { 1.00, 1.00, 1.00, 1.00 },
+        -- The ants carry the mark themselves, so this is a light breathe
+        -- rather than the state: enough to separate a planned talent from a
+        -- learned one, never enough to hide the ants mid-cycle.
+        pulseMin = 0.75,
+        pulseMax = 1.00,
+        pulsePeriod = 2.50,
+        -- One ticker drives both the soft pulse and the `next` flipbook, so
+        -- this is also the flipbook's sampling rate: 0.03 keeps the 30-frame
+        -- one-second loop from dropping frames unevenly the way the 0.04 the
+        -- flat style still uses would.
+        pulseInterval = 0.03,
+        restAlpha = 0.90,
+      },
+      -- The open drawer itself (user request, 2026-09-20): the diamond-metal
+      -- housing every other Modern WoW dock wears and a background-rock bed
+      -- inside it. Context and role choices use 128RedButton faces; build
+      -- rows use the profession recipe highlight so the list stays quiet.
+      -- Absent from the flat style, which keeps its own panel and text
+      -- buttons -- the whole themed path is chosen by this table existing.
+      --
+      -- The rock goes on ARTWORK and is anchored corner to corner, not
+      -- SetAllPoints: on BACKGROUND it rendered nothing here, which
+      -- modules/modernwow.lua records for the social footer's identical wash.
+      --
+      -- Height is not a constant. `rowsGap` and the selected bottom block sit
+      -- under the build list; advisor.FitHeight adds them to the rows actually
+      -- shown and drops the warning row when no points are outside the build.
+      drawer = {
+        width = 250,
+        inset = 6,
+        rockShade = 0.42,
+        -- The bed reads at 70% (user requests, 2026-09-21). It is vertex
+        -- alpha, not the region's own alpha: the open/close fade drives the
+        -- drawer's SetAlpha, which copies itself onto this texture and would
+        -- take a region alpha straight back off.
+        rockAlpha = 0.70,
+        titleY = -11,
+        -- The title's rule (user request, 2026-09-21): the Dialog Box divider
+        -- this theme already lays between a quest page and its footer, drawn
+        -- across the drawer under the heading. `M.modernWow.horizontalBar`
+        -- owns its atlas cells and three-slice geometry; this token owns only
+        -- its placement.
+        -- It runs the full width of the bed and meets the housing's rim on
+        -- both sides, so its inset is the bed's own (user request,
+        -- 2026-09-21), and it draws 20% thinner than the authored bar: height
+        -- scales the three-slice, so its caps come down with it.
+        divider = { y = -24, inset = 6, height = 8 },
+        -- The same rule again between the context/role choices and the build
+        -- list (user request, 2026-09-21). `yPlain` is where it lands for a
+        -- class whose drawer draws no role row.
+        listDivider = { y = -88, yPlain = -61, inset = 6, height = 8 },
+        -- The same rule below the last visible build, held the same distance
+        -- from the list as the rule above it (user request, 2026-09-21): the
+        -- list rule's art ends 5 units over the first row's highlight, so this
+        -- one starts 5 units under the last row's, and `gap` carries the 3
+        -- units of pitch the body's trailing row does not draw.
+        buildDivider = { gap = 6, inset = 6, height = 8 },
+        -- The rows under the title, each measured from the drawer's top: the
+        -- context row, the role row, and the build list with and without that
+        -- role row. They moved down together when the divider was added, so
+        -- they are tokens rather than literals in the layout.
+        -- The header -- the drawer's top down to the context row -- is 30%
+        -- shorter than it first shipped (user request, 2026-09-21): 50 units
+        -- became 35, with the title and its rule scaled to match, and every
+        -- row below moved up by that same 15.
+        contextY = -35,
+        roleY = -62,
+        buildTop = -100,
+        buildTopPlain = -73,
+        titleColor = { 1.00, 0.82, 0.00, 1.00 },
+        side = 10,
+        buttonHeight = 22,
+        labelY = -1,
+        labelColor = M.color.text,
+        selectedColor = { 1.00, 0.82, 0.00, 1.00 },
+        -- The status line while a talent is waiting to be learned.
+        statusColor = { 1.00, 0.82, 0.00, 1.00 },
+        -- Role choices wear the settings atlas's wide rounded button (user
+        -- request, 2026-09-21) instead of the red action face the context
+        -- row keeps: it is the theme's own quiet toggle, so the two rows read
+        -- as choice-then-filter rather than two actions.
+        --
+        -- Cell measured by alpha on the 512 sheet: the button occupies
+        -- 332..417 x 11..69, and its corner round runs 13 texels, so a
+        -- 16-texel cap carries the whole round inside a fixed-aspect end and
+        -- leaves 54 flat texels to stretch.
+        --
+        -- The sheet ships one cell for this button, so state is the face's
+        -- tint: it rests one step down from the authored art, comes up to it
+        -- on hover, and takes the accent when chosen -- which multiplies the
+        -- metal rim gold and leaves the near-black bed where it is, the same
+        -- selected look the atlas draws for its own square buttons.
+        roleButton = {
+          texture = M.modernWow.texture.settingUI,
+          sheet = 512,
+          cell = { 332, 418, 11, 70 },
+          cap = 16,
+          restColor = { 0.78, 0.78, 0.78, 1.00 },
+          hoverColor = { 1.00, 1.00, 1.00, 1.00 },
+          selectedColor = M.color.accent,
+          labelColor = M.color.text,
+          hoverLabelColor = { 1.00, 1.00, 1.00, 1.00 },
+          activeLabelColor = { 1.00, 0.82, 0.00, 1.00 },
+        },
+        -- One build row is exactly as tall as the highlight it draws
+        -- (buildRow.height), so the pitch below leaves strictly 3 units of
+        -- bed between two listed builds (user request, 2026-09-21) rather
+        -- than 3 plus the slack a taller button left above and below its bar.
+        rowHeight = 19,
+        rowGap = 3,
+        -- The band between the build list and the status block: the rule's
+        -- 6 above and 8 of art, then one unit below it, so widening the gap
+        -- above the rule moves the rule rather than crowding the status.
+        rowsGap = 15,
+        -- Bottom-anchored status stack with exactly 4 units between each text
+        -- region. Without an outside-build warning the status takes that row's
+        -- place and the drawer drops the warning's 18 + 4 units.
+        footer = {
+          legendY = 9,
+          warningY = 31,
+          statusY = 53,
+          statusYPlain = 31,
+        },
+        bottomBlock = 84,
+        bottomBlockPlain = 62,
+        minHeight = 184,
+        minHeightPlain = 162,
+        buildRow = {
+          texture = M.modernWow.professions.texture.atlas,
+          atlasWidth = M.modernWow.professions.atlas.width,
+          atlasHeight = M.modernWow.professions.atlas.height,
+          cell = M.modernWow.professions.cells.highlight,
+          height = M.modernWow.professions.recipe.selectedHeight,
+          -- Row states (user request, 2026-09-21). The highlight is drawn on
+          -- every listed build rather than only under the pointer, so each
+          -- row reads as a bordered entry: neutral grey at rest, one step
+          -- lighter while hovered, and the addon accent on the chosen build.
+          -- Selection wins over hover, so pointing at the current build does
+          -- not dim it back to grey.
+          restColor = { 0.42, 0.42, 0.42, 1.00 },
+          hoverColor = { 0.62, 0.62, 0.62, 1.00 },
+          selectedColor = M.color.accent,
+          labelColor = M.modernWow.professions.recipeColor,
+          activeLabelColor = M.modernWow.professions.recipeHoverColor,
+        },
+      },
+
+      -- The drawer's open/close arrow (user request, 2026-09-20). Modern WoW
+      -- draws it as a themed control: a dark bed inside the theme's own
+      -- ThinBorder rim, with one of the settings atlas's solid yellow arrows
+      -- on top. The flat style keeps the shared text button, so this table is
+      -- absent there and advisor.BuildToggle falls back to it.
+      --
+      -- `left` and `right` are the two glyphs' texels on the 512x512 sheet,
+      -- measured by alpha rather than by their yellow alone: the arrows carry
+      -- a dark outline, and boxing only the yellow clipped it. Both are taken
+      -- at the same 21x34 so the two directions cannot differ in size. Drawn
+      -- at 15.6x25.3 -- the box aspect, at a scale that puts the yellow 10%
+      -- smaller than the first pass (user request, 2026-09-20).
+      --
+      -- backgroundInset keeps the bed off the rim: the ThinBorder pieces are
+      -- 32px canvases whose art fills only their first rows, so a 10-unit
+      -- piece draws a thin line and the rest of it is clear. Filling the
+      -- button's whole rect put a black square outside that line.
+      --
+      -- The inset is where the bed has to stop to touch the rim, and it is
+      -- measured off the art the eye actually reads -- alpha over 128 -- not
+      -- off the soft falloff around it. That falloff is what an earlier pass
+      -- measured, and it left a visible gap between the two (user report,
+      -- 2026-09-20): thin-border-top's solid line is only rows 3-6 of its 32,
+      -- so at borderSize 12 it ends 2.63 units in, while the falloff runs to
+      -- 3.75. 2.5 meets the top line and tucks a fraction under the other
+      -- three, which draw above the bed, and stays well inside the line's
+      -- outer edge (1.1 units in) so no fill escapes the rim.
+      --
+      -- Both numbers scale with borderSize: inner edge 0.219 x size, outer
+      -- edge 0.094 x size. Move them together.
+      toggle = {
+        width = 26,
+        height = 46,
+        background = { 0.04, 0.035, 0.030, 0.80 },
+        backgroundInset = 2.5,
+        borderSize = 12,
+        -- The ThinBorder set has no bottom-right corner and the shared
+        -- builder mirrors its bottom-left one into that slot, which at this
+        -- size reads as a broken corner (user report, 2026-09-20). Blizzard's
+        -- raid-frame corner is the same metal rim and is handed in instead.
+        borderBottomRight = M.modernWow.path ..
+                            "ui\\borders\\raidborder-bottomright",
+        arrow = {
+          texture = M.modernWow.texture.settingUI,
+          sheet = 512,
+          left = { 399, 420, 184, 218 },
+          right = { 475, 496, 184, 218 },
+          width = 15.6,
+          height = 25.3,
+          alpha = 0.85,
+          hoverAlpha = 1.00,
+          -- The whole glyph drops a unit while held, which is this theme's
+          -- press everywhere else it has one.
+          pressDrop = 1,
+        },
+      },
+
+      wrong = {
+        texture = M.modernWow.texture.talentIconAlert,
+        -- Match the 64-unit slot art scaled by this talent path's 30/37
+        -- button ratio: 51.9 units around the 30-unit ability icon.
+        grow = 11,
+        y = 1,
+        color = { 1.00, 0.06, 0.03, 1.00 },
+        alpha = 0.90,
+        pulseMin = 0.35,
+        pulseMax = 0.56,
+        pulsePeriod = 1.625,
+      },
+      -- Blizzard's own "you can spend a point here" answer: the action-bar
+      -- proc alert, played around the talent button. `start` is the one-shot
+      -- burst, `loop` the border it settles into, and both are 5x6 grids of
+      -- 30 frames whose cells are plain fractions of their own texture, so a
+      -- cell's UVs are (column/columns, row/rows) with nothing to measure.
+      --
+      -- Durations are Blizzard's FlipBook ones -- 0.7s for the burst, 1s per
+      -- loop -- but the two scales are not. ActionButtonSpellAlertTemplate
+      -- draws the loop at 1.4x the button, which lands the border ON the
+      -- icon's edge; here it has to sit around the icon instead (user
+      -- request, 2026-09-20), so both are measured off the art:
+      --
+      --   loop  cell 101px, clear opening 52px  -> 0.515 of the cell
+      --   burst cell 128px, clear opening 25px  -> 0.195 of the cell
+      --
+      -- loopScale 1.95 puts a 30-unit talent icon inside a 30.1-unit
+      -- opening -- the exact fit, 5% down from the 2.05 first tried (user
+      -- request, 2026-09-20) -- and keeps the border's outer glow (48.6
+      -- units) inside the 52-unit slot frame. startScale holds the burst's
+      -- opening at the loop's, 0.515/0.195 = 2.64x loopScale, so the handover
+      -- between the two grids does not jump.
+      --
+      -- No SetBlendMode("ADD") here. The art carries its own alpha and the
+      -- FrameXML declares no alphaMode, and additive compositing on this
+      -- client is documented-not-verified
+      -- (knowledge.json / rendering.setblendmode_add_inert), so the effect
+      -- must not depend on it.
+      next = {
+        flipbook = true,
+        startTexture = M.modernWow.texture.spellAlertStart,
+        loopTexture = M.modernWow.texture.spellAlertLoop,
+        columns = 5,
+        rows = 6,
+        frames = 30,
+        startDuration = 0.70,
+        loopDuration = 1.00,
+        loopScale = 1.95,
+        startScale = 5.15,
+        -- The ring draws thinner than the art authored it (user requests,
+        -- 2026-09-21: 15%, then another 20% off that). Scaling the whole grid
+        -- down would have taken the opening with it and put the border back
+        -- on the icon's edge, so the trim is a crop of every loop cell
+        -- instead: its outer rows are dropped and the texture drawn exactly
+        -- that much smaller, which keeps the remaining art at its own scale
+        -- and the 30-unit opening where the icon fit put it.
+        --
+        -- Cell 101px around a 52px opening is a band 24.5 texels thick. The
+        -- first pass left 20.83 of it, and 20% off that is 16.66 -- a trim of
+        -- 7.84 texels per side, 0.0776 of the cell. The drawn size follows as
+        -- loopScale x (1 - 2 x loopCrop).
+        loopCrop = 0.0776,
+        grow = 8,
+        -- Kept for a revert: the autocast model this replaced.
+        model = "Interface\\Buttons\\UI-AutoCastButton.mdx",
+      },
+    },
+    ["modern"] = {
+      -- The same drawer as the Modern WoW style above, drawn in UnrealUI's
+      -- own flat system (user request, 2026-09-21): identical width, header,
+      -- row pitch, footer and rule separations, with no theme media at all.
+      -- `flat` is the one marker the module branches on -- it selects the
+      -- shared components over the theme's artwork -- and every other token
+      -- here is geometry or a shared colour, never a texture.
+      drawer = {
+        flat = true,
+        width = 250,
+        titleY = -11,
+        -- The bed behind the whole drawer, at 90% (user request,
+        -- 2026-09-21). It is the backdrop's own colour, so the open/close
+        -- fade still multiplies the frame alpha over it.
+        background = { 0.02, 0.018, 0.014, 0.90 },
+        -- The drawer's three rules are the flat system's 1-unit line rather
+        -- than the theme's Dialog Box bar, so each one is placed by the gap
+        -- it has to leave rather than by the band the art filled. The title's
+        -- rule is the same neutral grey as the other two (user request,
+        -- 2026-09-21) rather than the accent: the heading above it already
+        -- carries the accent, and a second accent line under it read as a
+        -- divider competing with the title.
+        divider = { y = -31, inset = 8, height = 1, color = M.color.border },
+        -- The choice rows sit in their own band, with the same 10 units of
+        -- drawer above them as below (user request, 2026-09-21), and the
+        -- build list keeps 8 units clear of the rule at each end (user
+        -- request, 2026-09-21: 3 more than it first shipped).
+        listDivider = { y = -101, yPlain = -74, inset = 8, height = 1,
+                        color = M.color.border },
+        buildDivider = { gap = 8, inset = 8, height = 1,
+                         color = M.color.border },
+        contextY = -42,
+        roleY = -69,
+        buildTop = -110,
+        buildTopPlain = -83,
+        titleColor = M.color.accent,
+        buttonHeight = 22,
+        labelY = 0,
+        statusColor = M.color.accent,
+        rowHeight = 19,
+        rowGap = 3,
+        -- 8 units over the closing rule, its own unit, then 1 below it.
+        rowsGap = 11,
+        footer = {
+          legendY = 9,
+          warningY = 31,
+          statusY = 53,
+          statusYPlain = 31,
+        },
+        bottomBlock = 84,
+        bottomBlockPlain = 62,
+        minHeight = 186,
+        minHeightPlain = 164,
+        -- The flat twin of the themed row's highlight: the same height and
+        -- pitch, and the same three states, carried by the shared flat
+        -- surface and its single outline instead of the profession atlas.
+        -- Neutral at rest, a dim accent edge on hover, the accent fill and
+        -- outline on the chosen build; selection still wins over hover.
+        buildRow = {
+          flat = true,
+          restFill = M.color.background,
+          restEdge = M.color.border,
+          hoverFill = M.color.background,
+          hoverEdge = M.color.accentDim,
+          selectedFill = M.color.accentFill,
+          selectedEdge = M.color.accent,
+          labelColor = M.color.textDim,
+          hoverLabelColor = M.color.text,
+          activeLabelColor = M.color.textAccent,
+        },
+      },
+      -- The three talent marks are not listed here: both styles draw the
+      -- same ones, and they are assigned below so the two cannot drift.
+    },
+  },
+}
+
+-- One set of talent marks for every theme (user request, 2026-09-21): the
+-- marching ants on a talent the build still wants, the spell-alert flipbook
+-- on the one to spend the point on now, and the pulsing red rim on a rank
+-- spent outside the build. Modern used to draw three flat outlines instead,
+-- which read as three colours of the same static line rather than as three
+-- different states.
+--
+-- This is not theme chrome crossing a line. All three are the client's own
+-- art -- Blizzard's SpellActivationOverlay ants and action-bar proc
+-- flipbooks -- which happen to be stored under the theme's media folder, the
+-- same standing exception the swing bar's Blizzard atlas has
+-- (rules/unreal-ui-design.md). Nothing ornamental, and no Dragonflight
+-- chrome, enters the flat theme with them.
+--
+-- The specs are shared by reference rather than copied: both talent windows
+-- draw 30-unit talent buttons (M.talents.grid.button and
+-- M.modernWow.talents.grid.button), so the measured grow, scale and cell
+-- geometry transfer unchanged, and the module only ever reads them.
+M.talentAdvisor.styles["modern"].soft  = M.talentAdvisor.styles["modern-wow"].soft
+M.talentAdvisor.styles["modern"].wrong = M.talentAdvisor.styles["modern-wow"].wrong
+M.talentAdvisor.styles["modern"].next  = M.talentAdvisor.styles["modern-wow"].next
