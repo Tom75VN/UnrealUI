@@ -2,7 +2,7 @@
 ## Title: |cffffffffUnreal |cfff5ae0aUI
 ## Notes: Unreal Azeroth native UI addon.
 ## Author: unrealUI
-## Version: 0.9.0
+## Version: 0.9.1
 ## X-License: MIT
 ## SavedVariables: UnrealUIDB, UnrealUIProfiles, UnrealUIDiagDB, UnrealUIPriceDB
 ## SavedVariablesPerCharacter: UnrealUIProfileDB, UnrealUIFavoriteDB, UnrealUIBankCountDB, UnrealUIBankCacheDB
@@ -91,6 +91,15 @@ modules\settings.lua
 modules\autoattack.lua
 modules\swingbar.lua
 modules\gamemenu.lua
+# The client's own Video/Sound/Interface/Key Bindings panels gathered into one
+# window, on WoW Forever's canvas-category structure. It also hosts the pages
+# registered by modules\settings.lua under its Unreal UI category. After
+# modules\gamemenu.lua because it reroutes the native menu rows that module has
+# already dressed.
+modules\gamesettings.lua
+# Rebuilds a hosted settings page as Forever's settings list; needs
+# U.gameSettings from the line above.
+modules\gamesettingslist.lua
 modules\logout.lua
 modules\minimap.lua
 modules\durabilityframe.lua

@@ -279,7 +279,13 @@ end
 function U.CreateSectionHeader(parent, options)
   options = options or {}
 
-  local control = {}
+  local control = {
+    uuiSectionHeader = true,
+    uuiSectionParent = parent,
+    uuiSectionX = options.x or 0,
+    uuiSectionY = options.y or 0,
+    uuiSectionWidth = options.width or 400,
+  }
 
   local title = U.CreateSettingsLabel(parent, {
     size = M.fontSize.normal,
@@ -809,8 +815,33 @@ function U.CreateDropdown(parent, options)
   end
   control.menu = menu
 
+  -- Reasserted whenever the popup opens. A hosted settings page is recursively
+  -- re-levelled after these controls are created, which deliberately flattens
+  -- the creation-time +40 and can leave a later slider thumb above the menu.
+  -- The popup owns one high block: shell at +40, interactive rows at +41.
+  local function RaisePopup()
+    local ok, buttonLevel = pcall(button.GetFrameLevel, button)
+    buttonLevel = ok and tonumber(buttonLevel) or nil
+    if not buttonLevel then return end
+    pcall(menu.SetFrameLevel, menu, buttonLevel + 40)
+    if menu.uuiDropdownBedMenu then
+      pcall(menu.uuiDropdownBedMenu.SetFrameLevel,
+            menu.uuiDropdownBedMenu, buttonLevel + 40)
+    end
+    if menu.uuiDropdownModernWow then
+      pcall(menu.uuiDropdownModernWow.SetFrameLevel,
+            menu.uuiDropdownModernWow, buttonLevel + 40)
+    end
+    local i
+    for i = 1, table.getn(control.rows) do
+      pcall(control.rows[i].SetFrameLevel, control.rows[i], buttonLevel + 41)
+    end
+  end
+  control.RaisePopup = RaisePopup
+
   local function SetPopupShown(shown)
     control.open = shown and true or false
+    if control.open then RaisePopup() end
     SetDropdownPartShown(menu, control.open)
     if control.open then U.SetBackgroundColor(menu, M.Unpack(menuBackground)) end
     local i
@@ -879,6 +910,38 @@ function U.CreateDropdown(parent, options)
 
   control.GetValue = function()
     return control.value
+  end
+
+  -- Shared settings skins can add the same previous/next controls used by the
+  -- Game Settings dropdown without knowing this widget's private item list.
+  -- Disabled entries are skipped just as they are when choosing from the
+  -- open menu.
+  local function StepTarget(direction)
+    direction = tonumber(direction) or 0
+    if direction == 0 then return nil end
+    direction = direction < 0 and -1 or 1
+    local current
+    local i
+    for i = 1, table.getn(items) do
+      if items[i].value == control.value then current = i; break end
+    end
+    if not current then return nil end
+    i = current + direction
+    while i >= 1 and i <= table.getn(items) do
+      if not items[i].disabled then return i end
+      i = i + direction
+    end
+    return nil
+  end
+
+  control.GetStepState = function()
+    return StepTarget(-1) ~= nil, StepTarget(1) ~= nil
+  end
+
+  control.StepValue = function(direction)
+    local target = StepTarget(direction)
+    if not target then return false end
+    return control.SetValue(items[target].value, true)
   end
 
   control.SetPoint = function(point, relative, relativePoint, x, y)
@@ -1812,6 +1875,7 @@ function U.CreateSlider(parent, options)
     minLabel:SetPoint("TOPLEFT", track, "BOTTOMLEFT", 0, -3)
     minLabel:SetText(tostring(min))
   end
+  control.minLabel = minLabel
 
   local maxLabel = U.CreateSettingsLabel(parent, {
     size = M.fontSize.tiny,
@@ -1826,6 +1890,7 @@ function U.CreateSlider(parent, options)
     maxLabel:SetPoint("TOPRIGHT", track, "BOTTOMRIGHT", 0, -3)
     maxLabel:SetText(tostring(max))
   end
+  control.maxLabel = maxLabel
 
   -- Value box. A plain readout, not an editable field: an EditBox here
   -- crashed the client on click even stripped down to only the calls
@@ -1999,6 +2064,39 @@ function U.CreateSlider(parent, options)
   -- populating a page and must not fire onChange back into itself.
   control.SetValue = function(raw)
     Publish(raw, true)
+  end
+
+  -- The Forever/Game Settings stepper component calls this public surface so
+  -- arrow clicks take the same publish path as a track click or completed
+  -- drag, including the page's onChange and live-preview brackets.
+  control.GetStepState = function()
+    local value = Clamp(control.current or min)
+    return value > min, value < max
+  end
+
+  control.StepValue = function(direction)
+    direction = tonumber(direction) or 0
+    if direction == 0 then return false end
+    local before = Clamp(control.current or min)
+    local after = Clamp(before + (direction < 0 and -step or step))
+    if after == before then return false end
+    BeginInput()
+    Publish(after)
+    EndInput()
+    return true
+  end
+
+  control.SetControlWidth = function(value)
+    value = tonumber(value)
+    if not value or value < THUMB_WIDTH + 2 then return false end
+    width = value
+    control.width = width
+    pcall(track.SetWidth, track, width)
+    if caption then pcall(caption.SetWidth, caption, width) end
+    if minLabel then pcall(minLabel.SetWidth, minLabel, width / 2) end
+    if maxLabel then pcall(maxLabel.SetWidth, maxLabel, width / 2) end
+    PlaceThumb(control.current or min)
+    return true
   end
 
   control.SetPoint = function(point, relative, relativePoint, x, y)
@@ -2909,6 +3007,9 @@ local function DressConfirmWowButton(button, width, height)
   U.PostHookScript(button, "OnLeave", function()
     U.ModernWowPaintRedButton(button, false)
   end)
+  if type(U.ModernWowRedButtonInput) == "function" then
+    U.ModernWowRedButtonInput(button)
+  end
   if button.label then
     U.SetStockFont(button.label, M.fontSize.normal, M.color.text)
     U.CenterButtonLabel(button.label, button)

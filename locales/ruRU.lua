@@ -100,6 +100,20 @@ MOVER_LABEL_ACTION_BAR    = "Панель %d",
 MOVER_LABEL_MOVER_TEST    = "Проверка перемещения",
 
 -- ---------------------------------------------------------------------------
+-- Grouped game settings window (modules/gamesettings.lua)
+-- ---------------------------------------------------------------------------
+GAMESETTINGS_TITLE        = "Настройки игры",
+GAMESETTINGS_VIDEO        = "Видео",
+GAMESETTINGS_SOUND        = "Звук",
+GAMESETTINGS_INTERFACE    = "Интерфейс",
+GAMESETTINGS_KEYBINDINGS  = "Горячие клавиши",
+GAMESETTINGS_UNREALUI     = "Unreal UI",
+GAMESETTINGS_UNREALQUEST  = "Unreal Quest",
+GAMESETTINGS_UNAVAILABLE  = "Эта панель недоступна на данном клиенте.",
+GAMESETTINGS_SEARCH       = "Поиск",
+GAMESETTINGS_NO_MATCHES   = "Подходящие параметры не найдены.",
+
+-- ---------------------------------------------------------------------------
 -- Settings window
 -- ---------------------------------------------------------------------------
 SETTINGS_MOVE_UI          = "Переместить интерфейс",
@@ -580,6 +594,11 @@ PROFESSIONS_COOLDOWN      = "До восстановления: %s",
 PROFESSIONS_TRAINING_POINTS = "Очки обучения: %d",
 PROFESSIONS_NO_RECIPES    = "Нет рецептов для показа.",
 GAMEMENU_OPTIONS          = "Настройки",
+GAMEMENU_RETURN           = "Вернуться в игру",
+GAMEMENU_TITLE            = "Игровое меню",
+GAMEMENU_EDIT_MODE        = "Режим редактирования",
+GAMEMENU_SUPPORT          = "Поддержка",
+GAMEMENU_SUPPORT_UNAVAILABLE = "окно поддержки недоступно в этой сборке.",
 
 -- ---------------------------------------------------------------------------
 -- Experience bar settings and tooltip (modules/xpbar.lua)
@@ -608,6 +627,7 @@ XPTIP_UNIT_SECOND         = "с",
 -- ---------------------------------------------------------------------------
 CMD_HEADER                = "v%s, команды:",
 CMD_SETTINGS              = "  |cffffff00/uui|r — открыть настройки",
+CMD_GAME                  = "  |cffffff00/uui game|r — открыть настройки игры",
 CMD_UNLOCK                = "  |cffffff00/uui unlock|r — разблокировать рамки для перемещения",
 CMD_LOCK                  = "  |cffffff00/uui lock|r — заблокировать рамки",
 CMD_RESET                 = "  |cffffff00/uui reset|r — сбросить все позиции рамок",

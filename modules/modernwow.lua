@@ -321,21 +321,63 @@ function mw.ActionButtonSetSlice(texture, token, left, right, top)
         (top + token.cellHeight) / token.atlasHeight)
 end
 
-function mw.PaintActionButton(button, hovered)
+-- The hover bloom every 128RedButton carries: the atlas's own glow cell drawn
+-- ADD over the resting face, at the token's measured cell, margin and
+-- intensity. An atlas without that cell (the gold sibling) simply has no
+-- bloom, and its owner keeps the plain resting face while hovered.
+function mw.RedButtonGlow(owner, token, path)
+  if not owner or not token or not token.glow then return nil end
+  local glow = mw.Texture(owner, "OVERLAY", path)
+  if not glow then return nil end
+  local cell = token.glow
+  pcall(glow.SetBlendMode, glow, "ADD")
+  pcall(glow.SetTexCoord, glow, cell[1] / token.atlasWidth,
+        cell[2] / token.atlasWidth, cell[3] / token.atlasHeight,
+        cell[4] / token.atlasHeight)
+  local margin = token.glowMargin or 0
+  pcall(glow.SetPoint, glow, "TOPLEFT", owner, "TOPLEFT", -margin, margin)
+  pcall(glow.SetPoint, glow, "BOTTOMRIGHT", owner, "BOTTOMRIGHT", margin, -margin)
+  local shade = token.glowIntensity or 1
+  pcall(glow.SetVertexColor, glow, shade, shade, shade, 1)
+  pcall(glow.Hide, glow)
+  return glow
+end
+
+-- Every 128RedButton in the addon wears the same four states (user request,
+-- 2026-09-22): the resting row at rest, that row plus the atlas's glow while
+-- hovered, the atlas's darker row while held, and its grey row while disabled.
+-- `hovered` and `pressed` are remembered on the face's own state, so a caller
+-- that only knows one of them -- most of them hook enter/leave alone -- does
+-- not clear the other.
+function mw.PaintActionButton(button, hovered, pressed)
   local state = button and button.uuiModernWowAction
   if type(state) ~= "table" then return end
   local token = state.token or M.modernWow.button128Red
   if not token then return end
 
-  -- Disabled wins over hover; an atlas without a disabled cell keeps normal.
-  -- A grey owner draws that same cell while enabled: the atlas has no grey
-  -- hover, so its owner shows hover through its label instead.
+  if hovered ~= nil then state.hovered = hovered and true or false end
+  if pressed ~= nil then state.pressed = pressed and true or false end
+  local off = (state.disabled or state.grey) and true or false
+
+  -- Disabled wins over the rest; an atlas without a disabled cell keeps
+  -- normal. A grey owner draws that same cell while enabled.
   local wanted = "normal"
-  if (state.disabled or state.grey) and token.disabled then
+  if off and token.disabled then
     wanted = "disabled"
-  elseif hovered then
-    wanted = "hover"
+  elseif state.pressed and token.pressed then
+    wanted = "pressed"
   end
+
+  -- The bloom is a separate piece, so it is settled before the early return:
+  -- hover can change without the face's own cells changing.
+  if state.glow then
+    if state.hovered and not state.pressed and not off then
+      pcall(state.glow.Show, state.glow)
+    else
+      pcall(state.glow.Hide, state.glow)
+    end
+  end
+
   if state.painted == wanted then return end
   state.painted = wanted
 
@@ -433,13 +475,19 @@ function mw.DressActionButton(button)
     pcall(middle.SetPoint, middle, "TOPLEFT", left, "TOPRIGHT", 0, 0)
     pcall(middle.SetPoint, middle, "BOTTOMRIGHT", right, "BOTTOMLEFT", 0, 0)
 
+    state.glow = mw.RedButtonGlow(button, token, path)
+
     U.PostHookScript(button, "OnEnter", function()
-      state.hovered = true
       mw.PaintActionButton(button, true)
     end)
     U.PostHookScript(button, "OnLeave", function()
-      state.hovered = false
-      mw.PaintActionButton(button, false)
+      mw.PaintActionButton(button, false, false)
+    end)
+    U.PostHookScript(button, "OnMouseDown", function()
+      mw.PaintActionButton(button, nil, true)
+    end)
+    U.PostHookScript(button, "OnMouseUp", function()
+      mw.PaintActionButton(button, nil, false)
     end)
     U.PostHookScript(button, "OnShow", function()
       mw.PaintActionButton(button, state.hovered)
@@ -494,6 +542,7 @@ function U.ModernWowRedButtonFace(owner, height, gold)
     if not left or not middle or not right then return false end
 
     state = { left = left, middle = middle, right = right, token = token }
+    state.glow = mw.RedButtonGlow(owner, token, path)
     owner.uuiModernWowAction = state
 
     pcall(left.SetPoint, left, "TOPLEFT", owner, "TOPLEFT", 0, 0)
@@ -565,6 +614,12 @@ function U.StyleModernWowActionButton(button, options)
     end)
   end
 
+  -- The press is hooked once the cover carries a face (below, on the first
+  -- pass it is not there yet).
+  if skin.cover and type(U.ModernWowRedButtonInput) == "function" then
+    U.ModernWowRedButtonInput(button, skin.cover)
+  end
+
   local face = skin.cover
   if not face then return false end
   local height = mw.Dimension(button, "GetHeight")
@@ -602,11 +657,33 @@ function U.StyleModernWowActionButton(button, options)
   return true
 end
 
-function U.ModernWowPaintRedButton(owner, hovered)
+function U.ModernWowPaintRedButton(owner, hovered, pressed)
   local state = owner and owner.uuiModernWowAction
   if type(state) ~= "table" then return end
-  state.hovered = hovered and true or false
-  mw.PaintActionButton(owner, state.hovered)
+  mw.PaintActionButton(owner, hovered, pressed)
+end
+
+-- Hooks a real Button's mouse so its face owner shows the pressed row while
+-- held, for a caller that drives hover itself (user request, 2026-09-22: the
+-- click effect on every red button). `owner` is the frame carrying the face --
+-- the button itself, or the cover drawn over it. Hooked once per button.
+function U.ModernWowRedButtonInput(button, owner)
+  if not button or button.uuiModernWowRedInput then return false end
+  owner = owner or button
+  if type(owner.uuiModernWowAction) ~= "table" then return false end
+  button.uuiModernWowRedInput = true
+
+  U.PostHookScript(button, "OnMouseDown", function()
+    mw.PaintActionButton(owner, nil, true)
+  end)
+  U.PostHookScript(button, "OnMouseUp", function()
+    mw.PaintActionButton(owner, nil, false)
+  end)
+  -- Released outside the button: the client sends no OnMouseUp there.
+  U.PostHookScript(button, "OnLeave", function()
+    mw.PaintActionButton(owner, nil, false)
+  end)
+  return true
 end
 
 -- The grey face for a row the owner reports as disabled.
@@ -640,8 +717,15 @@ function mw.MetalSlice(texture, slice, token)
         slice.v1 / ah, slice.v2 / ah)
 end
 
-function U.ModernWowMetalFrame(frame, width, height)
-  if not mw.MediaAllowed() or not frame then return false end
+-- `force` draws the housing with no Modern WoW selection at all, for a window
+-- that carries this chrome under every theme: the grouped game-settings window
+-- (modules/gamesettings.lua, user request 2026-09-22), which already takes its
+-- buttons' 128RedButton face and its MinimalScrollBar from this family. It
+-- adds that one window and no surface, the way mw.MediaAllowed does for the
+-- Classic talent window; every other caller keeps the gate.
+function U.ModernWowMetalFrame(frame, width, height, force)
+  if not force and not mw.MediaAllowed() then return false end
+  if not frame then return false end
 
   local token = M.modernWow.metalFrame
   if not token then return false end
@@ -1898,12 +1982,20 @@ function U.ModernWowRefreshHeader(frame)
     if frame.spec and frame.spec.targetReactionName and
        type(U.UnitFrameNameColor) == "function" then
       reactionR, reactionG, reactionB = U.UnitFrameNameColor(data, true)
+      -- A non-player target's name takes its level's difficulty colour, the
+      -- same as the level number beside it (user request, 2026-09-21), so a
+      -- trivial mob reads grey across the whole row. Its reaction is already
+      -- carried by the reaction bar under the row, so nothing is lost. Players
+      -- keep the colour that identifies them, as on the flat modern frames.
+      if not data.isPlayer and type(U.UnitDifficultyColor) == "function" then
+        local dr, dg, db = U.UnitDifficultyColor(data.level)
+        pcall(text.name.SetTextColor, text.name, dr, dg, db, 1)
       -- A row with its own name colour keeps it: the reaction is carried by
       -- the reaction bar below, coloured just after this. Only a row with
       -- neither -- no owned colour and no reaction art -- falls back to
       -- tinting the name itself, which is the one place the reaction would
       -- otherwise go unshown.
-      if text.nameColor then
+      elseif text.nameColor then
         pcall(text.name.SetTextColor, text.name, M.Unpack(text.nameColor))
       elseif text.reaction then
         pcall(text.name.SetTextColor, text.name, M.Unpack(M.color.text))
@@ -1928,6 +2020,14 @@ function U.ModernWowRefreshHeader(frame)
     local value = data.level
     text.level:SetText(type(value) == "number" and value > 0
                        and tostring(value) or "")
+    -- Same difficulty bands as the flat frames (U.UnitDifficultyColor in
+    -- modules/unitframes.lua): red at +5, orange at +3, yellow within two
+    -- levels, green down to the grey threshold, grey at or below it. An
+    -- unknown level keeps the helper's lighter grey.
+    if type(U.UnitDifficultyColor) == "function" then
+      local dr, dg, db = U.UnitDifficultyColor(value)
+      pcall(text.level.SetTextColor, text.level, dr, dg, db, 1)
+    end
   end
 end
 
@@ -4437,12 +4537,93 @@ function mw.CollapseFace(icon)
   return true
 end
 
+-- The same override with the literal +/- art (buttons/plus-minus-button, user
+-- request 2026-09-22) instead of the arrow stand-ins above: plus while
+-- collapsed, minus while expanded, each with the sheet's own pushed cell under
+-- the mouse. Like mw.CollapseFace this replaces only the media the shared
+-- component draws with -- its state, uuiCollapsed and every caller of
+-- U.SetStockCollapseState are untouched.
+function mw.PlusMinusFace(icon)
+  if not icon or icon.uuiModernWowFace then return false end
+
+  local cells = M.modernWow.plusMinusCell
+  local created, face = pcall(icon.CreateTexture, icon, nil, "ARTWORK")
+  if not created or not face then return false end
+  if not pcall(face.SetTexture, face, M.modernWow.texture.plusMinus) then
+    return false
+  end
+  pcall(face.SetAllPoints, face, icon)
+
+  -- The flat box comes off: its backdrop is the chrome this art replaces, and
+  -- its own "+"/"-" label would sit on top of the glyph.
+  if type(U.SetBackdropShown) == "function" then
+    pcall(U.SetBackdropShown, icon, false)
+  end
+  if icon.text then pcall(icon.text.Hide, icon.text) end
+
+  local state = { down = false }
+  local function Paint()
+    local collapsed = icon.uuiCollapsed and true or false
+    local cell
+    if collapsed then
+      cell = state.down and cells.plusPushed or cells.plusNormal
+    else
+      cell = state.down and cells.minusPushed or cells.minusNormal
+    end
+    pcall(face.SetTexCoord, face, cell[1] / cells.sheet, cell[2] / cells.sheet,
+          cell[3] / cells.sheet, cell[4] / cells.sheet)
+  end
+
+  -- Hover keeps the component's accent feedback, moved from the (now hidden)
+  -- outline onto the glyph itself, as mw.CollapseFace does.
+  icon:SetScript("OnEnter", function()
+    pcall(face.SetVertexColor, face, M.Unpack(M.color.accent))
+  end)
+  icon:SetScript("OnLeave", function()
+    state.down = false
+    pcall(face.SetVertexColor, face, 1, 1, 1, 1)
+    Paint()
+  end)
+  icon:SetScript("OnMouseDown", function()
+    state.down = true
+    Paint()
+  end)
+  icon:SetScript("OnMouseUp", function()
+    state.down = false
+    Paint()
+  end)
+
+  local native = icon.uuiSetCollapsed
+  icon.uuiSetCollapsed = function(collapsed)
+    if type(native) == "function" then pcall(native, collapsed) end
+    Paint()
+  end
+  Paint()
+
+  icon.uuiModernWowFace = face
+  return true
+end
+
 -- Entry point for a module that owns a stock collapse header: hands in the
 -- host button, not the icon, because uuiCollapseIcon is where the shared
 -- component actually lives.
-function U.ModernWowCollapseFace(button)
-  if not mw.Active() or not button then return false end
-  return mw.CollapseFace(button.uuiCollapseIcon)
+--
+-- `force` re-faces it with no Modern WoW selection at all, for the grouped
+-- game-settings window (user request, 2026-09-22: the category list's
+-- sub-menu toggles in this art), which draws the same chrome under every
+-- theme -- the same exception U.ModernWowMetalFrame takes.
+function U.ModernWowCollapseFace(button, force)
+  if not button then return false end
+  if not force and not mw.Active() then return false end
+  return mw.CollapseFace(button.uuiCollapseIcon or button)
+end
+
+-- The +/- variant, for a caller that wants the literal pair rather than the
+-- arrows. `force` has the same meaning as above.
+function U.ModernWowPlusMinusFace(button, force)
+  if not button then return false end
+  if not force and not mw.Active() then return false end
+  return mw.PlusMinusFace(button.uuiCollapseIcon or button)
 end
 
 -- Where the right page's recessed scroll channel lands, in the window's own

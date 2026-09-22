@@ -109,6 +109,20 @@ MOVER_LABEL_ACTION_BAR    = "Bar %d",
 MOVER_LABEL_MOVER_TEST    = "Mover test",
 
 -- ---------------------------------------------------------------------------
+-- Grouped game settings window (modules/gamesettings.lua)
+-- ---------------------------------------------------------------------------
+GAMESETTINGS_TITLE        = "Game Settings",
+GAMESETTINGS_VIDEO        = "Video",
+GAMESETTINGS_SOUND        = "Sound",
+GAMESETTINGS_INTERFACE    = "Interface",
+GAMESETTINGS_KEYBINDINGS  = "Key Bindings",
+GAMESETTINGS_UNREALUI     = "Unreal UI",
+GAMESETTINGS_UNREALQUEST  = "Unreal Quest",
+GAMESETTINGS_UNAVAILABLE  = "This panel is not available on this client.",
+GAMESETTINGS_SEARCH       = "Search",
+GAMESETTINGS_NO_MATCHES   = "No matching options.",
+
+-- ---------------------------------------------------------------------------
 -- Settings window (modules/settings.lua)
 -- ---------------------------------------------------------------------------
 SETTINGS_MOVE_UI          = "Move UI",
@@ -586,6 +600,11 @@ PROFESSIONS_COOLDOWN      = "Cooldown remaining: %s",
 PROFESSIONS_TRAINING_POINTS = "Training Points: %d",
 PROFESSIONS_NO_RECIPES    = "No recipes to show.",
 GAMEMENU_OPTIONS          = "Options",
+GAMEMENU_RETURN           = "Return to Game",
+GAMEMENU_TITLE            = "Game Menu",
+GAMEMENU_EDIT_MODE        = "Edit Mode",
+GAMEMENU_SUPPORT          = "Support",
+GAMEMENU_SUPPORT_UNAVAILABLE = "the support window is not available in this build.",
 
 -- ---------------------------------------------------------------------------
 -- Experience bar settings and tooltip (modules/xpbar.lua)
@@ -618,6 +637,7 @@ XPTIP_UNIT_SECOND         = "s",
 -- ---------------------------------------------------------------------------
 CMD_HEADER                = "v%s commands:",
 CMD_SETTINGS              = "  |cffffff00/uui|r - open settings",
+CMD_GAME                  = "  |cffffff00/uui game|r - open the game settings window",
 CMD_UNLOCK                = "  |cffffff00/uui unlock|r - unlock frames for moving",
 CMD_LOCK                  = "  |cffffff00/uui lock|r - lock frames",
 CMD_RESET                 = "  |cffffff00/uui reset|r - reset all frame positions",

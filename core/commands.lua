@@ -185,6 +185,7 @@ local function ShowHelp(rest)
 
   U.Print(U.L("CMD_HEADER", U.version))
   U.Print(U.L("CMD_SETTINGS"))
+  U.Print(U.L("CMD_GAME"))
   U.Print(U.L("CMD_UNLOCK"))
   U.Print(U.L("CMD_LOCK"))
   U.Print(U.L("CMD_RESET"))
@@ -1697,6 +1698,50 @@ handlers["menu"] = function()
   else
     U.Print("the game menu module is not loaded.")
   end
+end
+
+-- The grouped window for the client's own Video/Sound/Interface/Key Bindings
+-- panels (modules/gamesettings.lua). The Escape menu's four rows open it too;
+-- this is the way in without going through the menu. An optional page id
+-- (video, sound, interface, keys) selects which one it opens on.
+handlers["game"] = function(argument)
+  if type(U.OpenGameSettings) ~= "function" then
+    U.Print("the game settings module is not loaded.")
+    return
+  end
+  local page = argument
+  if type(page) == "string" then
+    page = string.gsub(page, "^%s+", "")
+    page = string.gsub(page, "%s+$", "")
+    if page == "" then page = nil end
+  end
+  U.OpenGameSettings(page)
+end
+
+-- Chrome inventory of a hosted settings page (default video), written to
+-- UnrealUIDiagDB.gameSettingsChrome. See U.DumpGameSettings.
+handlers["gamedump"] = function(argument)
+  if type(U.DumpGameSettings) ~= "function" then
+    U.Print("the game settings module is not loaded.")
+    return
+  end
+  local page = argument
+  if type(page) == "string" then
+    page = string.gsub(page, "^%s+", "")
+    page = string.gsub(page, "%s+$", "")
+    if page == "" then page = nil end
+  end
+  U.DumpGameSettings(page)
+end
+
+-- Input trace for the Forever settings list (modules/gamesettingslist.lua):
+-- toggles; the second call writes UnrealUIDiagDB.gameSettingsFocus.
+handlers["gamefocus"] = function()
+  if type(U.GameSettingsFocusTrace) ~= "function" then
+    U.Print("the game settings module is not loaded.")
+    return
+  end
+  U.GameSettingsFocusTrace()
 end
 
 handlers["bindscan"] = function() ShowBindingScan() end

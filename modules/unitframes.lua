@@ -422,18 +422,34 @@ local function PastelText(r, g, b)
 end
 
 -- knowledge.json / core.getdifficultycolor_missing: this client has no
--- GetDifficultyColor. The thresholds are the Vanilla ones; the helper stays
--- local because unrealUI does not install shim globals.
-local function DifficultyColor(level)
+-- GetDifficultyColor, so the bands live here; unrealUI does not install shim
+-- globals, so it is exported on U instead -- the modern-wow target header
+-- (modules/modernwow.lua) colours its own name/level row with the same helper.
+--
+-- Bands and colours are the ones requested on 2026-09-21: +5 and above red,
+-- +3/+4 orange, -2..+2 yellow, anything lower green until the grey threshold,
+-- grey at or below it. The threshold is Vanilla's own -- GetQuestGreenRange,
+-- documented on this client but not runtime verified -- with the fixed 7 the
+-- module used before as the fallback, so a client that does not answer keeps
+-- behaving exactly as it did.
+function U.UnitDifficultyColor(level)
   level = tonumber(level) or 0
   local playerLevel = ApiNumber("UnitLevel", "player") or 1
+  -- Kept function-local rather than as two more top-level names: this file is
+  -- close to the 200-local chunk limit (rules/unreal-ui.md).
+  local greenRange = ApiNumber("GetQuestGreenRange")
+  if not greenRange or greenRange <= 0 then greenRange = 7 end
 
+  -- An unknown ("??") level keeps its own lighter grey rather than joining the
+  -- trivial-mob grey below, so the two stay distinguishable.
   if level <= 0 then return 0.69, 0.69, 0.69 end
-  if level >= playerLevel + 5 then return 1, 0.1, 0.1 end
-  if level >= playerLevel + 3 then return 1, 0.5, 0.1 end
-  if level >= playerLevel - 2 then return 1, 1, 0 end
-  if level > playerLevel - 8 then return 0.25, 0.75, 0.25 end
-  return 0.5, 0.5, 0.5
+
+  local diff = level - playerLevel
+  if diff >= 5 then return 1.00, 0.10, 0.10 end
+  if diff >= 3 then return 1.00, 0.50, 0.25 end
+  if diff >= -2 then return 1.00, 1.00, 0.00 end
+  if -diff <= greenRange then return 0.25, 0.75, 0.25 end
+  return 0.50, 0.50, 0.50
 end
 
 local function Abbreviate(value)
@@ -699,6 +715,17 @@ local function ColoredName(data, nameClassColor, targetReactionName)
   if data.muted then
     return Hex(M.Unpack(M.color.textDim)) .. name, truncated
   end
+  -- A non-player unit's name carries the same difficulty colour as its level
+  -- (user request, 2026-09-21), so a trivial mob reads grey on both halves of
+  -- the label. Its friend/foe standing is still shown by the health bar's
+  -- reaction colour, so nothing is lost by moving the name onto difficulty.
+  -- Players keep the colour that identifies them -- class on the party frames,
+  -- reaction on the target -- because their level is already in the number
+  -- beside the name.
+  if not data.isPlayer then
+    return Hex(U.UnitDifficultyColor(data.level)) .. name, truncated
+  end
+
   local nr, ng, nb = U.UnitFrameNameColor(data, targetReactionName)
   -- Party player names retain the full shared class colour instead of the
   -- muted pastel treatment, making classes easier to distinguish at a glance.
@@ -709,12 +736,15 @@ local function ColoredName(data, nameClassColor, targetReactionName)
   return Hex(nr, ng, nb) .. name, truncated
 end
 
+-- Difficulty colours are used exactly as specified rather than through
+-- PastelText: the whole point of the five bands is that red/orange/yellow/
+-- green/grey are recognisable at a glance, and the pastel wash moves every one
+-- of them toward white.
 local function ColoredLevel(data)
   if data.muted then
     return Hex(M.Unpack(M.color.textDim)) .. LevelString(data)
   end
-  local lr, lg, lb = PastelText(DifficultyColor(data.level))
-  return Hex(lr, lg, lb) .. LevelString(data)
+  return Hex(U.UnitDifficultyColor(data.level)) .. LevelString(data)
 end
 
 -- Builds one of the pfUI text tokens this module supports. Only the tokens the

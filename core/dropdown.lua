@@ -74,7 +74,9 @@ local function LayoutText(dropdown, button)
   -- menu too), so text width is reserved against the arrow glyph, not the
   -- button's edge.
   local arrow = button and button.uuiDropdownArrow
-  U.SetStockFont(text, M.fontSize.small, M.color.text)
+  local bedStyle = dropdown.uuiDropdownBed
+  U.SetStockFont(text, bedStyle and bedStyle.textSize or M.fontSize.small,
+                 bedStyle and bedStyle.textColor or M.color.text)
   pcall(function()
     text:ClearAllPoints()
     -- LEFT/RIGHT anchors put the text region's own centre on the control's
@@ -85,11 +87,38 @@ local function LayoutText(dropdown, button)
     -- explicit-SetJustifyV treatment chat.scrollingmessage_bottom_alignment
     -- records for this client, where inherited vertical alignment is not what
     -- upstream expects.
-    text:SetPoint("LEFT", dropdown, "LEFT", 5, CONTROL_TEXT_Y)
-    text:SetPoint("RIGHT", arrow or dropdown, arrow and "LEFT" or "RIGHT", -4, CONTROL_TEXT_Y)
+    local bed = dropdown.uuiDropdownBed
+    text:SetPoint("LEFT", dropdown, "LEFT", (bed and bed.textInset) or 5, CONTROL_TEXT_Y)
+    if dropdown.uuiDropdownBedRight then
+      -- A bed control stops the value short of the arrow printed in its right
+      -- cap, measured off the control itself. Not off the empty spacer glyph:
+      -- /uui gamefocus (2026-09-21) read that empty FontString's LEFT at a
+      -- different, meaningless x on every Video dropdown, which left the GPU
+      -- value in a 19.8-wide box (wrapped into a 120-tall column) and ran
+      -- Graphics API's 66 units past the control's right edge.
+      text:SetPoint("RIGHT", dropdown, "RIGHT", -(dropdown.uuiDropdownBedRight + 4),
+                    CONTROL_TEXT_Y)
+    else
+      text:SetPoint("RIGHT", arrow or dropdown, arrow and "LEFT" or "RIGHT", -4, CONTROL_TEXT_Y)
+    end
     text:SetHeight(dropdown.uuiDropdownHeight or CONTROL_HEIGHT)
-    text:SetJustifyH("LEFT")
+    -- A bed may centre its value (options.bed.textAlign); everything else
+    -- reads left, as the stock control does.
+    text:SetJustifyH((bed and bed.textAlign) or "LEFT")
     if text.SetJustifyV then text:SetJustifyV("CENTER") end
+
+    -- Re-written at the new width. A FontString is truncated against the
+    -- width it has when SetText runs and never reflows when widened later
+    -- (knowledge.json / tooltip.line_geometry_is_fixed_at_settext), so a
+    -- value the client wrote into its narrow stock box stayed cut short in
+    -- this wider one -- reported in game 2026-09-21 on the Video page's GPU
+    -- and Graphics API dropdowns. Blank first so the same string counts as a
+    -- change.
+    local current = text:GetText()
+    if current and current ~= "" then
+      text:SetText("")
+      text:SetText(current)
+    end
   end)
 end
 
@@ -395,17 +424,41 @@ StyleList = function(level)
   -- otherwise.
   local owner = OwningDropdown()
   local modern = level == 1 and owner and owner.uuiDropdownModernWowStyled
-  if modern then
+  local bedMenu = level == 1 and owner and owner.uuiDropdownBed and
+                  owner.uuiDropdownBed.menu
+  if bedMenu then
+    -- The bed's own menu art (options.bed.menu): no flat panel, no Modern WoW
+    -- chrome, the caller's nine-slice on a child frame -- the list's own
+    -- regions are stripped on every toggle, a child frame's are not.
+    --
+    -- The menu art is chamfered, so anything filling the list's full rectangle
+    -- shows through at its corners as a dark square (reported in game with a
+    -- screenshot, 2026-09-22). A backdrop is not an enumerable region
+    -- (knowledge.json / rendering.setbackdrop_keeps_native_edge_art), so the
+    -- strip above cannot reach it and SetBackdrop(nil) alone is not enough:
+    -- clear the fill and edge colours too, and hide the plain-fill fallback
+    -- U.CreateBackdrop leaves behind when the shared list was last opened by a
+    -- flat dropdown.
+    pcall(list.SetBackdrop, list, nil)
+    pcall(list.SetBackdropColor, list, 0, 0, 0, 0)
+    pcall(list.SetBackdropBorderColor, list, 0, 0, 0, 0)
+    if list.uuiFill then U.SetColor(list.uuiFill, 0, 0, 0, 0) end
+    ShowFlatEdges(list, false)
+    if list.uuiDropdownModernWow then pcall(list.uuiDropdownModernWow.Hide, list.uuiDropdownModernWow) end
+    D.BedMenu(list, owner.uuiDropdownBed)
+  elseif modern then
     -- No backdrop: the fill lives on the chrome child, because the list
     -- itself is region-stripped on every toggle.
     pcall(list.SetBackdrop, list, nil)
     ShowFlatEdges(list, false)
+    if list.uuiDropdownBedMenu then pcall(list.uuiDropdownBedMenu.Hide, list.uuiDropdownBedMenu) end
     local chrome = ModernWowChrome(list)
     if chrome then
       ModernWowFill(chrome, list, M.modernWow.dropdown.listFill)
       pcall(chrome.Show, chrome)
     end
   else
+    if list.uuiDropdownBedMenu then pcall(list.uuiDropdownBedMenu.Hide, list.uuiDropdownBedMenu) end
     U.CreateBackdrop(list, { background = { 0.03, 0.03, 0.03, 0.95 } })
     ShowFlatEdges(list, true)
     if list.uuiDropdownModernWow then pcall(list.uuiDropdownModernWow.Hide, list.uuiDropdownModernWow) end
@@ -491,6 +544,217 @@ function D.EnsureTextLayout()
   end
 end
 
+-- options.bed: the control is drawn from a caller-supplied atlas bed instead
+-- of either chrome below -- a three-slice cell stretched sideways only. The
+-- caller owns the art and hands in only data, so this component reads no
+-- theme token for it:
+--
+--   texture, sheet             file and its square size in texels
+--   normal, hover, disabled    { x0, x1, y0, y1 } cells, in texels
+--   pressed                    optional cell while the button is held
+--   capLeft, capRight          texels kept at fixed aspect at each end
+--   height                     drawn bed height
+--   controlHeight              the control's own height (optional; the bed
+--                              height when absent)
+--   overhang                   how far the bed reaches outside the control on
+--                              the left and right (optional, default 0)
+--   arrow                      optional { cell, width, height, y }: a glyph
+--                              shown BOTTOM of the control only while hovered
+--                              or held, for a bed without a printed arrow
+--   textInset                  the value's left inset (optional, default 5)
+--   textAlign                  the value's justification (optional, "LEFT")
+--   textColor, textSize        the value's colour and size (optional)
+--
+-- State is the cell: pressed while the button is held, hover while the pointer
+-- is over it, disabled while it reports disabled, normal otherwise.
+function D.BedPiece(dropdown, layer)
+  local ok, texture = pcall(dropdown.CreateTexture, dropdown, nil, layer or "BACKGROUND")
+  if not ok or not texture then return nil end
+  pcall(texture.SetTexture, texture, dropdown.uuiDropdownBed.texture)
+  return texture
+end
+
+function D.BuildBed(dropdown, bed)
+  dropdown.uuiDropdownBed = bed
+  if dropdown.uuiDropdownBedPieces then return true end
+
+  local pieces = { left = D.BedPiece(dropdown), middle = D.BedPiece(dropdown),
+                   right = D.BedPiece(dropdown) }
+  if not pieces.left or not pieces.middle or not pieces.right then return false end
+
+  local cellHeight = bed.normal[4] - bed.normal[3]
+  local height = bed.height or CONTROL_HEIGHT
+  local left = bed.capLeft * height / cellHeight
+  local right = bed.capRight * height / cellHeight
+  local overhang = bed.overhang or 0
+  -- Fixed height, centred on the control, never pinned to its top and bottom.
+  -- Reported in game 2026-09-21: clicking the control changed the bed's
+  -- height. Opening the list runs the client's own update path, which puts
+  -- the stock height back on the frame from native code the SetHeight lock
+  -- above cannot intercept, and a bed anchored TOP/BOTTOM stretched with it.
+  -- The frame is anchored by its LEFT, so a height change leaves its centre
+  -- where it is and a centred bed does not move.
+  pcall(function()
+    pieces.left:SetHeight(height)
+    pieces.middle:SetHeight(height)
+    pieces.right:SetHeight(height)
+    pieces.left:SetWidth(left)
+    pieces.left:SetPoint("LEFT", dropdown, "LEFT", -overhang, 0)
+    pieces.right:SetWidth(right)
+    pieces.right:SetPoint("RIGHT", dropdown, "RIGHT", overhang, 0)
+    pieces.middle:SetPoint("LEFT", pieces.left, "RIGHT", 0, 0)
+    pieces.middle:SetPoint("RIGHT", pieces.right, "LEFT", 0, 0)
+  end)
+
+  if bed.arrow then
+    local arrow = D.BedPiece(dropdown, "OVERLAY")
+    if arrow then
+      local sheet, cell = bed.sheet, bed.arrow.cell
+      pcall(function()
+        arrow:SetTexCoord(cell[1] / sheet, cell[2] / sheet, cell[3] / sheet, cell[4] / sheet)
+        arrow:SetWidth(bed.arrow.width)
+        arrow:SetHeight(bed.arrow.height)
+        -- Off the control's centre rather than its BOTTOM: the client puts
+        -- its stock height back on the frame (see above), and the arrow has
+        -- to stay with the drawn bed.
+        local control = bed.controlHeight or height
+        arrow:SetPoint("BOTTOM", dropdown, "CENTER", 0, -control / 2 + (bed.arrow.y or 0))
+        arrow:Hide()
+      end)
+      pieces.arrow = arrow
+    end
+  end
+
+  dropdown.uuiDropdownBedPieces = pieces
+  -- How far into the control the right cap reaches, which is what the value
+  -- has to stop short of.
+  dropdown.uuiDropdownBedRight = math.max(0, right - overhang)
+  return true
+end
+
+-- options.bed.menu: the open list's art for a bed control --
+--   cell { x0, x1, y0, y1 }   texels on the bed's sheet, drawn as a nine-slice
+--   cut { left, right, top, bottom } texels kept at fixed size on each side
+--   scale                     drawn units per texel for those kept edges
+--   inset { left, top, right, bottom } how far the art reaches outside the list
+-- Drawn on a mouse-transparent child frame of the list, at the list's own
+-- level so its rows stay above it.
+function D.BedMenu(list, bed)
+  local menu = bed and bed.menu
+  if not list or not menu then return end
+  local frame = list.uuiDropdownBedMenu
+  if not frame then
+    local ok, made = pcall(CreateFrame, "Frame", nil, list)
+    if not ok or not made then return end
+    frame = made
+    pcall(frame.EnableMouse, frame, false)
+    frame.pieces = {}
+    local keys = { "tl", "t", "tr", "l", "c", "r", "bl", "b", "br" }
+    local i
+    for i = 1, 9 do
+      local okTexture, texture = pcall(frame.CreateTexture, frame, nil, "BACKGROUND")
+      if okTexture and texture then frame.pieces[keys[i]] = texture end
+    end
+    list.uuiDropdownBedMenu = frame
+  end
+
+  local p = frame.pieces
+  if not p.tl or not p.c or not p.br then return end
+  local sheet, cell, cut = bed.sheet, menu.cell, menu.cut
+  local unit = menu.scale or 1
+  local x0, x1, y0, y1 = cell[1], cell[2], cell[3], cell[4]
+  local xs = { x0, x0 + cut.left, x1 - cut.right, x1 }
+  local ys = { y0, y0 + cut.top, y1 - cut.bottom, y1 }
+  -- Drawn sizes of the kept edges, per side.
+  local wl, wr = cut.left * unit, cut.right * unit
+  local ht, hb = cut.top * unit, cut.bottom * unit
+  local order = { { "tl", 1, 1 }, { "t", 2, 1 }, { "tr", 3, 1 },
+                  { "l", 1, 2 }, { "c", 2, 2 }, { "r", 3, 2 },
+                  { "bl", 1, 3 }, { "b", 2, 3 }, { "br", 3, 3 } }
+  local i
+  for i = 1, 9 do
+    local piece = p[order[i][1]]
+    local col, row = order[i][2], order[i][3]
+    if piece then
+      pcall(piece.SetTexture, piece, bed.texture)
+      pcall(piece.SetTexCoord, piece, xs[col] / sheet, xs[col + 1] / sheet,
+            ys[row] / sheet, ys[row + 1] / sheet)
+      pcall(piece.ClearAllPoints, piece)
+    end
+  end
+
+  local inset = menu.inset or {}
+  pcall(function()
+    frame:ClearAllPoints()
+    frame:SetPoint("TOPLEFT", list, "TOPLEFT", -(inset.left or 0), inset.top or 0)
+    frame:SetPoint("BOTTOMRIGHT", list, "BOTTOMRIGHT", inset.right or 0, -(inset.bottom or 0))
+    local levelOk, level = pcall(list.GetFrameLevel, list)
+    if levelOk and tonumber(level) then frame:SetFrameLevel(level) end
+
+    p.tl:SetWidth(wl); p.tl:SetHeight(ht); p.tl:SetPoint("TOPLEFT", frame, "TOPLEFT", 0, 0)
+    p.tr:SetWidth(wr); p.tr:SetHeight(ht); p.tr:SetPoint("TOPRIGHT", frame, "TOPRIGHT", 0, 0)
+    p.bl:SetWidth(wl); p.bl:SetHeight(hb); p.bl:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", 0, 0)
+    p.br:SetWidth(wr); p.br:SetHeight(hb); p.br:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", 0, 0)
+    p.t:SetPoint("TOPLEFT", p.tl, "TOPRIGHT", 0, 0)
+    p.t:SetPoint("BOTTOMRIGHT", p.tr, "BOTTOMLEFT", 0, 0)
+    p.b:SetPoint("TOPLEFT", p.bl, "TOPRIGHT", 0, 0)
+    p.b:SetPoint("BOTTOMRIGHT", p.br, "BOTTOMLEFT", 0, 0)
+    p.l:SetPoint("TOPLEFT", p.tl, "BOTTOMLEFT", 0, 0)
+    p.l:SetPoint("BOTTOMRIGHT", p.bl, "TOPRIGHT", 0, 0)
+    p.r:SetPoint("TOPLEFT", p.tr, "BOTTOMLEFT", 0, 0)
+    p.r:SetPoint("BOTTOMRIGHT", p.br, "TOPRIGHT", 0, 0)
+    p.c:SetPoint("TOPLEFT", p.tl, "BOTTOMRIGHT", 0, 0)
+    p.c:SetPoint("BOTTOMRIGHT", p.br, "TOPLEFT", 0, 0)
+  end)
+  pcall(frame.Show, frame)
+end
+
+-- `state` is "pressed", "hover" (or true, the older form), or nil for rest.
+function D.PaintBed(dropdown, state)
+  local pieces = dropdown and dropdown.uuiDropdownBedPieces
+  local bed = dropdown and dropdown.uuiDropdownBed
+  if not pieces or not bed then return end
+  if state == true then state = "hover" end
+  if state == false then state = nil end
+
+  local cell = bed.normal
+  local name = dropdown.GetName and dropdown:GetName()
+  local button = dropdown.uuiDropdownStateButton or
+                 (name and U.G(name .. "Button"))
+  if button and type(button.IsEnabled) == "function" then
+    -- IsEnabled returns 1 / 0 on this client, not a boolean.
+    local ok, enabled = pcall(button.IsEnabled, button)
+    if ok and (enabled == 0 or enabled == nil or enabled == false) then
+      cell = bed.disabled or cell
+      state = "disabled"
+    end
+  end
+  if state == "disabled" then
+    -- A caller that is not a dropdown says so itself: the lookup above only
+    -- finds the enabled state of a dropdown's own <name>Button.
+    cell = bed.disabled or cell
+  elseif state == "pressed" then
+    cell = bed.pressed or bed.hover or cell
+  elseif state == "hover" then
+    cell = bed.hover or cell
+  end
+
+  local sheet = bed.sheet
+  local x0, x1, y0, y1 = cell[1], cell[2], cell[3], cell[4]
+  local l, r = x0 + bed.capLeft, x1 - bed.capRight
+  pcall(pieces.left.SetTexCoord, pieces.left, x0 / sheet, l / sheet, y0 / sheet, y1 / sheet)
+  pcall(pieces.middle.SetTexCoord, pieces.middle, l / sheet, r / sheet, y0 / sheet, y1 / sheet)
+  pcall(pieces.right.SetTexCoord, pieces.right, r / sheet, x1 / sheet, y0 / sheet, y1 / sheet)
+
+  if pieces.arrow then
+    if state == "hover" or state == "pressed" then
+      pcall(pieces.arrow.Show, pieces.arrow)
+    else
+      pcall(pieces.arrow.Hide, pieces.arrow)
+    end
+  end
+end
+
 -- options.modernWow: the caller has chosen its Modern WoW drawing path
 -- (rules/unreal-ui-design.md branching rule); the control and its list take
 -- the ThinBorder chrome instead of the flat edge. The caller decides the
@@ -518,7 +782,11 @@ function D.StyleStock(dropdown, width, options)
   U.HideRegion(U.G(name .. "Middle"))
   U.HideRegion(U.G(name .. "Right"))
   U.HideRegion(U.G(name .. "Icon"))
-  if options.modernWow then
+  if options.bed then
+    local controlHeight = options.bed.controlHeight or options.bed.height
+    if controlHeight then dropdown.uuiDropdownHeight = controlHeight end
+    D.BuildBed(dropdown, options.bed)
+  elseif options.modernWow then
     dropdown.uuiDropdownModernWowStyled = true
     -- The fill sits on the control itself, BACKGROUND, so its text (ARTWORK)
     -- stays above it; the border rides on the chrome child.
@@ -541,7 +809,32 @@ function D.StyleStock(dropdown, width, options)
     end)
     RemoveButtonArt(button)
     StyleArrow(button)
-    if options.modernWow and button.uuiDropdownArrow then
+    if options.bed and button.uuiDropdownArrow then
+      -- The bed prints its own arrow. The glyph stays as an empty spacer over
+      -- the right cap so LayoutText still stops the value short of it.
+      local arrow = button.uuiDropdownArrow
+      pcall(function()
+        arrow:SetText("")
+        arrow:ClearAllPoints()
+        arrow:SetPoint("RIGHT", button, "RIGHT",
+                       -(dropdown.uuiDropdownBedRight or 0), 0)
+      end)
+      if not button.uuiDropdownBedHooked then
+        button.uuiDropdownBedHooked = true
+        U.PostHookScript(button, "OnEnter", function()
+          button.uuiDropdownOver = true
+          D.PaintBed(dropdown, "hover")
+        end)
+        U.PostHookScript(button, "OnLeave", function()
+          button.uuiDropdownOver = false
+          D.PaintBed(dropdown, nil)
+        end)
+        U.PostHookScript(button, "OnMouseDown", function() D.PaintBed(dropdown, "pressed") end)
+        U.PostHookScript(button, "OnMouseUp", function()
+          D.PaintBed(dropdown, button.uuiDropdownOver and "hover" or nil)
+        end)
+      end
+    elseif options.modernWow and button.uuiDropdownArrow then
       local arrow = button.uuiDropdownArrow
       pcall(arrow.SetTextColor, arrow, M.Unpack(M.modernWow.dropdown.arrowColor))
       pcall(function()
@@ -552,16 +845,20 @@ function D.StyleStock(dropdown, width, options)
     AttachPlacement(dropdown, button)
   end
 
-  LayoutText(dropdown, button)
+  -- Now and again one tick later: a FontString's new width does not settle in
+  -- the frame that set it (widgets.fontstring_stringwidth_clamped_by_setwidth),
+  -- and LayoutText re-writes the value against that width.
+  LayoutTextWhenSettled(dropdown)
   if not dropdown.uuiDropdownTextHooked then
     dropdown.uuiDropdownTextHooked = U.PostHookScript(dropdown, "OnShow", function()
       -- USER_CONFIRMED_INGAME: changing the one-time SetHeight above did not
       -- change the visible trainer control. Reassert the component geometry
       -- after the native template's show/update path has restored its size.
-      ApplyControlHeight(dropdown)
-      LayoutText(dropdown, U.G(name .. "Button"))
+      LayoutTextWhenSettled(dropdown)
+      D.PaintBed(dropdown, false)
     end)
   end
+  D.PaintBed(dropdown, false)
   return dropdown
 end
 

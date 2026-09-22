@@ -198,17 +198,24 @@ local function Clamp(value)
   return value
 end
 
--- knowledge.json / core.getdifficultycolor_missing. Thresholds are Vanilla's;
--- only used when the native level fontstring has no colour to copy.
+-- knowledge.json / core.getdifficultycolor_missing. Only used when the native
+-- level fontstring has no colour to copy. Bands, colours and the
+-- GetQuestGreenRange grey cut-off are kept identical to the unit frames'
+-- DifficultyColor (modules/unitframes.lua) so the two never disagree about the
+-- same mob; keep them in step if either is changed.
 local function DifficultyColor(level)
   level = tonumber(level) or 0
   local playerLevel = ApiNumber("UnitLevel", "player") or 1
+  local greenRange = ApiNumber("GetQuestGreenRange")
+  if not greenRange or greenRange <= 0 then greenRange = 7 end
 
   if level <= 0 then return 0.69, 0.69, 0.69 end
-  if level >= playerLevel + 5 then return 1.00, 0.10, 0.10 end
-  if level >= playerLevel + 3 then return 1.00, 0.50, 0.10 end
-  if level >= playerLevel - 2 then return 1.00, 1.00, 0.00 end
-  if level > playerLevel - 8 then return 0.25, 0.75, 0.25 end
+
+  local diff = level - playerLevel
+  if diff >= 5 then return 1.00, 0.10, 0.10 end
+  if diff >= 3 then return 1.00, 0.50, 0.25 end
+  if diff >= -2 then return 1.00, 1.00, 0.00 end
+  if -diff <= greenRange then return 0.25, 0.75, 0.25 end
   return 0.50, 0.50, 0.50
 end
 

@@ -37,10 +37,18 @@ local M = U.media
 -- pair (knowledge.json / api.getcursorposition_usable_for_hit_testing) and
 -- moves the list through Slider:SetValue, the call the arrows and the mouse
 -- wheel already use.
+--
+-- options.token: a caller-supplied token of the same shape as
+-- M.modernWow.scrollbar, for a window that draws MinimalScrollBar from another
+-- build's sheets.
+-- options.bodyX: horizontal offset for the track and thumb only; arrows remain
+-- centred on the Slider.
+-- A cell may name its own sheet with a `path` field, for art split across more
+-- than the two sheets the Modern WoW import uses.
 function U.StyleModernWowScrollbar(scrollbar, options)
-  local token = M.modernWow and M.modernWow.scrollbar
-  if not scrollbar or not token then return nil end
   options = options or {}
+  local token = options.token or (M.modernWow and M.modernWow.scrollbar)
+  if not scrollbar or not token then return nil end
 
   local state = scrollbar.uuiModernWow
   if state then
@@ -58,16 +66,18 @@ function U.StyleModernWowScrollbar(scrollbar, options)
   if not created or not thumb then return nil end
 
   state = {
+    token = token,
     onChange = options.onChange,
     -- Read by UnrealRuntimeProbe's skillscroll capture; nothing here uses it.
     thumb = thumb,
     extent = token.thumb.minExtent,
+    bodyX = tonumber(options.bodyX) or 0,
     arrows = {},
   }
   scrollbar.uuiModernWow = state
 
   local function SetCell(texture, path, cell, alpha)
-    pcall(texture.SetTexture, texture, path)
+    pcall(texture.SetTexture, texture, cell.path or path)
     pcall(texture.SetTexCoord, texture, M.Unpack(cell))
     pcall(texture.SetAlpha, texture, alpha or 1)
   end
@@ -138,12 +148,12 @@ function U.StyleModernWowScrollbar(scrollbar, options)
     SetCell(top, token.proportional, track.top)
     top:SetWidth(track.width)
     top:SetHeight(track.cap)
-    top:SetPoint("TOP", scrollbar, "TOP", 0, 0)
+    top:SetPoint("TOP", scrollbar, "TOP", state.bodyX, 0)
 
     SetCell(bottom, token.proportional, track.bottom)
     bottom:SetWidth(track.width)
     bottom:SetHeight(track.cap)
-    bottom:SetPoint("BOTTOM", scrollbar, "BOTTOM", 0, 0)
+    bottom:SetPoint("BOTTOM", scrollbar, "BOTTOM", state.bodyX, 0)
 
     SetCell(middle, token.vertical, track.middle)
     middle:SetWidth(track.width)
@@ -224,8 +234,8 @@ function U.StyleModernWowScrollbar(scrollbar, options)
     end
     pcall(function()
       thumb:ClearAllPoints()
-      thumb:SetPoint("TOPLEFT", scrollbar, "TOPLEFT", 0, -offset)
-      thumb:SetPoint("TOPRIGHT", scrollbar, "TOPRIGHT", 0, -offset)
+      thumb:SetPoint("TOPLEFT", scrollbar, "TOPLEFT", state.bodyX, -offset)
+      thumb:SetPoint("TOPRIGHT", scrollbar, "TOPRIGHT", state.bodyX, -offset)
       thumb:SetHeight(extent)
     end)
   end
@@ -312,8 +322,8 @@ end
 -- the whole track (see M.modernWow.scrollbar); the scrollbar's next tick
 -- re-places the thumb at the new size.
 function U.SetModernWowScrollbarProportion(scrollbar, visibleCount, totalCount)
-  local token = M.modernWow and M.modernWow.scrollbar
   local state = scrollbar and scrollbar.uuiModernWow
+  local token = (state and state.token) or (M.modernWow and M.modernWow.scrollbar)
   if not token or not state then return nil end
 
   visibleCount = tonumber(visibleCount or 0) or 0

@@ -98,6 +98,20 @@ MOVER_LABEL_ACTION_BAR    = "Barre %d",
 MOVER_LABEL_MOVER_TEST    = "Test de deplacement",
 
 -- ---------------------------------------------------------------------------
+-- Grouped game settings window (modules/gamesettings.lua)
+-- ---------------------------------------------------------------------------
+GAMESETTINGS_TITLE        = "Options du jeu",
+GAMESETTINGS_VIDEO        = "Video",
+GAMESETTINGS_SOUND        = "Son",
+GAMESETTINGS_INTERFACE    = "Interface",
+GAMESETTINGS_KEYBINDINGS  = "Raccourcis clavier",
+GAMESETTINGS_UNREALUI     = "Unreal UI",
+GAMESETTINGS_UNREALQUEST  = "Unreal Quest",
+GAMESETTINGS_UNAVAILABLE  = "Ce panneau n'est pas disponible sur ce client.",
+GAMESETTINGS_SEARCH       = "Rechercher",
+GAMESETTINGS_NO_MATCHES   = "Aucune option correspondante.",
+
+-- ---------------------------------------------------------------------------
 -- Settings window
 -- ---------------------------------------------------------------------------
 SETTINGS_MOVE_UI          = "Deplacer l'interface",
@@ -565,6 +579,11 @@ PROFESSIONS_COOLDOWN      = "Temps de recharge restant : %s",
 PROFESSIONS_TRAINING_POINTS = "Points d'entrainement : %d",
 PROFESSIONS_NO_RECIPES    = "Aucune recette a afficher.",
 GAMEMENU_OPTIONS          = "Options",
+GAMEMENU_RETURN           = "Retour au jeu",
+GAMEMENU_TITLE            = "Menu du jeu",
+GAMEMENU_EDIT_MODE        = "Mode edition",
+GAMEMENU_SUPPORT          = "Support",
+GAMEMENU_SUPPORT_UNAVAILABLE = "la fenetre de support n'est pas disponible dans cette version.",
 
 -- ---------------------------------------------------------------------------
 -- Experience bar settings and tooltip (modules/xpbar.lua)
@@ -593,6 +612,7 @@ XPTIP_UNIT_SECOND         = "s",
 -- ---------------------------------------------------------------------------
 CMD_HEADER                = "v%s commandes :",
 CMD_SETTINGS              = "  |cffffff00/uui|r - ouvrir les reglages",
+CMD_GAME                  = "  |cffffff00/uui game|r - ouvrir les options du jeu",
 CMD_UNLOCK                = "  |cffffff00/uui unlock|r - deverrouiller les cadres pour les deplacer",
 CMD_LOCK                  = "  |cffffff00/uui lock|r - verrouiller les cadres",
 CMD_RESET                 = "  |cffffff00/uui reset|r - reinitialiser toutes les positions",

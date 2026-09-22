@@ -1217,6 +1217,9 @@ function advisor.BuildRedChoice(parent, width, text, onClick, cfg)
 
   if type(U.ModernWowRedButtonFace) == "function" then
     pcall(U.ModernWowRedButtonFace, button, cfg.buttonHeight)
+    if type(U.ModernWowRedButtonInput) == "function" then
+      pcall(U.ModernWowRedButtonInput, button)
+    end
   end
   -- Both states go through the shared paint rather than straight to the face:
   -- a selected button must not fall back to the normal art when the pointer

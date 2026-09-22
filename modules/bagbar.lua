@@ -13,15 +13,26 @@
 -- children of MainMenuBar, and modules/actionbar.lua suppresses that whole
 -- family because UnrealUI draws its own action bars. Turning the bag module
 -- off therefore left no on-screen way to open a bag at all -- only a keybind.
--- This module fills exactly that gap, and only that gap:
+-- This module fills that gap:
 --
---   bags module ON   -> UnrealUI's own merged bag window opens from its own
---                       controls; this bar stays hidden and builds nothing.
 --   bags module OFF  -> this bar appears outside classic-wow, and every click
 --                       goes to the client's own globals (ToggleBackpack,
 --                       OpenAllBags, ToggleBag), so whichever addon owns the
 --                       container UI answers it. Classic keeps the stock bag
 --                       buttons inside the native MainMenuBar instead.
+--   bags module ON   -> the merged bag window owns the container UI, so the
+--                       bar is redundant and stays hidden -- except under
+--                       `modern-wow` with the `bagbar` surface on, where the
+--                       DragonflightUI bag row is part of that interface's
+--                       HUD and the player asked to keep it (user request,
+--                       2026-09-21). There it builds exactly as it does with
+--                       the module off: modules/bags.lua has already pointed
+--                       ToggleBackpack/OpenAllBags at its merged window and
+--                       neutered ToggleBag, so the same clicks land on that
+--                       window without this module knowing anything about it.
+--                       Only the keyring needs a different destination, since
+--                       the merged window carries its own keyring tray rather
+--                       than a global -- see bb.CreateKeyring.
 --
 -- WHAT IT DOES NOT DO
 --
@@ -107,24 +118,48 @@ function bb.EnsureConfig()
   return bb.config
 end
 
--- Public for the settings page (modules/bags.lua), which owns the checkbox.
--- Turning it on or off is reload-bound for the same reason the bag module's own
--- switch is: the bar is built once, at OnEnable, and a flag flipped afterwards
--- would leave either half a bar or a stale one.
+-- Public for the two views of this switch: the Bags settings page
+-- (modules/bags.lua) and the contextual panel on this bar's own edit-mode
+-- anchor.
+--
+-- It takes effect immediately -- no reload. Nothing about the bar depends on a
+-- state read once at load: the only thing it decides at build time is which
+-- theme it draws, and a theme change is reload-bound in its own right. So the
+-- switch simply shows or hides the row. The anchor under it stays put either
+-- way, because the panel on that anchor is one of the two places this switch
+-- lives (bb.Available, bb.HideControls).
 function U.BagBarEnabled()
   return bb.EnsureConfig().enabled and true or false
 end
 
 function U.SetBagBarEnabled(value)
   bb.EnsureConfig().enabled = value and true or false
+  bb.Apply()
+  return U.BagBarEnabled()
 end
 
--- The bar is the bag module's stand-in, so it is shown only while that module
--- is off. U.BagsEnabled reads the same persisted flag the settings checkbox
--- writes, and both changes are reload-bound, so this is read at enable time
--- and does not need re-testing on a refresh tick.
-function bb.Wanted()
-  if not bb.EnsureConfig().enabled then return false end
+-- The `modern-wow` bag row: the theme is on and its `bagbar` surface has not
+-- been switched off. Build reads this to choose its drawing path, and Wanted
+-- reads it to decide whether the bar survives the bag module being on, so both
+-- answers come from one place rather than drifting apart.
+function bb.ModernWowActive()
+  if type(U.GetActiveThemeStyle) ~= "function" then return false end
+  if U.GetActiveThemeStyle() ~= "modern-wow" then return false end
+  if type(U.ModernWowSurfaceEnabled) ~= "function" then return true end
+  return U.ModernWowSurfaceEnabled("bagbar") and true or false
+end
+
+-- Whether this interface has a place for the bar at all, ignoring the player's
+-- own switch. The bar stands in for the bag module, so that is normally only
+-- while the module is off; the exception is `modern-wow`, where the bag row is
+-- part of the theme's own HUD rather than a stand-in and stays on screen
+-- alongside the merged bag window (user request, 2026-09-21). Classic keeps
+-- the stock bag buttons on the native MainMenuBar and needs neither.
+--
+-- This, not bb.Wanted, is the mover's `visible` predicate: an anchor that
+-- disappeared with the bar would take away the only place the bar can be
+-- switched back on in edit mode (user request, 2026-09-21).
+function bb.Available()
   local nativeMain = nil
   if type(U.ActionBarUsesNativeMainMenuBar) == "function" then
     nativeMain = U.ActionBarUsesNativeMainMenuBar()
@@ -133,7 +168,26 @@ function bb.Wanted()
   end
   if nativeMain then return false end
   if type(U.BagsEnabled) ~= "function" then return true end
-  return not U.BagsEnabled()
+  if not U.BagsEnabled() then return true end
+  return bb.ModernWowActive()
+end
+
+-- ...and whether it is actually drawn: the above plus the player's switch.
+-- U.BagsEnabled reads the same persisted flag the bag module's own settings
+-- checkbox writes, and that switch is reload-bound; this bar's own switch is
+-- not, which is why the answer is recomputed by bb.Apply rather than captured
+-- once.
+function bb.Wanted()
+  if not bb.EnsureConfig().enabled then return false end
+  return bb.Available()
+end
+
+-- True while the bar is sharing the screen with UnrealUI's own merged bag
+-- window rather than standing in for it. Only the keyring control cares: every
+-- other click already reaches that window through the globals bags.lua
+-- overrides.
+function bb.SharesWithBagWindow()
+  return type(U.BagsEnabled) == "function" and U.BagsEnabled() and true or false
 end
 
 -- ---------------------------------------------------------------------------
@@ -412,7 +466,11 @@ function bb.CreateBackpack()
       local free, total = bb.FreeSlots()
       pcall(tip.AddLine, tip, U.L("BAGBAR_FREE_SLOTS", free, total),
             0.65, 0.65, 0.65, 1)
-      if bb.Has("OpenAllBags") then
+      -- Not while the merged bag window owns the container UI: bags.lua points
+      -- OpenAllBags at the same toggle as ToggleBackpack, so right click does
+      -- exactly what left click does and the line would promise a second
+      -- behaviour that does not exist.
+      if bb.Has("OpenAllBags") and not bb.SharesWithBagWindow() then
         pcall(tip.AddLine, tip, U.L("BAGBAR_OPEN_ALL_HINT"),
               0.65, 0.65, 0.65, 1)
       end
@@ -471,7 +529,18 @@ end
 -- at all here, so its absence hides the button rather than leaving a control
 -- that does nothing.
 function bb.CreateKeyring()
-  if not bb.Has("ToggleKeyRing") and not bb.Has("ToggleBag") then return nil end
+  -- With the merged bag window on screen beside this bar, the keyring lives
+  -- in that window's own tray and there is no global that opens it -- bags.lua
+  -- leaves ToggleKeyRing alone and makes ToggleBag a no-op, so the stock path
+  -- below would open the client's KeyRingFrame on top of the merged bag. Route
+  -- to the window's tray instead, and if that module exposes no opener, show
+  -- no keyring at all rather than one that opens the wrong thing.
+  local shared = bb.SharesWithBagWindow()
+  if shared then
+    if type(U.ToggleBagKeyring) ~= "function" then return nil end
+  elseif not bb.Has("ToggleKeyRing") and not bb.Has("ToggleBag") then
+    return nil
+  end
 
   local name = "UnrealUIBagBarKeyring"
   local button = U.CreateButton(bb.anchor, {
@@ -480,6 +549,10 @@ function bb.CreateKeyring()
     width = bb.SLOT,
     height = bb.SLOT,
     onClick = function()
+      if shared then
+        pcall(U.ToggleBagKeyring)
+        return
+      end
       if not bb.Call("ToggleKeyRing") then
         bb.Call("ToggleBag", bb.KEYRING_BAG)
       end
@@ -691,6 +764,11 @@ end
 
 function bb.ProcessDirty()
   if not bb.dirty then return end
+  -- A bar that is switched off keeps its dirty flag rather than clearing it:
+  -- bb.Apply redraws on the way back anyway, and leaving it set costs nothing.
+  -- The anchor itself stays shown for the edit-mode handle, so the bar's own
+  -- switch is what is tested here.
+  if not bb.built or not bb.Wanted() then return end
   bb.dirty = false
   bb.Refresh()
 end
@@ -699,10 +777,7 @@ end
 -- Build
 -- ---------------------------------------------------------------------------
 function bb.Build()
-  bb.mw.active = type(U.GetActiveThemeStyle) == "function" and
-                 U.GetActiveThemeStyle() == "modern-wow" and
-                 (type(U.ModernWowSurfaceEnabled) ~= "function" or
-                  U.ModernWowSurfaceEnabled("bagbar"))
+  bb.mw.active = bb.ModernWowActive()
 
   bb.anchor = CreateFrame("Frame", "UnrealUIBagBarAnchor", UIParent)
   bb.anchor:SetWidth(bb.BACKPACK)
@@ -732,27 +807,79 @@ function bb.Build()
     label = U.L("MOVER_LABEL_BAG_BAR"),
     default = { point = "BOTTOMRIGHT", relativePoint = "BOTTOMRIGHT",
                 x = -12, y = 28 },
-    -- A bar the bag module is currently replacing keeps its stored position
-    -- but offers no drag handle in edit mode; see core/mover.lua.
-    visible = function() return bb.Wanted() end,
+    -- Available, not Wanted: a bar the bag module is currently replacing has
+    -- no anchor to drag, but a bar the player has merely switched off keeps
+    -- one -- its contextual panel is where it is switched back on.
+    visible = function() return bb.Available() end,
   })
 
   bb.built = true
+  -- Registered here rather than in OnEnable: the bar may be built later, the
+  -- first time the player switches it on, and it needs the same refresh tick
+  -- from that moment. Build runs once, so these register once.
+  U.RegisterEvent("PLAYER_ENTERING_WORLD", bb.MarkDirty)
+  U.RegisterEvent("BAG_UPDATE", bb.MarkDirty)
+  U.RegisterEvent("UNIT_INVENTORY_CHANGED", bb.MarkDirty)
+  U.RegisterUpdate("bagbar.refresh", 0.2, bb.ProcessDirty)
+
   -- Refresh ends in a full layout, so the row is placed by the same code that
   -- will place it on every later bag change rather than by a separate pass.
   bb.Refresh()
 end
 
+-- Hides the row without hiding the frame it hangs on. The edit-mode handle is
+-- created as a CHILD of the mover's frame (core/mover.lua CreateHandle), so
+-- hiding bb.anchor would hide the handle with it and there would be no anchor
+-- left to switch the bar back on from. The anchor carries no art of its own --
+-- no backdrop, no texture, no mouse -- so leaving it shown draws nothing.
+function bb.HideControls()
+  local i
+  local controls = { bb.backpack, bb.keyring, bb.arrow }
+  for i = 1, table.getn(controls) do
+    if controls[i] then controls[i]:Hide() end
+  end
+  for i = 1, bb.SLOT_COUNT do
+    if bb.slots[i] then bb.slots[i]:Hide() end
+  end
+end
+
+-- Brings the bar into line with bb.Wanted, building it the first time this
+-- interface has a place for it. Safe to call at any time and as often as
+-- wanted: Build runs once, and everything after it is a show or a hide.
+function bb.Apply()
+  if bb.Available() and not bb.built then bb.Build() end
+  if not bb.anchor then return false end
+
+  local wanted = bb.Wanted()
+  bb.anchor:Show()
+
+  if wanted then
+    -- Free slots and equipped bags may have changed while it was hidden, and
+    -- the refresh tick skips a hidden bar. Drawn here rather than left to the
+    -- next tick so the bar does not appear a fifth of a second stale. Layout
+    -- shows exactly the controls the collapse state calls for.
+    bb.dirty = false
+    bb.Refresh()
+  else
+    bb.HideControls()
+  end
+
+  return wanted
+end
+
 -- Called by modules/modernwow.lua's surface registry.
 --
 -- Unlike the other surfaces this one cannot dress an existing frame: the bar is
--- built at most once, at OnEnable, and its art has to be chosen while its
--- buttons are created rather than painted over them afterwards. bb.Build reads
--- the same surface flag itself, and this reports what that produced so
--- `/uui mw list` states the truth instead of a guess.
+-- built once, at OnEnable, and its art has to be chosen while its buttons are
+-- created rather than painted over them afterwards. bb.Build reads the same
+-- surface flag itself, and this reports what that produced so `/uui mw list`
+-- states the truth instead of a guess.
 --
--- A bar that was never built because the bag module owns the container UI is
--- not a failure of this surface, so it reports success with nothing drawn.
+-- A bar that was never built is not a failure of this surface, so it reports
+-- success with nothing drawn. That is where this interface has no place for
+-- the bar at all (bb.Available) -- this surface off while the bag module owns
+-- the container UI. The player's own switch is not that case: the bar is still
+-- built, and merely hidden.
 function U.BuildModernWowBagBar()
   if not bb.built then return true end
   if not bb.mw.active then
@@ -762,22 +889,119 @@ function U.BuildModernWowBagBar()
 end
 
 -- ---------------------------------------------------------------------------
+-- Edit-mode panel
+--
+-- Clicking this bar's anchor in edit mode selects it, and core/moverpanel.lua
+-- puts this panel beside the handle. It carries the bag settings themselves
+-- rather than a way through to the settings window (user request,
+-- 2026-09-21): the merged bag window, its category view, and whether this bar
+-- is on screen. Every one of them is the same accessor the Bags page writes
+-- (U.SetBagsEnabled, U.SetBagsCategories, U.SetBagBarEnabled), so the two
+-- views cannot drift -- including the reload prompt the merged bag's own
+-- switch raises, which belongs to that setting and not to the page.
+--
+-- Kept on the bb table rather than as top-level locals, like the rest of this
+-- file (rules/unreal-ui.md: the Lua chunk's 200-local limit).
+-- ---------------------------------------------------------------------------
+bb.MOVER_CONTENT_WIDTH = 236
+bb.MOVER_ROW = 22
+bb.MOVER_PANEL_HEIGHT = 150
+
+-- The rows, in the order the Bags page lists them. A row whose accessors are
+-- missing -- modules/bags.lua failed to load -- is skipped rather than
+-- erroring inside a panel build, which is the same defensiveness bb.Available
+-- applies to U.BagsEnabled.
+bb.moverRows = {
+  { name = "UnrealUIBagBarMoverBags",
+    text = "SETTINGS_BAGS_ENABLE",
+    get = "BagsEnabled", set = "SetBagsEnabled" },
+  { name = "UnrealUIBagBarMoverCategories",
+    text = "SETTINGS_BAGS_CATEGORIES",
+    get = "BagsCategoriesEnabled", set = "SetBagsCategories" },
+  -- Live, so the bar leaves and returns under the cursor. Its anchor stays
+  -- either way, which is what keeps this panel reachable to switch it back on
+  -- (see bb.Available).
+  { name = "UnrealUIBagBarMoverEnable",
+    text = "SETTINGS_BAGBAR_ENABLE",
+    get = "BagBarEnabled", set = "SetBagBarEnabled" },
+}
+
+function bb.BuildMoverPanel(frame, contentTop, contentWidth)
+  local pad = U.MoverPanelPad()
+  local widgets = {}
+  local boxes = {}
+  local last = nil
+  local i, rows = nil, 0
+
+  for i = 1, table.getn(bb.moverRows) do
+    local spec = bb.moverRows[i]
+    local get, set = U[spec.get], U[spec.set]
+    if type(get) == "function" and type(set) == "function" then
+      local box = U.CreateCheckbox(frame, {
+        name = spec.name,
+        text = U.L(spec.text),
+        textWidth = contentWidth,
+        value = get(),
+        onChange = function(value) set(value) end,
+      })
+      box.SetPoint("TOPLEFT", frame, "TOPLEFT", pad,
+                   contentTop - rows * bb.MOVER_ROW)
+      rows = rows + 1
+      last = box
+      table.insert(boxes, { box = box, get = get })
+      table.insert(widgets, box)
+    end
+  end
+
+  local hint = last and U.CreateSettingsLabel(frame, {
+    size = M.fontSize.tiny,
+    color = M.color.textDim,
+    inherits = "GameFontNormalSmall",
+    justify = "LEFT",
+    width = contentWidth,
+  })
+  if hint then
+    -- Anchored under the control it explains rather than at a panel-relative
+    -- offset, per rules/unreal-ui-design.md.
+    U.AnchorSettingsDescription(hint, last.box)
+    hint:SetText(U.L("BAGBAR_MOVER_HINT"))
+    table.insert(widgets, hint)
+  end
+
+  -- Re-read on every show: the Bags page writes the same three settings, and
+  -- the merged bag's switch is only applied on the next reload.
+  local function Refresh()
+    local j
+    for j = 1, table.getn(boxes) do
+      boxes[j].box.SetValue(boxes[j].get())
+    end
+  end
+
+  return widgets, Refresh
+end
+
+-- ---------------------------------------------------------------------------
 -- Registration
 -- ---------------------------------------------------------------------------
 function BB:OnInit()
   bb.EnsureConfig()
+  if type(U.RegisterMoverPanel) == "function" then
+    U.RegisterMoverPanel("bagbar", {
+      name = "UnrealUIBagBarMoverSettings",
+      width = bb.MOVER_CONTENT_WIDTH + U.MoverPanelPad() * 2,
+      height = bb.MOVER_PANEL_HEIGHT,
+      build = bb.BuildMoverPanel,
+      title = function() return U.L("MOVER_LABEL_BAG_BAR") end,
+      preferVertical = true,
+    })
+  end
 end
 
 function BB:OnEnable()
   bb.EnsureConfig()
-  -- Off, or the bag module owns the container UI: build nothing at all. Both
-  -- switches are reload-bound, so there is no live state to keep in sync.
-  if not bb.Wanted() then return end
-
-  bb.Build()
-
-  U.RegisterEvent("PLAYER_ENTERING_WORLD", bb.MarkDirty)
-  U.RegisterEvent("BAG_UPDATE", bb.MarkDirty)
-  U.RegisterEvent("UNIT_INVENTORY_CHANGED", bb.MarkDirty)
-  U.RegisterUpdate("bagbar.refresh", 0.2, bb.ProcessDirty)
+  -- Nothing is built where this interface has no place for the bar at all --
+  -- classic-wow, or the bag module owning the container UI outside modern-wow.
+  -- Everywhere else the bar is built and then shown or hidden by its own
+  -- switch, which is live and keeps its anchor either way.
+  bb.Apply()
 end

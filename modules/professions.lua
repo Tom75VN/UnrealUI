@@ -1695,6 +1695,9 @@ function pw.RedButton(win, parent, text, onClick)
       U.ModernWowPaintRedButton(button, false)
     end
   end)
+  if type(U.ModernWowRedButtonInput) == "function" then
+    U.ModernWowRedButtonInput(button)
+  end
   button:SetScript("OnClick", function()
     if button.enabled then onClick() end
   end)

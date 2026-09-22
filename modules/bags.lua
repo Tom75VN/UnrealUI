@@ -110,6 +110,43 @@ function U.BagsEnabled()
   return EnsureConfig().enabled and true or false
 end
 
+-- The two settings this module owns have two views each: the Bags page in the
+-- settings window, and the panel on the bag bar's edit-mode anchor
+-- (modules/bagbar.lua). Both go through these, so the reload prompt and the
+-- redraw belong to the setting rather than being written out twice.
+--
+-- Turning the merged bag on or off is genuinely reload-bound: this module
+-- overrides the client's bag globals and builds its window once, at enable.
+-- The prompt is the setting's own behaviour, not the page's.
+function U.SetBagsEnabled(value)
+  value = value and true or false
+  if EnsureConfig().enabled == value then return value end
+  EnsureConfig().enabled = value
+
+  U.ShowConfirm({
+    owner = "bags.enable-reload",
+    centered = true,
+    text = U.L("SETTINGS_BAGS_CHANGED"),
+    detail = value and U.L("SETTINGS_BAGS_RELOAD_ON")
+                    or U.L("SETTINGS_BAGS_RELOAD_OFF"),
+    acceptText = U.L("COMMON_OK_SHORT"),
+    cancelText = U.L("COMMON_CLOSE"),
+  })
+  return value
+end
+
+function U.BagsCategoriesEnabled()
+  return EnsureConfig().categories and true or false
+end
+
+function U.SetBagsCategories(value)
+  EnsureConfig().categories = value and true or false
+  -- Both views run on the same buttons, so the next refresh tick simply draws
+  -- the other one. Nothing to reload and nothing to rebuild.
+  layoutDirty = true
+  return U.BagsCategoriesEnabled()
+end
+
 -- Classic keeps the merged UnrealUI container but paints it from the live
 -- native ContainerFrame texture objects before those stock windows are
 -- suppressed. No client asset path is guessed or bundled: the running client
@@ -1527,6 +1564,26 @@ local function ToggleBags()
   if ok and shown then HideBags() else ShowBags() end
 end
 
+-- The keyring tray, for a caller outside this window's own header. The HUD bag
+-- bar (modules/bagbar.lua) stays on screen beside this window under
+-- `modern-wow`, and its keyring control has no global to reach: this module
+-- deliberately leaves ToggleKeyRing native and makes ToggleBag inert, so the
+-- stock path would raise the client's KeyRingFrame over the merged bag. This is
+-- the same toggle frame.keyToggle runs, exposed rather than duplicated.
+function U.ToggleBagKeyring()
+  if not frame or not frame.keyring then return false end
+
+  local tray = frame.keyring
+  local ok, shown = pcall(tray.IsShown, tray)
+  if ok and shown then
+    tray:Hide()
+  else
+    LayoutKeyring()
+    tray:Show()
+  end
+  return true
+end
+
 -- The equipped-bag buttons use ToggleBag(container). Their contents are
 -- already part of the merged window, so the individual toggle must not close
 -- or reopen that window. This matches UnrealPfUI's working behavior on this
@@ -1620,16 +1677,7 @@ local function BuildHeader()
     fallback = "K",
     title = U.L("BAGS_TOGGLE_KEYRING"),
     detail = function() return U.L("BAGS_KEYRING_HINT") end,
-    onClick = function()
-      local tray = frame.keyring
-      local ok, shown = pcall(tray.IsShown, tray)
-      if ok and shown then
-        tray:Hide()
-      else
-        LayoutKeyring()
-        tray:Show()
-      end
-    end,
+    onClick = function() U.ToggleBagKeyring() end,
   })
   classicBag.StyleIconButton(frame.keyToggle)
   frame.keyToggle:SetPoint("TOPLEFT", frame, "TOPLEFT", PADDING, -PADDING)
@@ -1976,19 +2024,8 @@ local function BuildSettingsPage(parent)
   local enable = U.CreateCheckbox(parent, {
     name = "UnrealUISettingsBagsEnable",
     text = U.L("SETTINGS_BAGS_ENABLE"),
-    value = EnsureConfig().enabled,
-    onChange = function(value)
-      EnsureConfig().enabled = value and true or false
-      U.ShowConfirm({
-        owner = "bags.enable-reload",
-        centered = true,
-        text = U.L("SETTINGS_BAGS_CHANGED"),
-        detail = value and U.L("SETTINGS_BAGS_RELOAD_ON")
-                        or U.L("SETTINGS_BAGS_RELOAD_OFF"),
-        acceptText = U.L("COMMON_OK_SHORT"),
-        cancelText = U.L("COMMON_CLOSE"),
-      })
-    end,
+    value = U.BagsEnabled(),
+    onChange = function(value) U.SetBagsEnabled(value) end,
   })
   enable.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -34)
   table.insert(widgets, enable)
@@ -2009,13 +2046,8 @@ local function BuildSettingsPage(parent)
   local categories = U.CreateCheckbox(parent, {
     name = "UnrealUISettingsBagsCategories",
     text = U.L("SETTINGS_BAGS_CATEGORIES"),
-    value = EnsureConfig().categories,
-    onChange = function(value)
-      EnsureConfig().categories = value and true or false
-      -- Both views run on the same buttons, so the next refresh tick simply
-      -- draws the other one. Nothing to reload and nothing to rebuild.
-      layoutDirty = true
-    end,
+    value = U.BagsCategoriesEnabled(),
+    onChange = function(value) U.SetBagsCategories(value) end,
   })
   -- Anchored under the description above rather than at a computed offset: that
   -- text wraps to a different number of lines per language, and
@@ -2041,9 +2073,15 @@ local function BuildSettingsPage(parent)
   end
 
   -- The HUD bag bar (modules/bagbar.lua) stands in for this window while the
-  -- module above is off, so its one switch belongs on this page rather than on
-  -- a tab of its own. It is shown always and simply has no visible effect
-  -- while the merged bag is the container UI, which the description says.
+  -- module above is off -- and under modern-wow stays beside it while it is on
+  -- -- so its one switch belongs on this page rather than on a tab of its own.
+  -- It is shown always; the description says which themes and module states it
+  -- actually appears in.
+  --
+  -- Unlike the module switch above it takes effect immediately, with no reload
+  -- prompt: the bar builds itself the first time it is wanted and is shown or
+  -- hidden after that. The same switch appears on the bar's own edit-mode
+  -- anchor, and either view writes it.
   local bar = U.CreateCheckbox(parent, {
     name = "UnrealUISettingsBagsHudBar",
     text = U.L("SETTINGS_BAGBAR_ENABLE"),
@@ -2051,14 +2089,6 @@ local function BuildSettingsPage(parent)
     onChange = function(value)
       if type(U.SetBagBarEnabled) ~= "function" then return end
       U.SetBagBarEnabled(value)
-      U.ShowConfirm({
-        owner = "bagbar.enable-reload",
-        centered = true,
-        text = U.L("SETTINGS_BAGS_CHANGED"),
-        detail = U.L("SETTINGS_BAGBAR_RELOAD"),
-        acceptText = U.L("COMMON_OK_SHORT"),
-        cancelText = U.L("COMMON_CLOSE"),
-      })
     end,
   })
   if categoriesHint then
@@ -2082,8 +2112,8 @@ local function BuildSettingsPage(parent)
   end
 
   local function Refresh()
-    enable.SetValue(EnsureConfig().enabled)
-    categories.SetValue(EnsureConfig().categories)
+    enable.SetValue(U.BagsEnabled())
+    categories.SetValue(U.BagsCategoriesEnabled())
     if U.BagBarEnabled then bar.SetValue(U.BagBarEnabled()) end
   end
 

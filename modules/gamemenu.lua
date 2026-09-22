@@ -14,13 +14,23 @@ local M = U.media
 
 local G = U.RegisterModule("gamemenu")
 
-local FRAME_WIDTH = 246
-local BUTTON_WIDTH = 180
+local MENU_WIDTH_SCALE = 0.8
+local FRAME_WIDTH = 197
+local BUTTON_WIDTH = 144
 local BUTTON_HEIGHT = 26
 local TOP_OFFSET = 34
 local BOTTOM_PADDING = 20
 local SPACING = 4
 local GROUP_SPACING = 18
+local OPTIONS_BOTTOM_GAP = 5
+
+-- User request, 2026-09-22: every break between two groups of rows is the same
+-- number -- twice the menu's own group break, less GROUP_GAP_TRIM. It started
+-- as the break below Options and below Macros, which is why it is built from
+-- those two metrics, and it is now what separates any two groups so no pair of
+-- sections sits closer than another.
+local SECTION_GAP_SCALE = 2
+local GROUP_GAP_TRIM = 4
 
 -- Classic only: this client centres a button label high inside its own button
 -- face, so every row of the native menu -- the client's own as well as the two
@@ -35,8 +45,12 @@ local styled = false
 local order
 local chrome
 local title
+local titlePlate
 local uuiButton
 local bindButton
+local editModeButton
+local supportButton
+local gameSettingsButton
 local closeButton
 
 -- Layout metrics and drawing hooks for the non-native menu. Both start as the
@@ -63,11 +77,86 @@ local LABELS = {
   GameMenuButtonHelp = "Help / Report Bug",
   GameMenuButtonLogout = "Logout",
   GameMenuButtonQuit = "Exit Game",
-  GameMenuButtonContinue = "Close",
+  GameMenuButtonContinue = "Return to Game",
 }
+
+-- The client still creates four separate settings rows.  The grouped Forever
+-- settings window owns those pages now, so none of the individual rows belong
+-- in the Escape menu.
+local GAME_SETTINGS_ROWS = {
+  GameMenuButtonOptions = true,
+  GameMenuButtonSoundOptions = true,
+  GameMenuButtonUIOptions = true,
+  GameMenuButtonKeybindings = true,
+}
+
+local function IsGameSettingsRow(button)
+  local name
+  if button and button.GetName then pcall(function() name = button:GetName() end) end
+  return name and GAME_SETTINGS_ROWS[name] or false
+end
+
+local function HideGameSettingsRows()
+  local name
+  for name in pairs(GAME_SETTINGS_ROWS) do
+    local button = U.G(name)
+    if button then pcall(button.Hide, button) end
+  end
+end
 
 local function IsNamed(button, name)
   return button and button == U.G(name)
+end
+
+-- The caption the client drew on a native row, read raw (NativeText below
+-- rewrites it for display and must not be used to recognise a row).
+local function RowCaption(button)
+  if not button then return nil end
+
+  local text
+  if button.GetText then pcall(function() text = button:GetText() end) end
+  if (type(text) ~= "string" or text == "") and button.GetFontString then
+    local fontstring
+    pcall(function() fontstring = button:GetFontString() end)
+    if fontstring and fontstring.GetText then
+      pcall(function() text = fontstring:GetText() end)
+    end
+  end
+  if type(text) ~= "string" or text == "" then return nil end
+  return string.lower(text)
+end
+
+-- A row matched by the client's own caption global, with the English literal
+-- as the last resort. This is how rows this build does not expose as globals
+-- are recognised -- see IsClosingRow.
+local function IsCaptioned(button, globalName, fallback)
+  local caption = RowCaption(button)
+  if not caption then return false end
+
+  local expected = U.G(globalName)
+  if type(expected) == "string" and expected ~= "" and
+     string.lower(expected) == caption then
+    return true
+  end
+  return string.lower(fallback) == caption
+end
+
+-- Logout and Exit Game. classicMenu.FollowerIndex records that this client
+-- does not present them as GameMenuButtonLogout / GameMenuButtonQuit, so the
+-- name check alone never matches here and the captions are what actually
+-- resolve them. Both forms are kept so a build that does name them still works.
+local function IsClosingRow(button)
+  if IsNamed(button, "GameMenuButtonLogout") or
+     IsNamed(button, "GameMenuButtonQuit") then return true end
+  return IsCaptioned(button, "LOGOUT", "Logout") or
+         IsCaptioned(button, "EXIT_GAME", "Exit Game")
+end
+
+-- Macros, resolved the same way, because the Edit Mode / Support pair seats
+-- itself above that row.
+local function IsMacrosRow(button)
+  return IsNamed(button, "GameMenuButtonMacros") or
+         IsCaptioned(button, "MACROS", "Macros")
 end
 
 local function RaiseAbove(frame, owner, amount)
@@ -76,6 +165,66 @@ local function RaiseAbove(frame, owner, amount)
   if ok and tonumber(level) then
     pcall(frame.SetFrameLevel, frame, tonumber(level) + (amount or 1))
   end
+end
+
+-- The title box sits fully above the menu. The flat menu reuses its own panel
+-- border; Modern WoW wears a small diamond-metal box, the same
+-- character-create-diamond-metal housing as the menu window (user request,
+-- 2026-09-23), tokenised as M.modernWow.titlePlate.
+local function BuildTitlePlate(parent, color, border, modernWow)
+  local header = modernWow and M.modernWow.titlePlate or nil
+
+  if modernWow then
+    titlePlate = CreateFrame("Frame", "UnrealUIGameMenuTitlePlate", parent)
+    titlePlate:SetWidth(header and header.minWidth or 112)
+    titlePlate:SetHeight(header and header.height or 31.68)
+    titlePlate:SetPoint("CENTER", parent, "TOP", 0, header and header.centerY or -3)
+  else
+    titlePlate = U.CreatePanel(parent, {
+      name = "UnrealUIGameMenuTitlePlate",
+      width = 112,
+      height = 31.68,
+      background = { 0.04, 0.04, 0.04, 0.40 },
+      border = border,
+    })
+    titlePlate:SetPoint("CENTER", parent, "TOP", 0, -3)
+  end
+  pcall(titlePlate.EnableMouse, titlePlate, false)
+  RaiseAbove(titlePlate, parent, 6)
+
+  title = U.CreateLabel(titlePlate, {
+    size = M.fontSize.large,
+    color = color,
+    inherits = "GameFontNormal",
+  })
+  title:SetText(U.L("GAMEMENU_TITLE"))
+  if header then
+    title:SetPoint("CENTER", titlePlate, "CENTER", 0, header.textY)
+  else
+    title:SetPoint("CENTER", titlePlate, "CENTER", 0, -1)
+  end
+
+end
+
+-- The plate is the caption's own width plus the token's padding, so a
+-- translated caption still sits inside the metal.
+-- GetStringWidth is SUPPORTED / BEHAVIOR_VERIFIED on this client, but it can
+-- report 0 before the font string has been laid out, so this runs again on
+-- every layout pass rather than once at build time.
+local function SizeTitlePlate()
+  if not titlePlate or not title then return end
+  local header = M.modernWow.titlePlate
+  if not header then return end
+
+  local textWidth
+  if title.GetStringWidth then
+    pcall(function() textWidth = title:GetStringWidth() end)
+  end
+  textWidth = tonumber(textWidth) or 0
+  local width = textWidth + header.textPadding
+  if width < header.minWidth then width = header.minWidth end
+  pcall(titlePlate.SetWidth, titlePlate, width)
+  U.ModernWowMetalFrame(titlePlate, width, header.height)
 end
 
 local function NativeText(button)
@@ -192,6 +341,15 @@ local function OpenSettingsPanel(frame)
   U.OpenSettings(true)
 end
 
+local function OpenGameSettings(frame)
+  HideMenu(frame)
+  if type(U.OpenGameSettings) == "function" then
+    U.OpenGameSettings()
+  else
+    U.Error(U.L("GAMESETTINGS_UNAVAILABLE"))
+  end
+end
+
 local function OpenQuickBinding(frame)
   HideMenu(frame)
   if type(U.OpenQuickBind) == "function" then
@@ -201,7 +359,49 @@ local function OpenQuickBinding(frame)
   end
 end
 
+-- Edit mode is the UnrealUI mover overlay, the same one the settings window's
+-- "Move UI" row opens. Like Quick Binding it is a mode rather than a page, so
+-- the menu closes and core/mover.lua is called straight from here.
+local function OpenEditMode(frame)
+  HideMenu(frame)
+  U.UnlockUI()
+end
+
+-- The support window is the client's own: it is what the micro bar's Help
+-- button opens, and this client exposes no named global for it, so this row
+-- runs that button's own OnClick handler. Button:Click is
+-- RUNTIME_FAILURE_CONFIRMED broken here (knowledge.json /
+-- loot.native_button_click.v1), and this client's handlers can read the
+-- implicit `this` rather than their Lua argument (knowledge.json /
+-- scripts.handler_arguments_direct), so `this` is pointed at the micro button
+-- for the duration of the call and restored afterwards.
+local function OpenSupport(frame)
+  HideMenu(frame)
+
+  local button = U.G("HelpMicroButton")
+  local click
+  if button then
+    pcall(function() click = button:GetScript("OnClick") end)
+  end
+  if type(click) ~= "function" then
+    U.Error(U.L("GAMEMENU_SUPPORT_UNAVAILABLE"))
+    return
+  end
+
+  local previous = U.G("this")
+  U.SetG("this", button)
+  pcall(click, button, "LeftButton")
+  U.SetG("this", previous)
+end
+
 local function EnsureOwnButtons(frame)
+  if not gameSettingsButton then
+    gameSettingsButton = skin.OwnButton(frame, "UnrealUIGameMenuOptionsButton",
+      U.L("GAMEMENU_OPTIONS"),
+      function() OpenGameSettings(frame) end)
+    RaiseAbove(gameSettingsButton, frame, 20)
+  end
+
   if not uuiButton then
     uuiButton = skin.OwnButton(frame, "UnrealUIGameMenuButton",
       "|cffffffffUnreal|cfff5ae0aUI|r",
@@ -209,19 +409,41 @@ local function EnsureOwnButtons(frame)
     RaiseAbove(uuiButton, frame, 20)
   end
 
-  -- Quick binding sits directly under the UnrealUI row: it is a mode, not a
+  -- Quick binding sits directly under Edit Mode (user request, 2026-09-23)
+  -- and carries the plain red face of that block. It is a mode, not a
   -- settings page, so it opens straight from here instead of through the
   -- settings window (which it would only have to close again).
   if not bindButton then
     bindButton = skin.OwnButton(frame, "UnrealUIGameMenuQuickBindButton",
       U.L("SETTINGS_QUICKBIND"),
-      function() OpenQuickBinding(frame) end, true)
+      function() OpenQuickBinding(frame) end)
     RaiseAbove(bindButton, frame, 20)
   end
 
+  -- Edit Mode and Support sit directly above Macros (user request,
+  -- 2026-09-22). They are addon access rows like the pair above, but they
+  -- belong to the native Macros/AddOns block rather than to the UnrealUI one,
+  -- so they carry the plain red face the rows around them do.
+  if not editModeButton then
+    editModeButton = skin.OwnButton(frame, "UnrealUIGameMenuEditModeButton",
+      U.L("GAMEMENU_EDIT_MODE"),
+      function() OpenEditMode(frame) end)
+    RaiseAbove(editModeButton, frame, 20)
+  end
+
+  if not supportButton then
+    supportButton = skin.OwnButton(frame, "UnrealUIGameMenuSupportButton",
+      U.L("GAMEMENU_SUPPORT"),
+      function() OpenSupport(frame) end)
+    RaiseAbove(supportButton, frame, 20)
+  end
+
+  -- Labelled with the client's own wording for this row rather than "Close"
+  -- (user request, 2026-09-22): it is the menu's Return to Game, and it stands
+  -- in for the native GameMenuButtonContinue this module hides.
   if not closeButton then
     closeButton = skin.OwnButton(frame, "UnrealUIGameMenuCloseButton",
-      U.L("COMMON_CLOSE"),
+      U.L("GAMEMENU_RETURN"),
       function() HideMenu(frame) end)
     RaiseAbove(closeButton, frame, 20)
   end
@@ -229,14 +451,17 @@ end
 
 local function CaptureOrder(frame, buttons)
   EnsureOwnButtons(frame)
+  HideGameSettingsRows()
 
   local continueBtn = U.G("GameMenuButtonContinue")
   local sorted = {}
   local i
   for i = 1, table.getn(buttons) do
     local button = buttons[i]
-    if button ~= continueBtn and button ~= uuiButton and
-       button ~= bindButton and button ~= closeButton then
+    if button ~= continueBtn and button ~= gameSettingsButton and
+       button ~= uuiButton and button ~= bindButton and
+       button ~= editModeButton and button ~= supportButton and
+       button ~= closeButton then
       table.insert(sorted, button)
     end
   end
@@ -248,20 +473,44 @@ local function CaptureOrder(frame, buttons)
     return (at or 0) > (bt or 0)
   end)
 
-  local result, inserted = {}, false
+  local result, settingsInserted = {}, false
+  local closing = {}
+  local editInserted = false
+
+  -- The pair seats itself above Macros; when this client shows no Macros row
+  -- it falls in just above the UnrealUI block instead, so the rows exist
+  -- whatever the menu contains.
+  local function InsertEditPair()
+    if editInserted then return end
+    table.insert(result, editModeButton)
+    table.insert(result, bindButton)
+    table.insert(result, supportButton)
+    editInserted = true
+  end
+
   for i = 1, table.getn(sorted) do
     local button = sorted[i]
-    if not inserted and (IsNamed(button, "GameMenuButtonLogout") or
-                         IsNamed(button, "GameMenuButtonQuit")) then
-      table.insert(result, uuiButton)
-      table.insert(result, bindButton)
-      inserted = true
+    if IsGameSettingsRow(button) then
+      if not settingsInserted then
+        table.insert(result, gameSettingsButton)
+        settingsInserted = true
+      end
+    elseif IsClosingRow(button) then
+      -- Held back and re-seated at the bottom below.
+      table.insert(closing, button)
+    else
+      if IsMacrosRow(button) then InsertEditPair() end
+      table.insert(result, button)
     end
-    table.insert(result, button)
   end
-  if not inserted then
-    table.insert(result, uuiButton)
-    table.insert(result, bindButton)
+  if not settingsInserted then table.insert(result, gameSettingsButton) end
+  InsertEditPair()
+  table.insert(result, uuiButton)
+
+  -- Logout and Exit Game close the menu out directly above Close (user
+  -- request, 2026-09-22), keeping the order the client listed them in.
+  for i = 1, table.getn(closing) do
+    table.insert(result, closing[i])
   end
   table.insert(result, closeButton)
 
@@ -272,19 +521,37 @@ end
 
 local function ButtonGroup(button)
   if button == closeButton then return 5 end
-  if IsNamed(button, "GameMenuButtonLogout") or
-     IsNamed(button, "GameMenuButtonQuit") then return 4 end
+  if IsClosingRow(button) then return 4 end
   if button == uuiButton or button == bindButton or
+     button == editModeButton or button == supportButton or
      IsNamed(button, "GameMenuButtonKeybindings") or
-     IsNamed(button, "GameMenuButtonMacros") or
+     IsMacrosRow(button) or
      IsNamed(button, "GameMenuButtonAddOns") then return 3 end
-  if IsNamed(button, "GameMenuButtonOptions") or
-     IsNamed(button, "GameMenuButtonSoundOptions") or
-     IsNamed(button, "GameMenuButtonUIOptions") then return 2 end
+  -- Options replaces the old Video row immediately below Donation Rewards.
+  -- It stays in that top group; the next native group supplies the section
+  -- break below it.
+  if button == gameSettingsButton then return 1 end
   return 1
 end
 
+-- The one break between any two groups (user request, 2026-09-22), derived
+-- from whatever metrics the active skin supplied so both themes keep their own
+-- density.
+local function GroupGap()
+  local gap = (metrics.groupSpacing + OPTIONS_BOTTOM_GAP) * SECTION_GAP_SCALE
+             - GROUP_GAP_TRIM
+  if gap < 0 then gap = 0 end
+  return gap
+end
+
+-- Options and Macros close a section without the next row changing group, so
+-- they ask for the break themselves.
+local function EndsSection(button)
+  return button == gameSettingsButton or IsMacrosRow(button)
+end
+
 local function Layout(frame)
+  HideGameSettingsRows()
   order = order or CaptureOrder(frame, CollectButtons(frame))
 
   local continueBtn = U.G("GameMenuButtonContinue")
@@ -301,7 +568,8 @@ local function Layout(frame)
     pcall(function() shown = button:IsShown() and true or false end)
 
     if shown then
-      if button ~= uuiButton and button ~= bindButton and
+      if button ~= gameSettingsButton and button ~= uuiButton and button ~= bindButton and
+         button ~= editModeButton and button ~= supportButton and
          button ~= closeButton then
         skin.StyleRow(button)
       end
@@ -312,8 +580,10 @@ local function Layout(frame)
 
       local group = ButtonGroup(button)
       if previous then
-        local gap = group ~= previousGroup and metrics.groupSpacing or
-                    metrics.spacing
+        local gap = metrics.spacing
+        if group ~= previousGroup or EndsSection(previous) then
+          gap = GroupGap()
+        end
         button:SetPoint("TOP", previous, "BOTTOM", 0, -gap)
         height = height + gap
       else
@@ -346,13 +616,7 @@ local function BuildChrome(frame)
   pcall(chrome.EnableMouse, chrome, false)
   RaiseAbove(chrome, frame, 5)
 
-  title = U.CreateLabel(chrome, {
-    size = M.fontSize.large,
-    color = M.color.accent,
-    inherits = "GameFontNormal",
-  })
-  title:SetText(U.L("GAMEMENU_OPTIONS"))
-  title:SetPoint("TOP", chrome, "TOP", 0, -10)
+  BuildTitlePlate(chrome, M.color.accent, { 0.10, 0.10, 0.10, 1 })
 end
 
 skin.StyleRow = StyleNativeButton
@@ -421,6 +685,9 @@ function wowMenu.StyleRow(button)
       wowMenu.ColorLabel(cover, false)
     end)
   end
+  if type(U.ModernWowRedButtonInput) == "function" then
+    U.ModernWowRedButtonInput(button, cover)
+  end
 
   -- As in StyleNativeButton: clear what is enumerable, and let the cover's
   -- face hide anything that is not.
@@ -459,7 +726,7 @@ function wowMenu.ColorLabel(cover, hovered)
   pcall(cover.label.SetTextColor, cover.label, M.Unpack(color))
 end
 
--- `gold` draws the gold-rimmed atlas (the UnrealUI and Quick Binding rows).
+-- `gold` draws the gold-rimmed atlas (the UnrealUI row).
 function wowMenu.OwnButton(frame, name, text, onClick, gold)
   local token = M.modernWow.gameMenu
   local button = CreateFrame("Button", name, frame)
@@ -479,6 +746,9 @@ function wowMenu.OwnButton(frame, name, text, onClick, gold)
   button:SetScript("OnLeave", function()
     U.ModernWowPaintRedButton(button, false)
   end)
+  if type(U.ModernWowRedButtonInput) == "function" then
+    U.ModernWowRedButtonInput(button)
+  end
   return button
 end
 
@@ -505,15 +775,10 @@ function wowMenu.BuildChrome(frame)
   pcall(chrome.EnableMouse, chrome, false)
   RaiseAbove(chrome, frame, 5)
 
-  title = U.CreateLabel(chrome, {
-    size = M.fontSize.large,
-    color = token.titleColor,
-    inherits = "GameFontNormal",
-  })
-  if title then
-    title:SetText(U.L("GAMEMENU_OPTIONS"))
-    title:SetPoint("TOP", chrome, "TOP", 0, token.titleY)
-  end
+  -- The plate is its own small metal box, drawn by SizeTitlePlate; the
+  -- housing below is still the window's own.
+  BuildTitlePlate(chrome, token.titleColor, nil, true)
+  SizeTitlePlate()
 end
 
 -- The housing is placed from the size Layout just gave the menu; the chrome
@@ -521,6 +786,7 @@ end
 function wowMenu.AfterLayout(frame, width, height)
   wowMenu.ClearNativeBackdrop(frame)
   if chrome then U.ModernWowMetalFrame(chrome, width, height) end
+  SizeTitlePlate()
 end
 
 function wowMenu.Select()
@@ -610,8 +876,11 @@ end
 -- reference and the enumerated child compare unequal on this client, the name
 -- is the client's own and cannot drift.
 classicMenu.OWN = {
+  ["UnrealUIGameMenuOptionsButton"] = true,
   ["UnrealUIGameMenuButton"] = true,
   ["UnrealUIGameMenuQuickBindButton"] = true,
+  ["UnrealUIGameMenuEditModeButton"] = true,
+  ["UnrealUIGameMenuSupportButton"] = true,
 }
 
 function classicMenu.NameOf(object)
@@ -624,7 +893,8 @@ end
 
 function classicMenu.IsOwn(button)
   if not button then return false end
-  if button == classicMenu.settings or button == classicMenu.bind then
+  if button == classicMenu.settings or button == classicMenu.bind or
+     button == classicMenu.editMode or button == classicMenu.support then
     return true
   end
   if button.uuiClassicMenuVisual then return true end
@@ -899,8 +1169,13 @@ function classicMenu.CreateButton(frame, name, text, onClick)
 end
 
 function classicMenu.Ensure(frame)
-  if classicMenu.settings and classicMenu.bind then return end
+  if classicMenu.options and classicMenu.settings and classicMenu.bind and
+     classicMenu.editMode and classicMenu.support then return end
   classicMenu.template = classicMenu.template or classicMenu.FindTemplate(frame)
+
+  classicMenu.options = classicMenu.options or classicMenu.CreateButton(
+    frame, "UnrealUIGameMenuOptionsButton", U.L("GAMEMENU_OPTIONS"),
+      function() OpenGameSettings(frame) end)
 
   classicMenu.settings = classicMenu.settings or classicMenu.CreateButton(
     frame, "UnrealUIGameMenuButton", "|cffffffffUnreal|cfff5ae0aUI|r",
@@ -909,6 +1184,17 @@ function classicMenu.Ensure(frame)
   classicMenu.bind = classicMenu.bind or classicMenu.CreateButton(
     frame, "UnrealUIGameMenuQuickBindButton", "Quick Binding",
       function() OpenQuickBinding(frame) end)
+
+  -- Classic keeps the client's own row order, so the pair joins the UnrealUI
+  -- access block rather than seating itself above Macros the way the skinned
+  -- menu does (user request, 2026-09-22).
+  classicMenu.editMode = classicMenu.editMode or classicMenu.CreateButton(
+    frame, "UnrealUIGameMenuEditModeButton", U.L("GAMEMENU_EDIT_MODE"),
+      function() OpenEditMode(frame) end)
+
+  classicMenu.support = classicMenu.support or classicMenu.CreateButton(
+    frame, "UnrealUIGameMenuSupportButton", U.L("GAMEMENU_SUPPORT"),
+      function() OpenSupport(frame) end)
 end
 
 -- Native rows, top to bottom, excluding the two UnrealUI adds.
@@ -981,7 +1267,10 @@ function classicMenu.Layout()
   if not frame then return end
 
   classicMenu.Ensure(frame)
-  if not classicMenu.settings or not classicMenu.bind then return end
+  if not classicMenu.options or not classicMenu.settings or not classicMenu.bind or
+     not classicMenu.editMode or not classicMenu.support then return end
+
+  HideGameSettingsRows()
 
   local rows = classicMenu.Rows(frame)
   local count = table.getn(rows)
@@ -1001,9 +1290,12 @@ function classicMenu.Layout()
   local separation = followerGap or 0
   if separation < GROUP_SPACING then separation = GROUP_SPACING end
 
-  local width = classicMenu.Number(anchor, "GetWidth")
+  local width = classicMenu.baseButtonWidth or classicMenu.Number(anchor, "GetWidth")
+  if width and width > 0 then classicMenu.baseButtonWidth = width end
+  if width and width > 0 then width = width * MENU_WIDTH_SCALE end
   local height = classicMenu.Number(anchor, "GetHeight")
-  local own = { classicMenu.settings, classicMenu.bind }
+  local own = { classicMenu.options, classicMenu.settings, classicMenu.editMode,
+                classicMenu.bind, classicMenu.support }
   local previous = anchor
   local i
   for i = 1, table.getn(own) do
@@ -1011,7 +1303,9 @@ function classicMenu.Layout()
     if width and width > 0 then pcall(button.SetWidth, button, width) end
     if height and height > 0 then pcall(button.SetHeight, button, height) end
     button:ClearAllPoints()
-    button:SetPoint("TOP", previous, "BOTTOM", 0, i == 1 and -separation or -rowGap)
+    local gap = i == 1 and separation or rowGap
+    if previous == classicMenu.options then gap = gap + OPTIONS_BOTTOM_GAP end
+    button:SetPoint("TOP", previous, "BOTTOM", 0, -gap)
     classicMenu.SetLabelText(button)
     classicMenu.AlignLabel(button)
     button:Show()
@@ -1033,11 +1327,15 @@ function classicMenu.Layout()
 
   -- Every row's label, not only the two added here: the client sits them all
   -- high on the face, and half a menu nudged would read worse than none.
-  for i = 1, count do classicMenu.CoverRow(rows[i]) end
+  for i = 1, count do
+    if width and width > 0 then pcall(rows[i].SetWidth, rows[i], width) end
+    classicMenu.CoverRow(rows[i])
+  end
 
   local rowHeight = height or
                     classicMenu.Number(classicMenu.settings, "GetHeight") or 22
-  local added = separation + rowGap + 2 * rowHeight
+  local added = separation + (table.getn(own) - 1) * rowGap +
+                table.getn(own) * rowHeight + OPTIONS_BOTTOM_GAP
   if index then added = added + separation - (followerGap or rowGap) end
 
   U.Debug("classic game menu: seat " .. tostring(index) .. "/" .. count ..
@@ -1055,6 +1353,17 @@ function classicMenu.Layout()
     classicMenu.baseHeight = current
     classicMenu.appliedHeight = current + added
     pcall(frame.SetHeight, frame, classicMenu.appliedHeight)
+  end
+
+  local currentWidth = classicMenu.Number(frame, "GetWidth")
+  if currentWidth then
+    if classicMenu.appliedWidth and classicMenu.baseWidth and
+       math.abs(currentWidth - classicMenu.appliedWidth) < 0.5 then
+      currentWidth = classicMenu.baseWidth
+    end
+    classicMenu.baseWidth = currentWidth
+    classicMenu.appliedWidth = currentWidth * MENU_WIDTH_SCALE
+    pcall(frame.SetWidth, frame, classicMenu.appliedWidth)
   end
 end
 
@@ -1074,7 +1383,10 @@ function U.DumpGameMenu()
           ", level " .. tostring(classicMenu.Number(frame, "GetFrameLevel")) ..
           ", layouts " .. tostring(classicMenu.layouts or 0))
 
-  local names = { "UnrealUIGameMenuButton", "UnrealUIGameMenuQuickBindButton" }
+  local names = { "UnrealUIGameMenuOptionsButton", "UnrealUIGameMenuButton",
+                  "UnrealUIGameMenuQuickBindButton",
+                  "UnrealUIGameMenuEditModeButton",
+                  "UnrealUIGameMenuSupportButton" }
   local i
   for i = 1, table.getn(names) do
     local button = U.G(names[i])
@@ -1136,6 +1448,37 @@ function U.DumpGameMenu()
   end
 end
 
+-- The client draws its own "Main Menu" caption as a FontString on
+-- GameMenuFrame, and U.StripStockTextures leaves it alone -- that helper hides
+-- Textures only. Two captions were therefore visible on the skinned menu; the
+-- native one goes and the title plate above the frame keeps the single one
+-- (user request, 2026-09-22).
+--
+-- A region walk is safe on this frame in particular. Everything UnrealUI adds
+-- here is a child FRAME -- the chrome, the title plate, each row's cover, each
+-- owned row -- so no addon-owned FontString can be walked, and the identity
+-- trap in rules/unreal-ui.md (a walked region never compares equal to a kept
+-- one) has nothing to catch. It is re-run on every show because the client can
+-- repaint its own regions when the menu opens.
+local function HideNativeTitleText(frame)
+  local header = U.G("GameMenuFrameHeaderText")
+  if header then U.HideRegion(header) end
+
+  if not frame or not frame.GetRegions then return end
+  local ok, regions = pcall(function() return { frame:GetRegions() } end)
+  if not ok or type(regions) ~= "table" then return end
+
+  local i
+  for i = 1, table.getn(regions) do
+    local region = regions[i]
+    local objectType
+    if region and region.GetObjectType then
+      pcall(function() objectType = region:GetObjectType() end)
+    end
+    if objectType == "FontString" then U.HideRegion(region) end
+  end
+end
+
 local function OnMenuShow()
   local frame = U.G("GameMenuFrame")
   if not frame then return end
@@ -1150,6 +1493,7 @@ local function OnMenuShow()
   U.StripStockTextures(frame)
   local header = U.G("GameMenuFrameHeader")
   if header then U.HideRegion(header) end
+  HideNativeTitleText(frame)
   Layout(frame)
 end
 

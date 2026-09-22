@@ -365,15 +365,27 @@ M.modernWow.texture = {
   questlogRight    = M.modernWow.path .. "ui\\questlog-right-large",
   spellBackground  = M.modernWow.path .. "ui\\spell-bg",
   header           = M.modernWow.path .. "ui\\header",
-  headerLeft       = M.modernWow.path .. "ui\\header-left",
+  headerLeft      = M.modernWow.path .. "ui\\header-left",
   headerRight      = M.modernWow.path .. "ui\\header-right",
   button128Red     = M.modernWow.path .. "buttons\\128RedButton",
   button128GoldRed = M.modernWow.path .. "buttons\\128GoldRedButton",
   redButton        = M.modernWow.path .. "buttons\\red-button",
+  -- Blizzard's plus / minus tree button (FileDataID 4496242), converted from
+  -- the PNG beside it (user request, 2026-09-22). Four rounded buttons on a
+  -- 64x64 sheet: plus over minus, normal in the left column and pushed in the
+  -- right. It is the collapse control in the game-settings category list,
+  -- which needs a literal +/- pair the red-button atlas cannot give -- that
+  -- one carries a minus but no plus.
+  plusMinus        = M.modernWow.path .. "buttons\\plus-minus-button",
   -- Blizzard's settings-UI control atlas, 512x512, imported whole: its
   -- cells are addressed by texture coordinates, never cut out. The talent
   -- advisor draws its yellow arrows (M.talentAdvisor.styles, toggle).
   settingUI        = M.modernWow.path .. "buttons\\setting-ui",
+  -- MinimalSliderWithSteppers in silver: a recoloured copy of Forever's
+  -- bronze 8086434 made by user request (2026-09-22), NOT Blizzard's own grey
+  -- sheet (4567914, which no reachable source carries). Same 32x128 layout,
+  -- alpha identical pixel for pixel, so it is addressed by the same cells.
+  minimalSliderSilver = M.modernWow.path .. "buttons\\minimal-slider-silver",
   comboPoints      = M.modernWow.path .. "ui\\combo-points",
   classPortraits   = M.modernWow.path .. "ui\\class-portraits",
   frameTabs        = M.modernWow.path .. "ui\\frame-tabs",
@@ -1656,7 +1668,6 @@ M.talentTree = {
   },
 }
 
-
 -- Talent window, classic-wow (modules/talentsclassic.lua): the same
 -- three-tree interface the other two paths draw, housed in the client's own
 -- chrome (user request, 2026-09-21).
@@ -1795,7 +1806,6 @@ M.classicWow.talents = {
   branchCoords = M.talentTree.branchCoords,
   arrowCoords = M.talentTree.arrowCoords,
 }
-
 
 -- Talent window (modules/talentsmodernwow.lua): WoW-DragonflightUI's
 -- three-panel frame. Every number is WORKING_SOURCE from DF-main --
@@ -2274,10 +2284,52 @@ M.modernWow.button128Red = {
   lift = 10,
   normal = { barTop = 523, capLeft = 392, capTop = 913 },
   hover  = { barTop = 783, capLeft = 378, capTop = 1043 },
+  -- The same row under a second name, for a caller whose hover is the glow
+  -- below rather than a second face (user request, 2026-09-22: change the
+  -- texture on the click). Profiling the sheet's bands shows this row is
+  -- DARKER than the resting one -- 64,1,1 against 107,2,1 -- which is a
+  -- pressed face, not a lit one; the lit state is the bloom. UnrealQuest
+  -- reads it as its hover, so the cells stay where they are and this is an
+  -- alias, not a move.
+  pressed = { barTop = 783, capLeft = 378, capTop = 1043 },
   -- The grey pair, measured off the file's alpha with the same 2 px / 3 px
   -- lead the cells above use: bar opaque at y 655-774, short button at
   -- x 265-375, y 1045-1164.
   disabled = { barTop = 653, capLeft = 262, capTop = 1043 },
+  -- The bar glow, measured off the file's own alpha (2026-09-22): a soft red
+  -- bloom at x 15-423, y 424-486, the only band on the sheet that is not a
+  -- button face. It is this atlas's counterpart of the close button's
+  -- highlight cell, so a hovered button keeps its resting face and takes the
+  -- glow over it (user request, 2026-09-22) instead of swapping to the hover
+  -- row. `glowMargin` and `glowIntensity` are UnrealUI's numbers, not the
+  -- art's. A negative margin insets the bloom inside the face it lights, and
+  -- the intensity scales an ADDITIVE texture's contribution through its vertex
+  -- colour -- the light it adds, not its opacity, so it is on the RGB rather
+  -- than the alpha.
+  --
+  -- Reported in game 2026-09-22: at 2 and full intensity the hover was too
+  -- bright and too large, and at -3 and 0.5 it could not be seen at all. The
+  -- bloom is a dark red over an already-red face, so halving what it adds and
+  -- cropping its core together leave nothing. These are the values between the
+  -- two -- the glow at the face's own rect, a fifth of its light taken off.
+  glow = { 15, 424, 418, 490 },
+  glowMargin = 0,
+  glowIntensity = 0.8,
+}
+
+-- Cells in buttons/plus-minus-button, measured off the file's own alpha
+-- channel (2026-09-22): the occupied column runs are 2-21 and 26-45, the row
+-- runs 0-21 and 24-45, so each button is a 20x22 cell. Left column normal,
+-- right column pushed; plus on top, minus below. `size` is the authored cell,
+-- which is what the control is drawn at unless a caller scales it.
+M.modernWow.plusMinusCell = {
+  sheet = 64,
+  width = 20,
+  height = 22,
+  plusNormal   = {  2, 22,  0, 22 },
+  plusPushed   = { 26, 46,  0, 22 },
+  minusNormal  = {  2, 22, 24, 46 },
+  minusPushed  = { 26, 46, 24, 46 },
 }
 
 -- The gold-rimmed sibling, buttons/128GoldRedButton.tga (512x1024), with the same
@@ -2293,6 +2345,17 @@ M.modernWow.button128GoldRed = {
   normal   = { barTop = 523, capLeft = 296, capTop = 523 },
   hover    = { barTop = 783, capLeft = 296, capTop = 783 },
   disabled = { barTop = 653, capLeft = 296, capTop = 653 },
+  -- The same four states as the red atlas (user request, 2026-09-22), and the
+  -- same numbers: profiling this sheet shows the row at 783 is darker than the
+  -- resting one -- 64,1,1 against 107,2,1, exactly as in 128RedButton -- so it
+  -- is the pressed face, and the bar glow sits at the same x 15-423, y 418-489
+  -- on both files. Only the sheet height differs, which the fractions take
+  -- care of. The band here also carries a second element at x 443-506 that the
+  -- red file does not; it is not the bar's glow and is left alone.
+  pressed = { barTop = 783, capLeft = 296, capTop = 783 },
+  glow = { 15, 424, 418, 490 },
+  glowMargin = 0,
+  glowIntensity = 0.8,
 }
 
 -- Cells in buttons/red-button, the octagonal button atlas: a 5x3 grid of 34x38
@@ -2456,7 +2519,6 @@ M.modernWow.loot = {
   stateFill = { 0.5, 0.5, 0.5, 0.4 },
 }
 
-
 -- The Character window's three stat group boxes, DragonflightUI style: the
 -- stock rounded boxes darkened. Drawn with the client's own tooltip edge and
 -- a dark fill; `border` is DF's 0.4 darken. `margin` grows the stats rect out
@@ -2610,15 +2672,62 @@ M.modernWow.metalFrame = {
   right  = { u1 = 159, u2 = 219, v1 = 1450, v2 = 1540 },
 }
 
+-- The Game Settings housing keeps Forever's ButtonFrameTemplateNoPortrait
+-- structure, but substitutes the Modern WoW metal atlas. Corners retain their
+-- authored proportions; only the straight rails stretch between them.
+M.modernWow.gameSettingsFrame = {
+  corners = M.modernWow.path .. "ui\\frame\\metal-corners",
+  horizontal = M.modernWow.path .. "ui\\frame\\metal-horizontal",
+  vertical = M.modernWow.path .. "ui\\frame\\metal-vertical",
+  -- ButtonFrameTemplateNoPortrait's anchors, from the Forever reference.
+  offset = { left = -8, right = 4, top = 16, bottom = -3 },
+  topLeft = { width = 75, height = 74,
+              texCoord = { 0.00195312, 0.294922, 0.00195312, 0.294922 } },
+  topRight = { width = 75, height = 74,
+               texCoord = { 0.298828, 0.591797, 0.00195312, 0.294922 } },
+  bottomLeft = { width = 32, height = 32,
+                 texCoord = { 0.298828, 0.423828, 0.298828, 0.423828 } },
+  bottomRight = { width = 32, height = 32,
+                  texCoord = { 0.427734, 0.552734, 0.298828, 0.423828 } },
+  edgeTop = { height = 74,
+              texCoord = { 0, 1, 0.00390625, 0.589844 } },
+  edgeBottom = { height = 32,
+                 texCoord = { 0, 0.5, 0.597656, 0.847656 } },
+  edgeLeft = { width = 75,
+               texCoord = { 0.00195312, 0.294922, 0, 1 } },
+  edgeRight = { width = 75,
+                texCoord = { 0.298828, 0.591797, 0, 1 } },
+  -- The body sits inside the rim's visible metal. These values keep the
+  -- settings background below the border instead of extending through it.
+  body = { left = 3, top = 18, right = 3, bottom = 3 },
+  -- Settings-specific layout clearance; the outer rim itself remains at its
+  -- authored size.
+  content = { side = 9, rail = 28 },
+  titleOffsetY = 8,
+}
+
+-- The Modern WoW game menu's caption plate (modules/gamemenu.lua): a small
+-- diamond-metal box drawn by U.ModernWowMetalFrame from the same
+-- ui/character-create-diamond-metal atlas as the menu window itself (user
+-- request, 2026-09-23). Its centre sits `centerY` units from the window's top
+-- edge, like the flat plate; its width is the caption's width plus
+-- `textPadding`, never less than `minWidth`. `textY` centres the caption.
+M.modernWow.titlePlate = {
+  height = 32,
+  minWidth = 112,
+  textPadding = 48,
+  centerY = -3,
+  textY = -1,
+}
+
 -- The Modern WoW game menu window (modules/gamemenu.lua), in units. Rows are
 -- `buttonWidth` x `buttonHeight` 128RedButton faces centred in a `width`
 -- window; the first starts `top` below the window top, `spacing` separates
--- rows and `groupSpacing` the client's own group breaks. The title sits
--- `titleY` below the top edge in the warm gold the theme allows for short
--- titles; `labelY` nudges row labels onto the face's bevelled centre.
+-- rows and `groupSpacing` the client's own group breaks. `labelY` nudges row
+-- labels onto the face's bevelled centre.
 M.modernWow.gameMenu = {
-  width = 250,
-  buttonWidth = 190,
+  width = 200,
+  buttonWidth = 152,
   buttonHeight = 30,
   top = 42,
   bottom = 22,
@@ -2626,7 +2735,6 @@ M.modernWow.gameMenu = {
   -- spacing lets the faces' transparent padding overlap.
   spacing = -0.5,
   groupSpacing = 5,
-  titleY = -17,
   titleColor = { 1, 0.82, 0, 1 },
   labelY = -2,
 }
@@ -3045,8 +3153,9 @@ M.modernWow.parchmentInk = {
 }
 
 M.modernWow.ring = {
-  -- 65 and 63: three pixels over DragonflightUI's 62, and the same step for the
-  -- target's proportional 60. The portrait draws UNDER the ring overlay, so
+  -- 68 and 65: six pixels over DragonflightUI's player size of 62 and five
+  -- over the target's proportional 60. The portrait draws UNDER the ring
+  -- overlay, so
   -- what this changes is not the visible circle -- the rim crops that to the
   -- 51-pixel opening either way -- but how much of the portrait image falls
   -- inside it. A larger portrait fills the opening with a slightly closer
@@ -3063,17 +3172,17 @@ M.modernWow.ring = {
   -- pixels smaller than the portrait (centred), so it no longer shows under
   -- the player rim's bottom edge; backgroundY then raises it that many pixels
   -- so the bottom clears the rim without cropping the top.
-  playerFrame    = { size = 65, x = 74, y = 43.0, model = 43,
+  playerFrame    = { size = 68, x = 74, y = 43.0, model = 43,
                      backgroundTrim = 2, backgroundY = 1 },
-  targetFrame    = { size = 63, x = 71, y = 43.5, model = 43 },
+  targetFrame    = { size = 65, x = 71, y = 43.5, model = 43 },
   -- The classification tiers share the target's ornament, so they carry the
   -- same numbers. Nothing sizes from them today -- the target entry's art is
   -- "targetFrame" and a tier change only swaps the texture, never the portrait
   -- -- but a stale value here would be a trap the day one does.
-  frameRare      = { size = 63, x = 71, y = 43.5, model = 43 },
-  frameElite     = { size = 63, x = 71, y = 43.5, model = 43 },
-  frameRareElite = { size = 63, x = 71, y = 43.5, model = 43 },
-  frameBoss      = { size = 63, x = 71, y = 43.5, model = 43 },
+  frameRare      = { size = 65, x = 71, y = 43.5, model = 43 },
+  frameElite     = { size = 65, x = 71, y = 43.5, model = 43 },
+  frameRareElite = { size = 65, x = 71, y = 43.5, model = 43 },
+  frameBoss      = { size = 65, x = 71, y = 43.5, model = 43 },
 
   -- The small canvas, in ITS 128x64 pixels rather than the large layout's.
   -- Measured rim: 3 pixels thick, inner opening x7..40 and y8..39, so the hole
@@ -4409,3 +4518,706 @@ M.talentAdvisor = {
 M.talentAdvisor.styles["modern"].soft  = M.talentAdvisor.styles["modern-wow"].soft
 M.talentAdvisor.styles["modern"].wrong = M.talentAdvisor.styles["modern-wow"].wrong
 M.talentAdvisor.styles["modern"].next  = M.talentAdvisor.styles["modern-wow"].next
+
+-- ---------------------------------------------------------------------------
+-- Forever settings chrome (media/Textures/forever-wow/)
+--
+-- The art WoW Forever's own settings window is built from, for UnrealUI's
+-- grouped game-settings window (modules/gamesettings.lua). Source:
+-- ForeverFrameXML-1.60.1.69913, Blizzard_Settings_Shared. Every number below is
+-- the exact UiTextureAtlasMember pixel rectangle for build 1.60.1.69913, read
+-- with `query.py atlasmap <name> --exact` and divided by its own sheet -- never
+-- measured off a screenshot and never invented, which is that reference's
+-- standing rule.
+--
+-- Six backing sheets are shipped whole and addressed by texture coordinates,
+-- the same way buttons/setting-ui.tga already serves several controls: an atlas
+-- member is a rectangle on a sheet, so cutting it out would only add files and
+-- lose the power-of-two sizes the client wants.
+--
+-- The controls INSIDE a hosted client panel -- checkboxes, dropdowns, sliders
+-- -- are not from here. By user request they come from the Modern WoW settings
+-- atlas (buttons/setting-ui.tga, M.foreverWow.control below), which is
+-- Blizzard's own dark control atlas, FileDataID 5412379, and the same visual
+-- family as the window around them.
+M.foreverWow = {}
+M.foreverWow.path = "Interface\\AddOns\\unrealUI\\media\\Textures\\forever-wow\\"
+
+M.foreverWow.texture = {
+  -- FileDataID 1318750, the Options atlas: inner frame, divider, category row
+  -- states and both tab sets.
+  options    = M.foreverWow.path .. "settings\\options",
+  -- FileDataID 4571485: the category list's expand/collapse chevron.
+  listExpand = M.foreverWow.path .. "settings\\list-expand",
+  -- The ButtonFrameTemplateNoPortrait nine-slice, on three sheets exactly as
+  -- Blizzard splits it: corners 8069116, top/bottom edges 8069118, left/right
+  -- edges 8069114.
+  corners    = M.foreverWow.path .. "ui\\frame-metal-corners",
+  edgeH      = M.foreverWow.path .. "ui\\frame-metal-edge-h",
+  edgeV      = M.foreverWow.path .. "ui\\frame-metal-edge-v",
+  -- FileDataID 4700695, FlatPanelBackgroundTemplate's two bottom corners.
+  panelBg    = M.foreverWow.path .. "ui\\panel-background",
+
+  -- Imported 2026-09-21 (user request): the Forever build's own art for the
+  -- controls its settings window draws. Member rectangles are in
+  -- media/Textures/forever-wow/ATTRIBUTION.md, read with query.py.
+  --
+  -- FileDataID 8069110: Forever's bronze-rimmed common-dropdown sheet, the
+  -- Forever variant of buttons/setting-ui.tga (5412379) that
+  -- M.foreverWow.control draws from today. WowStyle2Dropdown's
+  -- common-dropdown-c-* beds and the dropdown menu background.
+  dropdown   = M.foreverWow.path .. "settings\\common-dropdown",
+  -- SearchBoxTemplate's shared grey border, magnifier and clear-button sheet
+  -- (3281887), selected by the user for the settings search field.
+  search      = M.foreverWow.path .. "settings\\search",
+  -- 8086474: checkbox-minimal, the Forever settings checkbox bed.
+  checkbox   = M.foreverWow.path .. "settings\\checkbox-minimal",
+  -- 4614134: checkmark-minimal / -disabled (the only sheet carrying the tick).
+  checkmark  = M.foreverWow.path .. "settings\\checkmark-minimal",
+  -- 8086434: MinimalSliderWithSteppers -- bar caps, stretched middle, thumb
+  -- and the two stepper arrows.
+  slider     = M.foreverWow.path .. "settings\\minimal-slider",
+  -- 8107305: RedButton-Exit / MiniCondense / Expand / Highlight, the
+  -- ButtonFrameTemplate close and minimise buttons.
+  redButton  = M.foreverWow.path .. "ui\\red-button",
+  -- UIMenuButtonStretchTemplate's four client files, the face Forever's own
+  -- Key Bindings page gives every binding button (user request, 2026-09-22).
+  -- Client paths Interface\Buttons\UI-Silver-Button-Up / -Down / -Highlight /
+  -- -Select, 128x32 each; see M.foreverWow.control.binding for the slices.
+  silverUp        = M.foreverWow.path .. "buttons\\ui-silver-button-up",
+  silverDown      = M.foreverWow.path .. "buttons\\ui-silver-button-down",
+  silverHighlight = M.foreverWow.path .. "buttons\\ui-silver-button-highlight",
+  silverSelect    = M.foreverWow.path .. "buttons\\ui-silver-button-select",
+}
+
+-- SettingsPanel's own measurements (Blizzard_SettingsPanel.xml,
+-- Blizzard_CategoryList.xml, Blizzard_SettingsList.xml). Forever's window is a
+-- fixed 920x724; UnrealUI sizes its window to the client panel it is hosting,
+-- so what is kept here are the insets, heights and gaps, not the window size.
+M.foreverWow.panel = {
+  headerHeight = 64,      -- Options_InnerFrame sits at TOPLEFT 17,-64
+  innerInset = { left = 17, top = 64, right = 22, bottom = 46 },
+  titleY = -5,            -- NineSlice.Text, TOP 0,-5
+  categoryWidth = 199,    -- CategoryList, 199 wide
+  categoryInset = { left = 18, top = 76, bottom = 46 },
+  containerGap = 16,      -- Container TOPLEFT from CategoryList TOPRIGHT
+  containerRight = -22,
+  buttonWidth = 96,       -- Apply / Close, UIPanelButtonTemplate 96x22
+  buttonHeight = 22,
+  buttonInset = { right = 16, bottom = 16 },
+  buttonGap = 2,
+  listHeaderHeight = 50,  -- SettingsList.Header
+  listTitleInset = { x = 7, y = -22 },
+  rowHeight = 20,         -- SettingsCategoryListButtonTemplate, 175x20
+  rowWidth = 175,
+  -- Label anchors TOPLEFT 36,1 / BOTTOMRIGHT 0,1 and justifies LEFT. The 36
+  -- leaves room for the expand toggle, which sits at LEFT 9 and is 22x22 --
+  -- every row is indented the same whether or not it has one.
+  rowLabelInset = 36,
+  rowToggleInset = 9,
+  rowToggleSize = 22,
+  headerRowHeight = 30,   -- SettingsCategoryListHeaderTemplate, 175x30
+  spacerHeight = 18,      -- SettingsCategoryListSpacerTemplate
+  tabHeight = 37,         -- MinimalTabTemplate
+  tabInset = { x = 32, y = -27 },
+  tabGap = 5,
+}
+
+-- Cells on settings\options (1024x1024).
+M.foreverWow.options = {
+  sheet = 1024,
+  -- The recessed inner plate the category list and the page sit on.
+  innerFrame = { 1 / 1024, 887 / 1024, 150 / 1024, 768 / 1024 },
+  innerSize = { width = 886, height = 618 },
+  -- The plate drawn narrower than its authored width, and with a narrower
+  -- category list than the art was authored for (user requests, 2026-09-22:
+  -- the window 30% narrower, then the list 30% narrower). Measured off the
+  -- sheet the same day by profiling the member's columns: a 2-texel rim at
+  -- member x 0..2, the seam that separates the category list from the page at
+  -- x 199..201, and the right rim at x 883..885, with the top and bottom rows
+  -- rounding off inside x 6 / 882. Between those the field is completely
+  -- flat -- nothing else varies along x.
+  --
+  -- So the plate is a horizontal FIVE-slice, and the two flat fields take
+  -- every width change:
+  --
+  --   0 .. rim                 left rim and the rounded corners, 1:1
+  --   rim .. seam              the list field, squeezed to the list's width
+  --   seam .. seam + seamKeep  the seam itself and the page's left rim, 1:1
+  --   ... .. -keepRight        the page field, squeezed to what is left
+  --   -keepRight .. end        right rim and corners, 1:1
+  --
+  -- Squeezing the whole member instead drags the seam into the list, which is
+  -- the same defect that made stretching it for a wider page unacceptable; the
+  -- seam is drawn at the category list's own right edge instead, whatever
+  -- width the list is given.
+  -- `top` / `bottom` do the same for the height (user request, 2026-09-22:
+  -- the window 30% shorter). Profiled the same way: a 2-texel rim at member
+  -- y 0..1 and a 3-texel rim at y 615..617, nothing else along y, so the rims
+  -- and corners are drawn 1:1 and the flat band between them is squeezed. The
+  -- plate is therefore a 5x3 grid of pieces.
+  innerSlice = { rim = 8, seam = 199, seamKeep = 11, keepRight = 30,
+                 top = 8, bottom = 8 },
+  -- 630x1: stretched along the frame, never tiled.
+  divider = { 1 / 1024, 631 / 1024, 147 / 1024, 148 / 1024 },
+  dividerHeight = 1,
+  -- Category row states, 187x21 each. There is no "normal" member: an
+  -- unselected, unhovered row draws nothing at all.
+  rowActive = { 604 / 1024, 791 / 1024, 1 / 1024, 22 / 1024 },
+  rowHover  = { 793 / 1024, 980 / 1024, 1 / 1024, 22 / 1024 },
+  rowStateSize = { width = 187, height = 21 },
+  -- SettingsCategoryListHeaderMixin picks Options_CategoryHeader_<n> per
+  -- header. Both are 199x144: a 30-unit header row with a long gradient that
+  -- fades down behind the rows under it, which is why the art is far taller
+  -- than the row it labels.
+  categoryHeader = {
+    width = 199,
+    height = 144,
+    [1] = {   1 / 1024, 200 / 1024, 1 / 1024, 145 / 1024 },
+    [2] = { 403 / 1024, 602 / 1024, 1 / 1024, 145 / 1024 },
+  },
+  -- MinimalTabTemplate's three-slice, both states. The caps are 7 wide and
+  -- keep their aspect; only the 1-texel middle stretches. The active set is 3
+  -- units taller (26 against 23) and that is the whole state change -- the tab
+  -- is not resized, the taller art simply meets the frame.
+  tab = {
+    capWidth = 7,
+    height = 23,
+    activeHeight = 26,
+    left         = { 607 / 1024, 614 / 1024,  52 / 1024,  75 / 1024 },
+    middle       = { 604 / 1024, 605 / 1024,  24 / 1024,  47 / 1024 },
+    right        = { 607 / 1024, 614 / 1024, 105 / 1024, 128 / 1024 },
+    activeLeft   = { 607 / 1024, 614 / 1024,  24 / 1024,  50 / 1024 },
+    activeMiddle = { 604 / 1024, 605 / 1024,  49 / 1024,  75 / 1024 },
+    activeRight  = { 607 / 1024, 614 / 1024,  77 / 1024, 103 / 1024 },
+  },
+}
+
+-- SettingsPanel.SearchBox / SearchBoxTemplate, from
+-- Blizzard_SettingsPanel.xml and Shared/InputBox/InputBoxTemplates.xml.
+M.foreverWow.search = {
+  width = 175,
+  height = 22,
+  border = {
+    texture = M.foreverWow.texture.search,
+    sheetWidth = 256,
+    sheetHeight = 128,
+    height = 20,
+    capWidth = 8,
+    left = { 227, 243, 43, 83 },
+    middle = { 1, 225, 43, 83 },
+    right = { 1, 17, 85, 125 },
+  },
+  icons = {
+    texture = M.foreverWow.texture.search,
+    sheetWidth = 256,
+    sheetHeight = 128,
+    search = { 19, 43, 85, 109 },
+    clear = { 45, 65, 85, 105 },
+    size = 10,
+    buttonSize = 17,
+  },
+  textInset = { left = 16, right = 20 },
+}
+
+-- The settings LIST a page is rebuilt into (user request, 2026-09-21), from
+-- Forever's own numbers: Blizzard_SettingsList.lua (verticalPad 10, padLeft
+-- 25, spacing 9; the ScrollBox 15 left of the header and 20 short of the
+-- right edge), Blizzard_SettingControls.xml (section header 45 tall, title at
+-- 7,-16; every control row 26 tall) and Blizzard_SettingControls.lua (label
+-- LEFT at indent+37 and RIGHT at CENTER-85, indent 15; checkbox and slider
+-- LEFT at CENTER-80, the slider 3 up; dropdown LEFT at CENTER-48, 3 up), and
+-- Blizzard_SettingsList.xml (DefaultsButton 96x22 at TOPRIGHT -36,-16).
+--
+-- The slider numbers are MinimalSliderWithSteppersTemplate's at the controls'
+-- 0.58 (see M.foreverWow.control): the group sits at CENTER-46 (-80) and its
+-- Slider is inset 11 (19) inside it, so the track starts at CENTER-35 and is
+-- 122 wide (212); the value is its RightText, 14 (25) right of the track. scrollbarInset leaves MinimalScrollBar's 11-high stepper plus its
+-- 8 gap at each end. UnrealUI's own choices: scrollbarWidth and wheelStep.
+M.foreverWow.list = {
+  -- Every list spacing below is Forever's number at the controls' 0.58 (user
+  -- requests, 2026-09-21: smaller controls, then "adapt the gap with these new
+  -- sizes"), so the gaps keep Forever's proportions to the controls they
+  -- separate. Forever's own value follows each in brackets. The header, the
+  -- Defaults button and the window are not scaled.
+  padTop = 6,          -- (10)
+  padBottom = 6,       -- (10)
+  padLeft = 14.5,      -- (25)
+  padRight = 11.5,     -- (20)
+  -- Every line is one height (user request, 2026-09-22): the tallest drawn
+  -- control, the dropdown bed (29.25, its shadow included), with no extra
+  -- gap -- the bed's own shadow is the space between two dropdowns, and a
+  -- checkbox or slider line sits in the same band so the page reads evenly.
+  spacing = 0,         -- (9)
+  rowHeight = 29.25,   -- (26)
+  sectionHeight = 26,  -- (45)
+  sectionTitle = { x = 4, y = -9 },  -- (7, -16)
+  indent = 8.7,        -- (15)
+  -- Flush with the row (user request, 2026-09-22: "remove the gap on the left
+  -- side of the option name"), instead of Forever's 37 -- which leaves room
+  -- for a checkbox this list does not draw in the label column. The row's own
+  -- inset from the plate is list.padLeft, which stays: the hover band reaches
+  -- 7.5 left of the row and would otherwise cross the plate's rim.
+  labelInset = 0,      -- (37)
+  labelRight = -49,    -- (-85)
+  -- The gap a row's label keeps from the leftmost unit its control draws
+  -- (user request, 2026-09-22: "reduce the gap between the option name and
+  -- the elements to its minimum"). Forever's own 5 at the controls' 0.58, the
+  -- same 3 units its label cap already keeps from the checkbox column. The
+  -- column is Forever's CENTER-anchored one, but this window's list is far
+  -- wider than Forever's, so L.MeasureColumn slides the column LEFT -- never
+  -- right -- until the tightest row on the page is this far from its control.
+  -- 48, not Forever's scaled 3: 10 more, then 15, then 20 again (user
+  -- requests, 2026-09-22), so a label is clearly separated from its control.
+  labelGap = 48,       -- (5)
+  -- Forever's own control column, kept as the measurement. The list places
+  -- the box on the left arrow's edge instead (user request, 2026-09-22), 3
+  -- units right of this: Forever's column is the slider GROUP's edge, and its
+  -- Back arrow sits 3 inside that.
+  checkboxX = -46,     -- (-80)
+  -- The slider group starts where the checkbox does; its track is inset 11
+  -- (19) inside it.
+  sliderX = -31.7,     -- (-61) the group at -46 plus the grown 14.3 inset
+  sliderY = 1.5,       -- (3)
+  -- Forever's own dropdown column, kept as the measurement. The list no
+  -- longer places from it: every dropdown is drawn at the slider's span
+  -- instead (user request, 2026-09-22), so L.DropdownSpan derives both its
+  -- LEFT and its width from the slider and stepper tokens.
+  dropdownX = -28,     -- (-48)
+  dropdownY = 1.5,     -- (3)
+  -- A nudge of the whole dropdown group -- bed and both steppers -- off the
+  -- line L.DropdownSpan puts it on (user request, 2026-09-22: 2 left), so its
+  -- left arrow reads level with the checkbox beside it rather than measuring
+  -- level with the slider's smaller arrow.
+  dropdownShift = -2,
+  sliderWidth = 158.6,
+  valueGap = 18.2,
+  defaultsWidth = 96,
+  defaultsHeight = 22,
+  defaultsInset = { x = -36, y = -16 },
+  actionWidth = 96,
+  actionHeight = 22,
+  tabGap = 5,
+  scrollbarWidth = 12,
+  scrollbarInset = { top = 20, bottom = 20, right = 2 },
+  -- The bare space between the list's right edge and the scrollbar track.
+  -- Read by both the ScrollFrame's anchor and the column measurement, so the
+  -- two cannot disagree about where the bar starts -- and by the Key Bindings
+  -- page (gs.ListContent), so its listing keeps the same gap as every list.
+  -- Widened from Forever's 4 by user request, 2026-09-22.
+  scrollbarGap = 14,
+  -- How much of the space between the rightmost control on the page and the
+  -- scrollbar is taken away (user request, 2026-09-22: that gap reduced by
+  -- 70%). L.MeasureColumn pushes the whole control column right by this much
+  -- of it, so the tightest row -- normally a slider, whose value sits right of
+  -- its Forward arrow -- keeps the remaining 30%. The label gap is then
+  -- whatever is left of the row; labelGap above is only its floor, used when a
+  -- control overflows the row and the column has to come back left.
+  rightGapTrim = 0.7,
+  -- Stand-in width for a slider's value while its FontString cannot be
+  -- measured (it is written by the client's own OnValueChanged), so the column
+  -- is not placed as though the value were absent.
+  valueWidth = 30,
+  -- One row and its gap, as 35 was at Forever's sizes.
+  wheelStep = 29.25,
+  -- A value bar the client DRAWS beside a control rather than a setting to
+  -- change -- the Sound page's microphone level, beside Test Microphone
+  -- (reported in game, 2026-09-22: with no row of its own it stayed anchored
+  -- where the client had drawn it on the panel, outside this window, and kept
+  -- drawing while the list scrolled under it). The list adopts it like any
+  -- other control and dresses it in the Modern WoW XP bar's material
+  -- (M.modernWow.texture.xpFill / xpBorder and M.modernWow.xpbar's own
+  -- overhangs, user request 2026-09-22) -- the same theme this list already
+  -- borrows MinimalScrollBar from. Every number here is UnrealUI's own: the
+  -- client's bar has no authored size in this window.
+  meter = {
+    -- Thinner than a control, as a bar rather than something to click.
+    height = 11,
+    -- A bar that rides its owner's row draws in that row's label column,
+    -- which is empty -- a button carries its own text -- this far in from the
+    -- row's label inset and this far short of the control column.
+    sidecarInset = 4,
+    sidecarGap = 10,
+    -- Floor for either placement, so a narrow column still leaves a bar.
+    minWidth = 40,
+  },
+  -- HoverBackgroundTemplate (Blizzard_SettingControls.xml): white at 10%,
+  -- across the whole row from 10 left of it to 5 short of its right edge --
+  -- at the controls' 0.75. Shown while the row or its control is hovered
+  -- (SettingsListElementMixin). Translucency through the vertex colour's
+  -- alpha, which this client honours, not Texture:SetAlpha, which darkens
+  -- (rendering.texture_setalpha_darkens_not_translucent).
+  hover = { color = { 1, 1, 1, 0.1 }, left = -7.5, right = -3.75, interval = 0.05 },
+  -- GameFontNormal gold for a row label, GameFontHighlight white for its
+  -- value and GameFontHighlightLarge for a section title.
+  labelColor = { 1.00, 0.82, 0.00, 1 },
+  valueColor = { 1.00, 1.00, 1.00, 1 },
+  sectionColor = { 1.00, 1.00, 1.00, 1 },
+  -- A client section box handed back on detach. The colour getters are absent
+  -- here (rendering.backdrop_color_getters_absent), so these are Vanilla's
+  -- OptionFrameBoxTemplate OnLoad values -- WORKING_SOURCE, not read back.
+  boxBorderColor = { 0.4, 0.4, 0.4, 1 },
+  boxColor = { 0.15, 0.15, 0.15, 1 },
+}
+
+-- Cells on settings\list-expand (128x128), 28x26 each.
+M.foreverWow.listExpand = {
+  sheet = 128,
+  width = 28,
+  height = 26,
+  collapsed = {  1 / 128, 29 / 128, 56 / 128, 82 / 128 },
+  expanded  = { 31 / 128, 59 / 128, 56 / 128, 82 / 128 },
+  -- The rest of SettingsExpandableSectionTemplate's bar
+  -- (Blizzard_SettingControls.xml 191), which the same sheet carries and the
+  -- Key Bindings page draws on every binding category (user request,
+  -- 2026-09-22). Three pieces: `Options_ListExpand_Left` 12x26 at the bar's
+  -- TOPLEFT, `_Options_ListExpand_Middle` 1x26 stretched between the caps,
+  -- and the +/- cap above -- `Options_ListExpand_Right` collapsed,
+  -- `Options_ListExpand_Right_Expanded` expanded -- at its TOPRIGHT.
+  left   = {  1 / 128, 13 / 128, 84 / 128, 110 / 128 },
+  middle = {  0,        1 / 128, 28 / 128,  54 / 128 },
+  leftWidth = 12,
+  -- The template's own: the Button is 30 tall inset 20 from the section's
+  -- right edge, and its GameFontNormal title sits at LEFT 21, +2.
+  barHeight = 30,
+  -- The category bar spans the entire Key Bindings listing.
+  barInsetRight = 0,
+  -- Keep the bar inside its recycled row: this leaves a visible three-pixel
+  -- gap above and below it, so the scroll frame cannot clip its lower edge.
+  verticalInset = 3,
+  titleInset = { x = 12, y = 0 },
+  titleColor = { 1.00, 1.00, 1.00, 1 },
+}
+
+-- The Key Bindings page's own two header strings, which the client draws on a
+-- plate ABOVE its panel -- outside this window's content frame, where they
+-- read as loose text beside the page (reported in game 2026-09-22). They are
+-- moved inside the panel; the binding-set line sits to the title's right.
+-- These offsets are UnrealUI's because the client's plate is hidden here.
+M.foreverWow.keys = {
+  titleInset  = { x = 12, y = -8 },
+  outputInset = { x = 12, y = -24 },
+  titleGap = 6,
+  outputGap = 6,
+  promptGap = 6,
+  commandHeaderNudge = 10,
+  keyHeaderNudge = { -10, -18 },
+  characterShift = { x = 6, y = 13 },
+  characterTextGap = 3,
+  characterTextLift = 0,
+  -- Unbind and Default keep the page's bottom-left corner once Okay and
+  -- Cancel have left it for the window's own. They have to be re-anchored
+  -- rather than left alone: this client chains the four (Okay off Cancel,
+  -- Unbind off Okay, measured 2026-09-22), so moving Okay would otherwise
+  -- carry them to the window corner with it.
+  actionInset = { x = 42, y = 20 },
+  actionGap = 4,
+  -- How far the listing's LEFT edge sits from the column a list page's rows
+  -- start on: negative is further left (user request, 2026-09-22, 8 pixels).
+  -- Screen pixels, like listDrop. The right edge does not move with it --
+  -- gs.AlignBindingList takes the same amount off the width -- so the gap
+  -- between the listing and the scrollbar stays the one every page has.
+  listNudge = -8,
+  -- How far the listing sits below where the client puts it (user request,
+  -- 2026-09-22). SCREEN pixels, unlike every other number here, because that
+  -- is how it was asked for and how it reads on the page; gs.AlignBindingList
+  -- divides it by the rows' own pixels-per-unit. Applied once per attach to
+  -- the row that carries the chain, so the rows below it follow.
+  listDrop = 6,
+}
+
+-- ButtonFrameTemplateNoPortrait (Blizzard_SharedXML NineSliceLayouts.lua). The
+-- offsets are Blizzard's own: the corners overhang the frame by 8 left and 4
+-- right, 16 above and 3 below, which is what makes the metal rim sit proud of
+-- the panel rather than inside it.
+M.foreverWow.nineSlice = {
+  cornerSize = 190,          -- every corner piece is 190 wide
+  cornerTopHeight = 190,
+  cornerBottomHeight = 200,  -- the bottom pair is 10 taller
+  edgeThickness = 190,
+  offset = { left = -8, right = 4, top = 16, bottom = -3 },
+  corners = {
+    sheet = { width = 1024, height = 512 },
+    topLeft     = { 193 / 1024, 383 / 1024,   1 / 512, 191 / 512 },
+    topRight    = { 193 / 1024, 383 / 1024, 193 / 512, 383 / 512 },
+    bottomLeft  = {   1 / 1024, 191 / 1024,   1 / 512, 201 / 512 },
+    bottomRight = {   1 / 1024, 191 / 1024, 203 / 512, 403 / 512 },
+  },
+  -- The horizontal edges are the full 256 of their sheet and stretch along the
+  -- frame; the vertical pair is the full 256 the other way.
+  edgeH = {
+    sheet = { width = 256, height = 512 },
+    top    = { 0, 1, 203 / 512, 393 / 512 },
+    bottom = { 0, 1,   1 / 512, 201 / 512 },
+  },
+  edgeV = {
+    sheet = { width = 512, height = 256 },
+    left  = {   1 / 512, 191 / 512, 0, 1 },
+    right = { 193 / 512, 383 / 512, 0, 1 },
+  },
+}
+
+-- FlatPanelBackgroundTemplate: two 16x16 bottom corners on a 64x32 sheet, with
+-- flat PANEL_BACKGROUND_COLOR everywhere else. Blizzard tints every piece with
+-- that one colour, so the corners carry shape rather than art.
+M.foreverWow.panelBackground = {
+  sheet = { width = 64, height = 32 },
+  cornerSize = 16,
+  bottomLeft  = {  1 / 64, 17 / 64, 1 / 32, 17 / 32 },
+  bottomRight = { 19 / 64, 35 / 64, 1 / 32, 17 / 32 },
+  -- PANEL_BACKGROUND_COLOR. Sampled from a Forever Options screenshot the
+  -- user supplied, 2026-09-21: rgb(28,39,48), flat across the category pane
+  -- and the page. It is a dark blue-grey, not the near-black this addon's
+  -- own windows use, and that tint is most of why the reference reads as
+  -- Blizzard's settings panel rather than as a black box.
+  -- The alpha is UnrealUI's, not Forever's: the window's main background is
+  -- drawn at 95% (user requests, 2026-09-22: 70, then 80, then 95). It applies
+  -- to THIS surround only -- the recessed plate the category list and the page
+  -- sit on stays opaque, by the same request. Carried on the vertex colour
+  -- rather than Texture:SetAlpha, which darkens instead of making translucent
+  -- on this client (rendering.texture_setalpha_darkens_not_translucent).
+  color = { 0.110, 0.153, 0.188, 0.95 },
+}
+
+-- Controls drawn inside a hosted client panel, from the Forever build's own
+-- art (user request, 2026-09-21), replacing the Modern WoW settings atlas they
+-- borrowed before.
+--
+-- Drawn at 0.58 of Forever's template sizes (user requests, 2026-09-21:
+-- smaller dropdowns, sliders and checkboxes -- 0.77, then 25% less again). One factor for all of them, so the
+-- controls keep Forever's proportions to each other; the atlas cells are
+-- unchanged, only the drawn sizes below. The window itself is not scaled --
+-- a reparented client control ignores an ancestor's scale
+-- (widgets.reparented_native_widget_ignores_ancestor_scale) -- so each size
+-- is set on the control directly. Every rectangle is the build's UiTextureAtlasMember read
+-- with `query.py atlasmap <name> --exact` (texels, x0, x1, y0, y1); every size
+-- and offset is the template's own (ForeverFrameXML-1.60.1.69913). Where
+-- UnrealUI chooses a number instead, the comment says so.
+M.foreverWow.control = {
+  -- WowStyle2DropdownTemplate (Blizzard_Menu/MenuTemplates.xml): a 25-high
+  -- button whose Background, common-dropdown-c-button, is anchored 7 outside
+  -- it on every side. The member is a 78x78 square on a 512 sheet authored at
+  -- twice the unit size, so it draws 39 tall -- exactly 25 + 2*7. It is
+  -- stretched sideways only, as a three-slice: `cap` is the corner, the soft
+  -- shadow ramp (14 texels) plus the bevelled rim (8), measured by alpha, and
+  -- drawn at half size. The arrow shows only while hovered, BOTTOM y=-5
+  -- (WowStyle2DropdownMixin:OnButtonStateChanged). States as
+  -- WowStyle2DropdownMixin:GetBackgroundAtlas picks them.
+  dropdown = {
+    -- The dropdown bed, its steppers' beds and the open menu draw from
+    -- modern-wow/buttons/setting-ui.tga (FileDataID 5412379) by user request
+    -- (2026-09-22), not from forever-wow/settings/common-dropdown.tga (8069110).
+    -- Both are the common-dropdown atlas at 512x512; every member drawn here
+    -- sits at the same rectangle on both except the hover arrow, and the
+    -- menu cell's rim and shadow measure the same (x 33..146, y 23..136).
+    texture = M.modernWow.texture.settingUI,
+    sheet = 512,
+    -- 30% larger than the 0.58 set (user request, 2026-09-22): 0.75 of
+    -- Forever's own sizes from here on, for every control below.
+    controlHeight = 18.2,
+    height = 29.25,
+    overhang = 5.5,
+    capLeft = 22,
+    capRight = 22,
+    normal   = { 431, 509,   1,  79 },
+    hover    = { 401, 479,  85, 163 },
+    pressed  = {  81, 159, 345, 423 },
+    open     = {   1,  79, 425, 503 },
+    disabled = { 321, 399,  85, 163 },
+    -- common-dropdown-c-button-hover-arrow on 5412379 (8069110 has it at
+    -- 183..207 x 139..149).
+    arrow = { cell = { 321, 345, 165, 175 }, width = 9, height = 4, y = -4 },
+    -- The value's inset from the bed's left cap: the component's 5 plus 5 of
+    -- padding (user request, 2026-09-21). It is the text region's left edge;
+    -- the region's right edge is the printed arrow in the right cap, which the
+    -- component measures off the control.
+    textInset = 10,
+    -- Centred in that region, as Forever centres its own dropdown text (user
+    -- request, 2026-09-22). The region is not quite symmetric -- its right
+    -- inset is the arrow reservation, about 1.6 units less than textInset --
+    -- so the value sits that much right of the control's true centre.
+    textAlign = "CENTER",
+    -- GameFontNormal, as the template's Text inherits.
+    textColor = { 1.00, 0.82, 0.00, 1 },
+    -- Metal2DropdownWithSteppersAndLabelTemplate (the settings dropdown):
+    -- DecrementButton RIGHT of the dropdown's LEFT -5, IncrementButton LEFT of
+    -- its RIGHT +4 (DropdownWithSteppersMixin:OnLoad), each a
+    -- WowStyle2IconButtonTemplate 26x25 whose Background is the same
+    -- common-dropdown-c-button at atlas size (39) and whose Icon is
+    -- common-dropdown-icon-back / -next at atlas size (34x34 at twice the
+    -- unit size, 17). States as WowStyle2IconButtonMixin:GetBackgroundAtlas
+    -- picks them, the "-2" set. All at the controls' 0.58. The icons live
+    -- only on 5412379, which ships as modern-wow/buttons/setting-ui.tga.
+    stepper = {
+      width = 19.5,
+      height = 18.9,
+      bedSize = 29.25,
+      iconSize = 13,
+      gapLeft = 3.9,
+      gapRight = 3,
+      normal   = { 431, 509,   1,  79 },
+      hover    = {   1,  79, 345, 423 },
+      pressed  = {  81, 159, 425, 503 },
+      disabled = { 321, 399,  85, 163 },
+      iconTexture = M.modernWow.texture.settingUI,
+      iconSheet = 512,
+      back         = { 393, 427, 183, 217 },
+      backDisabled = { 429, 463, 183, 217 },
+      next         = { 465, 499, 183, 217 },
+      nextDisabled = { 393, 427, 237, 271 },
+    },
+    -- MenuStyle2Mixin:Generate, the open menu: common-dropdown-c-bg anchored
+    -- TOPLEFT -17,12 and BOTTOMRIGHT 17,-22 of the menu, drawn at the art's
+    -- own 0.5 unit per texel (the member is 180x180 at twice the unit size).
+    -- Measured on the cell (2026-09-22): a 2-texel bronze rim at x 33..146,
+    -- y 23..136, a 12-texel chamfer, and a shadow of 33 texels left and
+    -- right, 23 on top and 43 below -- which at 0.5 are exactly Forever's
+    -- anchor offsets, so the rim lands on the menu's edge. Nine-sliced with
+    -- a cut per side (shadow + chamfer: 45 / 35 / 45 / 56) so the corners
+    -- keep their chamfer and only the plain rim runs stretch. A first
+    -- version cut 45 on every side and drew it at 13 units, which squeezed
+    -- the corners and cut the deeper bottom shadow through the rim (reported
+    -- in game with a screenshot beside Forever's).
+    menu = {
+      cell = { 1, 181, 1, 181 },
+      cut = { left = 45, right = 45, top = 35, bottom = 56 },
+      scale = 0.5,
+      inset = { left = 16.5, top = 11.5, right = 16.5, bottom = 21.5 },
+    },
+  },
+  -- SettingsCheckboxTemplate: 30x29, checkbox-minimal as the normal and
+  -- pushed bed, checkmark-minimal / -disabled as the checked faces, all three
+  -- from the one sheet 4614134 (user request, 2026-09-21: the box and its
+  -- tick from checkmark-minimal.tga, rather than the box from 8086474).
+  -- Blizzard gives the box no hover art of its own.
+  checkbox = {
+    texture = M.foreverWow.texture.checkmark,
+    sheet = 64,
+    -- Drawn at the dropdown's left arrow, not at a scale of Forever's 30x29
+    -- (user request, 2026-09-22, with a screenshot: the box and that arrow
+    -- read as one control in a column). Assigned under the table, from
+    -- dropdown.stepper.bedSize, so the two cannot drift apart. The values
+    -- here are the ones they replace, kept as the measurement.
+    width = 15.6,
+    height = 15,
+    -- The tick at the box's own size, over the same area, as
+    -- SettingsCheckboxTemplate draws both at atlas size (30x29 each): the
+    -- tick's art runs a little past the box's rim within its cell, which is
+    -- Forever's slight overshoot (user request, 2026-09-22, matched against a
+    -- Forever screenshot; an earlier 0.7 fitted it inside the square). These
+    -- follow the box, under the table.
+    checkWidth = 15.6,
+    checkHeight = 15,
+    cell = { 1, 31, 1, 30 },
+    checkTexture = M.foreverWow.texture.checkmark,
+    checkSheet = 64,
+    check = { 1, 31, 32, 61 },
+    checkDisabled = { 33, 63, 1, 30 },
+  },
+  -- MinimalSliderWithSteppersTemplate / MinimalSliderTemplate
+  -- (Blizzard_SharedXML/Shared/Slider/MinimalSlider.xml), sheet 8086434,
+  -- 32x128, authored at unit size. The group is 250 wide with the Slider
+  -- inset 19 each side (so 212), Back 11x19 at the Slider's LEFT -4, Forward
+  -- 9x18 at its RIGHT +4; the bar caps are 11x17, the middle tiles, and the
+  -- thumb is 20x19.
+  slider = {
+    -- The silver copy of this sheet (user request, 2026-09-22); the cells
+    -- below are the same on both.
+    texture = M.modernWow.texture.minimalSliderSilver,
+    sheetWidth = 32,
+    sheetHeight = 128,
+    width = 158.6,
+    inset = 14.3,
+    barHeight = 13,
+    capWidth = 8.3,
+    left   = { 14, 25, 41, 58 },
+    middle = {  0,  1,  1, 18 },
+    right  = {  1, 12, 62, 79 },
+    thumb  = {  1, 21, 20, 39 },
+    thumbWidth = 15,
+    thumbHeight = 14.3,
+    back    = { cell = { 1, 12, 41, 60 }, width = 8.3, height = 14.3 },
+    forward = { cell = { 1, 10, 81, 99 }, width = 6.9, height = 13.65 },
+    stepperGap = 3,
+    -- Stepper when the slider reports no value step: a tenth of its range.
+    -- UnrealUI's choice; Forever's steppers use the setting's own step.
+    fallbackSteps = 10,
+  },
+  -- The rectangular buttons' labels: GameFontNormal, GameFontHighlight while
+  -- hovered, as UIPanelButtonNoTooltipTemplate. Their face is the HD
+  -- 128RedButton (M.modernWow.button128Red, user request 2026-09-22), not
+  -- the template's old 128x32 UI-Panel-Button files; see gs.DressButton.
+  button = {
+    textColor = { 1.00, 0.82, 0.00, 1 },
+    hoverTextColor = { 1.00, 1.00, 1.00, 1 },
+    disabledTextColor = { 0.50, 0.50, 0.50, 1 },
+  },
+  -- UIPanelCloseButtonNoScripts placement. The Game Settings button uses the
+  -- modern-wow red-button atlas through M.modernWow.redButtonCell.
+  close = {
+    size = 20.4,
+    x = -2,
+    y = 1,
+  },
+  -- UIMenuButtonStretchTemplate (Blizzard_SharedXML SharedUIPanelTemplates.xml
+  -- 772), the face Forever's Key Bindings page gives every binding button
+  -- through KeyBindingFrameBindingButtonTemplate (Blizzard_Keybindings.xml 4).
+  -- User request, 2026-09-22: the bindings wear this rather than the settings
+  -- dropdown bed they wore before.
+  --
+  -- A nine-slice of one 128x32 sheet, in the template's own texture
+  -- coordinates: the four corners draw 12x6 unstretched, the top and bottom
+  -- edges stretch sideways at 6 tall, the left and right edges stretch down at
+  -- 12 wide, and the centre stretches both ways. Blizzard's coordinates cover
+  -- x 0..80 and y 0..26 of the sheet; the rest is empty.
+  binding = {
+    up        = M.foreverWow.texture.silverUp,
+    down      = M.foreverWow.texture.silverDown,
+    highlight = M.foreverWow.texture.silverHighlight,
+    -- KeyBindingFrameBindingButtonTemplate's SelectedHighlight, drawn ADD
+    -- over the face while that binding is the one listening for a key. It is
+    -- the template's own 160x20 at CENTER 0,-3.
+    select    = M.foreverWow.texture.silverSelect,
+    selectSize = { width = 160, height = 20, y = -3 },
+    corner = { width = 12, height = 6 },
+    edge = { width = 12, height = 14 },
+    -- The template's own TexCoords, as fractions of the 128x32 sheet.
+    topLeft      = { 0,        0.09375,  0,      0.1875 },
+    topRight     = { 0.53125,  0.625,    0,      0.1875 },
+    bottomLeft   = { 0,        0.09375,  0.625,  0.8125 },
+    bottomRight  = { 0.53125,  0.625,    0.625,  0.8125 },
+    topMiddle    = { 0.09375,  0.53125,  0,      0.1875 },
+    bottomMiddle = { 0.09375,  0.53125,  0.625,  0.8125 },
+    middleLeft   = { 0,        0.09375,  0.1875, 0.625 },
+    middleRight  = { 0.53125,  0.625,    0.1875, 0.625 },
+    middleMiddle = { 0.09375,  0.53125,  0.1875, 0.625 },
+    -- UI-Silver-Button-Highlight is drawn whole, at the template's crop.
+    highlightCoords = { 0, 1, 0.03, 0.7175 },
+    -- KeyBindingFrameBindingTemplate: the row is 25 tall and its two buttons
+    -- are 160x22, the first at LEFT of the row's CENTER -80 and the second
+    -- against its right edge. UnrealUI keeps the client's own row and button
+    -- anchors; only `height` is applied, so the face is drawn in Forever's
+    -- proportion whatever width the client's button has.
+    width = 160,
+    height = 22,
+    -- GameFontHighlightSmall / GameFontDisableSmall, the template's fonts.
+    textColor = { 1.00, 1.00, 1.00, 1 },
+    disabledTextColor = { 0.50, 0.50, 0.50, 1 },
+  },
+}
+
+-- The checkbox is the dropdown's left arrow, at its size and on its line
+-- (user request, 2026-09-22, with a screenshot). Width is the stepper's drawn
+-- bed; height keeps the box art's own 30x29 aspect rather than being squared
+-- off, which leaves it 1 unit shorter than the square bed -- both are centred
+-- on the same line, so the column reads straight. The tick follows the box, as
+-- SettingsCheckboxTemplate draws both at atlas size.
+--
+-- Then 9 units off that width, in three steps of 3 (user requests,
+-- 2026-09-22), so the box sits inside the arrow rather than matching it.
+M.foreverWow.control.checkbox.width = M.foreverWow.control.dropdown.stepper.bedSize - 9
+M.foreverWow.control.checkbox.height = M.foreverWow.control.checkbox.width *
+  (M.foreverWow.control.checkbox.cell[4] - M.foreverWow.control.checkbox.cell[3]) /
+  (M.foreverWow.control.checkbox.cell[2] - M.foreverWow.control.checkbox.cell[1])
+M.foreverWow.control.checkbox.checkWidth = M.foreverWow.control.checkbox.width
+M.foreverWow.control.checkbox.checkHeight = M.foreverWow.control.checkbox.height

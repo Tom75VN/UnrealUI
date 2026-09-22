@@ -84,6 +84,9 @@ function popup.StyleWowButton(button, alwaysRed)
     U.PostHookScript(button, "OnLeave", function()
       U.ModernWowPaintRedButton(button, false)
     end)
+    if type(U.ModernWowRedButtonInput) == "function" then
+      U.ModernWowRedButtonInput(button)
+    end
   else
     popup.ClearButtonStateArt(button)
   end

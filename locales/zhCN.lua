@@ -99,6 +99,20 @@ MOVER_LABEL_ACTION_BAR    = "动作条 %d",
 MOVER_LABEL_MOVER_TEST    = "移动测试",
 
 -- ---------------------------------------------------------------------------
+-- Grouped game settings window (modules/gamesettings.lua)
+-- ---------------------------------------------------------------------------
+GAMESETTINGS_TITLE        = "游戏设置",
+GAMESETTINGS_VIDEO        = "视频",
+GAMESETTINGS_SOUND        = "声音",
+GAMESETTINGS_INTERFACE    = "界面",
+GAMESETTINGS_KEYBINDINGS  = "按键设置",
+GAMESETTINGS_UNREALUI     = "Unreal UI",
+GAMESETTINGS_UNREALQUEST  = "Unreal Quest",
+GAMESETTINGS_UNAVAILABLE  = "此面板在当前客户端不可用。",
+GAMESETTINGS_SEARCH       = "搜索",
+GAMESETTINGS_NO_MATCHES   = "未找到匹配的选项。",
+
+-- ---------------------------------------------------------------------------
 -- Settings window
 -- ---------------------------------------------------------------------------
 SETTINGS_MOVE_UI          = "移动界面",
@@ -563,6 +577,11 @@ PROFESSIONS_COOLDOWN      = "剩余冷却时间：%s",
 PROFESSIONS_TRAINING_POINTS = "训练点数：%d",
 PROFESSIONS_NO_RECIPES    = "没有可显示的配方。",
 GAMEMENU_OPTIONS          = "设置",
+GAMEMENU_RETURN           = "返回游戏",
+GAMEMENU_TITLE            = "游戏菜单",
+GAMEMENU_EDIT_MODE        = "编辑模式",
+GAMEMENU_SUPPORT          = "客服支持",
+GAMEMENU_SUPPORT_UNAVAILABLE = "此版本中客服支持窗口不可用。",
 
 -- ---------------------------------------------------------------------------
 -- Experience bar settings and tooltip (modules/xpbar.lua)
@@ -591,6 +610,7 @@ XPTIP_UNIT_SECOND         = "秒",
 -- ---------------------------------------------------------------------------
 CMD_HEADER                = "v%s 命令列表：",
 CMD_SETTINGS              = "  |cffffff00/uui|r - 打开设置",
+CMD_GAME                  = "  |cffffff00/uui game|r - 打开游戏设置窗口",
 CMD_UNLOCK                = "  |cffffff00/uui unlock|r - 解锁框体以便移动",
 CMD_LOCK                  = "  |cffffff00/uui lock|r - 锁定框体",
 CMD_RESET                 = "  |cffffff00/uui reset|r - 重置所有框体位置",

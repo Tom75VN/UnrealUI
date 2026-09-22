@@ -43,6 +43,21 @@ local focusedId        -- id of the single row (page or expanded group, at any
 
 local RenderSidebar    -- forward declarations; rows and pages call each other
 local SelectPage
+local OpenStandaloneSettings
+
+-- The unified Game Settings window uses the same registered pages rather than
+-- maintaining a second settings schema. It supplies the outer category list;
+-- this state owns only the scrollable page canvas inside that window.
+local integrated = {
+  width = PANEL_WIDTH - SIDEBAR_WIDTH - 24,
+  height = PANEL_HEIGHT - HEADER_HEIGHT - FOOTER_HEIGHT,
+  offset = 0,
+  -- Every UnrealUI and Unreal Quest page sits this far left of the host box,
+  -- closer to the category list (user request, 2026-09-22: 10 left). The
+  -- scroll frame moves rather than the canvas, so the stepper pad inside the
+  -- sheet is not clipped.
+  shiftX = -10,
+}
 
 -- ---------------------------------------------------------------------------
 -- Visibility helpers
@@ -108,7 +123,9 @@ function U.RegisterSettingsGroup(id, label, options)
     kind = "group",
     id = id,
     label = label or id,
-    expanded = false,
+    -- Open by default, and each group opens and closes on its own; no
+    -- accordion (user request, 2026-09-23).
+    expanded = true,
   }
 
   options = options or {}
@@ -215,20 +232,6 @@ local function VisibleEntries()
   end
 
   return visible
-end
-
--- Accordion behaviour: only one group (at any depth) stays expanded at a
--- time. Collapses every group except keepId, which future nested submenus
--- get for free since it only checks entry.kind, not depth or identity.
-local function CollapseOtherGroups(keepId)
-  local i
-  for i = 1, table.getn(entries) do
-    local entry = entries[i]
-    if entry.kind == "group" and entry.id ~= keepId and entry.expanded then
-      entry.expanded = false
-      if focusedId == entry.id then focusedId = nil end
-    end
-  end
 end
 
 local function StyleRow(row, entry, selected)
@@ -361,7 +364,6 @@ RenderSidebar = function()
           return
         end
         target.expanded = not target.expanded
-        if target.expanded then CollapseOtherGroups(target.id) end
         -- Only one row is ever highlighted: expanding a group claims the
         -- highlight, collapsing it releases the highlight (rather than
         -- falling back to whatever page used to hold it), and this holds at
@@ -395,10 +397,6 @@ end
 -- ---------------------------------------------------------------------------
 SelectPage = function(entry)
   if not entry or entry.kind ~= "page" then return end
-
-  -- Picking a page outside the open group (or a top-level page while any
-  -- group is open) collapses that group, same as clicking another group.
-  CollapseOtherGroups(entry.parent)
 
   local i
   for i = 1, table.getn(entries) do
@@ -438,6 +436,26 @@ end
 function U.OpenSettingsPage(id)
   local entry = FindEntry(id)
   if not entry or entry.kind ~= "page" then return false end
+
+  if type(U.OpenGameSettings) == "function" and
+     type(U.SelectIntegratedSettingsPage) == "function" then
+    local scope = U.SettingsEntryScope(entry)
+    U.OpenGameSettings(scope)
+    U.SelectIntegratedSettingsPage(id, scope)
+    if U.gameSettings then
+      local gs = U.gameSettings
+      local frame = U.G("UnrealUIGameSettingsUI")
+      local level
+      if gs.host and type(gs.Number) == "function" then
+        level = gs.Number(gs.host, "GetFrameLevel")
+      end
+      if frame and level and type(gs.Relevel) == "function" then
+        gs.Relevel(frame, level + 1, 0)
+      end
+      if type(gs.RenderList) == "function" then gs.RenderList() end
+    end
+    return true
+  end
 
   if entry.parent then
     local parent = FindEntry(entry.parent)
@@ -503,16 +521,17 @@ local function RefreshLanguageButtons()
   end
 end
 
-local function BuildLanguageSelector(parent)
+local function BuildLanguageSelector(parent, topInset, namePrefix)
   local languages = U.GetLanguages()
   local count = table.getn(languages)
+  local built = {}
   local i
 
   for i = 1, count do
     local entry = languages[i]
 
     local button = U.CreateButton(parent, {
-      name = "UnrealUISettingsLanguage" .. entry.code,
+      name = (namePrefix or "UnrealUISettingsLanguage") .. entry.code,
       -- A flag texture owns the whole face, so the badge text is dropped for
       -- any code that has artwork.
       text = M.languageFlag[entry.code] and "" or entry.short,
@@ -530,7 +549,7 @@ local function BuildLanguageSelector(parent)
     button:SetPoint("TOPRIGHT", parent, "TOPRIGHT",
                     -LANGUAGE_BUTTON_RIGHT_INSET - (count - i) *
                           (LANGUAGE_BUTTON_WIDTH + LANGUAGE_BUTTON_GAP),
-                    -LANGUAGE_BUTTON_TOP_INSET)
+                    -(topInset or LANGUAGE_BUTTON_TOP_INSET))
 
     if M.languageFlag[entry.code] and button.CreateTexture then
       local flag = button:CreateTexture(nil, "ARTWORK")
@@ -568,10 +587,12 @@ local function BuildLanguageSelector(parent)
     end)
 
     table.insert(languageButtons, button)
-    table.insert(parent.chrome, button)
+    table.insert(built, button)
+    if type(parent.chrome) == "table" then table.insert(parent.chrome, button) end
   end
 
   RefreshLanguageButtons()
+  return built
 end
 
 -- ---------------------------------------------------------------------------
@@ -725,13 +746,18 @@ end
 -- screen (modules/quickbind.lua) uses this rather than U.OpenSettings, which
 -- would reopen an already-closed panel.
 function U.CloseSettings()
+  if type(U.CloseGameSettings) == "function" and U.gameSettings and
+     U.gameSettings.active and U.gameSettings.active.settings then
+    U.CloseGameSettings()
+    return
+  end
   Hide()
 end
 
 -- Single entry point: /uui and the minimap button both call this, so they can
 -- never diverge (see core/commands.lua). keepOpen skips the toggle, which is
 -- what U.OpenSettingsPage needs.
-function U.OpenSettings(keepOpen)
+OpenStandaloneSettings = function(keepOpen)
   if not panel then Build() end
 
   local ok, shown = pcall(panel.IsShown, panel)
@@ -760,6 +786,416 @@ function U.OpenSettings(keepOpen)
       end
     end
   end
+end
+
+function U.OpenSettings(keepOpen)
+  if type(U.OpenGameSettings) ~= "function" then
+    OpenStandaloneSettings(keepOpen)
+    return
+  end
+
+  local gs = U.gameSettings
+  if not keepOpen and gs and gs.panel and gs.active and
+     gs.active.settings then
+    local shown = false
+    pcall(function() shown = gs.panel:IsShown() and true or false end)
+    if shown then
+      U.CloseGameSettings()
+      return
+    end
+  end
+  Hide()
+  U.OpenGameSettings("unrealui")
+end
+
+-- ---------------------------------------------------------------------------
+-- Unified Game Settings canvas
+-- ---------------------------------------------------------------------------
+
+-- The Game Settings window lists these entries under two categories (user
+-- request, 2026-09-22): UnrealQuest's group -- registered by the sibling
+-- addon as "unrealquest" -- and its pages are the "Unreal Quest" category;
+-- everything else is "Unreal UI". The group itself is not a row there: its
+-- category header already names it, so its pages sit directly beneath.
+function U.SettingsEntryScope(entry)
+  if type(entry) == "string" then entry = FindEntry(entry) end
+  if not entry then return nil end
+  if entry.id == "unrealquest" or entry.parent == "unrealquest" then
+    return "unrealquest"
+  end
+  return "unrealui"
+end
+
+-- Whether any selectable page is registered under a scope; the Unreal Quest
+-- category exists only while UnrealQuest is installed and has registered.
+function U.HasIntegratedSettingsScope(scope)
+  local i
+  for i = 1, table.getn(entries) do
+    if entries[i].kind == "page" and
+       U.SettingsEntryScope(entries[i]) == (scope or "unrealui") then
+      return true
+    end
+  end
+  return false
+end
+
+local function IntegratedEntry(id, scope)
+  local entry = FindEntry(id)
+  if entry and entry.kind == "page" and
+     (not scope or U.SettingsEntryScope(entry) == scope) then
+    return entry
+  end
+  return nil
+end
+
+local function IntegratedDefault(scope)
+  scope = scope or "unrealui"
+  if activePage and U.SettingsEntryScope(activePage) == scope then
+    return activePage
+  end
+  local i
+  for i = 1, table.getn(entries) do
+    if entries[i].kind == "page" and U.SettingsEntryScope(entries[i]) == scope then
+      return entries[i]
+    end
+  end
+  return nil
+end
+
+-- Navigation rows consumed by modules/gamesettings.lua. Group headings expose
+-- their expansion state; the pages beneath them remain the selectable rows.
+function U.GetIntegratedSettingsTabs(scope)
+  scope = scope or "unrealui"
+  local tabs = {}
+  local i
+  for i = 1, table.getn(entries) do
+    local entry = entries[i]
+    if scope == "unrealquest" then
+      if entry.kind == "page" and U.SettingsEntryScope(entry) == scope then
+        table.insert(tabs, {
+          name = entry.id,
+          label = entry.label,
+          selected = activePage == entry,
+          unavailable = false,
+          muted = entry.muted and true or false,
+          settings = true,
+          indent = 0,
+        })
+      end
+    elseif U.SettingsEntryScope(entry) == scope then
+      if entry.kind == "group" then
+        table.insert(tabs, {
+          name = "settings-group:" .. entry.id,
+          label = entry.label,
+          unavailable = true,
+          settingsHeader = true,
+          settingsGroup = entry.id,
+          collapsed = not entry.expanded,
+        })
+      elseif entry.kind == "page" then
+        local visible = not entry.parent
+        if entry.parent then
+          local parent = FindEntry(entry.parent)
+          visible = parent and parent.expanded
+        end
+        if visible then
+          table.insert(tabs, {
+            name = entry.id,
+            label = entry.label,
+            selected = activePage == entry,
+            unavailable = false,
+            muted = entry.muted and true or false,
+            settings = true,
+            indent = entry.parent and 7 or 0,
+          })
+        end
+      end
+    end
+  end
+  return tabs
+end
+
+function U.SetIntegratedSettingsGroupExpanded(id, expanded)
+  local entry = FindEntry(id)
+  if not entry or entry.kind ~= "group" then return false end
+  entry.expanded = expanded and true or false
+  return true
+end
+
+local function IntegratedPaintArrows()
+  if not integrated.bar then return end
+  local low, high, value = 0, 0, 0
+  pcall(function() low, high = integrated.bar:GetMinMaxValues() end)
+  pcall(function() value = integrated.bar:GetValue() end)
+  local function Set(suffix, enabled)
+    local button = U.G("UnrealUIGameSettingsUIBar" .. suffix)
+    if not button then return end
+    if enabled then pcall(button.Enable, button) else pcall(button.Disable, button) end
+  end
+  Set("ScrollUpButton", value > low + 0.5)
+  Set("ScrollDownButton", value < high - 0.5)
+end
+
+local function SetIntegratedOffset(value)
+  local maximum = integrated.maximum or 0
+  value = math.max(0, math.min(maximum, tonumber(value) or 0))
+  integrated.offset = value
+  if integrated.scroll and type(integrated.scroll.SetVerticalScroll) == "function" then
+    pcall(integrated.scroll.SetVerticalScroll, integrated.scroll, value)
+  end
+  if integrated.bar then pcall(integrated.bar.SetValue, integrated.bar, value) end
+  IntegratedPaintArrows()
+end
+
+local function IntegratedLeftPad()
+  local gs = U.gameSettings
+  if gs and type(gs.DropdownStepperPads) == "function" then
+    local left = gs.DropdownStepperPads()
+    if tonumber(left) and left > 0 then return left end
+  end
+  return 30
+end
+
+-- The addon's own settings pages share one canvas frame across every category
+-- (SelectIntegratedSettingsPage only toggles a page's widgets with
+-- SetListShown; the canvas itself is never rebuilt), so integrated.height --
+-- a fixed constant sized for the standalone window -- cannot say how tall the
+-- CURRENTLY selected page actually is. A short page (Unit Frames > General,
+-- user report 2026-09-23) left the range at that constant, so the bar could
+-- scroll well past the page's real content into blank space below it.
+--
+-- Measured the same way gs.Overhang already does for a hosted native panel
+-- (modules/gamesettings.lua): only the canvas's DIRECT, currently visible
+-- children -- which is exactly what SetListShown toggles -- so a hidden
+-- page's widgets are never counted. The delta between the canvas's own top and
+-- the lowest visible child's bottom is in on-screen units common to both, so
+-- only the canvas's own applied scale (the sheet's, its parent, already
+-- applied this pass by the time this runs) needs dividing back out.
+local function IntegratedContentHeight(scale)
+  local canvas = integrated.canvas
+  if not canvas or type(canvas.GetTop) ~= "function" then
+    return integrated.height
+  end
+  local top
+  pcall(function() top = canvas:GetTop() end)
+  if not top then return integrated.height end
+
+  local count = 0
+  pcall(function() count = canvas:GetNumChildren() end)
+  if count < 1 or type(canvas.GetChildren) ~= "function" then
+    return integrated.height
+  end
+
+  local ok, kids = pcall(function() return { canvas:GetChildren() } end)
+  if not ok or not kids then return integrated.height end
+
+  local lowest = top
+  local i
+  for i = 1, table.getn(kids) do
+    local kid = kids[i]
+    local visible
+    pcall(function() visible = kid:IsVisible() end)
+    if visible then
+      local bottom
+      pcall(function() bottom = kid:GetBottom() end)
+      if bottom and bottom < lowest then lowest = bottom end
+    end
+  end
+
+  if not scale or scale <= 0 then scale = 1 end
+  return (top - lowest) / scale
+end
+
+local function LayoutIntegratedCanvas()
+  if not integrated.root or not integrated.canvas or not integrated.sheet then return end
+  local width, height
+  pcall(function() width = integrated.root:GetWidth() end)
+  pcall(function() height = integrated.root:GetHeight() end)
+  width, height = tonumber(width) or 0, tonumber(height) or 0
+  if width < 1 or height < 1 then return end
+
+  local barWidth = 18
+  local viewportWidth = math.max(1, width - barWidth - 4)
+  local contentWidth = integrated.width + (integrated.leftPad or 0)
+  local scale = math.min(1, viewportWidth / contentWidth)
+  integrated.scale = scale
+  pcall(integrated.sheet.SetScale, integrated.sheet, scale)
+
+  -- What a page may fill without scrolling, in the page's own units: the
+  -- visible box divided back out of the width fit above. The canvas frame is
+  -- taller than this, so a page that sizes itself to its parent overflows and
+  -- gains a scrollbar -- U.GetIntegratedSettingsPageHeight is what a page that
+  -- lays itself out to the space available reads instead.
+  integrated.viewport = height / scale
+  local contentHeight = IntegratedContentHeight(scale)
+  integrated.maximum = math.max(0, contentHeight - height / scale)
+  if integrated.bar then
+    pcall(integrated.bar.SetMinMaxValues, integrated.bar, 0, integrated.maximum)
+    if integrated.maximum > 0 then
+      pcall(integrated.bar.Show, integrated.bar)
+      local up = U.G("UnrealUIGameSettingsUIBarScrollUpButton")
+      local down = U.G("UnrealUIGameSettingsUIBarScrollDownButton")
+      if up then pcall(up.Show, up) end
+      if down then pcall(down.Show, down) end
+      if type(U.SetModernWowScrollbarProportion) == "function" then
+        U.SetModernWowScrollbarProportion(integrated.bar,
+          height / scale, contentHeight)
+      end
+    else
+      pcall(integrated.bar.Hide, integrated.bar)
+      local up = U.G("UnrealUIGameSettingsUIBarScrollUpButton")
+      local down = U.G("UnrealUIGameSettingsUIBarScrollDownButton")
+      if up then pcall(up.Hide, up) end
+      if down then pcall(down.Hide, down) end
+    end
+  end
+  SetIntegratedOffset(integrated.offset)
+end
+
+-- The height a page built into this canvas can use before it scrolls. nil
+-- until the canvas has been laid out once, which callers read as "no answer
+-- yet" rather than as a height.
+function U.GetIntegratedSettingsPageHeight()
+  return tonumber(integrated.viewport)
+end
+
+local function BuildIntegratedCanvas(parent)
+  if integrated.root then return end
+
+  integrated.root = CreateFrame("Frame", "UnrealUIGameSettingsUI", parent)
+  integrated.root:SetAllPoints(parent)
+  pcall(integrated.root.EnableMouse, integrated.root, false)
+
+  integrated.scroll = CreateFrame("ScrollFrame", "UnrealUIGameSettingsUIScroll",
+                                  integrated.root)
+  integrated.scroll:SetPoint("TOPLEFT", integrated.root, "TOPLEFT",
+                             integrated.shiftX, 0)
+  integrated.scroll:SetPoint("BOTTOMRIGHT", integrated.root, "BOTTOMRIGHT", -22, 0)
+  pcall(integrated.scroll.EnableMouseWheel, integrated.scroll, true)
+
+  integrated.leftPad = IntegratedLeftPad()
+  integrated.sheet = CreateFrame("Frame", "UnrealUIGameSettingsUISheet",
+                                 integrated.scroll)
+  integrated.sheet:SetWidth(integrated.width + integrated.leftPad)
+  integrated.sheet:SetHeight(integrated.height)
+
+  integrated.canvas = CreateFrame("Frame", "UnrealUIGameSettingsUICanvas",
+                                  integrated.sheet)
+  integrated.canvas:SetWidth(integrated.width)
+  integrated.canvas:SetHeight(integrated.height)
+  integrated.canvas:SetPoint("TOPLEFT", integrated.sheet, "TOPLEFT",
+                             integrated.leftPad, 0)
+  pcall(integrated.scroll.SetScrollChild, integrated.scroll, integrated.sheet)
+
+  integrated.bar = CreateFrame("Slider", "UnrealUIGameSettingsUIBar",
+                               integrated.root)
+  pcall(integrated.bar.SetOrientation, integrated.bar, "VERTICAL")
+  integrated.bar:SetWidth(16)
+  integrated.bar:SetPoint("TOPRIGHT", integrated.root, "TOPRIGHT", 0, -16)
+  integrated.bar:SetPoint("BOTTOMRIGHT", integrated.root, "BOTTOMRIGHT", 0, 16)
+  pcall(integrated.bar.SetValueStep, integrated.bar, 12)
+  integrated.bar:SetScript("OnValueChanged", function()
+    local value = 0
+    pcall(function() value = integrated.bar:GetValue() end)
+    if math.abs((integrated.offset or 0) - value) < 0.5 then return end
+    integrated.offset = value
+    if integrated.scroll and type(integrated.scroll.SetVerticalScroll) == "function" then
+      pcall(integrated.scroll.SetVerticalScroll, integrated.scroll, value)
+    end
+    IntegratedPaintArrows()
+  end)
+
+  local function Arrow(suffix, direction)
+    local button = CreateFrame("Button", "UnrealUIGameSettingsUIBar" .. suffix,
+                               integrated.bar)
+    button:SetScript("OnClick", function()
+      SetIntegratedOffset((integrated.offset or 0) + direction * 36)
+    end)
+  end
+  Arrow("ScrollUpButton", -1)
+  Arrow("ScrollDownButton", 1)
+  if type(U.StyleModernWowScrollbar) == "function" then
+    U.StyleModernWowScrollbar(integrated.bar)
+  end
+
+  integrated.scroll:SetScript("OnMouseWheel", function()
+    local delta = tonumber(arg1)
+    if not delta or delta == 0 then return end
+    SetIntegratedOffset((integrated.offset or 0) + (delta > 0 and -36 or 36))
+  end)
+
+  integrated.root:SetScript("OnShow", function()
+    U.DeferOnce("gamesettings:unrealui-layout", LayoutIntegratedCanvas)
+  end)
+end
+
+function U.SelectIntegratedSettingsPage(id, scope)
+  local entry = IntegratedEntry(id, scope) or IntegratedDefault(scope)
+  if not entry or not integrated.canvas then return false end
+
+  if entry.parent then
+    local parent = FindEntry(entry.parent)
+    if parent and parent.kind == "group" then parent.expanded = true end
+  end
+
+  local i
+  for i = 1, table.getn(entries) do
+    if entries[i] ~= entry then SetListShown(entries[i].widgets, false) end
+  end
+
+  if not entry.widgets then
+    local widgets, refresh = entry.build(integrated.canvas)
+    entry.widgets = widgets or {}
+    entry.refresh = refresh
+  end
+  if U.gameSettings and type(U.gameSettings.StyleIntegratedWidgets) == "function" then
+    U.gameSettings.StyleIntegratedWidgets(entry.widgets)
+  end
+  SetListShown(entry.widgets, true)
+  if type(entry.refresh) == "function" then entry.refresh() end
+  activePage = entry
+  focusedId = entry.id
+  if U.gameSettings then U.gameSettings.revealSettingsSelection = true end
+  -- A full relayout, not just a reset offset: this page's widgets just
+  -- changed which are shown, and LayoutIntegratedCanvas is what remeasures
+  -- integrated.maximum against the newly visible content (IntegratedContent-
+  -- Height only sees IsVisible children, so a page switch has to redo it).
+  integrated.offset = 0
+  LayoutIntegratedCanvas()
+  return true
+end
+
+function U.ShowIntegratedSettings(parent, id, scope)
+  if not parent then return false end
+  BuildIntegratedCanvas(parent)
+  pcall(integrated.root.SetParent, integrated.root, parent)
+  pcall(integrated.root.ClearAllPoints, integrated.root)
+  pcall(integrated.root.SetAllPoints, integrated.root, parent)
+  pcall(integrated.root.Show, integrated.root)
+  pcall(integrated.scroll.Show, integrated.scroll)
+  pcall(integrated.sheet.Show, integrated.sheet)
+  pcall(integrated.canvas.Show, integrated.canvas)
+  pcall(integrated.bar.Show, integrated.bar)
+  local up = U.G("UnrealUIGameSettingsUIBarScrollUpButton")
+  local down = U.G("UnrealUIGameSettingsUIBarScrollDownButton")
+  if up then pcall(up.Show, up) end
+  if down then pcall(down.Show, down) end
+  LayoutIntegratedCanvas()
+  return U.SelectIntegratedSettingsPage(id, scope)
+end
+
+function U.HideIntegratedSettings()
+  local i
+  for i = 1, table.getn(entries) do SetListShown(entries[i].widgets, false) end
+  if integrated.scroll then pcall(integrated.scroll.Hide, integrated.scroll) end
+  if integrated.sheet then pcall(integrated.sheet.Hide, integrated.sheet) end
+  if integrated.canvas then pcall(integrated.canvas.Hide, integrated.canvas) end
+  if integrated.bar then pcall(integrated.bar.Hide, integrated.bar) end
+  local up = U.G("UnrealUIGameSettingsUIBarScrollUpButton")
+  local down = U.G("UnrealUIGameSettingsUIBarScrollDownButton")
+  if up then pcall(up.Hide, up) end
+  if down then pcall(down.Hide, down) end
+  if integrated.root then pcall(integrated.root.Hide, integrated.root) end
 end
 
 -- ---------------------------------------------------------------------------
@@ -1000,6 +1436,15 @@ local function BuildGeneralPage(parent)
   })
   table.insert(widgets, header)
 
+  if parent == integrated.canvas then
+    local languages = BuildLanguageSelector(parent, 32,
+                                            "UnrealUIGameSettingsLanguage")
+    local languageIndex
+    for languageIndex = 1, table.getn(languages) do
+      table.insert(widgets, languages[languageIndex])
+    end
+  end
+
   local themeLabel = U.CreateSettingsLabel(parent, {
     size = M.fontSize.small,
     color = M.color.text,
@@ -1027,9 +1472,9 @@ local function BuildGeneralPage(parent)
   local themes = U.CreateRadioGroup(parent, {
     name = "UnrealUISettingsThemeStyle",
     value = U.GetThemeStyle(),
-    width = 156,
+    width = 144,
     columns = 3,
-    columnGap = 6,
+    columnGap = 2,
     items = themeItems,
     onChange = function(value)
       if U.SetThemeStyle(value) and U.ThemeStyleRequiresReload() then
@@ -1073,7 +1518,7 @@ local function BuildGeneralPage(parent)
     width = 220,
     height = 26,
     onClick = function()
-      Hide()
+      U.CloseSettings()
       if type(U.OpenQuickBind) == "function" then
         U.OpenQuickBind()
       else
