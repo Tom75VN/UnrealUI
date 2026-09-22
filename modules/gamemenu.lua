@@ -63,6 +63,9 @@ local metrics = {
   bottom = BOTTOM_PADDING,
   spacing = SPACING,
   groupSpacing = GROUP_SPACING,
+  -- `modern` halves the break between groups (user request, 2026-09-23);
+  -- Modern WoW keeps the full one.
+  groupGapScale = 0.5,
 }
 local skin = {}
 local wowMenu = {}
@@ -141,7 +144,7 @@ local function IsCaptioned(button, globalName, fallback)
   return string.lower(fallback) == caption
 end
 
--- Logout and Exit Game. classicMenu.FollowerIndex records that this client
+-- Logout and Exit Game. This client (seen on the Classic menu)
 -- does not present them as GameMenuButtonLogout / GameMenuButtonQuit, so the
 -- name check alone never matches here and the captions are what actually
 -- resolve them. Both forms are kept so a build that does name them still works.
@@ -540,6 +543,7 @@ end
 local function GroupGap()
   local gap = (metrics.groupSpacing + OPTIONS_BOTTOM_GAP) * SECTION_GAP_SCALE
              - GROUP_GAP_TRIM
+  gap = gap * metrics.groupGapScale
   if gap < 0 then gap = 0 end
   return gap
 end
@@ -800,6 +804,7 @@ function wowMenu.Select()
   metrics.bottom = token.bottom
   metrics.spacing = token.spacing
   metrics.groupSpacing = token.groupSpacing
+  metrics.groupGapScale = 1
 
   skin.StyleRow = wowMenu.StyleRow
   skin.OwnButton = wowMenu.OwnButton
@@ -1185,9 +1190,7 @@ function classicMenu.Ensure(frame)
     frame, "UnrealUIGameMenuQuickBindButton", "Quick Binding",
       function() OpenQuickBinding(frame) end)
 
-  -- Classic keeps the client's own row order, so the pair joins the UnrealUI
-  -- access block rather than seating itself above Macros the way the skinned
-  -- menu does (user request, 2026-09-22).
+  -- Seated above Macros by classicMenu.CaptureOrder, as on the Modern menus.
   classicMenu.editMode = classicMenu.editMode or classicMenu.CreateButton(
     frame, "UnrealUIGameMenuEditModeButton", U.L("GAMEMENU_EDIT_MODE"),
       function() OpenEditMode(frame) end)
@@ -1218,48 +1221,124 @@ function classicMenu.Rows(frame)
   return rows
 end
 
--- The client's own spacing is read once, from the untouched native layout, and
--- kept per row. Measuring again later would read back the gaps this module
--- opened itself. The ordinary row spacing is the smallest of them; anything
--- larger is one of the client's own group breaks.
-function classicMenu.MeasureGaps(rows)
+-- Return to Game, by name or by the client's caption, as IsClosingRow resolves
+-- Logout and Exit Game.
+function classicMenu.IsReturnRow(button)
+  return IsNamed(button, "GameMenuButtonContinue") or
+         IsCaptioned(button, "RETURN_TO_GAME", "Return to Game")
+end
+
+-- The client's own spacing is read once, from the untouched native layout.
+-- Measuring again later would read back the layout this module applied. The
+-- ordinary row spacing is the smallest gap between two visible rows; the gap
+-- above Return to Game is the client's own group break; the insets are how far
+-- the first row sits below the frame's top and the last row above its bottom.
+function classicMenu.Measure(frame, rows)
   if classicMenu.measured then return end
   classicMenu.measured = true
-  classicMenu.gap = {}
 
+  local count = table.getn(rows)
   local smallest
   local i
-  for i = 2, table.getn(rows) do
+  for i = 2, count do
     local bottom = classicMenu.Number(rows[i - 1], "GetBottom")
     local top = classicMenu.Number(rows[i], "GetTop")
     if bottom and top and bottom >= top then
       local gap = bottom - top
-      classicMenu.gap[rows[i]] = gap
       if not smallest or gap < smallest then smallest = gap end
+      if classicMenu.IsReturnRow(rows[i]) then classicMenu.returnGap = gap end
     end
   end
-
   classicMenu.rowGap = smallest or 1
+
+  local frameTop = classicMenu.Number(frame, "GetTop")
+  local frameBottom = classicMenu.Number(frame, "GetBottom")
+  local firstTop = classicMenu.Number(rows[1], "GetTop")
+  local lastBottom = classicMenu.Number(rows[count], "GetBottom")
+  if frameTop and firstTop then classicMenu.topInset = frameTop - firstTop end
+  if frameBottom and lastBottom then
+    classicMenu.bottomInset = lastBottom - frameBottom
+  end
 end
 
--- The seat is the row directly above "Return to Game", which is where the
--- Modern menu shows the same pair: this client does not present its Logout and
--- Exit Game buttons as the globals that path checks for, so both menus resolve
--- their seat from the closing row instead and stay identical.
-function classicMenu.FollowerIndex(rows)
-  local count = table.getn(rows)
+-- The same row order the Modern menus build in CaptureOrder (user request,
+-- 2026-09-23): Options takes the first settings row's seat, Edit Mode / Quick
+-- Binding / Support sit directly above Macros, Unreal UI follows that block,
+-- and Logout / Exit Game close the menu out above Return to Game. Captured
+-- once, from the untouched native order, as the Modern path keeps its own.
+function classicMenu.CaptureOrder(frame)
+  local buttons = CollectButtons(frame)
+  local native = {}
   local i
-  for i = 2, count do
-    if classicMenu.NameOf(rows[i]) == "GameMenuButtonContinue" then return i end
-  end
-
-  for i = 2, count do
-    local name = classicMenu.NameOf(rows[i])
-    if name == "GameMenuButtonLogout" or name == "GameMenuButtonQuit" then
-      return i
+  for i = 1, table.getn(buttons) do
+    local button = buttons[i]
+    -- The hidden settings rows stay in the sort: their seat is Options'.
+    if not classicMenu.IsOwn(button) and
+       (IsGameSettingsRow(button) or classicMenu.Shown(button)) then
+      table.insert(native, button)
     end
   end
-  return nil
+
+  table.sort(native, function(a, b)
+    local at, bt
+    pcall(function() at = a:GetTop() end)
+    pcall(function() bt = b:GetTop() end)
+    return (at or 0) > (bt or 0)
+  end)
+
+  local result, closing, returnRow = {}, {}, nil
+  local settingsInserted, editInserted = false, false
+
+  local function InsertEditBlock()
+    if editInserted then return end
+    table.insert(result, classicMenu.editMode)
+    table.insert(result, classicMenu.bind)
+    table.insert(result, classicMenu.support)
+    editInserted = true
+  end
+
+  for i = 1, table.getn(native) do
+    local button = native[i]
+    if IsGameSettingsRow(button) then
+      if not settingsInserted then
+        table.insert(result, classicMenu.options)
+        settingsInserted = true
+      end
+    elseif classicMenu.IsReturnRow(button) then
+      returnRow = button
+    elseif IsClosingRow(button) then
+      table.insert(closing, button)
+    else
+      if IsMacrosRow(button) then InsertEditBlock() end
+      table.insert(result, button)
+    end
+  end
+  if not settingsInserted then table.insert(result, classicMenu.options) end
+  InsertEditBlock()
+  table.insert(result, classicMenu.settings)
+
+  for i = 1, table.getn(closing) do
+    table.insert(result, closing[i])
+  end
+  if returnRow then table.insert(result, returnRow) end
+  return result
+end
+
+-- ButtonGroup / EndsSection for the Classic rows, so both menus break in the
+-- same places.
+function classicMenu.Group(button)
+  if classicMenu.IsReturnRow(button) then return 5 end
+  if IsClosingRow(button) then return 4 end
+  if button == classicMenu.settings or button == classicMenu.bind or
+     button == classicMenu.editMode or button == classicMenu.support or
+     IsMacrosRow(button) or IsNamed(button, "GameMenuButtonAddOns") then
+    return 3
+  end
+  return 1
+end
+
+function classicMenu.EndsSection(button)
+  return button == classicMenu.options or IsMacrosRow(button)
 end
 
 function classicMenu.Layout()
@@ -1277,82 +1356,72 @@ function classicMenu.Layout()
   if count == 0 then return end
 
   classicMenu.layouts = (classicMenu.layouts or 0) + 1
-  classicMenu.MeasureGaps(rows)
+  classicMenu.Measure(frame, rows)
+  classicMenu.order = classicMenu.order or classicMenu.CaptureOrder(frame)
+  local order = classicMenu.order
   local rowGap = classicMenu.rowGap
 
-  local index = classicMenu.FollowerIndex(rows)
-  local anchor = index and rows[index - 1] or rows[count]
-  if classicMenu.IsOwn(anchor) then return end
-  local followerGap = index and classicMenu.gap[rows[index]] or nil
-
-  -- The pair reads as its own block: the break above and below it is the
-  -- client's own group spacing, or UnrealUI's when this menu has none.
-  local separation = followerGap or 0
+  -- One break between any two groups, as on the Modern menu: the client's own
+  -- group spacing, or UnrealUI's when this menu has none.
+  local separation = classicMenu.returnGap or 0
   if separation < GROUP_SPACING then separation = GROUP_SPACING end
 
-  local width = classicMenu.baseButtonWidth or classicMenu.Number(anchor, "GetWidth")
+  local width = classicMenu.baseButtonWidth or classicMenu.Number(rows[count], "GetWidth")
   if width and width > 0 then classicMenu.baseButtonWidth = width end
   if width and width > 0 then width = width * MENU_WIDTH_SCALE end
-  local height = classicMenu.Number(anchor, "GetHeight")
-  local own = { classicMenu.options, classicMenu.settings, classicMenu.editMode,
-                classicMenu.bind, classicMenu.support }
-  local previous = anchor
+  local rowHeight = classicMenu.Number(rows[count], "GetHeight")
+  if not rowHeight or rowHeight <= 0 then rowHeight = BUTTON_HEIGHT end
+
+  -- Every row after the first is re-anchored down one chain, so the rows the
+  -- settings rows used to fill close up and no two rows can overlap whether
+  -- the client anchored them to each other or to the frame. The first row
+  -- keeps the client's own anchor unless it is an UnrealUI row.
+  local previous, previousGroup
+  local height = classicMenu.topInset or 0
   local i
-  for i = 1, table.getn(own) do
-    local button = own[i]
-    if width and width > 0 then pcall(button.SetWidth, button, width) end
-    if height and height > 0 then pcall(button.SetHeight, button, height) end
-    button:ClearAllPoints()
-    local gap = i == 1 and separation or rowGap
-    if previous == classicMenu.options then gap = gap + OPTIONS_BOTTOM_GAP end
-    button:SetPoint("TOP", previous, "BOTTOM", 0, -gap)
-    classicMenu.SetLabelText(button)
-    classicMenu.AlignLabel(button)
-    button:Show()
-    previous = button
-  end
+  for i = 1, table.getn(order) do
+    local button = order[i]
+    local own = classicMenu.IsOwn(button)
+    if own or classicMenu.Shown(button) then
+      if width and width > 0 then pcall(button.SetWidth, button, width) end
+      if own then pcall(button.SetHeight, button, rowHeight) end
 
-  -- Every row below the seat is re-anchored down the chain with the spacing it
-  -- started with, so the native rows cannot overlap the inserted block whether
-  -- the client anchored them to each other or to the frame.
-  if index then
-    for i = index, count do
-      local row = rows[i]
-      local gap = (i == index) and separation or (classicMenu.gap[row] or rowGap)
-      row:ClearAllPoints()
-      row:SetPoint("TOP", previous, "BOTTOM", 0, -gap)
-      previous = row
+      local group = classicMenu.Group(button)
+      if previous then
+        local gap = rowGap
+        if group ~= previousGroup or classicMenu.EndsSection(previous) then
+          gap = separation
+        end
+        button:ClearAllPoints()
+        button:SetPoint("TOP", previous, "BOTTOM", 0, -gap)
+        height = height + gap
+      elseif own then
+        button:ClearAllPoints()
+        button:SetPoint("TOP", frame, "TOP", 0, -(classicMenu.topInset or 0))
+      end
+
+      -- Every row's label, not only the ones added here: the client sits them
+      -- all high on the face, and half a menu nudged would read worse than none.
+      if own then
+        classicMenu.SetLabelText(button)
+        classicMenu.AlignLabel(button)
+        button:Show()
+      else
+        classicMenu.CoverRow(button)
+      end
+
+      height = height + (classicMenu.Number(button, "GetHeight") or rowHeight)
+      previous = button
+      previousGroup = group
     end
   end
 
-  -- Every row's label, not only the two added here: the client sits them all
-  -- high on the face, and half a menu nudged would read worse than none.
-  for i = 1, count do
-    if width and width > 0 then pcall(rows[i].SetWidth, rows[i], width) end
-    classicMenu.CoverRow(rows[i])
-  end
+  U.Debug("classic game menu: " .. table.getn(order) .. " rows, gap " ..
+          tostring(rowGap) .. ", break " .. tostring(separation) ..
+          ", height " .. tostring(height))
 
-  local rowHeight = height or
-                    classicMenu.Number(classicMenu.settings, "GetHeight") or 22
-  local added = separation + (table.getn(own) - 1) * rowGap +
-                table.getn(own) * rowHeight + OPTIONS_BOTTOM_GAP
-  if index then added = added + separation - (followerGap or rowGap) end
-
-  U.Debug("classic game menu: seat " .. tostring(index) .. "/" .. count ..
-          ", gap " .. tostring(rowGap) .. ", break " .. tostring(separation) ..
-          ", added " .. tostring(added))
-
-  local current = classicMenu.Number(frame, "GetHeight")
-  if current then
-    -- The client can recompute the menu height itself when its visible rows
-    -- change; only a height this module set is treated as already grown.
-    if classicMenu.appliedHeight and classicMenu.baseHeight and
-       math.abs(current - classicMenu.appliedHeight) < 0.5 then
-      current = classicMenu.baseHeight
-    end
-    classicMenu.baseHeight = current
-    classicMenu.appliedHeight = current + added
-    pcall(frame.SetHeight, frame, classicMenu.appliedHeight)
+  if classicMenu.topInset and classicMenu.bottomInset then
+    pcall(frame.SetHeight, frame, height + classicMenu.bottomInset)
   end
 
   local currentWidth = classicMenu.Number(frame, "GetWidth")

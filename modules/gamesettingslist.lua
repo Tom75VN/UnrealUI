@@ -2759,7 +2759,10 @@ function L.Layout(page)
   local base = (gs.Number(gs.host, "GetFrameLevel") or 1) + L.LEVEL_GAP
   pcall(L.scroll.SetFrameLevel, L.scroll, base)
   pcall(L.child.SetFrameLevel, L.child, base + 1)
-  if L.bar then pcall(L.bar.SetFrameLevel, L.bar, base + 1) end
+  -- Relevel, not SetFrameLevel: on this client the latter moves the Slider
+  -- alone, which left its track above the owned thumb and arrows (its
+  -- children, still at their creation level) -- reported in game 2026-09-23.
+  if L.bar then gs.Relevel(L.bar, base + 1, 0) end
 
   local key, frame
   for key, frame in pairs(L.rows) do pcall(frame.Hide, frame) end

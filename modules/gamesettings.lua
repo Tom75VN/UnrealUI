@@ -97,15 +97,18 @@ local gs = {
   -- 1:1 at the list's right edge, and only the flat fields squeezed.
   -- Everything that does not fit the smaller page box is scaled inside it,
   -- which is what gs.Fit does.
-  WIDTH = 721.44,       -- 801.6 * 0.90
+  -- The window then grows by exactly the category list's 20% widening (user
+  -- request, 2026-09-23), so the page to its right keeps its width.
+  WIDTH = 721.44 + 27.86,   -- 801.6 * 0.90, plus 139.3 * 0.20
   HEIGHT = 611.52,      -- 509.6 * 1.20
-  -- The rows stay 30% narrower than Forever's 199 (user request, 2026-09-22),
-  -- with a 20-unit seat added beside them for the conditional scrollbar.
+  -- The rows were 30% narrower than Forever's 199 (user request, 2026-09-22),
+  -- then 20% wider than that (user request, 2026-09-23): 0.7 * 1.2. A 20-unit
+  -- seat sits beside them for the conditional scrollbar.
   -- gs.BuildInnerPlate draws the plate's seam at the sidebar's new right edge.
-  LIST_SCALE = 0.7,
-  SIDEBAR_CONTENT_WIDTH = 139.3,
+  LIST_SCALE = 0.84,
+  SIDEBAR_CONTENT_WIDTH = 167.16,   -- 139.3 * 1.2
   SIDEBAR_SCROLLBAR_SEAT = 20,
-  SIDEBAR_WIDTH = 139.3 + 20,
+  SIDEBAR_WIDTH = 167.16 + 20,
   -- The row label's inset, off Forever's 36 (user request, 2026-09-22: the
   -- menu text moved left). That 36 reserves room for an expand toggle, and
   -- none of these categories has one; the header band's label uses it too, so
@@ -1741,6 +1744,8 @@ function gs.SelectPage(id, keepSidebar)
 
   local attached = gs.Attach(page)
   page.unavailable = not attached
+  -- The page just attached was re-levelled above the host; lift the X over it.
+  gs.RaiseCloseX()
 
   gs.switching = false
 
@@ -3620,6 +3625,11 @@ function gs.DressBindingChrome(page)
         U.DeferOnce("gamesettings:bindings", gs.PaintBindingList)
       end,
     })
+    -- Again after styling: the owned thumb is created by the call above, so
+    -- the subtree is levelled once it exists and sits above the track.
+    if gs.host then
+      gs.Relevel(bar, (gs.Number(gs.host, "GetFrameLevel") or 1) + gs.ACTION_LEVEL, 0)
+    end
   end
 
   local function Corner(object, point, relative, relativePoint, x, y)
@@ -4464,9 +4474,8 @@ function gs.BuildCloseX(panel)
   button:SetPoint("RIGHT", panel, "TOPRIGHT", token.x + gs.CLOSE_NUDGE.x,
                   -gs.HEADER_HEIGHT / 2 + gs.CLOSE_NUDGE.y)
   pcall(button.EnableMouse, button, true)
-  if panel.rim then
-    pcall(button.SetFrameLevel, button, gs.Number(panel.rim, "GetFrameLevel") + 2)
-  end
+  panel.closeX = button
+  gs.RaiseCloseX()
 
   local function Piece(layer)
     local made, texture = pcall(button.CreateTexture, button, nil, layer)
@@ -4498,7 +4507,21 @@ function gs.BuildCloseX(panel)
   button:SetScript("OnMouseUp", function() state.down = false; Paint() end)
   button:SetScript("OnClick", function() gs.Close() end)
   Paint()
-  panel.closeX = button
+end
+
+-- Reported in game 2026-09-23: the X lit up only with the cursor at or below
+-- its lower edge, and a click where it looked hovered did not close. It sat at
+-- rim + 2 (panel + 8), set once at build, while every page attach re-levels
+-- the hosted panel's subtree from host + 1 upward (gs.Relevel) -- enough to
+-- climb over it wherever that subtree overhangs the header. It now takes the
+-- page actions' level, clear of the hosted subtree, plus one, and is re-lifted
+-- after every attach and every Open, because this client does not carry a
+-- child along when its parent's level changes.
+function gs.RaiseCloseX()
+  local button = gs.panel and gs.panel.closeX
+  if not button then return end
+  local level = gs.Number(gs.panel, "GetFrameLevel") or 1
+  pcall(button.SetFrameLevel, button, level + gs.ACTION_LEVEL + 1)
 end
 
 -- id selects the page to open on; omitted keeps the last one, or Video.
@@ -4516,6 +4539,7 @@ function gs.Open(id)
   end
   gs.RenderList()
   gs.SelectPage(id or (gs.active and gs.active.id) or gs.PAGES[1].id)
+  gs.RaiseCloseX()
 end
 
 function gs.Close()
