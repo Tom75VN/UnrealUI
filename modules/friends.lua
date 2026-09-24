@@ -2610,15 +2610,26 @@ local function StyleGuildTab()
   end
 
   U.StripStockTextures(G("GuildFrameLFGFrame"))
-  -- "Show Offline Members". Modern WoW keeps the client's own CheckButton
-  -- art at its native 20 (user request 2026-09-20), as the Modern WoW
-  -- Spellbook's toggles do: a flat UnrealUI square would be the one foreign
-  -- control on the textured window (rules/unreal-ui-design.md, Modern WoW
-  -- interface-media contract). The flat themes keep the shared checkbox.
+  -- "Show Offline Members". Modern WoW draws the game settings checkbox, as
+  -- every Modern WoW checkbox does (user request 2026-09-23, superseding the
+  -- client's own art at 20 from 2026-09-20; rules/unreal-ui-design.md). The
+  -- client button's stock check cannot be removed, so an owned stand-in takes
+  -- its place in GuildFrameLFGFrame at the button's own anchor offsets, read
+  -- once as numbers; the button is parked undrawn. The flat themes keep the
+  -- shared checkbox.
   local offline = G("GuildFrameLFGButton")
+  local lfgFrame = G("GuildFrameLFGFrame")
   if modernWow then
-    if offline then pcall(offline.SetWidth, offline, 20) end
-    if offline then pcall(offline.SetHeight, offline, 20) end
+    if offline and lfgFrame and type(U.GameSettingsCheckboxProxy) == "function" then
+      local point, x, y = "LEFT", 0, 0
+      pcall(function()
+        local p, _, _, px, py = offline:GetPoint(1)
+        if type(p) == "string" then point, x, y = p, px or 0, py or 0 end
+      end)
+      local proxy = U.GameSettingsCheckboxProxy("GuildFrameLFGButton", lfgFrame,
+                                                { width = 170 })
+      if proxy then proxy.SetPoint(point, lfgFrame, point, x, y) end
+    end
   else
     U.StyleStockCheckbox(offline, 20)
   end

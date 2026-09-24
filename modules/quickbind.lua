@@ -251,6 +251,12 @@ local function StagedKey(command)
   if type(command) ~= "string" then return nil end
   local key = staged[command]
   if key ~= nil then return key or nil end
+  -- A search field holds the typing keys off the client while it is typed in
+  -- (core/searchbox.lua); the bars keep showing them.
+  if type(U.SearchHeldBindingKey) == "function" then
+    local held = U.SearchHeldBindingKey(command)
+    if held then return held end
+  end
   return CurrentKey(command)
 end
 

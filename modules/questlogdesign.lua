@@ -743,40 +743,14 @@ function questCount.CreateBox(parent)
     box:SetBackdropColor(M.Unpack(spec.fillColor))
     box:SetBackdropBorderColor(0, 0, 0, 0)
 
-    -- The talent panels' eight-slice ThinBorder rim (tal.BuildPanelBorder in
-    -- modules/talentsmodernwow.lua). The art ships no bottom-right corner, so
-    -- the bottom-left one is mirrored into it.
-    local edge = spec.edge
-    local function Piece(path, width, height)
-      local texture = box:CreateTexture(nil, "BORDER")
-      texture:SetTexture(path)
-      if width then texture:SetWidth(width) end
-      if height then texture:SetHeight(height) end
-      return texture
+    -- The talent panels' eight-slice ThinBorder rim, from the one shared
+    -- builder (rules/unreal-ui-design.md, ThinBorder rim): it draws the right
+    -- side as the left mirrored, because the set's authored right pieces do
+    -- not meet the mirrored bottom-right corner (user report, 2026-09-23).
+    if type(U.ModernWowBuildThinBorder) ~= "function" or
+       not U.ModernWowBuildThinBorder(box, spec.edge) then
+      error("ThinBorder builder unavailable")
     end
-
-    local topLeft = Piece(paths.topLeft, edge, edge)
-    local topRight = Piece(paths.topRight, edge, edge)
-    local bottomLeft = Piece(paths.bottomLeft, edge, edge)
-    local bottomRight = Piece(paths.bottomLeft, edge, edge)
-    bottomRight:SetTexCoord(1, 0, 0, 1)
-    topLeft:SetPoint("TOPLEFT", box, "TOPLEFT", 0, 0)
-    topRight:SetPoint("TOPRIGHT", box, "TOPRIGHT", 0, 0)
-    bottomLeft:SetPoint("BOTTOMLEFT", box, "BOTTOMLEFT", 0, 0)
-    bottomRight:SetPoint("BOTTOMRIGHT", box, "BOTTOMRIGHT", 0, 0)
-
-    local top = Piece(paths.top, nil, edge)
-    top:SetPoint("TOPLEFT", topLeft, "TOPRIGHT", 0, 0)
-    top:SetPoint("TOPRIGHT", topRight, "TOPLEFT", 0, 0)
-    local bottom = Piece(paths.bottom, nil, edge)
-    bottom:SetPoint("BOTTOMLEFT", bottomLeft, "BOTTOMRIGHT", 0, 0)
-    bottom:SetPoint("BOTTOMRIGHT", bottomRight, "BOTTOMLEFT", 0, 0)
-    local left = Piece(paths.left, edge, nil)
-    left:SetPoint("TOPLEFT", topLeft, "BOTTOMLEFT", 0, 0)
-    left:SetPoint("BOTTOMLEFT", bottomLeft, "TOPLEFT", 0, 0)
-    local right = Piece(paths.right, edge, nil)
-    right:SetPoint("TOPRIGHT", topRight, "BOTTOMRIGHT", 0, 0)
-    right:SetPoint("BOTTOMRIGHT", bottomRight, "TOPRIGHT", 0, 0)
   end)
 
   box.label = built and U.CreateLabel(box, {

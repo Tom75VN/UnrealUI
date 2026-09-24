@@ -730,6 +730,9 @@ function rank.BuildModernToggle(book)
     name = "UnrealUISpellBookRank",
     text = U.L("SPELLBOOK_HIGHEST_RANK"),
     value = config.highestRankOnly,
+    -- The game settings face is 20 across; the box matches it so the label
+    -- clears the drawn box under the modern-wow book.
+    size = rank.ModernWowBook() and rank.NATIVE_SIZE or nil,
     textWidth = rank.LABEL_WIDTH,
     onChange = rank.Commit,
   })
@@ -738,6 +741,7 @@ function rank.BuildModernToggle(book)
   control.SetPoint(rank.AnchorArgs())
   rank.label = control.label
   rank.AttachTooltip(control.box)
+  rank.SkinModernWow(control)
   return control
 end
 
@@ -746,13 +750,30 @@ end
 -- variant). Native-chrome themes keep the client's own CheckButton, because
 -- there the whole window is stock art and a flat unrealUI square would be the
 -- one foreign element on it.
--- The modern-wow book is a textured window too, so it takes the client's
--- checkbox rather than a flat square (rules/unreal-ui-design.md, Modern WoW
--- interface-media contract).
+-- The modern-wow book takes the shared control dressed as the game settings
+-- checkbox (user request, 2026-09-23; rules/unreal-ui-design.md, Modern WoW
+-- checkboxes). Not a CheckButton: its stock gold check is drawn by the engine
+-- and cannot be removed. The label keeps the small warm title colour the
+-- client's checkbox label had on this window.
 function rank.NativeControls()
-  if U.ThemeStyleUsesNativeChrome() then return true end
+  if rank.ModernWowBook() then return false end
+  return U.ThemeStyleUsesNativeChrome() and true or false
+end
+
+function rank.ModernWowBook()
   return type(U.ModernWowSpellBookActive) == "function" and
          U.ModernWowSpellBookActive() and true or false
+end
+
+function rank.SkinModernWow(control)
+  if not control or not rank.ModernWowBook() then return end
+  if type(U.StyleGameSettingsCheckbox) ~= "function" then return end
+  U.StyleGameSettingsCheckbox(control, function(c)
+    if c.label then
+      U.SetStockFont(c.label, M.fontSize.small,
+                     c.enabled and M.modernWow.spellBook.titleColor or M.color.textDim)
+    end
+  end)
 end
 
 function rank.BuildToggle()
@@ -1780,6 +1801,7 @@ function missing.BuildModernToggle(book)
     name = "UnrealUISpellBookBarHint",
     text = U.L("SPELLBOOK_BAR_HINT"),
     value = config.barHint,
+    size = rank.ModernWowBook() and rank.NATIVE_SIZE or nil,
     textWidth = missing.LABEL_WIDTH,
     onChange = missing.Commit,
   })
@@ -1787,6 +1809,7 @@ function missing.BuildModernToggle(book)
 
   control.SetPoint(missing.AnchorArgs())
   missing.AttachTooltip(control.box)
+  rank.SkinModernWow(control)
   return control
 end
 

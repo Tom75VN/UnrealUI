@@ -9,9 +9,10 @@
 -- It is deliberately the same component as the bag window: both draw their
 -- slots with core/itemslot.lua and both take their metrics from
 -- core/media.lua's M.slot, so the two windows cannot drift into two styles.
--- There is no search field: .claude/rules/unreal-ui-design.md excludes text
--- inputs on this client (knowledge.json / widgets.editbox_focus_crash), and
--- the omission was confirmed with the user rather than guessed.
+-- Under the bag design the header carries the bag's search field
+-- (U.ModernWowBagSearch, modules/bagdesign.lua; user request, 2026-09-24),
+-- the addon-drawn core/searchbox.lua field, which uses no EditBox
+-- (knowledge.json / widgets.editbox_focus_crash).
 --
 -- Evidence:
 --
@@ -181,11 +182,15 @@ local function InstallBankTransfer(button, bag)
         return
       end
 
+      -- What the category view's empty-slot proxy checks a specialty bag
+      -- against, read before the click lifts the item.
+      local source = U.BagCategoryDropSource(bag, slot)
       if click then click(a1, a2, a3, a4, a5, a6, a7, a8, a9) end
 
       if left then
         if CursorHasInventoryItem() then
           cursorBankBag = bag
+          if source then U.SetBagCategoryDropSource(source) end
         else
           cursorBankBag = nil
         end
@@ -195,11 +200,13 @@ local function InstallBankTransfer(button, bag)
   local dragStart = button:GetScript("OnDragStart")
   button:SetScript("OnDragStart",
     function(a1, a2, a3, a4, a5, a6, a7, a8, a9)
+      local source = U.BagCategoryDropSource(bag, button:GetID())
       if dragStart then
         dragStart(a1, a2, a3, a4, a5, a6, a7, a8, a9)
       end
       if CursorHasInventoryItem() then
         cursorBankBag = bag
+        if source then U.SetBagCategoryDropSource(source) end
       end
     end)
 
@@ -378,6 +385,16 @@ local function EnsureBagRoot(bag, parent)
   local root = CreateFrame("Frame", nil, parent)
   root:SetID(bag)
   root:SetAllPoints(parent)
+
+  -- The category view (modules/bagcategoryview.lua) anchors these buttons over
+  -- category boxes that are siblings of this root under the same grid, so both
+  -- would land on the grid's level + 1 with an undefined draw order. Lifted
+  -- clear of them once, as the bag window does; harmless in the flat grid.
+  local levelOk, level = pcall(parent.GetFrameLevel, parent)
+  if levelOk and tonumber(level) then
+    pcall(root.SetFrameLevel, root, level + 5)
+  end
+
   containers[bag] = root
   slots[bag] = slots[bag] or {}
   return root
@@ -402,7 +419,9 @@ local function EnsureSlot(bag, slot, parent)
 end
 
 local function UpdateSlotAppearance(bag, slot)
-  U.UpdateItemSlot(slots[bag] and slots[bag][slot], bag, slot)
+  local button = slots[bag] and slots[bag][slot]
+  U.UpdateItemSlot(button, bag, slot)
+  if modernBank.search then modernBank.search.PaintSlot(button, bag, slot) end
 end
 
 local function RefreshBag(bag)
@@ -621,9 +640,82 @@ end
 -- ---------------------------------------------------------------------------
 -- Layout
 -- ---------------------------------------------------------------------------
+-- The category view (user request, 2026-09-24): the bag window's own grouped
+-- layout, modules/bagcategoryview.lua, drawn over this window's containers
+-- and slot buttons whenever the bag window's category setting is on. The two
+-- views share the buttons, so switching is one relayout. Folds are kept apart
+-- from the carried bags' (U.BagsCategoryCollapsed("bank")).
+local catView
+
+function modernBank.CategoriesWanted()
+  return type(U.BagsEnabled) == "function" and U.BagsEnabled() and
+         type(U.BagsCategoriesEnabled) == "function" and
+         U.BagsCategoriesEnabled() and catView ~= nil
+end
+
+-- Sort belongs to the flat grid only, as in the bag window (user request,
+-- 2026-09-24): the category view already shows every category in sorted
+-- order. Hidden, stack takes sort's place; the drag strip and search field
+-- follow stack.
+function modernBank.SetSortShown(shown)
+  if not frame or not frame.sort or not frame.stack then return end
+  if frame.uuiSortShown == shown then return end
+  frame.uuiSortShown = shown
+  if shown then frame.sort:Show() else frame.sort:Hide() end
+  frame.stack:ClearAllPoints()
+  if shown then
+    frame.stack:SetPoint("LEFT", frame.sort, "RIGHT", modernBank.IconGap(), 0)
+  else
+    frame.stack:SetPoint("LEFT", frame.sort, "LEFT", 0, 0)
+  end
+end
+
+-- Slots of a bag that is gone entirely (its bank bag was taken out) stay
+-- created, but must not keep drawing over the grid.
+function modernBank.HideGoneBags(bags)
+  local live = {}
+  local i
+  for i = 1, table.getn(bags) do live[bags[i]] = true end
+  local bag, bagSlots
+  for bag, bagSlots in pairs(slots) do
+    if not live[bag] then
+      local slot
+      for slot = 1, table.getn(bagSlots) do
+        if bagSlots[slot] then bagSlots[slot]:Hide() end
+      end
+    end
+  end
+end
+
+-- The category view's slot placement: anchor and size, plus the bag-design
+-- face on the empty-slot proxy, which this window did not create.
+function modernBank.PlaceSlot(button, relative, x, y)
+  button:ClearAllPoints()
+  button:SetPoint("TOPLEFT", relative, "TOPLEFT", x, y)
+  button:SetWidth(SLOT_SIZE)
+  button:SetHeight(SLOT_SIZE)
+  if modernBank.Active() and not button.uuiBankSlotStyled then
+    button.uuiBankSlotStyled = U.ModernWowBagSlot(button, SLOT_SIZE) and true
+  end
+end
+
+-- Returns how many slots the bank reports, for the same retry as the flat
+-- grid below.
+function modernBank.LayoutCategories()
+  local bags = BankBags()
+  modernBank.HideGoneBags(bags)
+  local _, _, total = catView.Layout()
+  return total or 0
+end
+
 -- Returns how many slots it actually placed, so the caller can tell an empty
 -- bank from a bank whose contents have not reached the client yet.
 local function LayoutSlots()
+  local categories = modernBank.CategoriesWanted()
+  modernBank.SetSortShown(not categories)
+  if categories then return modernBank.LayoutCategories() end
+  if catView then catView.Clear() end
+
   local bags = BankBags()
   local live = {}
   local placed = 0
@@ -778,6 +870,12 @@ local function ShowBank()
 
   U.RegisterUpdate("bank.refresh", 0.2, ProcessDirty)
   ProcessDirty()
+  if modernBank.search then modernBank.search.Start() end
+end
+
+-- The bag window's category setting changed: redraw on the next tick.
+function U.MarkBankLayoutDirty()
+  layoutDirty = true
 end
 
 local function CloseBank()
@@ -999,11 +1097,60 @@ local function Build()
   modernBank.StyleHeader()
   BuildDragHandle()
 
+  -- Header search (user request, 2026-09-24): the bag's field
+  -- (modules/bagdesign.lua), fitted between the stack button and the bank-bag
+  -- row. It sits above the drag strip, which keeps the rest of that span.
+  -- Under `modern` the same lane on the flat header (U.FlatBagSearch; user
+  -- requests, 2026-09-24).
+  local searchSpec = {
+    window = frame,
+    name = "UnrealUIBankSearch",
+    id = "bank.search",
+    after = frame.stack,
+    before = frame.bags,
+    -- pairs, not table.getn: the category view builds no button for an empty
+    -- slot, so a bag's slot table has holes and a counted walk stops at the
+    -- first one, leaving every later item unshaded.
+    each = function(paint)
+      local bag, bagSlots
+      for bag, bagSlots in pairs(slots) do
+        local slot, button
+        for slot, button in pairs(bagSlots) do
+          paint(button, U.ContainerSlotLink(bag, slot))
+        end
+      end
+    end,
+  }
+  modernBank.search = U.ModernWowBagSearch(searchSpec) or
+                      U.FlatBagSearch(searchSpec)
+
   grid = CreateFrame("Frame", "UnrealUIBankGrid", frame)
   grid:SetPoint("TOPLEFT", frame, "TOPLEFT", modernBank.SidePad(),
                 -modernBank.Header())
   grid:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -modernBank.SidePad(),
                 modernBank.BottomPad())
+
+  catView = U.CreateBagCategoryView({
+    grid = grid,
+    name = "UnrealUIBank",
+    columns = COLUMNS,
+    slotSize = SLOT_SIZE,
+    slotGap = modernBank.SlotGap,
+    bags = BankBags,
+    slotCount = BagSlotCount,
+    slots = slots,
+    ensureSlot = function(bag, slot) return EnsureSlot(bag, slot, grid) end,
+    placeSlot = modernBank.PlaceSlot,
+    updateSlot = UpdateSlotAppearance,
+    collapsed = function() return U.BagsCategoryCollapsed("bank") end,
+    fullText = "BANK_FULL",
+    onDropped = function() layoutDirty = true end,
+    onLayout = function(width, height)
+      anchor:SetWidth(width + modernBank.SidePad() * 2)
+      anchor:SetHeight(modernBank.Header() + height + modernBank.BottomPad())
+      if modernBank.Active() then U.ModernWowBagHousing(frame) end
+    end,
+  })
 
   -- Escape (UISpecialFrames) and the close glyph both end up here, so the
   -- banker session is closed from one place instead of from each caller. The
@@ -1011,6 +1158,7 @@ local function Build()
   -- looping back on itself.
   frame:SetScript("OnHide", function()
     U.UnregisterUpdate("bank.refresh")
+    if modernBank.search then modernBank.search.Stop() end
     U.HideConfirm("bank")
     cursorBankBag = nil
     -- The bank's containers stop being writable when the session ends, so a

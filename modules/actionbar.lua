@@ -1515,6 +1515,10 @@ local NATIVE_BINDING_BAR = {
 local nativeBindingHooksInstalled = false
 local legacyMainBindingInstalled = false
 local OnButtonClick
+-- Defined below with the text-entry frames it reads; the press highlight asks
+-- it too, so a key blocked there shows no press either (user report,
+-- 2026-09-24: typing in a search field no longer cast but still flashed).
+local TextInputBlocksActionKey
 
 local function BoundButton(bar, index)
   bar = tonumber(bar)
@@ -1540,10 +1544,12 @@ local function HookNativeBindingHighlights()
   if mainHasUp or multiHasUp then installed = true end
 
   if U.PostHookGlobal("ActionButtonDown", function(index)
+    if TextInputBlocksActionKey() then return end
     local button = BoundButton(1, index)
     if button then ShowButtonPress(button, mainHasUp) end
   end) then installed = true end
   if U.PostHookGlobal("MultiActionButtonDown", function(name, index)
+    if TextInputBlocksActionKey() then return end
     local button = BoundButton(NATIVE_BINDING_BAR[name], index)
     if button then ShowButtonPress(button, multiHasUp) end
   end) then installed = true end
@@ -1561,7 +1567,12 @@ local TEXT_INPUT_OWNER_FRAMES = {
   "ChatFrameEditBox", "AuctionFrame", "MailFrame",
 }
 
-local function TextInputBlocksActionKey()
+TextInputBlocksActionKey = function()
+  -- UnrealUI's own search fields (core/searchbox.lua) know exactly when they
+  -- have the keyboard (user request, 2026-09-24).
+  if type(U.SearchBoxTyping) == "function" and U.SearchBoxTyping() then
+    return true
+  end
   local i
   for i = 1, #TEXT_INPUT_OWNER_FRAMES do
     local frame = U.G(TEXT_INPUT_OWNER_FRAMES[i])
@@ -1571,6 +1582,30 @@ local function TextInputBlocksActionKey()
     end
   end
   return false
+end
+
+-- The native bar 2-5 binding commands (MULTIACTIONBAR*) run the stock
+-- MultiActionButtonDown/Up globals, which nothing above routes: while a text
+-- input owns the keyboard they would still cast (user report, 2026-09-24,
+-- typing in a search field). The same gate as bar 1 and the declared
+-- bindings goes in front of them; outside it they run unchanged, including
+-- the highlight post-hooks, which this wraps.
+local multiBindingGateInstalled = false
+
+local function InstallMultiBindingGate()
+  if multiBindingGateInstalled then return end
+  local names = { "MultiActionButtonDown", "MultiActionButtonUp" }
+  local i
+  for i = 1, table.getn(names) do
+    local original = U.G(names[i])
+    if type(original) == "function" then
+      U.SetG(names[i], function(a1, a2, a3, a4)
+        if TextInputBlocksActionKey() then return end
+        return original(a1, a2, a3, a4)
+      end)
+    end
+  end
+  multiBindingGateInstalled = true
 end
 
 -- Vanilla binding commands call the stock ActionButtonDown/Up globals instead
@@ -3317,6 +3352,8 @@ function AB:OnEnable()
   -- Keep the visual-only hooks for the static multibars too. On the legacy
   -- main route they wrap UnrealUI's replacement, never the hidden stock path.
   HookNativeBindingHighlights()
+  -- After the highlight hooks, so a blocked key shows no press either.
+  InstallMultiBindingGate()
   RegisterEvents()
 
   -- Slot contents change rarely and cost the most calls; usable/active state

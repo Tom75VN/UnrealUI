@@ -10,7 +10,8 @@
 --                    leads into QuestFrame.
 --
 -- They are the NPC dialogs taken off the classic-wow native path under this
--- theme; merchant, trainer and the mailbox stay native
+-- theme; merchant and the mailbox stay native (modules/trainer.lua draws
+-- the trainer in this window's housing)
 -- (rules/unreal-ui-design.md). Both are the same 384x512 stock window, and
 -- DF-main dresses both identically (ChangeQuestFrame / ChangeGossipFrame), so
 -- one drawing path serves both, driven by a per-window spec below.

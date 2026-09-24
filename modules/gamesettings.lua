@@ -1001,7 +1001,7 @@ end
 -- The shared section header used by both "Game Settings" and "Unreal UI".
 -- Options_CategoryHeader_1 is taller than its frame so its gradient continues
 -- behind the rows beneath it, exactly as Forever's category list draws it.
-function gs.ListHeaderFrame(name, label)
+function gs.ListHeaderFrame(name, label, labelY)
   local token = M.foreverWow.options.categoryHeader
   local panel = M.foreverWow.panel
   local header = CreateFrame("Frame", name, gs.sidebar)
@@ -1023,7 +1023,8 @@ function gs.ListHeaderFrame(name, label)
     justify = "LEFT",
   })
   if header.label then
-    header.label:SetPoint("LEFT", header, "LEFT", gs.ROW_LABEL_INSET, -1)
+    header.label:SetPoint("LEFT", header, "LEFT", gs.ROW_LABEL_INSET,
+                          labelY or -1)
     header.label:SetText(U.L(label))
   end
   return header
@@ -1059,6 +1060,18 @@ function gs.PageTitleText(page)
   local ok, version = pcall(mark.version)
   if ok and version then
     text = text .. " |cff" .. gs.Hex(M.color.textDim) .. "v" ..
+           tostring(version) .. "|r"
+  end
+  return text
+end
+
+function gs.CategoryTitleText(page)
+  local text = U.L(page.label)
+  local mark = gs.WORDMARK[page.id]
+  if not mark then return text end
+  local ok, version = pcall(mark.version)
+  if ok and version then
+    return text .. " |cff" .. gs.Hex(M.color.textDim) .. "v" ..
            tostring(version) .. "|r"
   end
   return text
@@ -1193,7 +1206,8 @@ function gs.CreateRow(index)
   local page = gs.PAGES[index]
   if page.listHeader then
     local header = gs.ListHeaderFrame("UnrealUIGameSettingsRow" .. index,
-                                      page.label)
+                                      page.label,
+                                      gs.WORDMARK[page.id] and -3 or nil)
     header.uuiListHeader = true
     gs.rows[index] = header
     return header
@@ -1526,7 +1540,7 @@ end
 -- of categories. These four are all client settings, so there is one.
 function gs.BuildListHeader()
   if gs.listHeader then return gs.listHeader end
-  local header = gs.ListHeaderFrame(nil, "GAMESETTINGS_TITLE")
+  local header = gs.ListHeaderFrame(nil, "GAMESETTINGS_TITLE", -2)
 
   gs.listHeader = header
   return header
@@ -1556,7 +1570,7 @@ function gs.RenderList()
     if matches then
       local selected = gs.active ~= nil and gs.active.id == page.id
       if page.listHeader then
-        if row.label then row.label:SetText(U.L(page.label)) end
+        if row.label then row.label:SetText(gs.CategoryTitleText(page)) end
       else
         gs.StyleRow(row, page, selected)
       end
@@ -2504,7 +2518,9 @@ function gs.SetDropdownStepperState(steppers, back, next)
   end
 end
 
-function gs.StyleOwnedCheckbox(control)
+-- paintLabel, when given, colours the label in place of the settings list's
+-- own font and colour (the professions filter strip keeps difficulty colours).
+function gs.StyleOwnedCheckbox(control, paintLabel)
   if not control or control.uuiForeverStyled or not control.box then return false end
   control.uuiForeverStyled = true
   local original = control.Apply
@@ -2519,7 +2535,9 @@ function gs.StyleOwnedCheckbox(control)
     end
     gs.PaintOwnedCheckbox(control.box, control.value, control.enabled)
     if control.row then U.SetBackdropShown(control.row, false) end
-    if control.label then
+    if type(paintLabel) == "function" then
+      paintLabel(control)
+    elseif control.label then
       U.SetStockFont(control.label, M.fontSize.normal,
                      control.enabled and M.foreverWow.list.labelColor or
                      M.color.textDim)
@@ -4699,6 +4717,176 @@ end
 
 function U.CloseGameSettings()
   gs.Close()
+end
+
+-- ---------------------------------------------------------------------------
+-- This window's checkbox, lent to other windows
+--
+-- Every `modern-wow` checkbox and the profession filter strip draw exactly
+-- this window's checkbox (user requests, 2026-09-23; rules/unreal-ui-design.md).
+-- The art and its size stay owned here: callers use these entry points and
+-- never read M.foreverWow.
+-- ---------------------------------------------------------------------------
+
+-- A U.CreateCheckbox control. paintLabel is optional, see gs.StyleOwnedCheckbox.
+function U.StyleGameSettingsCheckbox(control, paintLabel)
+  return gs.StyleOwnedCheckbox(control, paintLabel)
+end
+
+-- A native CheckButton cannot wear this checkbox: the engine draws its stock
+-- gold check from the checked state, outside anything Lua reaches (confirmed
+-- in game 2026-09-21/22 and again 2026-09-23 on "Track this recipe"; see
+-- "Checkbox, rebuilt" in modules/gamesettingslist.lua). So a client-owned
+-- CheckButton is parked, undrawn, in a hidden frame and an owned
+-- U.CreateCheckbox stands in for it; its shown, enabled and checked state stay
+-- the client's and are mirrored onto the stand-in. An addon never creates a
+-- CheckButton for one of these checkboxes: it builds U.CreateCheckbox and
+-- calls U.StyleGameSettingsCheckbox.
+function gs.CheckVault()
+  if gs.checkVault then return gs.checkVault end
+  local ok, vault = pcall(CreateFrame, "Frame", nil, UIParent)
+  if not ok or not vault then return nil end
+  pcall(vault.SetWidth, vault, 1)
+  pcall(vault.SetHeight, vault, 1)
+  pcall(vault.SetPoint, vault, "TOPLEFT", UIParent, "TOPLEFT", 0, 0)
+  pcall(vault.Hide, vault)
+  gs.checkVault = vault
+  return vault
+end
+
+-- A click reaches a parked CheckButton the way a real one would: its own
+-- SetChecked toggles the state, then its own OnClick runs in every argument
+-- shape this client uses (knowledge.json / scripts.handler_arguments_direct).
+-- Shared with the settings list (L.ForwardClick).
+function gs.ForwardCheckClick(native)
+  if not native then return end
+  -- IsEnabled returns 1 / 0 on this client, not a boolean.
+  local enabled = gs.Read(native, "IsEnabled")
+  if enabled == 0 or enabled == false then return end
+
+  local checked = gs.Read(native, "GetChecked")
+  local want = not (checked and checked ~= 0)
+  pcall(native.SetChecked, native, want)
+
+  local handler
+  if type(native.GetScript) == "function" then
+    local ok, value = pcall(native.GetScript, native, "OnClick")
+    if ok then handler = value end
+  end
+  if type(handler) == "function" then
+    local oldThis, oldArg1 = this, arg1
+    this = native
+    arg1 = "LeftButton"
+    pcall(handler, native, "LeftButton")
+    this = oldThis
+    arg1 = oldArg1
+  end
+end
+
+-- Stand-ins by client button name. The button itself is resolved by name on
+-- every use, never held (see gs.Read's neighbours on client-owned frames).
+gs.checkProxies = {}
+
+function gs.SyncCheckProxy(name)
+  local native = U.G(name)
+  local control = gs.checkProxies[name]
+  if not native or not control or gs.syncingCheck then return end
+  gs.syncingCheck = true
+  local checked = gs.Read(native, "GetChecked")
+  local value = (checked and checked ~= 0) and true or false
+  if (control.value and true or false) ~= value then control.SetValue(value) end
+  local enabled = gs.Read(native, "IsEnabled")
+  enabled = not (enabled == 0 or enabled == false)
+  if control.enabled ~= enabled then control.SetEnabled(enabled) end
+  local host = control.row or control.box
+  if gs.Read(native, "IsShown") then pcall(host.Show, host) else pcall(host.Hide, host) end
+  gs.syncingCheck = nil
+end
+
+-- Stands an owned checkbox in for the client CheckButton `name`, on `parent`;
+-- the caller places it with control.SetPoint. options: text (default: the
+-- button's own <name>Text), width (the whole hit row), paintLabel. Returns
+-- the control; called again it only re-syncs and returns the same one.
+function U.GameSettingsCheckboxProxy(name, parent, options)
+  local native = type(name) == "string" and U.G(name)
+  if not native or not parent then return nil end
+  if gs.checkProxies[name] then
+    gs.SyncCheckProxy(name)
+    return gs.checkProxies[name]
+  end
+  options = options or {}
+  local text = options.text
+  if not text then
+    local label = U.G(name .. "Text")
+    text = label and gs.Read(label, "GetText")
+  end
+  local size = math.ceil(M.foreverWow.control.checkbox.width)
+  local width = options.width or 160
+  local control = U.CreateCheckbox(parent, {
+    text = text or "", size = size,
+    rowHover = true, rowWidth = width, rowHeight = size,
+    textWidth = width - size - 6,
+    onChange = function()
+      gs.ForwardCheckClick(U.G(name))
+      gs.SyncCheckProxy(name)
+    end,
+  })
+  if not control then return nil end
+  gs.StyleOwnedCheckbox(control, options.paintLabel)
+  gs.checkProxies[name] = control
+
+  local vault = gs.CheckVault()
+  if vault then pcall(native.SetParent, native, vault) end
+  -- Client code sets the state through these; the stand-in follows. The
+  -- same instance-method wrap U.StyleStockCheckbox uses for SetChecked.
+  local methods = { "SetChecked", "Enable", "Disable", "Show", "Hide" }
+  local i
+  for i = 1, table.getn(methods) do
+    local method = native[methods[i]]
+    if type(method) == "function" then
+      native[methods[i]] = function(self, a1, a2)
+        local result = method(self, a1, a2)
+        gs.SyncCheckProxy(name)
+        return result
+      end
+    end
+  end
+  U.PostHookScript(parent, "OnShow", function() gs.SyncCheckProxy(name) end)
+  gs.SyncCheckProxy(name)
+  return control
+end
+
+-- Just this checkbox's tick on a caller's texture, for a list row that marks
+-- the same state its checkbox sets (the recipe list's tracked mark). The
+-- caller places and sizes the texture.
+function U.SetGameSettingsTick(texture, disabled)
+  if not texture then return false end
+  local token = M.foreverWow.control.checkbox
+  if not pcall(texture.SetTexture, texture, token.checkTexture) then return false end
+  gs.SetCell(texture, disabled and token.checkDisabled or token.check,
+             token.checkSheet)
+  return true
+end
+
+-- A plain addon frame used as an indicator (a dropdown row's tick box):
+-- paints the box and tick centred on it, or, with clear, hides them again so
+-- the frame's own flat face shows. Returns the drawn box region.
+function U.PaintGameSettingsCheckbox(frame, checked, enabled, clear)
+  if not frame then return nil end
+  if clear then
+    local face = frame.uuiForeverCheckbox
+    if face then
+      pcall(face.box.Hide, face.box)
+      pcall(face.tick.Hide, face.tick)
+      U.SetBackdropShown(frame, true)
+    end
+    return nil
+  end
+  gs.PaintOwnedCheckbox(frame, checked, enabled)
+  local face = frame.uuiForeverCheckbox
+  if not face then return nil end
+  pcall(face.box.Show, face.box)
+  return face.box
 end
 
 -- ---------------------------------------------------------------------------

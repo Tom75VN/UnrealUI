@@ -49,7 +49,7 @@ local classicModernModules = {
 -- that shipped off and later became on-by-default would stay off forever for
 -- anyone who ran the earlier build. Same trap, and the same one-time fix, as
 -- the surface version bumps in modules/modernwow.lua.
-local CLASSIC_MODERN_VERSION = 2
+local CLASSIC_MODERN_VERSION = 3
 
 local classicModernDefaults = {}
 local classicModernKnown = {}
@@ -126,7 +126,13 @@ local function ClassicModernConfig()
     -- becoming the Classic default, so turn it on once for the profiles that
     -- stored that earlier default. A later explicit choice in Settings stands,
     -- because this runs once per profile.
-    config.questlog = true
+    local version = tonumber(config.version) or 1
+    if version < 2 then config.questlog = true end
+    -- Same trap for the bag family (bag, bank, saved bank): profiles that
+    -- first read it while it shipped off stored `bags = false` and kept the
+    -- native bag art under Classic. Turned on once (user request,
+    -- 2026-09-24); a later explicit choice in Settings stands.
+    if version < 3 then config.bags = true end
     config.version = CLASSIC_MODERN_VERSION
   end
   return config
@@ -186,9 +192,8 @@ end
 -- Modern WoW deliberately keeps stock interaction windows on the same path
 -- as classic-wow. Character, Quest Log and HUD surfaces still use the Modern
 -- WoW theme, but NPC/service dialogs and the mailbox retain the client's own
--- complete chrome, controls and layout. The quest giver's two windows are the
--- exception (user requests, 2026-09-19): modules/quest.lua and
--- modules/gossip.lua ask U.ModernWowQuestDialogActive instead of this.
+-- complete chrome, controls and layout. Quest-giver windows, merchant and the
+-- trainer are explicit themed exceptions owned by their modules.
 function U.ThemeStyleUsesClassicInteractionChrome()
   return U.ThemeStyleUsesNativeChrome() or
          U.GetActiveThemeStyle() == "modern-wow"

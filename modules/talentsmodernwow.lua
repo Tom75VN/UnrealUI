@@ -405,13 +405,22 @@ function tal.BuildPanelBorder(panel, sizeOverride, bottomRightPath)
 
   -- DF-main gets this from InsetFrameTemplate2. The retail template is absent
   -- here, so its authored ThinBorder pieces form the same eight-slice rim.
-  local topLeft = Piece(paths.topLeft, size, size)
-  local topRight = Piece(paths.topRight, size, size)
-  local bottomLeft = Piece(paths.bottomLeft, size, size)
+  --
   -- These pieces ship no bottom-right corner, so the bottom-left one is
-  -- mirrored into that slot. On a panel it passes; on a control small enough
-  -- to read the corner it does not, and a caller may hand in a real corner
-  -- from the same metal family instead.
+  -- mirrored into that slot. The authored right edge and top-right corner do
+  -- not match that mirror: their line sits at texels 23-26 of 32 with a
+  -- lighter centre, the mirrored corner's at 24-28 with the left side's
+  -- shading, which showed as a step where the right edge meets the corner
+  -- (user report with a screenshot, 2026-09-23). So without a real corner the
+  -- whole right side is the left side mirrored -- edge, top and bottom
+  -- corners -- and every join matches, as the left side's already do. A
+  -- caller that hands in a real bottom-right corner from the same metal
+  -- family keeps the authored right side.
+  local mirrorRight = not bottomRightPath
+  local topLeft = Piece(paths.topLeft, size, size)
+  local topRight = Piece(mirrorRight and paths.topLeft or paths.topRight, size, size)
+  if topRight and mirrorRight then topRight:SetTexCoord(1, 0, 0, 1) end
+  local bottomLeft = Piece(paths.bottomLeft, size, size)
   local bottomRight = Piece(bottomRightPath or paths.bottomLeft, size, size)
   if topLeft then topLeft:SetPoint("TOPLEFT", panel, "TOPLEFT", 0, 0) end
   if topRight then topRight:SetPoint("TOPRIGHT", panel, "TOPRIGHT", 0, 0) end
@@ -436,7 +445,8 @@ function tal.BuildPanelBorder(panel, sizeOverride, bottomRightPath)
     left:SetPoint("TOPLEFT", topLeft, "BOTTOMLEFT", 0, 0)
     left:SetPoint("BOTTOMLEFT", bottomLeft, "TOPLEFT", 0, 0)
   end
-  local right = Piece(paths.right, size, nil)
+  local right = Piece(mirrorRight and paths.left or paths.right, size, nil)
+  if right and mirrorRight then right:SetTexCoord(1, 0, 0, 1) end
   if right and topRight and bottomRight then
     right:SetPoint("TOPRIGHT", topRight, "BOTTOMRIGHT", 0, 0)
     right:SetPoint("BOTTOMRIGHT", bottomRight, "TOPRIGHT", 0, 0)
@@ -991,6 +1001,30 @@ function U.ModernWowThinBorder(panel)
   end
   tal.BuildPanelBorder(panel)
   return true
+end
+
+-- How far inside the panel's edges the ThinBorder's opaque line starts, in
+-- drawn units (left, top, right, bottom), for pieces drawn at `size`
+-- (default the token's 16). No module gate: pure geometry.
+function U.ModernWowThinBorderInsets(size)
+  local spec = tal.Token().panel.border
+  local inset = spec and spec.fillInset
+  if not inset then return 0, 0, 0, 0 end
+  local unit = (tonumber(size) or tonumber(spec.size) or 16) / 32
+  return inset.left * unit, inset.top * unit, inset.right * unit, inset.bottom * unit
+end
+
+-- Anchors a ThinBorder panel's own fill texture inside the rim's line instead
+-- of to the panel's edges, where it showed past the rim (user report,
+-- 2026-09-23). The line itself is opaque, so the fill may run under it.
+function U.ModernWowThinBorderFill(fill, panel, size)
+  if not fill or not panel then return false end
+  local left, top, right, bottom = U.ModernWowThinBorderInsets(size)
+  return pcall(function()
+    fill:ClearAllPoints()
+    fill:SetPoint("TOPLEFT", panel, "TOPLEFT", left, -top)
+    fill:SetPoint("BOTTOMRIGHT", panel, "BOTTOMRIGHT", -right, bottom)
+  end)
 end
 
 -- The same rim for a shared component whose caller has already chosen its

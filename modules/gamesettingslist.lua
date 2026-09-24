@@ -90,7 +90,13 @@ end
 function L.Contains(value, query)
   if type(value) ~= "string" or query == "" then return query == "" end
   if string.find(value, query, 1, true) then return true end
-  return string.find(string.lower(value), string.lower(query), 1, true) ~= nil
+  if string.find(string.lower(value), string.lower(query), 1, true) then
+    return true
+  end
+  -- Typed text carries no accents (core/searchbox.lua), so "qualite" has to
+  -- find a label written with them.
+  if type(U.SearchFold) ~= "function" then return false end
+  return string.find(U.SearchFold(value), U.SearchFold(query), 1, true) ~= nil
 end
 
 function L.Matches(section, control)
@@ -759,142 +765,40 @@ end
 -- The list itself
 -- ---------------------------------------------------------------------------
 function L.PaintSearchPlaceholder()
-  if not L.searchPlaceholder or not L.searchEdit then return end
-  local text = gs.Read(L.searchEdit, "GetText") or ""
-  if text == "" then
-    pcall(L.searchPlaceholder.Show, L.searchPlaceholder)
-  else
-    pcall(L.searchPlaceholder.Hide, L.searchPlaceholder)
-  end
+  U.PaintSearchBox(L.search)
 end
 
+-- The addon's shared search field (core/searchbox.lua), in the strip above the
+-- option list.
 function L.BuildSearch()
   if L.search or not gs.panel then return L.search ~= nil end
-  local token = M.foreverWow.search
-  if not token then return false end
+  if type(U.CreateSearchBox) ~= "function" then return false end
 
-  local ok, search = pcall(CreateFrame, "Frame", "UnrealUIGameSettingsSearch",
-                           gs.panel)
-  if not ok or not search then return false end
+  local search = U.CreateSearchBox(gs.panel, {
+    name = "UnrealUIGameSettingsSearch",
+    placeholder = U.L("GAMESETTINGS_SEARCH"),
+    onChange = function(text) L.SetFilter(L.FilterValue(text)) end,
+  })
+  if not search then return false end
   search:Hide()
-  search:SetWidth(token.width)
-  search:SetHeight(token.height)
   -- Centre the field in the strip between the window header and the recessed
   -- content plate. It is aligned to the plate's right edge, but is not part of
   -- the content canvas and therefore takes no height away from the option list.
+  local height = gs.Number(search, "GetHeight") or 0
   local lane = gs.PLATE_TOP - gs.HEADER_HEIGHT
-  local top = gs.HEADER_HEIGHT + math.max(0, (lane - token.height) / 2)
+  local top = gs.HEADER_HEIGHT + math.max(0, (lane - height) / 2)
   search:SetPoint("TOPRIGHT", gs.panel, "TOPRIGHT", -gs.PLATE_SIDE, -top)
-  pcall(search.EnableMouse, search, false)
-  pcall(search.SetFrameLevel, search,
-        (gs.Number(gs.panel, "GetFrameLevel") or 1) + L.LEVEL_GAP)
-
-  local border = token.border
-  local function BorderPiece(cell)
-    local texture = search:CreateTexture(nil, "BACKGROUND")
-    texture:SetTexture(border.texture)
-    gs.SetCell(texture, cell, border.sheetWidth, border.sheetHeight)
-    texture:SetHeight(border.height)
-    return texture
-  end
-  local left = BorderPiece(border.left)
-  local middle = BorderPiece(border.middle)
-  local right = BorderPiece(border.right)
-  left:SetWidth(border.capWidth)
-  left:SetPoint("LEFT", search, "LEFT", -5, 0)
-  right:SetWidth(border.capWidth)
-  right:SetPoint("RIGHT", search, "RIGHT", 0, 0)
-  middle:SetPoint("LEFT", left, "RIGHT", 0, 0)
-  middle:SetPoint("RIGHT", right, "LEFT", 0, 0)
-
-  -- This is the user-confirmed UnrealQuest search contract: no EditBox scripts
-  -- and no programmatic focus. A separate window updater reads the text while
-  -- the user types; the magnifier remains an optional submit/focus-release.
-  local made, edit = pcall(CreateFrame, "EditBox",
-                           "UnrealUIGameSettingsSearchEdit", search)
-  if not made or not edit then return false end
-  edit:SetWidth(token.width)
-  edit:SetHeight(14)
-  edit:SetPoint("CENTER", search, "CENTER", 0, -3)
-  local font = U.G("GameFontHighlightSmall")
-  if font then pcall(edit.SetFontObject, edit, font) end
-  pcall(edit.SetTextColor, edit, 1, 1, 1)
-  pcall(edit.SetJustifyH, edit, "LEFT")
-  pcall(edit.SetTextInsets, edit, token.textInset.left, token.textInset.right, 0, 0)
-  pcall(edit.SetAutoFocus, edit, false)
-  pcall(edit.SetText, edit, "")
-
-  local icons = token.icons
-  local function IconButton(name, cell, alpha, point, x, y, onClick)
-    local button = CreateFrame("Button", name, search)
-    button:SetWidth(icons.buttonSize)
-    button:SetHeight(icons.buttonSize)
-    button:SetPoint(point, search, point, x, y)
-    pcall(button.SetFrameLevel, button,
-          (gs.Number(search, "GetFrameLevel") or 1) + 2)
-    local icon = button:CreateTexture(nil, "ARTWORK")
-    icon:SetTexture(icons.texture)
-    gs.SetCell(icon, cell, icons.sheetWidth, icons.sheetHeight)
-    icon:SetWidth(icons.size)
-    icon:SetHeight(icons.size)
-    icon:SetPoint("CENTER", button, "CENTER", 0, 0)
-    icon:SetAlpha(alpha)
-    button:SetScript("OnEnter", function() icon:SetAlpha(1) end)
-    button:SetScript("OnLeave", function() icon:SetAlpha(alpha) end)
-    button:SetScript("OnMouseDown", function()
-      icon:ClearAllPoints()
-      icon:SetPoint("CENTER", button, "CENTER", 1, -1)
-    end)
-    button:SetScript("OnMouseUp", function()
-      icon:ClearAllPoints()
-      icon:SetPoint("CENTER", button, "CENTER", 0, 0)
-    end)
-    button:SetScript("OnClick", onClick)
-    return button
-  end
-
-  local submit = IconButton("UnrealUIGameSettingsSearchButton", icons.search,
-                            0.6, "LEFT", -2, -1, function()
-    local text = gs.Read(edit, "GetText") or ""
-    if type(edit.ClearFocus) == "function" then pcall(edit.ClearFocus, edit) end
-    L.SetFilter(text)
-    L.PaintSearchPlaceholder()
-  end)
-  local clear = IconButton("UnrealUIGameSettingsSearchClear", icons.clear,
-                           0.5, "RIGHT", -3, 0, function()
-    pcall(edit.SetText, edit, "")
-    if type(edit.ClearFocus) == "function" then pcall(edit.ClearFocus, edit) end
-    L.SetFilter("")
-    L.PaintSearchPlaceholder()
-  end)
-
-  local placeholder = U.CreateLabel(search, {
-    size = M.fontSize.small,
-    color = { 0.58, 0.58, 0.58, 1 },
-    inherits = "GameFontDisableSmall",
-    justify = "LEFT",
-    width = token.width - token.textInset.left - token.textInset.right,
-    height = 14,
-  })
-  if placeholder then
-    placeholder:SetPoint("LEFT", search, "LEFT", token.textInset.left, -3)
-    placeholder:SetText(U.L("GAMESETTINGS_SEARCH"))
-  end
+  U.LevelSearchBox(search, (gs.Number(gs.panel, "GetFrameLevel") or 1) +
+                           L.LEVEL_GAP)
 
   L.search = search
-  L.searchEdit = edit
-  L.searchButton = submit
-  L.searchClear = clear
-  L.searchPlaceholder = placeholder
-  L.PaintSearchPlaceholder()
   return true
 end
 
 function L.SearchTick()
   if not gs.panel or not gs.Read(gs.panel, "IsShown") then return end
-  L.PaintSearchPlaceholder()
-  if not L.searchEdit then return end
-  local text = L.FilterValue(gs.Read(L.searchEdit, "GetText") or "")
+  if not L.search then return end
+  local text = L.FilterValue(U.SearchBoxText(L.search))
   if text ~= (L.filter or "") then L.SetFilter(text) end
   L.SyncBindingFilter()
 end
@@ -914,10 +818,7 @@ end
 function L.HideSearch()
   U.UnregisterUpdate("gamesettings.search")
   L.searchRunning = nil
-  if L.searchEdit and type(L.searchEdit.ClearFocus) == "function" then
-    pcall(L.searchEdit.ClearFocus, L.searchEdit)
-  end
-  if L.searchEdit then pcall(L.searchEdit.SetText, L.searchEdit, "") end
+  if L.search then U.ResetSearchBox(L.search) end
   L.filter = ""
   L.SyncBindingFilter()
   if L.search then pcall(L.search.Hide, L.search) end
@@ -2375,27 +2276,7 @@ end
 
 function L.ForwardClick(native)
   if not native then return end
-  -- IsEnabled returns 1 / 0 on this client, not a boolean.
-  local enabled = gs.Read(native, "IsEnabled")
-  if enabled == 0 or enabled == false then return end
-
-  local checked = gs.Read(native, "GetChecked")
-  local want = not (checked and checked ~= 0)
-  pcall(native.SetChecked, native, want)
-
-  local handler
-  if type(native.GetScript) == "function" then
-    local ok, value = pcall(native.GetScript, native, "OnClick")
-    if ok then handler = value end
-  end
-  if type(handler) == "function" then
-    local oldThis, oldArg1 = this, arg1
-    this = native
-    arg1 = "LeftButton"
-    pcall(handler, native, "LeftButton")
-    this = oldThis
-    arg1 = oldArg1
-  end
+  gs.ForwardCheckClick(native)
   if type(gs.PaintCheck) == "function" then gs.PaintCheck(native) end
 end
 

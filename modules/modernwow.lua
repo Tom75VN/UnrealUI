@@ -260,6 +260,60 @@ function U.ModernWowHorizontalBar(parent, width, height, layer, flipped)
   return bar
 end
 
+-- The same Dialog Box divider turned vertically. Its end caps keep the same
+-- authored proportions; only the centre is extended between the two footer
+-- sections. The pixels are pre-rotated because this client fragments the
+-- three sliced textures when Texture:SetRotation is used on them.
+function U.ModernWowVerticalBar(parent, height, width, layer)
+  local token = M.modernWow.horizontalBar
+  local path = M.modernWow.texture.verticalBar
+  height = tonumber(height) or 0
+  width = tonumber(width) or (token and token.height) or 0
+  if not parent or not token or not path or height <= 0 or width <= 0 then
+    return nil
+  end
+
+  local bar = CreateFrame("Frame", nil, parent)
+  local scale = width / token.sourceHeight
+  local topHeight = token.left.width * scale
+  local bottomHeight = token.right.width * scale
+  if height < topHeight + bottomHeight then return nil end
+
+  pcall(function()
+    bar:SetWidth(width)
+    bar:SetHeight(height)
+    if bar.EnableMouse then bar:EnableMouse(false) end
+  end)
+
+  local function Piece(cell)
+    local u1 = (token.atlasHeight - cell.v2) / token.atlasHeight
+    local u2 = (token.atlasHeight - cell.v1) / token.atlasHeight
+    local v1, v2 = cell.u1 / token.atlasWidth,
+                         cell.u2 / token.atlasWidth
+    local texture = mw.Texture(bar, layer or "OVERLAY", path, u1, u2, v1, v2)
+    if texture then
+      pcall(texture.SetWidth, texture, cell.height * scale)
+    end
+    return texture
+  end
+
+  local top = Piece(token.left)
+  local middle = Piece(token.middle)
+  local bottom = Piece(token.right)
+  if not top or not middle or not bottom then return nil end
+
+  pcall(function()
+    top:SetHeight(topHeight)
+    top:SetPoint("TOP", bar, "TOP", 0, 0)
+    bottom:SetHeight(bottomHeight)
+    bottom:SetPoint("BOTTOM", bar, "BOTTOM", 0, 0)
+    middle:SetPoint("TOP", top, "BOTTOM", 0, 0)
+    middle:SetPoint("BOTTOM", bottom, "TOP", 0, 0)
+  end)
+  bar.uuiPieces = { top, middle, bottom }
+  return bar
+end
+
 -- Takes UnrealUI's flat outline off a frame this theme is about to cover with
 -- its own art. Deliberately edge-only: U.SetBackdropShown would also clear the
 -- fill, which is the dark bed the art's transparent centre shows. Same
@@ -340,6 +394,26 @@ function mw.RedButtonGlow(owner, token, path)
   local shade = token.glowIntensity or 1
   pcall(glow.SetVertexColor, glow, shade, shade, shade, 1)
   pcall(glow.Hide, glow)
+  return glow
+end
+
+-- The 128RedButton hover bloom for a Modern WoW collapse icon (user request,
+-- 2026-09-24: the close button's red hover, from 128RedButton.tga). `parent`
+-- owns the texture; `region` (default `parent`) is what it covers, so a glyph
+-- drawn as a bare texture can take it too. Hidden; the caller shows it on
+-- hover and hides it while pressed, as the red buttons do.
+function U.ModernWowRedButtonGlow(parent, region)
+  if not mw.MediaAllowed() or not parent then return nil end
+  local glow = mw.RedButtonGlow(parent, M.modernWow.button128Red,
+                                M.modernWow.texture.button128Red)
+  if glow and region and region ~= parent then
+    local margin = M.modernWow.button128Red.glowMargin or 0
+    pcall(function()
+      glow:ClearAllPoints()
+      glow:SetPoint("TOPLEFT", region, "TOPLEFT", -margin, margin)
+      glow:SetPoint("BOTTOMRIGHT", region, "BOTTOMRIGHT", margin, -margin)
+    end)
+  end
   return glow
 end
 
@@ -512,6 +586,38 @@ end
 function U.ModernWowNpcActionButton(button)
   if not mw.Active() or not mw.Enabled("npcdialogs") then return false end
   return mw.DressActionButton(button)
+end
+
+-- `relativePoint` lets the trainer anchor its buttons from the window's
+-- TOPLEFT, as every other piece of its layout is, instead of from a bottom
+-- edge whose height the client owns.
+--
+-- `height` (optional) redraws the face shorter than the atlas's own 30, for
+-- the trainer's 27-high footer (user request, 2026-09-23): the caps are
+-- re-widened to keep the cell's aspect, only the middle stretches, and the
+-- glow follows the button's edges on its own.
+function U.ModernWowTrainerActionButton(button, point, relative, relativePoint,
+                                        x, y, height)
+  if not U.ModernWowSurfaceEnabled("trainer") or not button then return false end
+  if not mw.DressActionButton(button) then return false end
+  local state = button.uuiModernWowAction
+  local token = M.modernWow.button128Red
+  if height and token then
+    local cap = height * token.cap / token.cellHeight
+    pcall(button.SetHeight, button, height)
+    if state.left then pcall(state.left.SetWidth, state.left, cap) end
+    if state.right then pcall(state.right.SetWidth, state.right, cap) end
+  end
+  state.anchor = {
+    point = point,
+    relative = relative,
+    relativePoint = relativePoint or point,
+    x = x,
+    y = y,
+    ready = true,
+  }
+  mw.PlaceActionButton(button)
+  return true
 end
 
 -- Owned red-button face: the measured 128RedButton three-slice drawn on an
@@ -993,7 +1099,7 @@ mw.units = {
   -- the left-hand ring and shows through as two dark horizontal bands.
   { id = "pet",          art = "targetFrame", bg = "playerFrameBg",
     power = "totPowerFill", mirror = true, powerX = -2, healthValueX = -2,
-    alignPowerPercent = true,
+    alignPowerPercent = true, powerPercentY = 2,
     header = { name = 2, level = -4 } },
 }
 
@@ -3033,8 +3139,9 @@ mw.windows = {
   { name = "SpellBookFrame" },
   { name = "TalentFrame" },
   -- Interaction windows intentionally use classic-wow/native chrome even
-  -- when the generic Modern WoW window/header surfaces are enabled.
-  { name = "MerchantFrame", classicInteraction = true },
+  -- when the generic Modern WoW window/header surfaces are enabled. Merchant
+  -- is excluded here because its owning module has a complete surface below.
+  { name = "MerchantFrame", classicInteraction = true, ownSurface = true },
   { name = "ClassTrainerFrame", classicInteraction = true },
   { name = "MailFrame", classicInteraction = true },
   { name = "GossipFrame", classicInteraction = true },
@@ -3203,7 +3310,7 @@ end
 -- ---------------------------------------------------------------------------
 -- Surface: NPC interaction dialogs
 --
--- Quest, gossip, merchant and trainer windows may be lazy stock singletons on
+-- Quest, gossip and merchant windows may be lazy stock singletons on
 -- this client. A PLAYER_LOGIN-only window pass can therefore miss them, so
 -- their owning modules call U.ModernWowNpcDialog as soon as each frame actually
 -- exists. The surface builder below still handles a frame that happened to be
@@ -3233,11 +3340,6 @@ mw.npcDialogs = {
     panel = "UnrealUIMerchantPanel",
     portrait = "MerchantFramePortrait",
     close = "MerchantFrameCloseButton",
-  },
-  {
-    frame = "ClassTrainerFrame",
-    panel = "UnrealUITrainerPanel",
-    close = "ClassTrainerFrameCloseButton",
   },
 }
 
@@ -3293,12 +3395,156 @@ function U.ModernWowNpcDialog(frame, panel, portrait, closeName)
   return mw.DressNpcDialog(frame, panel, portrait, closeName)
 end
 
+function U.ModernWowMerchantChrome(frame, panel, portrait, closeName)
+  if not U.ModernWowSurfaceEnabled("merchant") or not frame then return false end
+  if not mw.DressNpcDialog(frame, panel, portrait, closeName) then return false end
+
+  local token = M.modernWow.merchant
+  local holder = U.ModernWowWindowChrome(frame)
+  if not token or not holder then return false end
+
+  if not frame.uuiModernWowMerchantFooter then
+    local f = token.footer
+    local width, height = f.right - f.left, f.bottom - f.top
+    local wash = mw.Texture(holder, "ARTWORK", M.modernWow.texture.questFooter,
+                            0, width / f.atlas, 0, height / f.atlas)
+    if wash then
+      pcall(function()
+        wash:SetVertexColor(f.shade, f.shade, f.shade)
+        wash:SetWidth(width)
+        wash:SetHeight(height)
+        wash:SetPoint("TOPLEFT", frame, "TOPLEFT", f.left, -f.top)
+      end)
+    end
+
+    local money = token.money
+    local function Plate(rect)
+      if not rect or not money then return nil end
+      local sourceWidth = money.sourceWidth
+      local sourceHeight = money.sourceHeight
+      local cropHeight = money.cropHeight
+      local cap = money.cap
+      if not sourceWidth or not sourceHeight or not cropHeight or not cap then
+        return nil
+      end
+      local plateHeight = rect.plateHeight or rect.height
+      local capWidth = cap * plateHeight / cropHeight
+      if rect.width <= capWidth * 2 then return nil end
+
+      local path = M.modernWow.texture.trainerMoney
+      local v2 = cropHeight / sourceHeight
+      local left = mw.Texture(holder, "ARTWORK", path,
+                              0, cap / sourceWidth, 0, v2)
+      local middle = mw.Texture(holder, "ARTWORK", path,
+                                cap / sourceWidth,
+                                (sourceWidth - cap) / sourceWidth, 0, v2)
+      local right = mw.Texture(holder, "ARTWORK", path,
+                               (sourceWidth - cap) / sourceWidth, 1, 0, v2)
+      if not left or not middle or not right then return nil end
+      pcall(function()
+        left:SetWidth(capWidth)
+        left:SetHeight(plateHeight)
+        left:SetPoint("TOPLEFT", frame, "TOPLEFT", rect.left, -rect.top)
+        right:SetWidth(capWidth)
+        right:SetHeight(plateHeight)
+        right:SetPoint("TOPRIGHT", frame, "TOPLEFT",
+                       rect.left + rect.width, -rect.top)
+        middle:SetHeight(plateHeight)
+        middle:SetPoint("TOPLEFT", left, "TOPRIGHT", 0, 0)
+        middle:SetPoint("TOPRIGHT", right, "TOPLEFT", 0, 0)
+      end)
+      return { left = left, middle = middle, right = right }
+    end
+
+    local function ServiceCell(rect)
+      local cell = rect and rect.cell
+      if not rect or not cell or not rect.texture or
+         not rect.sheetWidth or not rect.sheetHeight then return nil end
+      local texture = mw.Texture(
+        holder, "ARTWORK", rect.texture,
+        cell[1] / rect.sheetWidth, cell[2] / rect.sheetWidth,
+        cell[3] / rect.sheetHeight, cell[4] / rect.sheetHeight)
+      if not texture then return nil end
+      pcall(function()
+        texture:SetWidth(rect.width)
+        texture:SetHeight(rect.height)
+        texture:SetPoint("TOPLEFT", frame, "TOPLEFT", rect.left, -rect.top)
+      end)
+      return texture
+    end
+
+    local servicePlate = ServiceCell(f.service)
+    local moneyPlate = Plate(money)
+
+    frame.uuiModernWowMerchantFooter = {
+      wash = wash,
+      service = servicePlate,
+      money = moneyPlate,
+    }
+  end
+
+  frame.uuiModernWowMerchant = true
+  return true
+end
+
+-- The trainer wears the gossip window's housing (user request, 2026-09-23):
+-- the same quadrants, portrait ring and close button, through the same
+-- dresser. The frame must already carry its 384x512 size, which the quadrants
+-- are cut to once.
+function U.ModernWowTrainerChrome(frame, panel, portrait, closeName)
+  if not U.ModernWowSurfaceEnabled("trainer") or not frame then return false end
+  -- Lengthened by one list row (M.modernWow.trainer.extend) before the
+  -- dresser runs, which then finds the window already cut and keeps it.
+  if not frame.uuiModernWowWindow then
+    local token = M.modernWow.trainer
+    mw.DressWindow(frame, { extend = token and token.extend or 0 })
+  end
+  if not mw.DressNpcDialog(frame, panel, portrait, closeName) then
+    return false
+  end
+  frame.uuiModernWowTrainer = true
+  return true
+end
+
+-- The gossip window's footer on the trainer: the shaded rock band across the
+-- recess and the Dialog Box divider on its top edge. Drawn into the window's
+-- chrome frame, as questdesign.lua draws gossip's, because the trainer sits at
+-- the same low frame level and a sibling frame there would draw under the
+-- quadrants. Every piece anchors to the window itself, so it moves with it.
+function U.ModernWowTrainerFooterPlate(frame)
+  if not U.ModernWowSurfaceEnabled("trainer") or not frame then return false end
+  if frame.uuiModernWowTrainerFooter then return true end
+  local f = M.modernWow.trainer and M.modernWow.trainer.footer
+  local holder = U.ModernWowWindowChrome(frame)
+  if not f or not holder then return false end
+
+  local width, height = f.right - f.left, f.bottom - f.top
+  local wash = mw.Texture(holder, "ARTWORK", M.modernWow.texture.questFooter,
+                          0, width / f.atlas, 0, height / f.atlas)
+  if not wash then return false end
+  pcall(function()
+    wash:SetVertexColor(f.shade, f.shade, f.shade)
+    wash:SetWidth(width)
+    wash:SetHeight(height)
+    wash:SetPoint("TOPLEFT", frame, "TOPLEFT", f.left, -f.top)
+  end)
+
+  local rowH = M.modernWow.horizontalBar and M.modernWow.horizontalBar.height
+  local bar = rowH and U.ModernWowHorizontalBar(holder, width, rowH, "OVERLAY")
+  if bar then
+    pcall(bar.SetPoint, bar, "TOPLEFT", frame, "TOPLEFT", f.left,
+          -(f.top - rowH / 2))
+  end
+  frame.uuiModernWowTrainerFooter = { wash = wash, bar = bar }
+  return true
+end
+
 -- The quest-giver window is the one NPC dialog taken off the native path
 -- (user request, 2026-09-19). modules/questdesign.lua owns its layout and
 -- parchment; these two calls give it the shared window chrome (quadrants,
 -- portrait ring, close button) and the measured red action button, gated by
 -- the window's own `questdialog` surface rather than the retired
--- `npcdialogs` one, which gossip, merchant and trainer still read.
+-- the retired generic `npcdialogs` one.
 function U.ModernWowQuestDialogChrome(frame, panel, portrait, closeName)
   if not U.ModernWowSurfaceEnabled("questdialog") then return false end
   return mw.DressNpcDialog(frame, panel, portrait, closeName)
@@ -3729,10 +3975,11 @@ function mw.PlaceGearSlot(slot)
   -- stock slot shows it whole, edge to edge.
   local icon = state.icon
   if icon then
+    local coord = state.iconTexCoord or { 0, 1, 0, 1 }
     pcall(function()
       icon:ClearAllPoints()
       icon:SetAllPoints(slot)
-      icon:SetTexCoord(0, 1, 0, 1)
+      icon:SetTexCoord(coord[1], coord[2], coord[3], coord[4])
     end)
   end
 
@@ -3747,9 +3994,14 @@ function mw.PlaceGearSlot(slot)
   state.glow = U.SetGearQualityGlow(slot, border)
 end
 
-function mw.DressGearSlot(prefix, slotName)
-  local slot = U.G(prefix .. slotName)
-  if not slot or slot.uuiModernWowGear then return end
+function mw.DressItemSlot(slot, icon, iconTexCoord)
+  if not slot then return false end
+  if slot.uuiModernWowGear then
+    if icon then slot.uuiModernWowGear.icon = icon end
+    if iconTexCoord then slot.uuiModernWowGear.iconTexCoord = iconTexCoord end
+    mw.PlaceGearSlot(slot)
+    return true
+  end
 
   local token = M.modernWow.gearSlot
   local i
@@ -3785,9 +4037,21 @@ function mw.DressGearSlot(prefix, slotName)
     corners = corners,
     glow = glow,
     hover = hover,
-    icon = U.G(prefix .. slotName .. "IconTexture"),
+    icon = icon,
+    iconTexCoord = iconTexCoord,
   }
   mw.PlaceGearSlot(slot)
+  return true
+end
+
+function mw.DressGearSlot(prefix, slotName)
+  local slot = U.G(prefix .. slotName)
+  return mw.DressItemSlot(slot, U.G(prefix .. slotName .. "IconTexture"))
+end
+
+function U.ModernWowItemSlot(slot, icon, iconTexCoord)
+  if not mw.MediaAllowed() then return false end
+  return mw.DressItemSlot(slot, icon, iconTexCoord)
 end
 
 function mw.RefreshGearSlots(prefix, slots)
@@ -4514,13 +4778,14 @@ function mw.CollapseFace(icon)
   end
   if icon.text then pcall(icon.text.Hide, icon.text) end
 
-  -- Hover keeps the component's accent feedback, moved from the (now hidden)
-  -- outline onto the glyph itself so the state is still visible.
+  -- Hover is the 128RedButton bloom over the untinted glyph (user request,
+  -- 2026-09-24), never a recolour of the art.
+  local glow = U.ModernWowRedButtonGlow(icon)
   icon:SetScript("OnEnter", function()
-    pcall(face.SetVertexColor, face, M.Unpack(M.color.accent))
+    if glow then pcall(glow.Show, glow) end
   end)
   icon:SetScript("OnLeave", function()
-    pcall(face.SetVertexColor, face, 1, 1, 1, 1)
+    if glow then pcall(glow.Hide, glow) end
   end)
 
   -- Wraps the widget's own setter instead of replacing it, so uuiCollapsed and
@@ -4574,22 +4839,32 @@ function mw.PlusMinusFace(icon)
           cell[3] / cells.sheet, cell[4] / cells.sheet)
   end
 
-  -- Hover keeps the component's accent feedback, moved from the (now hidden)
-  -- outline onto the glyph itself, as mw.CollapseFace does.
+  -- Hover is the 128RedButton bloom over the untinted glyph (user request,
+  -- 2026-09-24), as mw.CollapseFace; hidden while pressed, as on the red
+  -- buttons, where the pushed cell is the feedback.
+  local glow = U.ModernWowRedButtonGlow(icon)
+  local function Glow(shown)
+    if not glow then return end
+    if shown then pcall(glow.Show, glow) else pcall(glow.Hide, glow) end
+  end
   icon:SetScript("OnEnter", function()
-    pcall(face.SetVertexColor, face, M.Unpack(M.color.accent))
+    state.over = true
+    Glow(not state.down)
   end)
   icon:SetScript("OnLeave", function()
+    state.over = false
     state.down = false
-    pcall(face.SetVertexColor, face, 1, 1, 1, 1)
+    Glow(false)
     Paint()
   end)
   icon:SetScript("OnMouseDown", function()
     state.down = true
+    Glow(false)
     Paint()
   end)
   icon:SetScript("OnMouseUp", function()
     state.down = false
+    Glow(state.over)
     Paint()
   end)
 
@@ -4858,6 +5133,24 @@ function mw.BuildQuestDialog()
 end
 mw.RegisterSurface("questdialog", "Quest giver windows (quest, gossip)", true,
                    mw.BuildQuestDialog)
+
+function mw.BuildTrainer()
+  if U.G("ClassTrainerFrame") and
+     (type(U.ModernWowTrainerActive) ~= "function" or
+      not U.ModernWowTrainerActive()) then
+    error("modern-wow trainer drawing path did not activate")
+  end
+end
+mw.RegisterSurface("trainer", "Trainer window", true, mw.BuildTrainer)
+
+function mw.BuildMerchant()
+  if U.G("MerchantFrame") and
+     (type(U.ModernWowMerchantActive) ~= "function" or
+      not U.ModernWowMerchantActive()) then
+    error("modern-wow merchant drawing path did not activate")
+  end
+end
+mw.RegisterSurface("merchant", "Merchant window", true, mw.BuildMerchant)
 
 -- Planned surfaces: art imported and tokenised in core/media.lua, no drawing
 -- path yet. Registered with no build function so `/uui mw list` states the

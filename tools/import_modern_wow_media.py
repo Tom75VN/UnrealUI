@@ -235,17 +235,13 @@ IMPORTS = [
 # (destination name, the filename it was supplied as, note[, on-disk input])
 USER_SUPPLIED = [
     ("unitframes/health-fill-full",
-     "UI-HUD-UnitFrame-Player-PortraitOn-Bar-Health-Status.tga",
-     "WoW-DragonflightUI (DF-main) "
-     "`Textures/Unitframe/UI-HUD-UnitFrame-Player-PortraitOn-Bar-Health-"
-     "Status.tga`: Blizzard's Dragonflight player health fill at 128x32, "
-     "greyscale for vertex colouring. Opaque edge to edge -- unlike the "
-     "DFRL `health-fill` it replaces, which carries its own transparent "
-     "padding -- so the dressed bar insets the fill itself from "
-     "M.modernWow.unitFrame.healthFillInset. Its top and bottom shading "
-     "ramps over seven rows instead of cutting off at an alpha edge, which "
-     "is why it was chosen. `health-fill` stays shipped for a revert.",
-     "UI-HUD-UnitFrame-Player-PortraitOn-Bar-Health-Status.tga"),
+     "ForeverFrameXML 4631591 / UI-HUD-UnitFrame-Player-PortraitOn-Bar-Health",
+     "Blizzard Forever build 1.60.1.69913 atlas member "
+     "`UI-HUD-UnitFrame-Player-PortraitOn-Bar-Health`: FileDataID 4631591, "
+     "atlas 2060, pixels L=693 R=817 T=238 B=258 (124x20). The member is "
+     "already coloured dark green to lime and carries its own bevel; "
+     "PlayerFrame.xml draws it as the HealthBar BarTexture and sets "
+     "lockColor=true, so UnrealUI draws it with a white vertex colour."),
     ("ui/class-portraits", "ui-classes-circles.png",
      "Blizzard UI-Classes-Circles class-icon atlas at 256x256: 64px "
      "cells, four per row, in CLASS_ICON_TCOORDS order (WARRIOR, MAGE, "
@@ -596,6 +592,17 @@ USER_SUPPLIED = [
      "Blizzard Forever Edit Mode selected centre fill at 16x16, FileDataID "
      "4554386 (atlas 1962): one flat colour, RGBA 255/245/105/128.",
      "editmodeuiselectedbackground.png"),
+]
+
+
+# Exact clockwise derivatives of shipped UI artwork. They are generated here
+# because this client fragments Texture:SetRotation output on sliced textures.
+ROTATED = [
+    ("ui/borders/ui-dialogbox-divider-vertical",
+     "ui/borders/ui-dialogbox-divider",
+     "ui-dialogbox-divider.png",
+     "Exact 90-degree clockwise derivative of ui-dialogbox-divider.tga for "
+     "the Merchant footer's vertical column separator."),
 ]
 
 
@@ -988,6 +995,26 @@ def main():
             "note": note,
         })
         print("%-34s %-9s user-supplied" % (dest_name, user_rows[-1]["size"]))
+
+    for dest_name, source_name, supplied_as, note in ROTATED:
+        src = os.path.join(dest_root,
+                           source_name.replace("/", os.sep) + ".tga")
+        dst = os.path.join(dest_root,
+                           dest_name.replace("/", os.sep) + ".tga")
+        image, _ = open_source(src)
+        rotated = image.convert("RGBA").transpose(Image.Transpose.ROTATE_270)
+        image.close()
+        width, height = write_rle_tga(rotated, dst)
+        rotated.close()
+
+        user_rows.append({
+            "dest": dest_name + ".tga",
+            "size": "%dx%d" % (width, height),
+            "supplied": supplied_as,
+            "note": note,
+        })
+        print("%-34s %-9s user-supplied, rotated"
+              % (dest_name, user_rows[-1]["size"]))
 
     for dest_name, supplied_as, peak, note in LUMA_ALPHA:
         dst = os.path.join(dest_root, dest_name.replace("/", os.sep) + ".tga")

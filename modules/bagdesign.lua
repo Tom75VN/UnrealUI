@@ -160,58 +160,297 @@ function U.ModernWowBagSeparator(window)
   window.uuiModernWowHeaderRule = rule
 end
 
--- Category box: the authored thin-border eight-slice (as the talent panels
--- and Quest Log count box draw it) over a dark bed. The art ships no
--- bottom-right corner, so the bottom-left one is mirrored into it. Every
+-- ---------------------------------------------------------------------------
+-- Header search (user requests, 2026-09-24)
+--
+-- The addon's shared search field (U.CreateSearchBox, core/searchbox.lua) on
+-- the header's icon row, for the bag, the live bank and the saved bank. It
+-- filters as the user types -- the field reports every change -- and shades
+-- every slot whose item name does not contain the text, accents folded
+-- (U.SearchFold). The shade is an owned black texture faded with SetAlpha
+-- on the texture itself: a parent's alpha does not reach its regions on this
+-- client (rendering.parent_alpha_not_propagated) and vertex alpha is no
+-- opacity route (textures.vertex_alpha_is_not_an_opacity_route).
+--
+-- The field has one anchor, LEFT on `after` -- the window's last left-hand
+-- header control, centred on the icon row -- with the vertical offset the bag
+-- was tuned against in game. Its x offset and width are fitted, while shown,
+-- to the lane from `after` to `before` (the first right-hand control; the
+-- close cell when there is none): the field takes `widthScale` of it,
+-- right-aligned. Measured rather than fixed because every lane changes with
+-- what the header shows (Pick Lock, bought bank bags, the note's text, the
+-- category view's width). All edges are addon-owned children of one window,
+-- so they share a scale.
+-- ---------------------------------------------------------------------------
+
+-- Plain, case-insensitive match of an item link's name against a lowercased
+-- query. An empty query matches everything, an empty slot nothing else.
+function design.SearchMatches(link, query)
+  if query == "" then return true end
+  if not link then return false end
+  local _, _, name = string.find(link, "%[(.-)%]")
+  if not name then return false end
+  return string.find(U.SearchFold(name), query, 1, true) ~= nil
+end
+
+-- The gold icon alert around a hit (match: M.modernWow.bags.search.match,
+-- shared by M.slot.search), sized so its line sits on the slot rim, grow`n-- units outside the button. Built on first use; sized on every show, since
+-- the bag and bank draw their slots at different sizes.
+function design.SearchMark(button, shown, token, grow)
+  local mark = button.uuiSearchMark
+  if not shown then
+    if mark then pcall(mark.Hide, mark) end
+    return
+  end
+  if not mark then
+    local ok, texture = pcall(button.CreateTexture, button, nil, "OVERLAY")
+    if not ok or not texture then return end
+    pcall(texture.SetTexture, texture, token.texture)
+    button.uuiSearchMark = texture
+    mark = texture
+  end
+  local okW, width = pcall(button.GetWidth, button)
+  width = okW and tonumber(width)
+  if not width or width <= 0 then return end
+  local rim = width + (grow or 0)
+  local size = rim * token.sheet / (token.sheet - 2 * token.line)
+  pcall(function()
+    mark:ClearAllPoints()
+    mark:SetWidth(size)
+    mark:SetHeight(size)
+    mark:SetPoint("CENTER", button, "CENTER", 0, 0)
+  end)
+  pcall(mark.SetAlpha, mark, token.alpha or 1)
+  pcall(mark.Show, mark)
+end
+
+-- dimmed: shaded, its rim and quality glow faded to `borderAlpha` (the shade
+-- covers only the button, and both run past its edge). matched: an active
+-- query's hit, ringed with the gold icon alert (design.SearchMark; user
+-- requests, 2026-09-24). Neither: the slot as drawn with no query. `token`
+-- carries dimAlpha / borderAlpha / match: M.modernWow.bags.search for the bag
+-- design, M.slot.search for the flat header; grow is the rim's overhang.
+function design.SearchShade(button, dimmed, matched, token, grow)
+  -- Border alpha is reapplied on every paint rather than behind the state
+  -- check below: a slot redraw can create the quality glow after the slot was
+  -- dimmed, and it is born at full opacity.
+  local borderAlpha = dimmed and token.borderAlpha or 1
+  local slot = button.uuiModernWowContainerSlot
+  local rim = slot and slot.frame
+  local glow, boost = button.uuiGearQualityGlow, button.uuiGearRareBoost
+  if rim then pcall(rim.SetAlpha, rim, borderAlpha) end
+  if glow then pcall(glow.SetAlpha, glow, borderAlpha) end
+  if boost then pcall(boost.SetAlpha, boost, borderAlpha) end
+
+  if button.uuiSearchDimmed == dimmed and
+     button.uuiSearchMatched == matched then
+    return
+  end
+  button.uuiSearchDimmed = dimmed
+  button.uuiSearchMatched = matched
+
+  design.SearchMark(button, matched, token.match, grow)
+
+  local shade = button.uuiSearchShade
+  if not dimmed then
+    if shade then pcall(shade.Hide, shade) end
+    return
+  end
+  if not shade then
+    local ok, texture = pcall(button.CreateTexture, button, nil, "OVERLAY")
+    if not ok or not texture then return end
+    texture:SetTexture(M.texture.plain)
+    texture:SetVertexColor(0, 0, 0)
+    texture:SetAllPoints(button)
+    button.uuiSearchShade = texture
+    shade = texture
+  end
+  pcall(shade.SetAlpha, shade, token.dimAlpha)
+  pcall(shade.Show, shade)
+end
+
+-- spec = {
+--   window   the bag-family window (its close cell is the default lane end)
+--   name     global name of the field
+--   id       update-loop id, unique per window
+--   after    frame whose right edge starts the lane (on the icon row)
+--   before   frame whose left edge ends it; nil = the close cell
+--   each(fn) calls fn(button, link) for every slot button the window draws
+-- }
+-- Returns a controller -- Start / Stop on show and hide, Paint(button, link)
+-- and PaintSlot(button, bag, slot) after a slot is redrawn -- or nil when the
+-- field cannot be built. U.ModernWowBagSearch serves the bag design,
+-- U.FlatBagSearch the `modern` header; both are this one controller on a
+-- different `lane`:
+--   shade      dimAlpha / borderAlpha for a miss (design.SearchShade)
+--   marked     ring a hit with the gold alert
+--   markGrow   the slot rim's overhang past the button, for the ring's size
+--   left/right the field's gap to `after` / the lane end
+--   widthScale share of the lane the field takes, right-aligned
+--   poll       refit interval while shown, seconds
+--   y          vertical offset from `after`'s centre line
+--   closeInset window right edge to the lane end when there is no `before`
+function design.LaneSearch(spec, lane)
+  local window = spec.window
+  local ctl = { query = "" }
+
+  function ctl.Paint(button, link)
+    if not button then return end
+    local match = design.SearchMatches(link, ctl.query)
+    design.SearchShade(button, not match,
+                       lane.marked and match and ctl.query ~= "", lane.shade,
+                       lane.markGrow)
+  end
+
+  -- Reads the slot's link only while a query is active.
+  function ctl.PaintSlot(button, bag, slot)
+    if not button then return end
+    if ctl.query == "" then
+      design.SearchShade(button, false, false, lane.shade, lane.markGrow)
+      return
+    end
+    ctl.Paint(button, U.ContainerSlotLink(bag, slot))
+  end
+
+  function ctl.SetQuery(text)
+    local query = U.SearchFold(text or "")
+    query = string.gsub(query, "^%s+", "")
+    query = string.gsub(query, "%s+$", "")
+    if query == ctl.query then return end
+    ctl.query = query
+    spec.each(ctl.Paint)
+  end
+
+  function ctl.Place(x)
+    ctl.field:ClearAllPoints()
+    ctl.field:SetPoint("LEFT", spec.after, "RIGHT", x, lane.y)
+  end
+
+  function ctl.Fit()
+    local okL, left = pcall(spec.after.GetRight, spec.after)
+    local right
+    if spec.before then
+      local okR, edge = pcall(spec.before.GetLeft, spec.before)
+      right = okR and tonumber(edge)
+    else
+      local okR, edge = pcall(window.GetRight, window)
+      right = okR and tonumber(edge) and (tonumber(edge) - lane.closeInset)
+    end
+    left = okL and tonumber(left)
+    if not left or not right then return end
+    local span = (right - lane.right) - (left + lane.left)
+    local width = math.floor(span * (lane.widthScale or 1) + 0.5)
+    if width < 1 or width == ctl.width then return end
+    ctl.width = width
+    pcall(ctl.field.SetWidth, ctl.field, width)
+    pcall(ctl.Place, lane.left + span - width)
+    -- The text keeps its tail in view, so a new width repaints it.
+    U.PaintSearchBox(ctl.field)
+  end
+
+  -- The lane moves with the header, so the fit is kept up while shown.
+  function ctl.Tick()
+    ctl.Fit()
+  end
+
+  function ctl.Start()
+    ctl.Fit()
+    U.RegisterUpdate(spec.id, lane.poll, ctl.Tick)
+  end
+
+  -- Closing the window empties the field, so it never reopens shaded.
+  function ctl.Stop()
+    U.UnregisterUpdate(spec.id)
+    U.ResetSearchBox(ctl.field)
+    ctl.SetQuery("")
+  end
+
+  local field = U.CreateSearchBox(window, {
+    name = spec.name,
+    placeholder = U.L("BAGS_SEARCH"),
+    onChange = ctl.SetQuery,
+  })
+  if not field then return nil end
+  ctl.field = field
+  ctl.Place(lane.left)
+  -- Above the window's own header children, so the field takes the click.
+  local ok, level = pcall(window.GetFrameLevel, window)
+  U.LevelSearchBox(field, ((ok and tonumber(level)) or 1) + 3)
+  return ctl
+end
+
+function U.ModernWowBagSearch(spec)
+  if not spec or not spec.window or not spec.after or
+     not U.ModernWowBagFamilyActive() or
+     type(U.CreateSearchBox) ~= "function" then
+    return nil
+  end
+  local token = M.modernWow.bags
+  local iconMiddle = token.actions.top + token.actions.height / 2
+  local closeMiddle = token.close.top + token.close.height / 2
+  return design.LaneSearch(spec, {
+    shade = token.search, marked = true, markGrow = token.slot.grow,
+    left = token.search.left, right = token.search.right,
+    widthScale = token.search.widthScale, poll = token.search.poll,
+    y = iconMiddle - closeMiddle + (token.search.lift or 0),
+    closeInset = token.close.right + token.close.width,
+  })
+end
+
+-- ---------------------------------------------------------------------------
+-- Flat header search (`modern` theme; user requests, 2026-09-24)
+--
+-- The same field and lane as the bag design, on the flat header's icon row:
+-- the bag's money readout moves to the footer (as the bag design has it), so
+-- the lane runs from the last icon to the close button. Nothing of
+-- M.modernWow is read on this path (M.slot.search). A hit is ringed with the
+-- same gold alert (user request, 2026-09-24), shared by reference in
+-- M.slot.search.match as the talent advisor shares its marks.
+-- ---------------------------------------------------------------------------
+function U.FlatBagSearchWanted()
+  return type(U.GetActiveThemeStyle) == "function" and
+         U.GetActiveThemeStyle() == "modern" and
+         type(U.CreateSearchBox) == "function"
+end
+
+function U.FlatBagSearch(spec)
+  if not spec or not spec.window or not spec.after or
+     not U.FlatBagSearchWanted() then
+    return nil
+  end
+  local token = M.slot.search
+  return design.LaneSearch(spec, {
+    shade = token, marked = true, markGrow = 0,
+    left = token.left, right = token.right,
+    widthScale = token.widthScale, poll = token.poll,
+    y = 0,
+    closeInset = M.slot.padding + M.slot.icon,
+  })
+end
+
+-- Category box: the thin-border eight-slice from the one shared builder (as
+-- the talent panels and Quest Log count box draw it) over a dark bed. The
+-- builder draws the right side as the left mirrored, because the set's
+-- authored right pieces do not meet the mirrored bottom-right corner (user
+-- report, 2026-09-23; rules/unreal-ui-design.md, ThinBorder rim). Every
 -- piece is anchored to the box, so a resize needs no redraw.
 function U.ModernWowBagSection(box)
   if not box or box.uuiModernWowSection then return false end
   local spec = M.modernWow.bags.section
-  local paths, edge = spec.border, spec.edge
 
-  local function Piece(layer, path, width, height)
-    local ok, texture = pcall(box.CreateTexture, box, nil, layer)
-    if not ok or not texture then return nil end
-    pcall(texture.SetTexture, texture, path)
-    if width then pcall(texture.SetWidth, texture, width) end
-    if height then pcall(texture.SetHeight, texture, height) end
-    return texture
-  end
-
-  local fill = Piece("BACKGROUND", M.texture.plain)
-  local topLeft = Piece("BORDER", paths.topLeft, edge, edge)
-  local topRight = Piece("BORDER", paths.topRight, edge, edge)
-  local bottomLeft = Piece("BORDER", paths.bottomLeft, edge, edge)
-  local bottomRight = Piece("BORDER", paths.bottomLeft, edge, edge)
-  local top = Piece("BORDER", paths.top, nil, edge)
-  local bottom = Piece("BORDER", paths.bottom, nil, edge)
-  local left = Piece("BORDER", paths.left, edge, nil)
-  local right = Piece("BORDER", paths.right, edge, nil)
-  if not (fill and topLeft and topRight and bottomLeft and bottomRight and
-          top and bottom and left and right) then
-    return false
-  end
-
+  local fillOk, fill = pcall(box.CreateTexture, box, nil, "BACKGROUND")
+  if not fillOk or not fill then return false end
   local ok = pcall(function()
+    fill:SetTexture(M.texture.plain)
     fill:SetVertexColor(M.Unpack(spec.fill))
     fill:SetPoint("TOPLEFT", box, "TOPLEFT", spec.fillInset, -spec.fillInset)
     fill:SetPoint("BOTTOMRIGHT", box, "BOTTOMRIGHT", -spec.fillInset,
                   spec.fillInset)
-    bottomRight:SetTexCoord(1, 0, 0, 1)
-    topLeft:SetPoint("TOPLEFT", box, "TOPLEFT", 0, 0)
-    topRight:SetPoint("TOPRIGHT", box, "TOPRIGHT", 0, 0)
-    bottomLeft:SetPoint("BOTTOMLEFT", box, "BOTTOMLEFT", 0, 0)
-    bottomRight:SetPoint("BOTTOMRIGHT", box, "BOTTOMRIGHT", 0, 0)
-    top:SetPoint("TOPLEFT", topLeft, "TOPRIGHT", 0, 0)
-    top:SetPoint("TOPRIGHT", topRight, "TOPLEFT", 0, 0)
-    bottom:SetPoint("BOTTOMLEFT", bottomLeft, "BOTTOMRIGHT", 0, 0)
-    bottom:SetPoint("BOTTOMRIGHT", bottomRight, "BOTTOMLEFT", 0, 0)
-    left:SetPoint("TOPLEFT", topLeft, "BOTTOMLEFT", 0, 0)
-    left:SetPoint("BOTTOMLEFT", bottomLeft, "TOPLEFT", 0, 0)
-    right:SetPoint("TOPRIGHT", topRight, "BOTTOMRIGHT", 0, 0)
-    right:SetPoint("BOTTOMRIGHT", bottomRight, "TOPRIGHT", 0, 0)
   end)
-  if not ok then return false end
+  if not ok or type(U.ModernWowBuildThinBorder) ~= "function" or
+     not U.ModernWowBuildThinBorder(box, spec.edge) then
+    return false
+  end
 
   U.SetBackdropShown(box, false)
   box.uuiModernWowSection = true

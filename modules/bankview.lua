@@ -392,6 +392,7 @@ function view.FillSlot(button, item)
       pcall(button.uuiEdges[i].Show, button.uuiEdges[i])
     end
   end
+  if view.search then view.search.Paint(button, item and item.l) end
 end
 
 -- ---------------------------------------------------------------------------
@@ -620,9 +621,31 @@ function view.Build()
 
   frame:SetScript("OnHide", function()
     U.HideItemCompare()
+    if view.search then view.search.Stop() end
   end)
 
   view.BuildDragHandle()
+
+  -- Header search (user request, 2026-09-24): the bag's field
+  -- (modules/bagdesign.lua), fitted between the title and the read-only note.
+  -- Nil unless the bag design is on. It sits above the drag strip, which keeps
+  -- the rest of the header.
+  if frame.uuiModernWowTitle then
+    view.search = U.ModernWowBagSearch({
+      window = frame,
+      name = "UnrealUIBankViewSearch",
+      id = "bankview.search",
+      after = frame.uuiModernWowTitle,
+      before = frame.note,
+      each = function(paint)
+        local i
+        for i = 1, table.getn(view.slots) do
+          local item = view.slots[i].uuiItem
+          paint(view.slots[i], item and item.l)
+        end
+      end,
+    })
+  end
   pcall(frame.SetMovable, frame, true)
   U.GuardOnScreen(frame, { id = VIEW_POSITION_ID })
   -- /uui reset clears the stored placement; an open window goes back to the
@@ -646,6 +669,7 @@ function U.ToggleBankView()
   view.Layout()
   view.Place()
   view.frame:Show()
+  if view.search then view.search.Start() end
 end
 
 function BV:OnEnable()

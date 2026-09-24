@@ -25,6 +25,9 @@ local CONTROL_TEXT_Y = -1
 local ROW_CHECK_SIZE = 10
 local ROW_CHECK_MARK_INSET = 3
 local ROW_TEXT_INSET = 8
+-- The label beside a Modern WoW (game settings) row tick sits 3 lower than the
+-- tick's centre (user request, 2026-09-23). Flat rows keep 0.
+local ROW_FOREVER_TEXT_Y = -3
 
 local StyleList        -- defined below; rows re-run it when a tick changes.
 local activeDropdown   -- last dropdown whose button we saw opened.
@@ -88,7 +91,9 @@ local function LayoutText(dropdown, button)
     -- records for this client, where inherited vertical alignment is not what
     -- upstream expects.
     local bed = dropdown.uuiDropdownBed
-    text:SetPoint("LEFT", dropdown, "LEFT", (bed and bed.textInset) or 5, CONTROL_TEXT_Y)
+    -- A caller may lower or raise one control's value (options.textY).
+    local textY = CONTROL_TEXT_Y + (dropdown.uuiDropdownTextY or 0)
+    text:SetPoint("LEFT", dropdown, "LEFT", (bed and bed.textInset) or 5, textY)
     if dropdown.uuiDropdownBedRight then
       -- A bed control stops the value short of the arrow printed in its right
       -- cap, measured off the control itself. Not off the empty spacer glyph:
@@ -97,9 +102,9 @@ local function LayoutText(dropdown, button)
       -- value in a 19.8-wide box (wrapped into a 120-tall column) and ran
       -- Graphics API's 66 units past the control's right edge.
       text:SetPoint("RIGHT", dropdown, "RIGHT", -(dropdown.uuiDropdownBedRight + 4),
-                    CONTROL_TEXT_Y)
+                    textY)
     else
-      text:SetPoint("RIGHT", arrow or dropdown, arrow and "LEFT" or "RIGHT", -4, CONTROL_TEXT_Y)
+      text:SetPoint("RIGHT", arrow or dropdown, arrow and "LEFT" or "RIGHT", -4, textY)
     end
     text:SetHeight(dropdown.uuiDropdownHeight or CONTROL_HEIGHT)
     -- A bed may centre its value (options.bed.textAlign); everything else
@@ -266,8 +271,11 @@ end
 
 -- checkboxes: the owning dropdown was styled as a multi-select filter, so every
 -- row reserves the indicator column and shows its own ticked state. Single-select
--- dropdowns pass false and keep the plain accent-highlight row.
-local function StyleListRow(name, index, checkboxes)
+-- dropdowns pass false and keep the plain accent-highlight row. forever: the
+-- tick box draws the game settings checkbox, centred on the flat box, which
+-- it overhangs; the label follows its drawn edge. The rows are a shared pool,
+-- so a flat multi-select menu clears that face again.
+local function StyleListRow(name, index, checkboxes, forever)
   local row = U.G(name .. "Button" .. index)
   local check = U.G(name .. "Button" .. index .. "Check")
   local selected = IsSelected(check)
@@ -281,9 +289,16 @@ local function StyleListRow(name, index, checkboxes)
   if not text or not row then return end
 
   local box = checkboxes and RowCheckbox(row) or row.uuiDropdownCheckbox
+  local drawn = box
   if box then
     if checkboxes then
-      U.SetCheckboxIndicator(box, selected, ROW_CHECK_MARK_INSET)
+      local paint = U.PaintGameSettingsCheckbox
+      if forever and type(paint) == "function" then
+        drawn = paint(box, selected, true) or box
+      else
+        if type(paint) == "function" then paint(box, nil, nil, true) end
+        U.SetCheckboxIndicator(box, selected, ROW_CHECK_MARK_INSET)
+      end
       box:Show()
     else
       box:Hide()
@@ -291,25 +306,48 @@ local function StyleListRow(name, index, checkboxes)
   end
 
   U.SetStockFont(text, M.fontSize.small, selected and M.color.accent or M.color.text)
+  -- Both anchors carry the same y, or the two points pull the label apart.
+  local textY = (checkboxes and box and forever) and ROW_FOREVER_TEXT_Y or 0
   pcall(function()
     text:ClearAllPoints()
     if checkboxes and box then
-      text:SetPoint("LEFT", box, "RIGHT", 6, 0)
+      text:SetPoint("LEFT", drawn, "RIGHT", 6, textY)
     else
       text:SetPoint("LEFT", row, "LEFT", ROW_TEXT_INSET, 0)
     end
-    text:SetPoint("RIGHT", row, "RIGHT", -ROW_TEXT_INSET, 0)
+    text:SetPoint("RIGHT", row, "RIGHT", -ROW_TEXT_INSET, textY)
     text:SetHeight(row:GetHeight())
     text:SetJustifyH("LEFT")
     if text.SetJustifyV then text:SetJustifyV("CENTER") end
   end)
+  -- Hover fill: same white-10% band the game settings list rows use, created
+  -- on the row itself so it is positioned exactly. Reset to hidden on every
+  -- style pass so a row that was left hovered on the previous open starts clean.
+  local hoverFill = row.uuiDropdownHoverFill
+  if not hoverFill then
+    local ok, tex = pcall(row.CreateTexture, row, nil, "BACKGROUND")
+    if ok and tex then
+      pcall(tex.SetTexture, tex, M.texture.plain)
+      local hc = M.foreverWow and M.foreverWow.list and M.foreverWow.list.hover
+                 and M.foreverWow.list.hover.color or { 1, 1, 1, 0.1 }
+      U.SetColor(tex, M.Unpack(hc))
+      pcall(tex.SetAllPoints, tex, row)
+      pcall(tex.Hide, tex)
+      row.uuiDropdownHoverFill = tex
+      hoverFill = tex
+    end
+  else
+    pcall(hoverFill.Hide, hoverFill)
+  end
   if not row.uuiDropdownHoverAttached then
     row.uuiDropdownHoverAttached = U.PostHookScript(row, "OnEnter", function()
       U.SetStockFont(text, M.fontSize.small, M.color.accent)
+      if hoverFill then pcall(hoverFill.Show, hoverFill) end
     end)
     U.PostHookScript(row, "OnLeave", function()
       U.SetStockFont(text, M.fontSize.small,
         row.uuiDropdownSelected and M.color.accent or M.color.text)
+      if hoverFill then pcall(hoverFill.Hide, hoverFill) end
     end)
     -- A tickable entry changes its own state without necessarily reopening the
     -- menu, so the owned indicator has to be refreshed after the native click.
@@ -343,9 +381,16 @@ local function OwningDropdown()
   return open
 end
 
+-- Second result: the owner took its Modern WoW path, so its row ticks draw the
+-- game settings checkbox (rules/unreal-ui-design.md, Modern WoW checkboxes).
+-- A bed control drawn under Modern WoW passes `modernWow` too: the bed owns
+-- the control's art, the flag still owns its rows' ticks.
 local function WantsCheckboxes()
   local dropdown = OwningDropdown()
-  return dropdown and dropdown.uuiDropdownCheckboxes and true or false
+  local checkboxes = dropdown and dropdown.uuiDropdownCheckboxes and true or false
+  local modern = dropdown and (dropdown.uuiDropdownModernWowStyled or
+                               dropdown.uuiDropdownModernWowRows)
+  return checkboxes, checkboxes and modern and true or false
 end
 
 -- Modern WoW chrome (M.modernWow.dropdown): an addon-owned frame over the
@@ -465,10 +510,10 @@ StyleList = function(level)
   end
 
   local max = tonumber(U.G("UIDROPDOWNMENU_MAXBUTTONS")) or 8
-  local checkboxes = WantsCheckboxes()
+  local checkboxes, forever = WantsCheckboxes()
   i = nil
   for i = 1, max do
-    StyleListRow(name, i, checkboxes)
+    StyleListRow(name, i, checkboxes, forever)
   end
   return list
 end
@@ -637,6 +682,7 @@ end
 --   cut { left, right, top, bottom } texels kept at fixed size on each side
 --   scale                     drawn units per texel for those kept edges
 --   inset { left, top, right, bottom } how far the art reaches outside the list
+--   alpha                     the art's opacity (optional, default 1)
 -- Drawn on a mouse-transparent child frame of the list, at the list's own
 -- level so its rows stay above it.
 function D.BedMenu(list, bed)
@@ -706,6 +752,9 @@ function D.BedMenu(list, bed)
     p.c:SetPoint("TOPLEFT", p.tl, "BOTTOMRIGHT", 0, 0)
     p.c:SetPoint("BOTTOMRIGHT", p.br, "TOPLEFT", 0, 0)
   end)
+  -- Set on every open: the list is one shared pool, so another bed's alpha
+  -- must not carry over.
+  pcall(frame.SetAlpha, frame, menu.alpha or 1)
   pcall(frame.Show, frame)
 end
 
@@ -777,6 +826,10 @@ function D.StyleStock(dropdown, width, options)
   if not name then return dropdown end
   dropdown.uuiDropdownStyled = true
   dropdown.uuiDropdownCheckboxes = options.checkboxes and true or false
+  dropdown.uuiDropdownModernWowRows = options.modernWow and true or false
+  -- options.textY: added to this control's value offset (SetPoint sign,
+  -- negative lowers it).
+  dropdown.uuiDropdownTextY = tonumber(options.textY) or nil
 
   U.HideRegion(U.G(name .. "Left"))
   U.HideRegion(U.G(name .. "Middle"))

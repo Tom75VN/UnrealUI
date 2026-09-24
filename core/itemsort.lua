@@ -251,6 +251,21 @@ function IS.IsGeneralBag(bag)
   return IS.TooltipBagSubtype(inventoryId) == ordinary
 end
 
+-- The category view keeps each equipped specialty bag separate.  This shares
+-- the tooltip-derived subtype used by the sorter, rather than trying to read
+-- an equipped bag's unavailable item link on this client.
+function U.BagSpecialtyLabel(bag)
+  if bag == 0 or bag == IS.BANK_CONTAINER then return nil end
+
+  local inventoryId = IS.BagInventoryId(bag)
+  local ordinary = IS.OrdinaryBagSubtype()
+  if not inventoryId or not ordinary then return nil end
+
+  local subtype = IS.TooltipBagSubtype(inventoryId)
+  if subtype and subtype ~= ordinary then return subtype end
+  return nil
+end
+
 -- ---------------------------------------------------------------------------
 -- Ordering
 -- ---------------------------------------------------------------------------

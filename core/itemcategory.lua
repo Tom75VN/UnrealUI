@@ -66,6 +66,14 @@ IC.order = {
   "bandage",
   "explosive",
   "reagent",
+  "leather",
+  "cloth",
+  "herb",
+  "ore",
+  "gem",
+  "enchanting",
+  "engineering",
+  "meat",
   "tradegoods",
   "recipe",
   "ammo",
@@ -88,6 +96,14 @@ IC.label = {
   bandage     = "ITEM_CATEGORY_BANDAGE",
   explosive   = "ITEM_CATEGORY_EXPLOSIVE",
   reagent     = "ITEM_CATEGORY_REAGENT",
+  leather     = "ITEM_CATEGORY_LEATHER",
+  cloth       = "ITEM_CATEGORY_CLOTH",
+  herb        = "ITEM_CATEGORY_HERB",
+  ore         = "ITEM_CATEGORY_ORE",
+  gem         = "ITEM_CATEGORY_GEM",
+  enchanting  = "ITEM_CATEGORY_ENCHANTING",
+  engineering = "ITEM_CATEGORY_ENGINEERING",
+  meat        = "ITEM_CATEGORY_MEAT",
   tradegoods  = "ITEM_CATEGORY_TRADEGOODS",
   recipe      = "ITEM_CATEGORY_RECIPE",
   ammo        = "ITEM_CATEGORY_AMMO",
@@ -148,6 +164,19 @@ IC.subclass = {
   },
 }
 
+-- The bundled item catalog orders Trade Goods by these material families.
+-- Custom entries that do not carry this static data remain in tradegoods.
+IC.tradeFamily = {
+  [1] = "leather",
+  [2] = "cloth",
+  [3] = "herb",
+  [4] = "ore",
+  [5] = "gem",
+  [6] = "enchanting",
+  [7] = "engineering",
+  [8] = "meat",
+}
+
 -- An equippable item carries an INVTYPE_* token here. Three of those tokens do
 -- not mean "gear" in this taxonomy: a bag or quiver belongs with the
 -- containers, ammunition belongs with the ammunition, and the explicit
@@ -172,6 +201,11 @@ end
 
 function IC.FromLink(link)
   local static = U.ItemSortStaticCategory(link)
+  if static == "tradegoods" and type(U.ItemSortStaticTradeFamily) == "function" then
+    local family = U.ItemSortStaticTradeFamily(link)
+    local material = family and IC.tradeFamily[family]
+    if material then return material end
+  end
   if static and static ~= "unknown" then return static end
 
   local cached = IC.cache[link]

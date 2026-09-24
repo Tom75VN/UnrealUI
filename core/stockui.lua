@@ -954,6 +954,12 @@ local function StyleGroupTab(button, options)
   local activeBg = options.activeBackground or inactiveBg
   U.CreateBackdrop(button, { background = inactiveBg, border = M.color.border })
   pcall(button.SetHeight, button, options.height or M.tab.height)
+  -- The hit rect follows the drawn tab. A template's insets were measured for
+  -- its own art size: the Spellbook's 128x64 tab insets 15/14/13/15, so once
+  -- this component sized the Pet tab to its label (~40x22) no clickable area
+  -- was left and every click missed it (user report, 2026-09-24: /uui sb tabs
+  -- read enabled=1 with zero mouse-downs under modern and modern-wow).
+  pcall(button.SetHitRectInsets, button, 0, 0, 0, 0)
   OwnTabLabel(button)
   AlignTabText(button)
 

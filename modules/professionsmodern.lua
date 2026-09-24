@@ -44,6 +44,13 @@ pm.KINDS = {
   },
 }
 
+pm.FILTERS = {
+  { kind = "trivial", key = "showTrivial", label = "PROFESSIONS_FILTER_GRAY" },
+  { kind = "easy", key = "showEasy", label = "PROFESSIONS_FILTER_GREEN" },
+  { kind = "medium", key = "showMedium", label = "PROFESSIONS_FILTER_YELLOW" },
+  { kind = "optimal", key = "showOptimal", label = "PROFESSIONS_FILTER_ORANGE" },
+}
+
 -- This window is drawn inside the native TradeSkill/Craft frame, so the client's
 -- own list and detail scroll frames are still alive underneath our list. They
 -- are ScrollFrames, which is exactly the widget type that receives the wheel on
@@ -242,6 +249,76 @@ function pm.Queue(win)
   U.DeferOnce(win.key, function() pm.Refresh(win) end)
 end
 
+-- Recipe filters, stored per profile. Read on every refresh rather than
+-- cached, because a profile switch replaces U.db without a reload.
+function pm.FilterConfig()
+  return U.ModuleConfig("professions", {
+    showTrivial = true,
+    showEasy = true,
+    showMedium = true,
+    showOptimal = true,
+    allReagents = false,
+  })
+end
+
+function pm.SetFilter(win, key, value)
+  pm.FilterConfig()[key] = value and true or false
+  win.offset = 1
+  win.reveal = true
+  win.selectionHidden = nil
+  pm.Queue(win)
+end
+
+function pm.SetQuery(win, text)
+  win.query = type(U.SearchFold) == "function" and U.SearchFold(text) or ""
+  win.expandForSearch = win.query ~= ""
+  win.offset = 1
+  win.reveal = true
+  win.selectionHidden = nil
+  pm.Queue(win)
+end
+
+-- A Craft entry whose raw difficulty is "none" (Beast Training) has neither a
+-- difficulty nor a reagent count, so no filter applies to it.
+function pm.RecipeVisible(config, entry)
+  if not entry or entry.kind == "header" then return false end
+  if entry.raw == "none" then return true end
+  local i
+  for i = 1, table.getn(pm.FILTERS) do
+    local spec = pm.FILTERS[i]
+    if entry.kind == spec.kind and not config[spec.key] then return false end
+  end
+  if config.allReagents and entry.available <= 0 then return false end
+  return true
+end
+
+function pm.RecipeMatchesSearch(win, entry)
+  local query = win and win.query
+  if type(query) ~= "string" or query == "" then return true end
+  local name = type(U.SearchFold) == "function" and U.SearchFold(entry.name) or ""
+  return string.find(name, query, 1, true) ~= nil
+end
+
+function pm.SyncFilters(win, config)
+  local controls = win.filterControls
+  if not controls then return end
+  local i
+  for i = 1, table.getn(controls) do
+    local control = controls[i]
+    if (control.value and true or false) ~= (config[control.filterKey] and true or false) then
+      control.SetValue(config[control.filterKey])
+    end
+  end
+end
+
+function pm.AppendEntry(entries, entry)
+  local previous = entries[table.getn(entries)]
+  if previous then
+    previous.groupEnd = previous.kind ~= "header" and entry.kind == "header"
+  end
+  table.insert(entries, entry)
+end
+
 function pm.SetPanelState(frame, color, border)
   U.SetBackgroundColor(frame, M.Unpack(color))
   U.SetBorderColor(frame, M.Unpack(border or { 0, 0, 0, 0 }))
@@ -366,8 +443,12 @@ function pm.OnRowClick(win, row)
   local entry = row.entry
   if not entry then return end
   if entry.kind == "header" then
-    pm.Call(entry.expanded and win.kind.collapse or win.kind.expand, entry.index)
+    if entry.expanded then win.selectionHidden = true end
+    local ok = pm.Call(entry.expanded and win.kind.collapse or win.kind.expand,
+                       entry.index)
+    if not ok then win.selectionHidden = nil end
   else
+    win.selectionHidden = nil
     if entry.index ~= pm.Selected(win) then win.count = 1 end
     pm.Call(win.kind.select, entry.index)
   end
@@ -635,6 +716,88 @@ function pm.BuildList(win)
     pm.WheelScroll(win, direction)
   end)
   pm.BuildScroll(win)
+end
+
+-- One filter toggle: the shared checkbox dressed as the game-settings
+-- checkbox (user request, 2026-09-23), its label in the given colour.
+function pm.BuildFilterBox(win, config, suffix, key, text, color, x, y, width)
+  local f = pm.Token().filter
+  local control = U.CreateCheckbox(win.filters, {
+    name = "UnrealUIProfessionsModernFilter" .. win.kind.id .. suffix,
+    text = text, value = config[key],
+    size = f.size, rowHover = true, rowWidth = width,
+    rowHeight = f.rowHeight, textWidth = width - f.size - 6,
+    onChange = function(value) pm.SetFilter(win, key, value) end,
+  })
+  if not control then return end
+  control.filterKey = key
+  control.SetPoint("TOPLEFT", win.filters, "TOPLEFT", x, -y)
+  local function PaintLabel(c) pm.SetColor(c.label, color) end
+  if type(U.StyleGameSettingsCheckbox) ~= "function" or
+     not U.StyleGameSettingsCheckbox(control, PaintLabel) then
+    local apply = control.Apply
+    control.Apply = function() apply() PaintLabel(control) end
+    control.Apply()
+  end
+  table.insert(win.filterControls, control)
+end
+
+-- The difficulty dropdown and the reagent filter above the recipe list. The
+-- difficulty entries keep their semantic recipe colour in the menu.
+function pm.BuildFilters(win)
+  local t, f = pm.Token(), pm.Token().filter
+  local config = pm.FilterConfig()
+  win.filters = U.CreatePanel(win.cover, {
+    width = f.width, height = f.height, background = t.insetColor,
+  })
+  pcall(function()
+    win.filters:SetFrameLevel(pm.Level(win.cover) + t.levels.content)
+    win.filters:SetPoint("TOPLEFT", win.cover, "TOPLEFT", f.x, -f.y)
+  end)
+  win.filterControls = {}
+
+  -- The trainer's Filter control as the flat theme styles it
+  -- (U.ProfessionsDifficultyDropdown in modules/professions.lua).
+  if type(U.ProfessionsDifficultyDropdown) == "function" then
+    win.difficulty = U.ProfessionsDifficultyDropdown(win.filters, {
+      name = "UnrealUIProfessionsModernDifficulty" .. win.kind.id,
+      width = f.dropdown.width,
+      height = f.dropdown.height,
+      style = { checkboxes = true, textY = f.dropdown.textY },
+      filters = pm.FILTERS,
+      config = pm.FilterConfig,
+      colorOf = function(kind) return pm.DifficultyColor({ kind = kind }) end,
+      onToggle = function(key, value) pm.SetFilter(win, key, value) end,
+    })
+  end
+  if win.difficulty then
+    pcall(function()
+      win.difficulty:SetFrameLevel(pm.Level(win.filters) + 2)
+      win.difficulty:ClearAllPoints()
+      win.difficulty:SetPoint("TOPLEFT", win.filters, "TOPLEFT", f.dropdown.x,
+                              -f.dropdown.y)
+    end)
+  end
+  pm.BuildFilterBox(win, config, "Reagents", "allReagents",
+                    U.L("PROFESSIONS_FILTER_ALL_REAGENTS"), M.color.text,
+                    f.reagents.x, f.reagentTop, f.reagents.width)
+  if type(U.CreateSearchBox) == "function" then
+    win.search = U.CreateSearchBox(win.filters, {
+      name = "UnrealUIProfessionsModernSearch" .. win.kind.id,
+      placeholder = U.L("BAGS_SEARCH"),
+      onChange = function(text) pm.SetQuery(win, text) end,
+    })
+  end
+  if win.search then
+    pcall(function()
+      win.search:ClearAllPoints()
+      win.search:SetPoint("TOPLEFT", win.filters, "TOPLEFT", f.search.x, -f.search.y)
+      win.search:SetPoint("TOPRIGHT", win.filters, "TOPRIGHT", -f.search.right,
+                          -f.search.y)
+      U.LevelSearchBox(win.search, pm.Level(win.filters) + 3)
+      U.PaintSearchBox(win.search)
+    end)
+  end
 end
 
 function pm.BuildReagent(win, index)
@@ -1256,13 +1419,25 @@ function pm.Refresh(win)
   end
 
   local pending = pm.pending
-  local wantsPending = pending and (not pending.kind or pending.kind == win.kind.id) and
+  local wantsPending = (not win.query or win.query == "") and pending and
+                       (not pending.kind or pending.kind == win.kind.id) and
                        (not pending.profession or pending.profession == name)
-  if wantsPending then pm.Call(win.kind.expand, 0) end
+  if wantsPending then
+    pm.Call(win.kind.expand, 0)
+  elseif win.expandForSearch then
+    win.expandForSearch = nil
+    pm.Call(win.kind.expand, 0)
+  end
 
   local entries, firstRecipe, pendingEntry = {}, nil, nil
+  -- An expanded category is listed only once one of its recipes passes the
+  -- filters; a collapsed one always is, since its recipes are not reported.
+  local openHeader, config = nil, pm.FilterConfig()
+  pm.SyncFilters(win, config)
   local countOk, count = pm.Call(win.kind.count)
   count = (countOk and tonumber(count)) or 0
+  local selected = pm.Selected(win)
+  local selectedEntry
   local i
   for i = 1, count do
     local rName, kind, available, expanded, sub, points, raw = pm.Info(win, i)
@@ -1270,34 +1445,41 @@ function pm.Refresh(win)
       local entry = { index = i, name = rName, kind = kind, available = available,
                       expanded = expanded and true or false, sub = sub,
                       points = points, raw = raw }
-      table.insert(entries, entry)
-      if kind ~= "header" and not firstRecipe then firstRecipe = entry end
-      if kind ~= "header" and wantsPending and rName == pending.recipe then pendingEntry = entry end
+      if kind == "header" then
+        openHeader = entry.expanded and entry or nil
+        if not entry.expanded and (not win.query or win.query == "") then
+          pm.AppendEntry(entries, entry)
+        end
+      else
+        local pendingMatch = wantsPending and rName == pending.recipe
+        if (pm.RecipeVisible(config, entry) and pm.RecipeMatchesSearch(win, entry)) or
+           pendingMatch then
+          if openHeader then
+            pm.AppendEntry(entries, openHeader)
+            openHeader = nil
+          end
+          pm.AppendEntry(entries, entry)
+          if not firstRecipe then firstRecipe = entry end
+          if i == selected then selectedEntry = entry end
+          if pendingMatch then pendingEntry = entry end
+        end
+      end
       if kind ~= "header" and type(U.CraftTrackerRememberSource) == "function" and
          U.CraftTrackerIsTracked(rName) then
         U.CraftTrackerRememberSource(rName, name, win.kind.id)
       end
     end
   end
-  for i = 1, table.getn(entries) - 1 do
-    entries[i].groupEnd = entries[i].kind ~= "header" and entries[i + 1].kind == "header"
-  end
   win.entries = entries
 
-  local selected = pm.Selected(win)
   if pendingEntry then
     selected = pendingEntry.index
+    selectedEntry = pendingEntry
     pm.Call(win.kind.select, selected)
     win.count, win.reveal, pm.pending = 1, true, nil
   end
-  local selectedEntry
-  for i = 1, table.getn(entries) do
-    if entries[i].index == selected and entries[i].kind ~= "header" then
-      selectedEntry = entries[i]
-      break
-    end
-  end
-  if not selectedEntry and firstRecipe then
+  if selectedEntry then win.selectionHidden = nil end
+  if not selectedEntry and firstRecipe and not win.selectionHidden then
     selectedEntry, selected = firstRecipe, firstRecipe.index
     pm.Call(win.kind.select, selected)
     win.count = 1
@@ -1312,6 +1494,12 @@ function pm.RefreshAll()
   for i = 1, table.getn(pm.windows) do
     if pm.Shown(pm.windows[i].frame) then pm.Queue(pm.windows[i]) end
   end
+end
+
+function pm.ResetSearch(win)
+  win.query = ""
+  win.expandForSearch = nil
+  if type(U.ResetSearchBox) == "function" then U.ResetSearchBox(win.search) end
 end
 
 function pm.Build(kind)
@@ -1329,6 +1517,7 @@ function pm.Build(kind)
 
   pm.MuteNativeWheel(kind)
   pm.BuildChrome(win)
+  pm.BuildFilters(win)
   pm.BuildList(win)
   pm.BuildDetail(win)
   pm.BuildControls(win)
@@ -1353,9 +1542,18 @@ function pm.Build(kind)
     pm.Refresh(win)
     pm.Queue(win)
   end)
-  U.PostHookScript(frame, "OnHide", pm.HideTip)
+  U.PostHookScript(frame, "OnHide", function()
+    pm.HideTip()
+    pm.ResetSearch(win)
+  end)
   if type(U.G(kind.update)) == "function" then
     U.PostHookGlobal(kind.update, function() pm.Queue(win) end)
+  end
+  -- The same header-selection freeze as the Modern WoW window (see
+  -- U.ProfessionsGuardHeaderSelection in modules/professions.lua).
+  if type(U.ProfessionsGuardHeaderSelection) == "function" then
+    U.ProfessionsGuardHeaderSelection(kind.id, kind.id == "trade" and
+      "TradeSkillFrame_SetSelection" or "CraftFrame_SetSelection")
   end
   win.built = true
   table.insert(pm.windows, win)

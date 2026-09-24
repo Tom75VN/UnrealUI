@@ -1,16 +1,14 @@
 -- unrealUI :: modules/merchant.lua
 --
--- pfUI-modern-inspired treatment of the native Merchant window. Native item
--- data, buy/sell/repair logic and tab switching stay intact; unrealUI changes
--- only artwork, typography and layout, matching the Character/Quest Log
--- treatment.
+-- The flat theme follows UnrealPfUI's merchant treatment. Modern WoW adapts
+-- ForeverFrameXML's Mainline merchant structure to the theme's existing NPC
+-- housing and media. Native item, buy/sell/repair and tab behavior stays intact.
 --
 -- query_compat.py has no record at all for MerchantFrame or any of its child
--- regions (checked before writing this file). Every field name below is
--- WORKING_SOURCE from UnrealPfUI's skins/blizzard/merchant.lua, not runtime-
--- verified on this client -- every access is G()+pcall guarded so a wrong
--- name simply leaves that element untouched rather than erroring. Confirm in
--- game and fold real names into knowledge.json once checked.
+-- regions (checked before writing this file). Runtime globals are WORKING_SOURCE
+-- from UnrealPfUI and the pinned Forever FrameXML, not runtime-verified on this
+-- client; every access is G()+pcall guarded so a wrong name leaves that element
+-- untouched rather than erroring.
 
 local U = UnrealUI
 local M = U.media
@@ -22,6 +20,7 @@ local DIM   = { 0.60, 0.60, 0.60, 1.00 }
 
 local frame, panel
 local useModernWow = false
+local chromeStripped = false
 
 -- Vanilla's MERCHANT_ITEMS_PER_PAGE is documented as 10, but the number of
 -- MerchantItem<n> buttons the stock template actually instantiates has no
@@ -41,6 +40,7 @@ local TAB_COUNT = 2
 -- unresolved leftovers fail closed and keep their native appearance.
 local merchantInfoHooked = false
 local buybackInfoHooked = false
+local moneyFrameHooked = false
 local buybackQualityByName = {}
 local BUYBACK_EDGE_SIZE = 2
 
@@ -48,8 +48,118 @@ local function G(name)
   return U.G(name)
 end
 
+local function ResolveItemButtonIcon(button, legacyName)
+  local icon = legacyName and G(legacyName) or nil
+  if icon or not button then return icon end
+  local fields = { "Icon", "icon", "IconTexture" }
+  local i
+  for i = 1, table.getn(fields) do
+    local candidate = button[fields[i]]
+    if candidate and type(candidate.SetTexture) == "function" then
+      return candidate
+    end
+  end
+  return nil
+end
+
 local function SetTextFont(object, size, color)
   U.SetStockFont(object, size or M.fontSize.normal, color or WHITE)
+end
+
+local function ModernToken()
+  return useModernWow and M.modernWow and M.modernWow.merchant or nil
+end
+
+local function RaiseAboveModernChrome(object, offset)
+  if not useModernWow or not object or not frame then return end
+  local ok, level = pcall(frame.GetFrameLevel, frame)
+  level = ok and tonumber(level) or nil
+  if level then pcall(object.SetFrameLevel, object, level + (offset or 3)) end
+end
+
+local function PlaceModernRow(row, position, compact)
+  local token = ModernToken()
+  local layout = token and token.row
+  if not row or not layout or not frame then return end
+  local column = math.mod(position - 1, 2)
+  local line = math.floor((position - 1) / 2)
+  local x = layout.left + column * (layout.width + layout.columnGap)
+  local gap = compact and layout.buybackGap or layout.rowGap
+  local y = layout.top + line * (layout.height + gap)
+  pcall(function()
+    row:ClearAllPoints()
+    row:SetWidth(layout.width)
+    row:SetHeight(layout.height)
+    row:SetPoint("TOPLEFT", frame, "TOPLEFT", x, -y)
+  end)
+end
+
+local function PrepareModernItemButton(button, icon)
+  if not button then return end
+  if not button.uuiModernWowMerchantPrepared then
+    local setters = {
+      "SetNormalTexture", "SetPushedTexture", "SetDisabledTexture",
+    }
+    local i
+    for i = 1, table.getn(setters) do
+      local setter = button[setters[i]]
+      if type(setter) == "function" then
+        if not pcall(setter, button, "") then pcall(setter, button, nil) end
+      end
+    end
+    pcall(button.SetBackdropBorderColor, button, 0, 0, 0, 0)
+    button.uuiModernWowMerchantPrepared = true
+  end
+  U.RestoreContentIcon(icon)
+end
+
+local function StyleModernMerchantSlot(button, icon, iconTexCoord)
+  if not button then return end
+  local token = ModernToken()
+  local borderSize = token and token.slot and token.slot.borderSize
+  if icon then
+    PrepareModernItemButton(button, icon)
+    local coord = iconTexCoord or { 0, 1, 0, 1 }
+    pcall(function()
+      icon:ClearAllPoints()
+      icon:SetTexCoord(coord[1], coord[2], coord[3], coord[4])
+      icon:SetDrawLayer("BACKGROUND")
+    end)
+    if type(U.ModernWowThinBorderFill) == "function" then
+      U.ModernWowThinBorderFill(icon, button, borderSize)
+    else
+      pcall(icon.SetAllPoints, icon, button)
+    end
+  end
+  if not button.uuiModernWowMerchantThinBorder and
+     type(U.ModernWowBuildThinBorder) == "function" then
+    U.ModernWowBuildThinBorder(button, borderSize)
+    button.uuiModernWowMerchantThinBorder = true
+  end
+end
+
+local function MerchantItemNameColor(i, itemButton)
+  local fallback = GOLD
+  local normal = G("NORMAL_FONT_COLOR")
+  if type(normal) == "table" and tonumber(normal.r) and
+     tonumber(normal.g) and tonumber(normal.b) then
+    fallback = { normal.r, normal.g, normal.b, normal.a or 1 }
+  end
+
+  local merchant = frame or G("MerchantFrame")
+  if merchant and tonumber(merchant.selectedTab) == 2 then return fallback end
+
+  local index = i
+  if itemButton and type(itemButton.GetID) == "function" then
+    local idOk, id = pcall(itemButton.GetID, itemButton)
+    if idOk and tonumber(id) then index = id end
+  end
+
+  local getLink = G("GetMerchantItemLink")
+  if type(getLink) ~= "function" then return fallback end
+  local linkOk, link = pcall(getLink, index)
+  if not linkOk or not link then return fallback end
+  return U.ItemLinkQualityColor(link) or fallback
 end
 
 -- Tints the flat row background behind an item/buyback slot. WORKING_SOURCE
@@ -69,16 +179,139 @@ end
 -- Native regions this client exposes for a MerchantItem row are unconfirmed
 -- beyond pfUI's WORKING_SOURCE names (ItemButton, MoneyFrame). Everything is
 -- G()-guarded and no-ops past a missing region.
+local function ScaleMoneyCoins(money, prefix, scale, offsetY)
+  if not money or not prefix or not scale then return end
+  local keys = { "GoldButton", "SilverButton", "CopperButton" }
+  local i
+  for i = 1, table.getn(keys) do
+    local key = keys[i]
+    local button = money[key] or G(prefix .. key)
+    local texture
+    if button and type(button.GetNormalTexture) == "function" then
+      local ok, value = pcall(button.GetNormalTexture, button)
+      if ok then texture = value end
+    end
+    if texture and not texture.uuiMerchantCostCoinScaled then
+      local widthOk, width = pcall(texture.GetWidth, texture)
+      local heightOk, height = pcall(texture.GetHeight, texture)
+      width = widthOk and tonumber(width) or nil
+      height = heightOk and tonumber(height) or nil
+      if width and height and width > 0 and height > 0 then
+        pcall(texture.SetWidth, texture, width * scale)
+        pcall(texture.SetHeight, texture, height * scale)
+        pcall(texture.ClearAllPoints, texture)
+        pcall(texture.SetPoint, texture, "RIGHT", button, "RIGHT", 0,
+              offsetY or 0)
+        texture.uuiMerchantCostCoinScaled = true
+      end
+    end
+  end
+end
+
+local function RefreshModernRowPlate(row, i)
+  local state = row and row.uuiModernWowMerchantRow
+  local label = state and state.label
+  if not label or tonumber(frame and frame.selectedTab) == 2 then return end
+
+  local getCount = G("GetMerchantNumItems")
+  if type(getCount) ~= "function" then return end
+  local countOk, count = pcall(getCount)
+  count = countOk and tonumber(count) or nil
+  local token = ModernToken()
+  local perPage = token and token.row and token.row.count
+  local page = tonumber(frame and frame.page) or 1
+  if not count or not perPage then return end
+
+  local index = (page - 1) * perPage + i
+  if index <= count then
+    pcall(label.SetTexture, label, M.modernWow.texture.merchantLabel)
+    pcall(label.SetAlpha, label, 1)
+    pcall(label.Show, label)
+  else
+    pcall(label.SetTexture, label, nil)
+    pcall(label.Hide, label)
+  end
+end
+
 local function StyleItemRow(i)
   local row = G("MerchantItem" .. i)
   if not row then return end
+
+  if useModernWow then
+    local token = ModernToken()
+    local layout = token and token.row
+    if not layout then return end
+
+    if not row.uuiModernWowMerchantRow then
+      U.StripStockTextures(row)
+      local ok, label = pcall(row.CreateTexture, row, nil, "BACKGROUND")
+      if ok and label then
+        pcall(function()
+          label:SetTexture(M.modernWow.texture.merchantLabel)
+          label:SetWidth(layout.label.width)
+          label:SetHeight(layout.label.height)
+          label:SetPoint("TOPLEFT", row, "TOPLEFT",
+                         layout.label.left, -layout.label.top)
+        end)
+      end
+      row.uuiModernWowMerchantRow = { label = label }
+    end
+
+    PlaceModernRow(row, i)
+    RaiseAboveModernChrome(row, 3)
+    local itemButton = G("MerchantItem" .. i .. "ItemButton")
+    RefreshModernRowPlate(row, i)
+    local icon = ResolveItemButtonIcon(
+      itemButton, "MerchantItem" .. i .. "ItemButtonIconTexture")
+    StyleModernMerchantSlot(itemButton, icon)
+    RaiseAboveModernChrome(itemButton, 4)
+    local name = G("MerchantItem" .. i .. "Name")
+    local nameColor = MerchantItemNameColor(i, itemButton)
+    SetTextFont(name, M.fontSize.small, nameColor)
+    if name then
+      local state = row.uuiModernWowMerchantRow
+      local anchor = state and state.nameAnchor
+      if state and type(anchor) ~= "table" and type(name.GetPoint) == "function" then
+        local anchorOk, point, relativeTo, relativePoint, x, y =
+          pcall(name.GetPoint, name, 1)
+        if anchorOk and point then
+          anchor = {
+            point = point, relativeTo = relativeTo, relativePoint = relativePoint,
+            x = x or 0, y = y or 0,
+          }
+          state.nameAnchor = anchor
+        end
+      end
+      if type(anchor) == "table" then
+        pcall(function()
+          name:ClearAllPoints()
+          name:SetPoint(anchor.point, anchor.relativeTo, anchor.relativePoint,
+                        anchor.x + (layout.nameOffsetX or 0), anchor.y)
+        end)
+      end
+      pcall(name.SetDrawLayer, name, "OVERLAY", 7)
+      name.uuiBuybackBaseColor = nameColor
+    end
+
+    local money = G("MerchantItem" .. i .. "MoneyFrame")
+    if money and itemButton then
+      ScaleMoneyCoins(money, "MerchantItem" .. i .. "MoneyFrame",
+                      layout.costCoinScale, layout.costCoinOffsetY)
+      pcall(function()
+        money:ClearAllPoints()
+        money:SetPoint("BOTTOMLEFT", itemButton, "BOTTOMRIGHT", 5, 1)
+      end)
+    end
+    return
+  end
 
   U.StripStockTextures(row)
   TintRow(row)
 
   local itemButton = G("MerchantItem" .. i .. "ItemButton")
   if itemButton then
-    local icon = G("MerchantItem" .. i .. "ItemButtonIconTexture")
+    local icon = ResolveItemButtonIcon(
+      itemButton, "MerchantItem" .. i .. "ItemButtonIconTexture")
     U.StyleStockButton(itemButton, { icon = icon })
   end
 
@@ -322,20 +555,26 @@ local function LayoutBuybackRows(occupied)
 
   for i = 1, table.getn(occupied) do
     local row = occupied[i]
-    if row ~= first then
-      pcall(row.ClearAllPoints, row)
+    if useModernWow then
+      PlaceModernRow(row, i, true)
       row.uuiBuybackMoved = true
-    end
-    if i == 1 then
-      if row ~= first and first then
-        pcall(row.SetPoint, row, "TOPLEFT", first, "TOPLEFT", 0, 0)
-      end
-    elseif math.mod(i, 2) == 0 then
-      pcall(row.SetPoint, row, "TOPLEFT", occupied[i - 1], "TOPRIGHT", 12, 0)
+      pcall(row.Show, row)
     else
-      pcall(row.SetPoint, row, "TOPLEFT", occupied[i - 2], "BOTTOMLEFT", 0, -15)
+      if row ~= first then
+        pcall(row.ClearAllPoints, row)
+        row.uuiBuybackMoved = true
+      end
+      if i == 1 then
+        if row ~= first and first then
+          pcall(row.SetPoint, row, "TOPLEFT", first, "TOPLEFT", 0, 0)
+        end
+      elseif math.mod(i, 2) == 0 then
+        pcall(row.SetPoint, row, "TOPLEFT", occupied[i - 1], "TOPRIGHT", 12, 0)
+      else
+        pcall(row.SetPoint, row, "TOPLEFT", occupied[i - 2], "BOTTOMLEFT", 0, -15)
+      end
+      pcall(row.Show, row)
     end
-    pcall(row.Show, row)
   end
 end
 
@@ -353,6 +592,11 @@ end
 local VENDOR_ROWS = 10
 
 local function RestoreMerchantAnchor(i, row)
+  if useModernWow then
+    PlaceModernRow(row, i)
+    row.uuiBuybackMoved = nil
+    return
+  end
   if not row.uuiBuybackMoved then return end
   row.uuiBuybackMoved = nil
   pcall(row.ClearAllPoints, row)
@@ -394,6 +638,12 @@ end
 
 local function RefreshBuybackRarity()
   local isBuyback = MerchantIsOnBuybackTab()
+  if useModernWow and isBuyback then
+    local portrait = G("MerchantFramePortrait")
+    if portrait then
+      pcall(portrait.SetTexture, portrait, M.modernWow.texture.merchantBuyback)
+    end
+  end
   local occupied = {}
   local i
   for i = 1, ITEM_ROWS do
@@ -413,7 +663,8 @@ local function RefreshBuybackRarity()
         if colorOk then nameRegion.uuiBuybackBaseColor = { r, g, b, a } end
       end
 
-      local icon = G("MerchantItem" .. i .. "ItemButtonIconTexture")
+      local icon = ResolveItemButtonIcon(
+        itemButton, "MerchantItem" .. i .. "ItemButtonIconTexture")
       local itemName, color = BuybackRowQuality(i, itemButton, icon)
       if itemName then table.insert(occupied, row) end
       if color then
@@ -511,27 +762,200 @@ local function MerchantShown()
   BindBuybackRarity()
 end
 
-local function MerchantInventoryUpdated()
-  RememberBagItemQualities()
-  RefreshBuybackRarity()
-end
-
 local function StyleBuyBackSlot()
   local slot = G("MerchantBuyBackItem")
   if not slot then return end
+
+  if useModernWow then
+    local token = ModernToken()
+    local layout = token and token.buyback
+    if not layout then return end
+    if not slot.uuiModernWowMerchantRow then
+      U.StripStockTextures(slot)
+      slot.uuiModernWowMerchantRow = true
+    end
+    pcall(function()
+      slot:ClearAllPoints()
+      slot:SetWidth(layout.width)
+      slot:SetHeight(layout.height)
+      slot:SetPoint("TOPLEFT", frame, "TOPLEFT", layout.left, -layout.top)
+    end)
+
+    local itemButton = G("MerchantBuyBackItemItemButton")
+    local icon = ResolveItemButtonIcon(
+      itemButton, "MerchantBuyBackItemItemButtonIconTexture")
+    StyleModernMerchantSlot(itemButton, icon)
+    RaiseAboveModernChrome(slot, 3)
+    RaiseAboveModernChrome(itemButton, 4)
+    return
+  end
 
   U.StripStockTextures(slot)
   TintRow(slot)
 
   local itemButton = G("MerchantBuyBackItemItemButton")
   if itemButton then
-    local icon = G("MerchantBuyBackItemItemButtonIconTexture")
+    local icon = ResolveItemButtonIcon(
+      itemButton, "MerchantBuyBackItemItemButtonIconTexture")
     U.StyleStockButton(itemButton, { icon = icon })
   end
 end
 
+local function RefreshLastBuybackSlot()
+  local getCount = G("GetNumBuybackItems")
+  local getInfo = G("GetBuybackItemInfo")
+  if type(getCount) ~= "function" or type(getInfo) ~= "function" then
+    return false
+  end
+
+  local countOk, count = pcall(getCount)
+  count = countOk and tonumber(count) or 0
+  if count < 1 then return false end
+
+  local infoOk, name, texture, price, quantity, available = pcall(getInfo, count)
+  if not infoOk or type(name) ~= "string" or name == "" then return false end
+
+  local slot = G("MerchantBuyBackItem")
+  local itemButton = G("MerchantBuyBackItemItemButton")
+  local icon = ResolveItemButtonIcon(
+    itemButton, "MerchantBuyBackItemItemButtonIconTexture")
+  if not slot or not itemButton then return false end
+
+  local nameRegion = G("MerchantBuyBackItemName")
+  if nameRegion then pcall(nameRegion.SetText, nameRegion, name) end
+
+  local setTexture = G("SetItemButtonTexture")
+  if type(setTexture) == "function" then
+    pcall(setTexture, itemButton, texture)
+  elseif icon then
+    pcall(icon.SetTexture, icon, texture)
+  end
+  if icon then
+    pcall(icon.SetTexture, icon, texture)
+    U.RestoreContentIcon(icon)
+  end
+
+  local setCount = G("SetItemButtonCount")
+  if type(setCount) == "function" then
+    pcall(setCount, itemButton, tonumber(quantity) or 0)
+  end
+  local setStock = G("SetItemButtonStock")
+  if type(setStock) == "function" then
+    pcall(setStock, itemButton, tonumber(available) or 0)
+  end
+
+  local money = G("MerchantBuyBackItemMoneyFrame")
+  local updateMoney = G("MoneyFrame_Update")
+  if money and type(updateMoney) == "function" then
+    local moneyNameOk, moneyName = pcall(money.GetName, money)
+    pcall(updateMoney,
+          moneyNameOk and moneyName or "MerchantBuyBackItemMoneyFrame",
+          tonumber(price) or 0)
+    pcall(money.Show, money)
+  end
+
+  itemButton.hasItem = true
+  itemButton.name = name
+  itemButton.texture = texture
+  pcall(slot.Show, slot)
+  pcall(itemButton.Show, itemButton)
+  StyleBuyBackSlot()
+  return true
+end
+
+local function ScheduleLastBuybackRefresh()
+  if type(U.DeferOnce) ~= "function" then
+    RefreshLastBuybackSlot()
+    RefreshBuybackRarity()
+    return
+  end
+  U.DeferOnce("merchant.last-buyback", function()
+    RefreshLastBuybackSlot()
+    RefreshBuybackRarity()
+  end)
+end
+
+local function MerchantInventoryUpdated()
+  RememberBagItemQualities()
+  ScheduleLastBuybackRefresh()
+end
+
+local function StyleModernRepairButton(button, nativeIcon, cell, layout)
+  local iconSpec = layout and layout.icon
+  if not button or not cell or not iconSpec then return end
+
+  PrepareModernItemButton(button, nativeIcon)
+
+  local state = button.uuiModernWowRepairArt
+  if type(state) ~= "table" then
+    local ownedIcon
+    if not nativeIcon then
+      local iconOk
+      iconOk, ownedIcon = pcall(button.CreateTexture, button, nil, "BORDER")
+      if not iconOk then ownedIcon = nil end
+    end
+    state = { icon = ownedIcon }
+    button.uuiModernWowRepairArt = state
+  end
+
+  local icon = nativeIcon or state.icon
+  if not icon then return end
+
+  pcall(function()
+    icon:ClearAllPoints()
+    icon:SetTexture(iconSpec.texture)
+    icon:SetTexCoord(cell[1] / iconSpec.sheetWidth,
+                     cell[2] / iconSpec.sheetWidth,
+                     cell[3] / iconSpec.sheetHeight,
+                     cell[4] / iconSpec.sheetHeight)
+    icon:SetPoint("TOPLEFT", button, "TOPLEFT", 0, 0)
+    icon:SetPoint("BOTTOMRIGHT", button, "BOTTOMRIGHT", 0, 0)
+    icon:SetDrawLayer("BORDER")
+    icon:SetVertexColor(1, 1, 1, 1)
+    icon:SetAlpha(1)
+    icon:Show()
+  end)
+end
+
 local function StyleRepairButtons()
   local repairAll = G("MerchantRepairAllButton")
+  if useModernWow then
+    local token = ModernToken()
+    local layout = token and token.repairs
+    if not layout then return end
+    local repairItem = G("MerchantRepairItemButton")
+    local guildRepair = G("MerchantGuildBankRepairButton")
+    local buttons = {
+      { repairAll, G("MerchantRepairAllIcon") or
+        (repairAll and repairAll.Icon),
+        layout.icon.repairAll },
+      { repairItem, repairItem and repairItem.Icon, layout.icon.repair },
+      { guildRepair, G("MerchantGuildBankRepairButtonIcon") or
+        (guildRepair and guildRepair.Icon),
+        layout.icon.repairAllGuild },
+    }
+    local visible = 0
+    local i
+    for i = 1, table.getn(buttons) do
+      local button, icon = buttons[i][1], buttons[i][2]
+      if button then
+        pcall(function()
+          button:ClearAllPoints()
+          button:SetWidth(layout.size)
+          button:SetHeight(layout.size)
+          button:SetPoint("TOPLEFT", frame, "TOPLEFT",
+                          layout.right - layout.size -
+                          visible * (layout.size + layout.gap),
+                          -layout.top)
+        end)
+        StyleModernRepairButton(button, icon, buttons[i][3], layout)
+        RaiseAboveModernChrome(button, 4)
+        visible = visible + 1
+      end
+    end
+    return
+  end
+
   if repairAll then
     U.StyleStockButton(repairAll, { icon = G("MerchantRepairAllIcon") })
     local icon = G("MerchantRepairAllIcon")
@@ -582,15 +1006,302 @@ local function StyleRepairButtons()
   end
 end
 
+local function RefreshPageText()
+  if not useModernWow or not frame then return end
+  local pageText = G("MerchantPageText")
+  local getNumItems = G("GetMerchantNumItems")
+  local token = ModernToken()
+  local page = token and token.page
+  if not page or type(getNumItems) ~= "function" then return end
+
+  if pageText then pcall(pageText.Hide, pageText) end
+  local state = frame.uuiModernWowMerchantPageText
+  if not state then
+    local layer = CreateFrame("Frame", nil, frame)
+    layer:SetAllPoints(frame)
+    pcall(layer.EnableMouse, layer, false)
+    local label = U.CreateLabel(layer, {
+      size = M.fontSize.small,
+      color = DIM,
+      inherits = "GameFontNormal",
+      justify = "CENTER",
+    })
+    if label then
+      label:SetPoint("CENTER", layer, "TOPLEFT", token.width / 2, -page.top)
+      pcall(label.SetDrawLayer, label, "OVERLAY", 7)
+    end
+    state = { layer = layer, label = label }
+    frame.uuiModernWowMerchantPageText = state
+  end
+  RaiseAboveModernChrome(state.layer, 5)
+  if not state.label then return end
+
+  local ok, itemCount = pcall(getNumItems)
+  itemCount = ok and tonumber(itemCount) or nil
+  local perPage = tonumber(G("MERCHANT_ITEMS_PER_PAGE")) or
+                  (token and token.row and token.row.count)
+  local currentPage = tonumber(frame.page) or 1
+  local totalPages = itemCount and perPage and perPage > 0 and
+                     math.max(1, math.ceil(itemCount / perPage)) or nil
+
+  if tonumber(frame.selectedTab) == 2 or not totalPages or totalPages <= 1 then
+    pcall(state.label.Hide, state.label)
+    return
+  end
+
+  currentPage = math.max(1, math.min(currentPage, totalPages))
+  pcall(state.label.SetText, state.label,
+        U.L("MERCHANT_PAGE_COUNT", currentPage, totalPages))
+  pcall(state.label.Show, state.label)
+end
+
+local function StyleModernPageButton(button, left)
+  local token = ModernToken()
+  local page = token and token.page
+  local spec = page and page.icon
+  local atlas = spec and spec.atlas
+  if not button or not atlas then return end
+
+  local function SetCell(texture)
+    if not texture then return end
+    local cell = atlas.next
+    local u1, u2 = cell[1] / atlas.sheet, cell[2] / atlas.sheet
+    local v1, v2 = cell[3] / atlas.sheet, cell[4] / atlas.sheet
+    if left then
+      pcall(texture.SetTexCoord, texture, u2, u1, v2, v1)
+    else
+      pcall(texture.SetTexCoord, texture, u1, u2, v1, v2)
+    end
+  end
+
+  local state = button.uuiModernWowMerchantPageIcon
+  if type(state) ~= "table" then
+    local label
+    if type(button.GetRegions) == "function" then
+      local regionsOk, regions = pcall(function() return { button:GetRegions() } end)
+      if regionsOk and type(regions) == "table" then
+        local i
+        for i = 1, table.getn(regions) do
+          local region = regions[i]
+          if region and type(region.SetTextColor) == "function" then
+            label = region
+            break
+          end
+        end
+      end
+    end
+    U.StripStockTextures(button)
+    pcall(button.SetNormalTexture, button, "")
+    pcall(button.SetPushedTexture, button, "")
+    pcall(button.SetDisabledTexture, button, "")
+    pcall(button.SetHighlightTexture, button, "")
+
+    local faceOk, face = pcall(button.CreateTexture, button, nil, "ARTWORK")
+    if not faceOk or not face then return end
+    pcall(face.SetTexture, face, atlas.texture)
+    pcall(face.SetAllPoints, face, button)
+
+    local glowOk, glow = pcall(button.CreateTexture, button, nil, "OVERLAY")
+    if glowOk and glow then
+      pcall(glow.SetTexture, glow, atlas.texture)
+      pcall(glow.SetAllPoints, glow, button)
+      pcall(glow.SetBlendMode, glow, "ADD")
+      pcall(glow.SetAlpha, glow, spec.hoverAlpha or 0.45)
+      pcall(glow.Hide, glow)
+    else
+      glow = nil
+    end
+
+    state = { face = face, glow = glow, label = label, over = false, down = false }
+    button.uuiModernWowMerchantPageIcon = state
+    U.PostHookScript(button, "OnEnter", function()
+      state.over = true
+      StyleModernPageButton(button, left)
+    end)
+    U.PostHookScript(button, "OnLeave", function()
+      state.over = false
+      state.down = false
+      StyleModernPageButton(button, left)
+    end)
+    U.PostHookScript(button, "OnMouseDown", function()
+      state.down = true
+      StyleModernPageButton(button, left)
+    end)
+    U.PostHookScript(button, "OnMouseUp", function()
+      state.down = false
+      StyleModernPageButton(button, left)
+    end)
+    U.PostHookScript(button, "OnEnable", function()
+      StyleModernPageButton(button, left)
+    end)
+    U.PostHookScript(button, "OnDisable", function()
+      StyleModernPageButton(button, left)
+    end)
+  end
+
+  pcall(button.SetWidth, button, spec.size)
+  pcall(button.SetHeight, button, spec.size)
+  local hit = spec.hitPadding or 0
+  pcall(button.SetHitRectInsets, button, -hit, -hit, -hit, -hit)
+
+  SetCell(state.face)
+  SetCell(state.glow)
+  local enabled = true
+  if type(button.IsEnabled) == "function" then
+    local enabledOk, value = pcall(button.IsEnabled, button)
+    if enabledOk then enabled = value and value ~= 0 end
+  end
+  if not enabled then state.down = false end
+  local shade = not enabled and (spec.disabledShade or 0.45) or
+                (state.down and (spec.pressShade or 1) or 1)
+  pcall(state.face.SetDesaturated, state.face, not enabled)
+  pcall(state.face.SetBlendMode, state.face, enabled and "BLEND" or "ADD")
+  pcall(state.face.SetVertexColor, state.face, shade, shade, shade, 1)
+  pcall(state.face.Show, state.face)
+  local textColor = enabled and page.textColor or page.disabledTextColor
+  if textColor then
+    local function PaintLabel(label)
+      if not label or type(label.SetTextColor) ~= "function" then return end
+      pcall(label.SetTextColor, label,
+            textColor[1], textColor[2], textColor[3], textColor[4] or 1)
+    end
+    PaintLabel(state.label)
+    if type(button.GetRegions) == "function" then
+      local regionsOk, regions = pcall(function() return { button:GetRegions() } end)
+      if regionsOk and type(regions) == "table" then
+        local i
+        for i = 1, table.getn(regions) do
+          local region = regions[i]
+          if region and type(region.SetTextColor) == "function" then
+            if not state.label then state.label = region end
+            PaintLabel(region)
+          end
+        end
+      end
+    end
+  end
+  if state.glow then
+    if enabled and state.over and not state.down then
+      pcall(state.glow.Show, state.glow)
+    else
+      pcall(state.glow.Hide, state.glow)
+    end
+  end
+end
+
 local function StylePageControls()
-  -- The Modern WoW media set has no authored left/right utility cells in
-  -- either red-button atlas. Preserve the native stateful arrow art there;
-  -- flat themes continue to use UnrealUI's shared arrow component.
+  -- Modern WoW uses the settings atlas's stepper glyph; flat themes keep
+  -- UnrealUI's shared arrow component.
   if not useModernWow then
     U.StyleStockArrowButton(G("MerchantPrevPageButton"), "left", 18)
     U.StyleStockArrowButton(G("MerchantNextPageButton"), "right", 18)
+  else
+    local token = ModernToken()
+    local page = token and token.page
+    local previous = G("MerchantPrevPageButton")
+    local nextButton = G("MerchantNextPageButton")
+    if page and previous and nextButton then
+      StyleModernPageButton(previous, true)
+      StyleModernPageButton(nextButton, false)
+      pcall(function()
+        previous:ClearAllPoints()
+        previous:SetPoint("CENTER", frame, "TOPLEFT", page.left, -page.top)
+        nextButton:ClearAllPoints()
+        nextButton:SetPoint("CENTER", frame, "TOPLEFT", page.right, -page.top)
+      end)
+      RaiseAboveModernChrome(previous, 4)
+      RaiseAboveModernChrome(nextButton, 4)
+    end
   end
-  SetTextFont(G("MerchantPageText"), M.fontSize.small, DIM)
+  local pageText = G("MerchantPageText")
+  if not useModernWow then SetTextFont(pageText, M.fontSize.small, DIM) end
+  RefreshPageText()
+end
+
+local function StyleMoneyFooter()
+  if not useModernWow then return end
+  local token = ModernToken()
+  local money = token and token.money
+  if not money then return end
+
+  local decorations = {
+    G("MerchantExtraCurrencyInset"), G("MerchantExtraCurrencyBg"),
+    G("MerchantMoneyInset"), G("MerchantMoneyBg"),
+  }
+  local i
+  for i = 1, table.getn(decorations) do
+    local decoration = decorations[i]
+    if decoration and not decoration.uuiModernWowMerchantStripped then
+      U.StripStockTextures(decoration)
+      decoration.uuiModernWowMerchantStripped = true
+    end
+  end
+
+  local readout = G("MerchantMoneyFrame")
+  if readout then
+    pcall(function()
+      readout:ClearAllPoints()
+      readout:SetPoint("RIGHT", frame, "TOPLEFT",
+                       money.left + money.width + money.contentRight,
+                       -(money.top + money.height / 2) +
+                       (money.readoutOffsetY or 0))
+    end)
+
+    local state = readout.uuiModernWowMerchantMoneyOffsets
+    if type(state) ~= "table" then
+      state = {}
+      readout.uuiModernWowMerchantMoneyOffsets = state
+    end
+    local function OffsetRegion(region, key, offset)
+      if not region or type(region.GetPoint) ~= "function" then return end
+      local base = state[key]
+      if type(base) ~= "table" or base.region ~= region then
+        local ok, point, relativeTo, relativePoint, x, y =
+          pcall(region.GetPoint, region, 1)
+        if not ok or not point then return end
+        base = {
+          region = region, point = point, relativeTo = relativeTo,
+          relativePoint = relativePoint, x = x or 0, y = y or 0,
+        }
+        state[key] = base
+      end
+      pcall(function()
+        region:ClearAllPoints()
+        region:SetPoint(base.point, base.relativeTo, base.relativePoint,
+                        base.x, base.y + offset)
+      end)
+    end
+
+    local denominations = {
+      { readout.GoldButton, "gold" },
+      { readout.SilverButton, "silver" },
+      { readout.CopperButton, "copper" },
+    }
+    local j
+    for j = 1, table.getn(denominations) do
+      local button, key = denominations[j][1], denominations[j][2]
+      if button then
+        local iconOk, icon = false, nil
+        if type(button.GetNormalTexture) == "function" then
+          iconOk, icon = pcall(button.GetNormalTexture, button)
+        end
+        if iconOk then OffsetRegion(icon, key .. "Icon", money.coinOffsetY or 0) end
+        local label = button.Text
+        if not label and type(button.GetFontString) == "function" then
+          local labelOk, value = pcall(button.GetFontString, button)
+          if labelOk then label = value end
+        end
+        OffsetRegion(label, key .. "Text", money.textOffsetY or 0)
+      end
+    end
+
+    if not moneyFrameHooked then
+      moneyFrameHooked = U.PostHookGlobal("MoneyFrame_Update", function(updated)
+        if updated == readout then StyleMoneyFooter() end
+      end)
+    end
+    RaiseAboveModernChrome(readout, 4)
+  end
 end
 
 local function StyleTabs()
@@ -600,17 +1311,79 @@ local function StyleTabs()
   end
   U.ChainStockTabs(tabs, 3)
   U.StyleStockTabGroup(tabs, 1)
-  if useModernWow and type(U.ModernWowNpcTab) == "function" then
-    for i = 1, TAB_COUNT do U.ModernWowNpcTab(tabs[i]) end
+  if useModernWow and type(U.ModernWowDressTab) == "function" then
+    for i = 1, TAB_COUNT do U.ModernWowDressTab(tabs[i]) end
+    local token = ModernToken()
+    local layout = token and token.tabs
+    if layout and tabs[1] then
+      U.FitStockTabStrip(tabs, frame, {
+        gap = layout.gap,
+        left = layout.left,
+        right = layout.left,
+        padding = M.modernWow.tab.padding,
+        minPadding = 4,
+        anchor = {
+          frame = frame,
+          point = "TOPLEFT",
+          relativePoint = "TOPLEFT",
+          x = layout.left,
+          y = -layout.top,
+        },
+      })
+    end
+    for i = 1, TAB_COUNT do RaiseAboveModernChrome(tabs[i], 4) end
   end
 end
 
--- The NPC portrait/name header is UNVERIFIED against this client's compact
--- evidence -- no query_compat.py or query_unrealUI.py record covers either
--- global. Guarded so a wrong name just leaves native art/text in place.
+-- Stock merchant title globals vary by client; Modern WoW owns the visible
+-- label and reads the current NPC directly.
 local function StyleHeader()
   local name = G("MerchantFrameTitleText") or G("MerchantNameText")
   if name then SetTextFont(name, M.fontSize.large, GOLD) end
+  if useModernWow then
+    local token = ModernToken()
+    local title = token and token.title
+    if title then
+      local state = frame.uuiModernWowMerchantTitle
+      if not state then
+        local layer = CreateFrame("Frame", nil, frame)
+        layer:SetAllPoints(frame)
+        pcall(layer.EnableMouse, layer, false)
+        local label = U.CreateLabel(layer, {
+          size = M.fontSize.large,
+          color = title.color,
+          inherits = "GameFontNormal",
+          justify = "CENTER",
+        })
+        if label then
+          label:SetPoint("CENTER", layer, "TOPLEFT", title.x,
+                         -(title.y + (token.titleOffsetY or 0)))
+          pcall(label.SetDrawLayer, label, "OVERLAY", 7)
+        end
+        state = { layer = layer, label = label }
+        frame.uuiModernWowMerchantTitle = state
+      end
+
+      RaiseAboveModernChrome(state.layer, 6)
+      local unitOk, text = pcall(UnitName, "npc")
+      if not unitOk or type(text) ~= "string" or text == "" then
+        local textOk
+        textOk, text = name and pcall(name.GetText, name)
+        if not textOk then text = nil end
+      end
+      if state.label then
+        pcall(state.label.SetText, state.label, text or "")
+        pcall(state.label.SetTextColor, state.label,
+              title.color[1], title.color[2], title.color[3],
+              title.color[4] or 1)
+        pcall(state.label.Show, state.label)
+      end
+      if name and state.label then
+        pcall(name.SetAlpha, name, 0)
+        pcall(name.Hide, name)
+      end
+    end
+  end
 
   local portrait = G("MerchantFramePortrait")
   if portrait then
@@ -619,18 +1392,33 @@ local function StyleHeader()
 end
 
 local function StripFrameChrome()
+  if useModernWow and chromeStripped then return end
   local portrait = G("MerchantFramePortrait")
   if portrait then
     U.StripStockTextures(frame, { keep = { [portrait] = true } })
   else
     U.StripStockTextures(frame)
   end
+  if useModernWow then chromeStripped = true end
 end
 
 local function ApplyModernWowDialog()
-  if useModernWow and type(U.ModernWowNpcDialog) == "function" then
-    U.ModernWowNpcDialog(frame, panel, G("MerchantFramePortrait"),
-                         "MerchantFrameCloseButton")
+  if useModernWow and type(U.ModernWowMerchantChrome) == "function" then
+    U.ModernWowMerchantChrome(frame, panel, G("MerchantFramePortrait"),
+                              "MerchantFrameCloseButton")
+    local token = ModernToken()
+    local close = G("MerchantFrameCloseButton")
+    if token and close then
+      pcall(function()
+        close:ClearAllPoints()
+        close:SetWidth(token.close.size)
+        close:SetHeight(token.close.size)
+        close:SetHitRectInsets(0, 0, 0, 0)
+        close:SetPoint("TOPRIGHT", panel, "TOPRIGHT",
+                       -token.close.right, -token.close.top)
+      end)
+      RaiseAboveModernChrome(close, 5)
+    end
   end
 end
 
@@ -640,7 +1428,11 @@ local function Reapply()
 
   StyleHeader()
   StyleItemRows()
+  StylePageControls()
+  StyleMoneyFooter()
   StyleBuyBackSlot()
+  RefreshLastBuybackSlot()
+  StyleRepairButtons()
   BindBuybackRarity()
   ApplyModernWowDialog()
 end
@@ -650,6 +1442,15 @@ local function BuildFrame()
   if not frame then
     U.Debug("merchant: native frame unavailable")
     return false
+  end
+
+  if useModernWow then
+    local token = ModernToken()
+    if not token then return false end
+    pcall(function()
+      frame:SetWidth(token.width)
+      frame:SetHeight(token.height)
+    end)
   end
 
   -- Also run here for a load-on-demand MerchantFrame. OnEnable's early
@@ -665,24 +1466,39 @@ local function BuildFrame()
     height = 100,
     background = { 0.01, 0.01, 0.01, 0.78 },
   })
-  panel:SetPoint("TOPLEFT", frame, "TOPLEFT", 10, -10)
-  panel:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -30, 58)
+  if useModernWow then
+    local art = ModernToken().art
+    panel:SetPoint("TOPLEFT", frame, "TOPLEFT", art.left, -art.top)
+    panel:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -art.right, art.bottom)
+  else
+    panel:SetPoint("TOPLEFT", frame, "TOPLEFT", 10, -10)
+    panel:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -30, 58)
+  end
   pcall(panel.EnableMouse, panel, false)
 
-  pcall(frame.SetHitRectInsets, frame, 10, 30, 10, 58)
+  if useModernWow then
+    local art = ModernToken().art
+    pcall(frame.SetHitRectInsets, frame, art.left, art.right,
+          art.top, art.bottom)
+  else
+    pcall(frame.SetHitRectInsets, frame, 10, 30, 10, 58)
+  end
 
   local frameLevelOk, frameLevel = pcall(frame.GetFrameLevel, frame)
   if frameLevelOk and tonumber(frameLevel) then
     pcall(panel.SetFrameLevel, panel, frameLevel)
   end
 
-  U.StyleStockCloseButton(G("MerchantFrameCloseButton"), panel, -6, -6)
+  if not useModernWow then
+    U.StyleStockCloseButton(G("MerchantFrameCloseButton"), panel, -6, -6)
+  end
   U.MakeWindowDraggable("merchant", frame, { headerInset = 54 })
 
   StyleHeader()
   StyleTabs()
   StyleItemRows()
   StylePageControls()
+  StyleMoneyFooter()
   StyleBuyBackSlot()
   StyleRepairButtons()
   BindBuybackRarity()
@@ -693,22 +1509,15 @@ local function BuildFrame()
     if panel then panel:Hide() end
   end)
 
-  -- MerchantFrame_UpdateMerchantInfo redraws item icons whenever stock, gold
-  -- or the buyback list changes while the window is open; re-running these
-  -- keeps unrealUI's border/icon framing in sync with it. StyleStockButton
-  -- no-ops its one-time strip/backdrop pass per button but still re-applies
-  -- icon show/alpha/crop every call, so this is safe to call repeatedly.
-  --
-  -- BUG (reported in game): the most recently sold item never appeared in
-  -- the buyback slot. StyleBuyBackSlot was only ever called once, at
-  -- BuildFrame/OnShow, before anything had been sold -- selling an item
-  -- fires MerchantFrame_UpdateMerchantInfo without re-showing the frame, so
-  -- the only hook that ran again was StyleItemRows, and the buyback icon's
-  -- show/alpha/crop pass never got a chance to re-apply once native code
-  -- actually populated it.
+  -- Mainline exposes the buyback icon as ItemButton.Icon rather than the
+  -- legacy global. Repopulate the newest sale from GetBuybackItemInfo after
+  -- native refresh, then repeat on the next driver tick so a later event
+  -- handler cannot leave that content texture hidden again.
   U.PostHookGlobal("MerchantFrame_UpdateMerchantInfo", function()
     StyleItemRows()
-    StyleBuyBackSlot()
+    StylePageControls()
+    RefreshLastBuybackSlot()
+    ScheduleLastBuybackRefresh()
   end)
 
   local shown = false
@@ -745,17 +1554,26 @@ function MER:OnEnable()
   BindBuybackRarity()
 
   -- MerchantFrame is load-on-demand on some installs. These behavior-only
-  -- callbacks remain active for every theme, including the two themes that
-  -- deliberately keep native NPC/service-window chrome.
+  -- callbacks remain active for every theme, including Classic's untouched
+  -- NPC/service-window chrome.
   U.RegisterEvent("MERCHANT_SHOW", MerchantShown)
   U.RegisterEvent("MERCHANT_UPDATE", MerchantInventoryUpdated)
   U.RegisterEvent("BAG_UPDATE", RememberBagItemQualities)
 
   useModernWow = type(U.GetActiveThemeStyle) == "function" and
                  U.GetActiveThemeStyle() == "modern-wow"
-  if U.ThemeStyleUsesClassicInteractionChrome() then return end
+  if U.ThemeStyleUsesNativeChrome() then return end
+  if useModernWow and
+     (type(U.ModernWowSurfaceEnabled) ~= "function" or
+      not U.ModernWowSurfaceEnabled("merchant")) then
+    return
+  end
   if TryBuild() then return end
 
   U.RegisterEvent("ADDON_LOADED", TryBuild)
   U.RegisterEvent("MERCHANT_SHOW", TryBuild)
+end
+
+function U.ModernWowMerchantActive()
+  return useModernWow and frame and frame.uuiModernWowMerchant and true or false
 end

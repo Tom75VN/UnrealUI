@@ -51,24 +51,11 @@ local ICON_SIZE     = M.slot.icon
 local HEADER_ICON   = M.slot.headerIcon
 local TRAY_SLOT     = M.slot.tray   -- keyring / bag-slot button size
 
--- Category view metrics (the optional grouped layout, off by default).
--- Categories normally span the flat grid's width, but two adjacent categories
--- can share a row when splitting the slot rhythm in half does not make the
--- window taller. Only the gutter and the second box's edge insets add width.
-local SECTION_TITLE  = 18   -- heading strip above each category box
-local SECTION_TOGGLE = 16   -- the +/- collapse box in that strip
-local SECTION_INSET  = 4    -- slot inset inside a category box
-local SECTION_GAP    = 6    -- between one category box and the next heading
-local SECTION_COLUMN_GAP = 6 -- between category boxes that share a row
-local SECTION_ITEM_COLUMNS = math.floor(COLUMNS / 2)
-
--- Centres the collapse box in its heading strip.
-local SECTION_TOGGLE_Y = math.floor((SECTION_TITLE - SECTION_TOGGLE) / 2)
-
 local anchor, frame, grid
-local sections = {}     -- sections[categoryKey] = { box, title, toggle }
 local slots = {}        -- slots[bag][slot] = button
 local containers = {}   -- containers[bag] = per-bag parent frame, SetID(bag)
+-- The category view, shared with the bank (modules/bagcategoryview.lua).
+local catView
 
 local layoutDirty = true
 local bagDirty = {}
@@ -97,13 +84,22 @@ local function EnsureConfig()
   -- stays the shipped bag, and nothing about the window changes for a player
   -- who never opens the settings page.
   -- collapsed is keyed by category; only the collapsed ones are present, so the
-  -- table stays empty until the player actually folds something away.
+  -- table stays empty until the player actually folds something away. The
+  -- bank window draws the same category view when `categories` is on, with
+  -- its own folds in collapsedBank.
   if not config then
     config = U.ModuleConfig("bags",
                             { enabled = true, categories = false,
-                              collapsed = {} })
+                              collapsed = {}, collapsedBank = {} })
   end
   return config
+end
+
+-- The persisted collapsed-category table of one window: "bank" for the bank,
+-- anything else for the carried bags.
+function U.BagsCategoryCollapsed(window)
+  if window == "bank" then return EnsureConfig().collapsedBank end
+  return EnsureConfig().collapsed
 end
 
 function U.BagsEnabled()
@@ -142,8 +138,10 @@ end
 function U.SetBagsCategories(value)
   EnsureConfig().categories = value and true or false
   -- Both views run on the same buttons, so the next refresh tick simply draws
-  -- the other one. Nothing to reload and nothing to rebuild.
+  -- the other one. Nothing to reload and nothing to rebuild. The bank follows
+  -- the same setting.
   layoutDirty = true
+  if type(U.MarkBankLayoutDirty) == "function" then U.MarkBankLayoutDirty() end
   return U.BagsCategoriesEnabled()
 end
 
@@ -171,6 +169,7 @@ local function BagFooterHeight()
   if modernBag.Active() and M.modernWow and M.modernWow.bags then
     return M.modernWow.bags.footer
   end
+  if modernBag.Flat() then return M.slot.footer end
   return 0
 end
 
@@ -266,12 +265,6 @@ function classicBag.SlotGap()
   -- Classic two extra pixels so adjacent rims remain visually distinct.
   if classicBag.ready then return SLOT_GAP + 2 end
   return U.ModernWowBagMetric("slotGap", SLOT_GAP)
-end
-
--- Slot inset inside a category box. Modern WoW's thin-border rim is wider
--- than the flat outline, so the slots sit further in to clear it.
-function classicBag.SectionInset()
-  return U.ModernWowBagMetric("sectionInset", SECTION_INSET)
 end
 
 -- Space between the header icons (key, bags, sell, sort, stack, bank).
@@ -467,6 +460,31 @@ function modernBag.StyleHeader(window)
 
   U.ModernWowBagSeparator(window)
   return true
+end
+
+-- The `modern` flat window, decided once at Build like the bag design.
+function modernBag.Flat()
+  return not modernBag.Active() and type(U.GetActiveThemeStyle) == "function" and
+         U.GetActiveThemeStyle() == "modern"
+end
+
+-- Under `modern` the money readout and the used-slot readout sit in a footer,
+-- bottom right and bottom left, where the bag design puts them (user request,
+-- 2026-09-24); the header's lane between the last icon and the close button
+-- is the search field's. The footer's height is M.slot.footer.
+function modernBag.StyleFlatFooter(window)
+  if not modernBag.Flat() or not window then return end
+  if window.money then
+    window.money:ClearAllPoints()
+    window.money:SetPoint("BOTTOMRIGHT", window, "BOTTOMRIGHT",
+                          -PADDING, PADDING)
+  end
+  if window.slotCount then
+    window.slotCount:ClearAllPoints()
+    -- On the money row's centre line.
+    window.slotCount:SetPoint("LEFT", window, "BOTTOMLEFT", PADDING,
+                              PADDING + 8)
+  end
 end
 
 function U.ModernWowBagsActive()
@@ -680,8 +698,8 @@ local function BuildCoin(parent, denom)
   icon:SetWidth(12)
   icon:SetHeight(12)
   -- The coin fills its own texture, so it centres on the holder and the
-  -- number keeps the common text baseline.
-  icon:SetPoint("RIGHT", holder, "RIGHT", 0, 0)
+  -- number keeps the common text baseline; M.money.iconY lifts the icon only.
+  icon:SetPoint("RIGHT", holder, "RIGHT", 0, M.money.iconY or 0)
   pcall(icon.SetTexture, icon, spec.texture)
   holder.icon = icon
 
@@ -692,7 +710,7 @@ local function BuildCoin(parent, denom)
     color = spec.color,
     inherits = "GameFontNormalSmall",
   })
-  if holder.label then holder.label:SetPoint("RIGHT", icon, "LEFT", -1, 0) end
+  if holder.label then holder.label:SetPoint("RIGHT", holder, "RIGHT", -13, 0) end
 
   return holder
 end
@@ -774,6 +792,12 @@ local function EnsureBagRoot(bag, parent)
   return root
 end
 
+-- Empty-slot proxy tracing, the same debug channel the shared category view
+-- (modules/bagcategoryview.lua) writes its drop routing to.
+local function DropTrace(message)
+  U.Debug("bags empty-slot: " .. tostring(message))
+end
+
 local function EnsureSlot(bag, slot, parent)
   slots[bag] = slots[bag] or {}
   if slots[bag][slot] then return slots[bag][slot] end
@@ -798,15 +822,35 @@ local function EnsureSlot(bag, slot, parent)
                         type(U.BagFavoriteBag) == "function" and
                         U.BagFavoriteBag(bag)
 
-  if rogueClick or favoriteClick then
-    local stockClick = button:GetScript("OnClick")
-    if type(stockClick) == "function" then
-      button:SetScript("OnClick", function(a, b, c)
-        if rogueClick and U.TryRoguePoisonClick(bag, slot, a, b) then return end
-        if favoriteClick and U.TryBagFavoriteClick(bag, slot, a, b) then return end
-        stockClick(a, b, c)
-      end)
-    end
+  local stockClick = button:GetScript("OnClick")
+  if type(stockClick) == "function" then
+    button:SetScript("OnClick", function(a1, a2, a3, a4, a5,
+                                          a6, a7, a8, a9)
+      if rogueClick and U.TryRoguePoisonClick(bag, slot, a1, a2) then return end
+      if favoriteClick and U.TryBagFavoriteClick(bag, slot, a1, a2) then return end
+
+      local source = U.BagCategoryDropSource(bag, slot)
+      local mouseButton = U.MouseButton(a1, a2)
+      if source and (not mouseButton or mouseButton == "LeftButton") then
+        U.SetBagCategoryDropSource(source)
+      end
+      stockClick(a1, a2, a3, a4, a5, a6, a7, a8, a9)
+      if source and U.CursorHasItem() then U.SetBagCategoryDropSource(source) end
+    end)
+  end
+
+  local stockDragStart = button:GetScript("OnDragStart")
+  if type(stockDragStart) == "function" then
+    button:SetScript("OnDragStart", function(a1, a2, a3, a4, a5,
+                                              a6, a7, a8, a9)
+      DropTrace("SOURCE OnDragStart fired")
+      local source = U.BagCategoryDropSource(bag, slot)
+      if source then U.SetBagCategoryDropSource(source) end
+      stockDragStart(a1, a2, a3, a4, a5, a6, a7, a8, a9)
+      local hasItem = U.CursorHasItem()
+      DropTrace("CursorHasItem after source pickup=" .. tostring(hasItem))
+      if source and hasItem then U.SetBagCategoryDropSource(source) end
+    end)
   end
 
   -- The shortcut line under the tooltip. core/itemslot.lua already post-hooks
@@ -826,6 +870,52 @@ local function EnsureSlot(bag, slot, parent)
 
   slots[bag][slot] = button
   return button
+end
+
+-- ---------------------------------------------------------------------------
+-- Header search (user request, 2026-09-24): the bag-family search field
+-- (U.ModernWowBagSearch, modules/bagdesign.lua), fitted between the last
+-- header icon -- the saved-bank button, which follows every show/hide rule of
+-- the icons before it -- and the close cell. Under `modern` the same lane on
+-- the flat header (U.FlatBagSearch; user requests, 2026-09-24), which the
+-- money readout leaves for the footer (modernBag.StyleFlatFooter).
+-- ---------------------------------------------------------------------------
+local search = {}
+
+function search.Build(window)
+  if search.ctl or not window or not window.bankView then return end
+  local spec = {
+    window = window,
+    name = "UnrealUIBagSearch",
+    id = "bags.search",
+    after = window.bankView,
+    -- pairs, not table.getn: the category view builds no button for an empty
+    -- slot, so a bag's slot table has holes and a counted walk stops at the
+    -- first one, leaving every later item unshaded.
+    each = function(paint)
+      local bag, bagSlots
+      for bag, bagSlots in pairs(slots) do
+        local slot, button
+        for slot, button in pairs(bagSlots) do
+          paint(button, U.ContainerSlotLink(bag, slot))
+        end
+      end
+    end,
+  }
+  search.ctl = U.ModernWowBagSearch(spec) or U.FlatBagSearch(spec)
+  search.field = search.ctl and search.ctl.field
+end
+
+function search.Paint(button, link)
+  if search.ctl then search.ctl.Paint(button, link) end
+end
+
+function search.Start()
+  if search.ctl then search.ctl.Start() end
+end
+
+function search.Stop()
+  if search.ctl then search.ctl.Stop() end
 end
 
 local function UpdateCooldown(bag, slot)
@@ -870,6 +960,9 @@ local function UpdateSlotAppearance(bag, slot)
   button.uuiSlotLink, button.uuiSlotTexture = link, texture
   button.uuiSlotCount, button.uuiSlotQuality = count, quality
   button.uuiSlotLocked = locked
+
+  -- A cache hit keeps the same item, so only a changed slot is re-matched.
+  search.Paint(button, link)
 end
 
 local function InvalidateSlotCache()
@@ -1045,6 +1138,42 @@ local function LayoutBagSlots()
     local name = "UnrealUIBagBagSlot" .. i
     local button = U.CreateBagSlotButton(tray, name, i)
     if button then
+      local bagClick = button:GetScript("OnClick")
+      if type(bagClick) == "function" then
+        button:SetScript("OnClick", function(a1, a2, a3, a4, a5,
+                                              a6, a7, a8, a9)
+          bagClick(a1, a2, a3, a4, a5, a6, a7, a8, a9)
+          if U.CursorHasItem() then
+            U.SetBagCategoryDropSource({
+              category = "container",
+              containerBag = button.slot,
+            })
+          end
+        end)
+      end
+
+      local bagDragStart = button:GetScript("OnDragStart")
+      if type(bagDragStart) == "function" then
+        button:SetScript("OnDragStart", function(a1, a2, a3, a4, a5,
+                                                  a6, a7, a8, a9)
+          DropTrace("SOURCE OnDragStart fired")
+          U.SetBagCategoryDropSource({
+            category = "container",
+            containerBag = button.slot,
+          })
+          bagDragStart(a1, a2, a3, a4, a5, a6, a7, a8, a9)
+          local hasItem = U.CursorHasItem()
+          DropTrace("CursorHasItem after source pickup=" ..
+                          tostring(hasItem))
+          if hasItem then
+            U.SetBagCategoryDropSource({
+              category = "container",
+              containerBag = button.slot,
+            })
+          end
+        end)
+      end
+
       button:ClearAllPoints()
       button:SetPoint("TOPLEFT", tray, "TOPLEFT",
                       PADDING + (i - 1) * (TRAY_SLOT + slotGap), -PADDING)
@@ -1077,44 +1206,16 @@ end
 -- Category view
 --
 -- Optional stacked-section layout over the very same slot buttons the flat
--- grid uses: nothing is created, destroyed or re-parented when the view is
--- switched, the buttons are only re-anchored. Click, drag, tooltip, price,
--- comparison and cooldown behavior are therefore identical in both views, and
--- switching costs one relayout rather than a rebuild.
---
--- What an item *is* belongs to core/itemcategory.lua; this file only decides
--- where a category goes on screen.
+-- grid uses. The layout, its sections and the empty-slot proxy are
+-- modules/bagcategoryview.lua, shared with the bank window; this file keeps
+-- only the window's side of it.
 -- ---------------------------------------------------------------------------
--- Forward declaration. The collapse handler is built in EnsureSection, above
--- the layout it has to re-run, and a fold should redraw on the click rather
--- than waiting up to a refresh tick for the dirty flag to be noticed.
-local LayoutCategories
-
-local function HideSection(section)
-  if not section then return end
-  if section.box then section.box:Hide() end
-  if section.toggle then section.toggle:Hide() end
-  if section.title then section.title:Hide() end
-end
-
-local function HideSections()
-  local key, section
-  for key, section in pairs(sections) do HideSection(section) end
-end
-
-local function ToggleSection(key, collapsed)
-  -- Only collapsed categories are stored, so folding one back open removes its
-  -- entry rather than leaving a false behind in SavedVariables.
-  EnsureConfig().collapsed[key] = collapsed or nil
-  LayoutCategories()
-end
-
 -- Used / total carried slots, shown in the header beside the money readout.
 --
 -- It belongs to the category view alone. The flat grid draws every free slot as
 -- an empty square, so the same information is already on screen there and a
--- second copy of it would just be header noise; the category view draws no
--- empty squares at all, which is exactly why it needs the number.
+-- second copy of it would just be header noise; the category view only draws
+-- one empty slot as a drop target, which is why it needs the number.
 --
 -- Keyring slots are excluded on purpose: BAG_IDS is what the window shows, and
 -- a keyring the player has not opened must not change a count that is meant to
@@ -1132,282 +1233,13 @@ local function RefreshSlotCount(used, total)
   label:Show()
 end
 
--- A section is a heading row plus a box of slots. The heading is deliberately
--- *not* part of the box: a collapsed category keeps its title and its +/-
--- control on screen while the box goes away, and a region belonging to a hidden
--- frame cannot stay visible. All three are children of the grid instead.
-local function EnsureSection(key, contentWidth)
-  local section = sections[key]
-  if section then return section end
-
-  section = {}
-
-  section.box = U.CreatePanel(grid, {
-    name = "UnrealUIBagCategory_" .. key,
-    width = contentWidth + classicBag.SectionInset() * 2,
-    height = SLOT_SIZE + classicBag.SectionInset() * 2,
-  })
-  classicBag.StylePanel(section.box, false)
-  if modernBag.Active() then U.ModernWowBagSection(section.box) end
-  -- Purely a backdrop for the slots anchored over it; it must not eat the
-  -- clicks and drags those slots depend on.
-  pcall(section.box.EnableMouse, section.box, false)
-
-  -- The shared collapse control (U.CreateCollapseButton), not a local variant:
-  -- same sharp box, same accent hover, same owned +/- glyph as every other
-  -- collapsible header in the addon.
-  section.toggle = U.CreateCollapseButton(grid, {
-    size = SECTION_TOGGLE,
-    collapsed = EnsureConfig().collapsed[key],
-    onClick = function(collapsed) ToggleSection(key, collapsed) end,
-  })
-  if modernBag.Active() and type(U.ModernWowCollapseFace) == "function" then
-    U.ModernWowCollapseFace(section.toggle)
-  end
-
-  section.title = U.CreateLabel(grid, {
-    size = M.fontSize.small,
-    color = M.color.accent,
-    inherits = "GameFontNormalSmall",
-    justify = "LEFT",
-  })
-  if section.title then section.title:SetText(U.ItemCategoryLabel(key)) end
-
-  sections[key] = section
-  return section
-end
-
--- One pass over every carried slot, bucketed by category. Free slots are only
--- counted: they are not content, so they get no section and no button. The
--- header readout reports them instead, which is why the used and total counts
--- come back alongside the buckets.
-local function CollectCategories()
-  local buckets = {}
-  local used, total = 0, 0
-  local i
-
-  -- The favourite section overrides whatever the item would otherwise be
-  -- filed under, so a marked item is in one place and only one place. Resolved
-  -- once per pass rather than per slot; nil when modules/bagfavorites.lua is
-  -- not loaded, and the view then behaves exactly as it did before.
-  local favoriteKey = nil
-  if type(U.ItemCategoryFavorite) == "function" and
-     type(U.IsBagSlotFavorite) == "function" then
-    favoriteKey = U.ItemCategoryFavorite()
-  end
-
-  for i = 1, table.getn(BAG_IDS) do
-    local bag = BAG_IDS[i]
-    local ok, n = pcall(GetContainerNumSlots, bag)
-    n = (ok and tonumber(n)) or 0
-
-    local slot
-    for slot = 1, n do
-      total = total + 1
-
-      local key = U.ItemCategoryForSlot(bag, slot)
-      -- After the classification, not instead of it: an empty slot is still
-      -- empty, and the mark is only ever asked about a slot that holds
-      -- something.
-      if key ~= "empty" and favoriteKey and U.IsBagSlotFavorite(bag, slot) then
-        key = favoriteKey
-      end
-      if key ~= "empty" then
-        used = used + 1
-        if not buckets[key] then buckets[key] = {} end
-
-        -- The grouped view is the visual form of the physical sorter: category
-        -- headings own the first level, and this shared key groups functional
-        -- kinds (healing potions, mana potions, etc.) plus identical items
-        -- inside each heading. Coordinates make equal stacks deterministic.
-        local link = U.ContainerSlotLink(bag, slot)
-        local sort = U.ItemSortKey(link) ..
-          string.format("|%02d|%04d", bag + 2, slot)
-        table.insert(buckets[key], { bag = bag, slot = slot, sort = sort })
-      end
-    end
-  end
-
-  -- Automatic while category view is enabled: only the slot buttons move on
-  -- screen. The player's actual container slots are left untouched.
-  local _, entries
-  for _, entries in pairs(buckets) do
-    table.sort(entries, function(a, b) return a.sort < b.sort end)
-  end
-
-  return buckets, used, total
-end
-
-local function CategoryBodyHeight(n, columns, collapsed, slotGap)
-  if collapsed then return 0 end
-  local rows = math.ceil(n / columns)
-  return classicBag.SectionInset() * 2 + rows * (SLOT_SIZE + slotGap) - slotGap
-end
-
--- Two categories share a row only when the half-width slot grids are no taller
--- than drawing both as full-width rows. This keeps a large category beside a
--- tiny one from making the grouped view worse merely to force a second column.
-local function CategoriesCanShareRow(left, right, slotGap)
-  if not left or not right or SECTION_ITEM_COLUMNS < 1 then return false end
-
-  local leftHalf = CategoryBodyHeight(left.n, SECTION_ITEM_COLUMNS,
-                                      left.collapsed, slotGap)
-  local rightHalf = CategoryBodyHeight(right.n, SECTION_ITEM_COLUMNS,
-                                       right.collapsed, slotGap)
-  local sharedHeight = SECTION_TITLE + math.max(leftHalf, rightHalf)
-
-  local separateHeight = SECTION_TITLE +
-    CategoryBodyHeight(left.n, COLUMNS, left.collapsed, slotGap) +
-    SECTION_GAP + SECTION_TITLE +
-    CategoryBodyHeight(right.n, COLUMNS, right.collapsed, slotGap)
-
-  return sharedHeight <= separateHeight
-end
-
--- Assigns the local forward-declared above ToggleSection.
-function LayoutCategories()
-  local slotGap = classicBag.SlotGap()
-  local fullContentWidth = COLUMNS * (SLOT_SIZE + slotGap) - slotGap
-  local halfContentWidth = SECTION_ITEM_COLUMNS * (SLOT_SIZE + slotGap) - slotGap
-  local fullSectionWidth = fullContentWidth + classicBag.SectionInset() * 2
-  local halfSectionWidth = halfContentWidth + classicBag.SectionInset() * 2
-  local buckets, usedSlots, totalSlots = CollectCategories()
-  local order = U.ItemCategoryOrder()
-  local live = {}    -- every (bag, slot) this pass actually placed
-  local drawn = {}   -- every category this pass actually drew
-  local visible = {} -- ordered non-empty categories, paired below when useful
-  local layoutWidth = fullSectionWidth
-  local y = 0
-  local i
-
-  RefreshSlotCount(usedSlots, totalSlots)
+-- The view itself is modules/bagcategoryview.lua, shared with the bank; this
+-- window hands it its containers and slot buttons (see Build) and sizes
+-- itself from the result in onLayout. The sort button goes: the view already
+-- shows every category in sorted order.
+local function LayoutCategories()
   SetSortButtonShown(false)
-
-  for i = 1, table.getn(order) do
-    local key = order[i]
-    local entries = buckets[key]
-    local n = (entries and table.getn(entries)) or 0
-    if n > 0 then
-      table.insert(visible, {
-        key = key,
-        entries = entries,
-        n = n,
-        collapsed = EnsureConfig().collapsed[key] and true or false,
-      })
-    end
-  end
-
-  i = 1
-  while i <= table.getn(visible) do
-    local left = visible[i]
-    local right = visible[i + 1]
-    local shared = CategoriesCanShareRow(left, right, slotGap)
-    local rowCount = shared and 2 or 1
-    local columns = shared and SECTION_ITEM_COLUMNS or COLUMNS
-    local contentWidth = shared and halfContentWidth or fullContentWidth
-    local sectionWidth = shared and halfSectionWidth or fullSectionWidth
-    local rowBodyHeight = 0
-
-    if shared then
-      layoutWidth = math.max(layoutWidth,
-                             halfSectionWidth * 2 + SECTION_COLUMN_GAP)
-    end
-
-    local rowIndex
-    for rowIndex = 1, rowCount do
-      local spec = visible[i + rowIndex - 1]
-      local section = EnsureSection(spec.key, contentWidth)
-      local x = (rowIndex - 1) * (sectionWidth + SECTION_COLUMN_GAP)
-      local height = CategoryBodyHeight(spec.n, columns, spec.collapsed,
-                                        slotGap)
-      drawn[spec.key] = true
-
-      -- Heading row: the +/- control and the category name remain visible even
-      -- when the category box below them is folded away.
-      if section.toggle then
-        section.toggle:ClearAllPoints()
-        section.toggle:SetPoint("TOPLEFT", grid, "TOPLEFT", x,
-                                -(y + SECTION_TOGGLE_Y))
-        section.toggle.uuiSetCollapsed(spec.collapsed)
-        section.toggle:Show()
-      end
-      if section.title then
-        section.title:ClearAllPoints()
-        if section.toggle then
-          section.title:SetPoint("LEFT", section.toggle, "RIGHT", 4, 0)
-        else
-          section.title:SetPoint("TOPLEFT", grid, "TOPLEFT", x + 2, -y)
-        end
-        section.title:Show()
-      end
-
-      if spec.collapsed then
-        -- The slots are simply not placed. Nothing marks them live, so the
-        -- sweep at the end of this function is what takes them off screen.
-        section.box:Hide()
-      else
-        section.box:SetWidth(contentWidth + classicBag.SectionInset() * 2)
-        section.box:SetHeight(height)
-        section.box:ClearAllPoints()
-        section.box:SetPoint("TOPLEFT", grid, "TOPLEFT", x,
-                             -(y + SECTION_TITLE))
-        section.box:Show()
-
-        local j
-        for j = 1, spec.n do
-          local entry = spec.entries[j]
-          local button = EnsureSlot(entry.bag, entry.slot, grid)
-          if button then
-            local col = math.mod(j - 1, columns)
-            local row = math.floor((j - 1) / columns)
-            local inset = classicBag.SectionInset()
-            PlaceSlot(button, section.box,
-                      inset + col * (SLOT_SIZE + slotGap),
-                      -(inset + row * (SLOT_SIZE + slotGap)))
-            UpdateSlotAppearance(entry.bag, entry.slot)
-            button:Show()
-            live[entry.bag .. ":" .. entry.slot] = true
-          end
-        end
-      end
-
-      rowBodyHeight = math.max(rowBodyHeight, height)
-    end
-
-    y = y + SECTION_TITLE + rowBodyHeight + SECTION_GAP
-    i = i + rowCount
-  end
-
-  if y > 0 then y = y - SECTION_GAP end
-
-  -- Everything this pass did not place: every free slot, which the header
-  -- readout accounts for instead, every slot inside a collapsed category, and
-  -- any button left over from a bag since swapped for a smaller one.
-  for i = 1, table.getn(BAG_IDS) do
-    local bag = BAG_IDS[i]
-    local bagSlots = slots[bag]
-    if bagSlots then
-      local slot
-      for slot = 1, table.getn(bagSlots) do
-        if bagSlots[slot] and not live[bag .. ":" .. slot] then
-          bagSlots[slot]:Hide()
-        end
-      end
-    end
-  end
-
-  local key, section
-  for key, section in pairs(sections) do
-    if not drawn[key] then HideSection(section) end
-  end
-
-  -- No bags at all (or none readable yet): keep one slot row of window rather
-  -- than collapsing the frame onto its header.
-  if y <= 0 then y = SLOT_SIZE end
-
-  anchor:SetWidth(layoutWidth + classicBag.SidePad() * 2)
-  anchor:SetHeight(BagHeaderHeight() + y + PADDING + BagFooterHeight())
-  modernBag.ResizePanel(frame)
+  catView.Layout()
 end
 
 -- ---------------------------------------------------------------------------
@@ -1420,7 +1252,7 @@ local function LayoutSlots()
 
   -- Switching back out of the category view leaves its boxes and its header
   -- readout behind otherwise; the slot buttons themselves are re-anchored below.
-  HideSections()
+  if catView then catView.Clear() end
   RefreshSlotCount(nil, nil)
   SetSortButtonShown(true)
 
@@ -1545,6 +1377,11 @@ function U.MarkBagsDirty()
   InvalidateSlotCache()
   MarkAllBagsDirty()
   layoutDirty = true
+end
+
+local function RefreshAfterBagRun()
+  U.MarkBagsDirty()
+  RefreshSortButton()
 end
 
 -- ---------------------------------------------------------------------------
@@ -1757,7 +1594,7 @@ local function BuildHeader()
     -- U.SortBags owns every refusal message (already running, cursor holding
     -- something, nothing to do), so this only has to reflect the new state.
     onClick = function()
-      if U.SortBags(BAG_IDS, { onFinish = RefreshSortButton, owner = "bags" })
+      if U.SortBags(BAG_IDS, { onFinish = RefreshAfterBagRun, owner = "bags" })
       then
         RefreshSortButton()
       end
@@ -1779,7 +1616,7 @@ local function BuildHeader()
     detail = function() return U.L("BAGS_STACK_HINT") end,
     -- U.StackBags owns every refusal message, as U.SortBags does.
     onClick = function()
-      if U.StackBags(BAG_IDS, { onFinish = RefreshSortButton, owner = "bags" })
+      if U.StackBags(BAG_IDS, { onFinish = RefreshAfterBagRun, owner = "bags" })
       then
         RefreshSortButton()
       end
@@ -1901,7 +1738,18 @@ end
 -- The grab strip occupies header space without covering its controls.
 local function BuildDragHandle()
   local handle = CreateFrame("Button", "UnrealUIBagDrag", frame)
-  if modernBag.Active() then
+  if modernBag.Active() and search.field then
+    local token = M.modernWow.bags
+    -- The search field fills the icon row between the last icon and the
+    -- close button, so the strip is the rim above the row instead: the whole
+    -- width up to the close cell, down to the close cell's top edge. The
+    -- field (centred on the close cell) is levelled above it, so the edge it
+    -- shares with the strip still takes its clicks.
+    handle:SetPoint("TOPLEFT", frame, "TOPLEFT", 0, 0)
+    handle:SetPoint("TOPRIGHT", frame, "TOPRIGHT",
+                    -(token.close.right + token.close.width + 4), 0)
+    handle:SetHeight(token.close.top)
+  elseif modernBag.Active() then
     local token = M.modernWow.bags
     -- The icon row now shares the close button's line, so the strip starts
     -- after its last control (bank view) instead of covering the icons.
@@ -1911,7 +1759,7 @@ local function BuildDragHandle()
   else
     handle:SetPoint("TOPLEFT", frame.bankView, "TOPRIGHT", 4, 0)
     handle:SetPoint("TOPRIGHT", frame.close, "TOPLEFT", -4, 0)
-    handle:SetHeight(BagHeaderHeight() - PADDING)
+    handle:SetHeight(HEADER_HEIGHT - PADDING)
   end
   handle:RegisterForDrag("LeftButton")
   pcall(handle.EnableMouse, handle, true)
@@ -1954,7 +1802,9 @@ local function Build()
   BuildHeader()
   classicBag.StyleHeader(frame)
   local modernHeader = modernBag.StyleHeader(frame)
+  modernBag.StyleFlatFooter(frame)
   modernBag.built = modernPanel and modernHeader and true or false
+  if modernHeader or not modernBag.Active() then search.Build(frame) end
   BuildDragHandle()
 
   grid = CreateFrame("Frame", "UnrealUIBagGrid", frame)
@@ -1962,6 +1812,35 @@ local function Build()
                 -BagHeaderHeight())
   grid:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -classicBag.SidePad(),
                 PADDING + BagFooterHeight())
+  -- The shared category view over this window's containers and buttons.
+  catView = U.CreateBagCategoryView({
+    grid = grid,
+    name = "UnrealUIBag",
+    columns = COLUMNS,
+    slotSize = SLOT_SIZE,
+    slotGap = classicBag.SlotGap,
+    bags = function() return BAG_IDS end,
+    slotCount = function(bag)
+      local ok, n = pcall(GetContainerNumSlots, bag)
+      return (ok and tonumber(n)) or 0
+    end,
+    slots = slots,
+    ensureSlot = function(bag, slot) return EnsureSlot(bag, slot, grid) end,
+    placeSlot = PlaceSlot,
+    updateSlot = UpdateSlotAppearance,
+    collapsed = function() return EnsureConfig().collapsed end,
+    favorites = true,
+    styleBox = function(box) classicBag.StylePanel(box, false) end,
+    onSlotCount = RefreshSlotCount,
+    onDropped = function()
+      if type(U.MarkBagsDirty) == "function" then U.MarkBagsDirty() end
+    end,
+    onLayout = function(width, height)
+      anchor:SetWidth(width + classicBag.SidePad() * 2)
+      anchor:SetHeight(BagHeaderHeight() + height + PADDING + BagFooterHeight())
+      modernBag.ResizePanel(frame)
+    end,
+  })
 
   -- Trays sit above the frame: keyring on the left, bag slots on the right,
   -- matching the reference layout.
@@ -1976,12 +1855,14 @@ local function Build()
   frame:SetScript("OnShow", function()
     layoutDirty = true
     cooldownDirty = true
+    search.Start()
   end)
   -- rendering.parent_alpha_not_propagated: the trays are toggled explicitly
   -- rather than left to follow the frame they hang off.
   frame:SetScript("OnHide", function()
     frame.keyring:Hide()
     frame.bagslots:Hide()
+    search.Stop()
   end)
 
   -- No mover: the bag is dragged directly by its header instead of being

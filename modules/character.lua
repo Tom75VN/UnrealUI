@@ -995,16 +995,25 @@ RefreshReputationDetailControls = function()
   local detail = G("ReputationDetailFrame")
   if not detail then return end
 
-  local controls = {
-    G("ReputationDetailAtWarCheckBox"),
-    G("ReputationDetailInactiveCheckBox"),
-    G("ReputationDetailMainScreenCheckBox"),
+  local names = {
+    "ReputationDetailAtWarCheckBox",
+    "ReputationDetailInactiveCheckBox",
+    "ReputationDetailMainScreenCheckBox",
   }
   local offsets = { 72, 48, 24 }
   local i
-  for i = 1, table.getn(controls) do
-    local checkbox = controls[i]
-    if checkbox then
+  for i = 1, table.getn(names) do
+    local checkbox = G(names[i])
+    -- Modern WoW draws the game settings checkbox, as every Modern WoW
+    -- checkbox does (user request, 2026-09-23; rules/unreal-ui-design.md).
+    -- The client button's stock check cannot be removed, so an owned
+    -- stand-in takes its place and the button is parked undrawn.
+    local proxy = checkbox and modernWowTabMode and
+                  type(U.GameSettingsCheckboxProxy) == "function" and
+                  U.GameSettingsCheckboxProxy(names[i], detail, { width = 180 })
+    if proxy then
+      proxy.SetPoint("BOTTOMLEFT", detail, "BOTTOMLEFT", 24, offsets[i])
+    elseif checkbox then
       U.StyleStockCheckbox(checkbox, {
         size = 14,
         labelGap = 4,

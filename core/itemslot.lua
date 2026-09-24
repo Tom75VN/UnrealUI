@@ -98,6 +98,9 @@ function U.QuestRewardColor(source, itemType, index)
 
   quality = ok and tonumber(quality) or nil
   if quality and quality >= 0 then
+    if M.qualityText and M.qualityText[quality] then
+      return M.qualityText[quality]
+    end
     local colorFn = U.G("GetItemQualityColor")
     if type(colorFn) == "function" then
       local colorOk, r, g, b = pcall(colorFn, quality)
@@ -137,7 +140,8 @@ function U.FitQuestItemSlot(name, width)
 
   local delta = native - width
   pcall(button.SetWidth, button, width)
-  local parts = { U.G(name .. "NameFrame"), U.G(name .. "Name") }
+  local nameFrame, title = U.G(name .. "NameFrame"), U.G(name .. "Name")
+  local parts = { nameFrame, title }
   local i
   for i = 1, table.getn(parts) do
     local part = parts[i]
@@ -146,6 +150,20 @@ function U.FitQuestItemSlot(name, width)
       partWidth = ok and tonumber(partWidth) or 0
       if partWidth > delta then pcall(part.SetWidth, part, partWidth - delta) end
     end
+  end
+
+  -- The name FontString's native anchor only fixes its top and width, sized
+  -- for the stock (wider) column; a long reward name that now wraps to a
+  -- second line at this narrower width draws past that native single-line
+  -- height into whatever the client anchors below the slot -- the reward's
+  -- taught-spell "You will learn:" line, when the guaranteed item is the last
+  -- one in the row (USER_CONFIRMED_INGAME). Same fix as modules/questlog.lua's
+  -- StyleQuestItems (knowledge.json / questlog.reward_item_name_overflows_
+  -- resized_cell): add the missing bottom anchor to box wrapped text inside
+  -- the slot's own full height instead of past it. The native top anchor is
+  -- left untouched -- this design keeps the icon at its native position.
+  if title then
+    pcall(title.SetPoint, title, "BOTTOMRIGHT", button, "BOTTOMRIGHT", -5, 4)
   end
   return true
 end

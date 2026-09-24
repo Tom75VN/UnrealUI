@@ -32,7 +32,8 @@
 --    guarded, so a missing one degrades rather than throws.
 --  * The count box is a readout between two step buttons rather than
 --    DF-main's EditBox: native text input is off limits
---    (rules/unreal-ui-design.md). There is no search box for the same reason.
+--    (rules/unreal-ui-design.md). Recipe search uses U.CreateSearchBox, the
+--    addon-owned keyboard-safe field.
 --  * The list uses the same addon-owned MinimalScrollBar treatment as
 --    Character > Skills. Physical wheel input cannot reach addon frames on
 --    this client (knowledge.json / scripts.addon_wheel_binding_unavailable),
@@ -40,10 +41,9 @@
 --  * The rank bar is a plain texture cropped with SetTexCoord (a native
 --    StatusBar does not lay out its fill here, statusbar knowledge), and its
 --    DF-main mask is baked into the fill by tools/import_modern_wow_media.py.
---  * DF-main's profession tabs, favourites, filter menu, link button and
---    minimize button are omitted: switching profession casts a spell, which
---    is protected here, and the rest need an EditBox or a dropdown menu. Item
---    icons still support the native Shift-click chat-link interaction.
+--  * DF-main's profession tabs, favourites, link button and minimize button
+--    are omitted: switching profession casts a spell, which is protected
+--    here. Item icons still support native Shift-click chat links.
 --
 -- Local budget: one table, per rules/unreal-ui.md.
 
@@ -67,6 +67,7 @@ pw.KINDS = {
     host = "TradeSkillFrame",
     close = "TradeSkillFrameCloseButton",
     update = "TradeSkillFrame_Update",
+    setSelection = "TradeSkillFrame_SetSelection",
     count = "GetNumTradeSkills",
     selected = "GetTradeSkillSelectionIndex",
     select = "SelectTradeSkill",
@@ -91,6 +92,7 @@ pw.KINDS = {
     host = "CraftFrame",
     close = "CraftFrameCloseButton",
     update = "CraftFrame_Update",
+    setSelection = "CraftFrame_SetSelection",
     count = "GetNumCrafts",
     selected = "GetCraftSelectionIndex",
     select = "SelectCraft",
@@ -111,8 +113,149 @@ pw.KINDS = {
   },
 }
 
+pw.FILTERS = {
+  { kind = "trivial", key = "showTrivial", label = "PROFESSIONS_FILTER_GRAY" },
+  { kind = "easy", key = "showEasy", label = "PROFESSIONS_FILTER_GREEN" },
+  { kind = "medium", key = "showMedium", label = "PROFESSIONS_FILTER_YELLOW" },
+  { kind = "optimal", key = "showOptimal", label = "PROFESSIONS_FILTER_ORANGE" },
+}
+
 function pw.Token()
   return M.modernWow.professions
+end
+
+-- Recipe filters, stored per profile and shared with the flat Modern window
+-- (modules/professionsmodern.lua). Read on every refresh rather than cached,
+-- because a profile switch replaces U.db without a reload.
+function pw.FilterConfig()
+  return U.ModuleConfig("professions", {
+    showTrivial = true,
+    showEasy = true,
+    showMedium = true,
+    showOptimal = true,
+    allReagents = false,
+  })
+end
+
+function pw.SetFilter(win, key, value)
+  pw.FilterConfig()[key] = value and true or false
+  win.offset = 1
+  win.reveal = true
+  win.selectionHidden = nil
+  pw.Queue(win)
+end
+
+function pw.SetQuery(win, text)
+  win.query = type(U.SearchFold) == "function" and U.SearchFold(text) or ""
+  win.expandForSearch = win.query ~= ""
+  win.offset = 1
+  win.reveal = true
+  win.selectionHidden = nil
+  pw.Queue(win)
+end
+
+-- A Craft entry whose raw difficulty is "none" (Beast Training) has neither a
+-- difficulty nor a reagent count, so no filter applies to it.
+function pw.RecipeVisible(config, entry)
+  if not entry or entry.kind == "header" then return false end
+  if entry.raw == "none" then return true end
+  local i
+  for i = 1, table.getn(pw.FILTERS) do
+    local spec = pw.FILTERS[i]
+    if entry.kind == spec.kind and not config[spec.key] then return false end
+  end
+  if config.allReagents and entry.available <= 0 then return false end
+  return true
+end
+
+function pw.RecipeMatchesSearch(win, entry)
+  local query = win and win.query
+  if type(query) ~= "string" or query == "" then return true end
+  local name = type(U.SearchFold) == "function" and U.SearchFold(entry.name) or ""
+  return string.find(name, query, 1, true) ~= nil
+end
+
+-- The difficulty filter as a dropdown whose menu rows carry checkboxes, the
+-- trainer's Filter control exactly (user request, 2026-09-23), shared by this
+-- window and the flat Modern one (modules/professionsmodern.lua). A native
+-- UIDropDownMenuTemplate frame styled by the shared dropdown component, as
+-- the trainer's is: creating and initialising one from addon code is
+-- WORKING_SOURCE (UnrealPfUI modules/unlock.lua does it on this client).
+-- Each entry is an independent on/off filter (keepShownOnClick), its label in
+-- its difficulty colour through an inline colour code, which the component's
+-- row font colour does not override. The menu is rebuilt from the config on
+-- every open, so it always shows the stored state.
+--   options: name, width, height (optional), style (U.Dropdown.StyleStock
+--   options), filters ({ kind, key, label }), config() -> table,
+--   colorOf(kind) -> { r, g, b }, onToggle(key, value)
+function U.ProfessionsDifficultyDropdown(parent, options)
+  if not parent or not options then return nil end
+  local ok, dropdown = pcall(CreateFrame, "Frame", options.name, parent,
+                             "UIDropDownMenuTemplate")
+  if not ok or not dropdown then return nil end
+  local title = U.L("PROFESSIONS_FILTER_DIFFICULTY")
+
+  local function Hex(color)
+    local function Byte(v)
+      v = math.floor((tonumber(v) or 1) * 255 + 0.5)
+      if v < 0 then v = 0 elseif v > 255 then v = 255 end
+      return v
+    end
+    return string.format("|cff%02x%02x%02x", Byte(color[1]), Byte(color[2]),
+                         Byte(color[3]))
+  end
+  local function SetTitle()
+    pcall(UIDropDownMenu_SetText, title, dropdown)
+  end
+  local function Init()
+    local config = options.config()
+    local i
+    for i = 1, table.getn(options.filters) do
+      local spec = options.filters[i]
+      local key = spec.key
+      local info = {}
+      info.text = Hex(options.colorOf(spec.kind)) .. U.L(spec.label) .. "|r"
+      info.checked = config[key] and 1 or nil
+      info.keepShownOnClick = 1
+      info.func = function()
+        options.onToggle(key, not options.config()[key])
+        SetTitle()
+      end
+      UIDropDownMenu_AddButton(info)
+    end
+  end
+
+  if not pcall(UIDropDownMenu_Initialize, dropdown, Init) then return nil end
+  SetTitle()
+  if U.Dropdown and U.Dropdown.StyleStock then
+    U.Dropdown.StyleStock(dropdown, options.width, options.style)
+    if options.height then U.Dropdown.SetControlHeight(dropdown, options.height) end
+  end
+  SetTitle()
+  return dropdown
+end
+
+function pw.SyncFilters(win, config)
+  local controls = win.filterControls
+  if not controls then return end
+  local i
+  for i = 1, table.getn(controls) do
+    local control = controls[i]
+    if (control.value and true or false) ~= (config[control.filterKey] and true or false) then
+      control.SetValue(config[control.filterKey])
+    end
+  end
+end
+
+function pw.AppendEntry(entries, entry)
+  local previous = entries[table.getn(entries)]
+  if previous then
+    local header = previous.kind == "header"
+    local nextHeader = entry.kind == "header"
+    previous.groupEnd = not header and nextHeader
+    previous.groupStart = header and not nextHeader
+  end
+  table.insert(entries, entry)
 end
 
 -- pcall on a client global; returns ok followed by its results.
@@ -204,6 +347,16 @@ function pw.Atlas(parent, layer, cell)
   local texture = pw.Texture(parent, layer, pw.Token().texture.atlas)
   pw.AtlasCoords(texture, cell)
   return texture
+end
+
+-- A ThinBorder panel's own fill, stopped at the rim's line so none of it
+-- shows outside the border (user report with a screenshot, 2026-09-23).
+function pw.PanelFill(fill, panel)
+  if not fill then return end
+  if not (type(U.ModernWowThinBorderFill) == "function" and
+          U.ModernWowThinBorderFill(fill, panel)) then
+    pcall(fill.SetAllPoints, fill, panel)
+  end
 end
 
 function pw.Place(region, relative, point, x, y, width, height)
@@ -443,7 +596,8 @@ function pw.BuildRank(win)
   local r = t.rank
   local bar = pw.Frame("Frame", win.cover, t.levels.panel, false)
   if not bar then return end
-  pw.Place(bar, win.frame, "TOPLEFT", r.x, -r.y, r.width, r.height)
+  -- Centred on the window, under the centred title (user request, 2026-09-23).
+  pw.Place(bar, win.frame, "TOP", 0, -r.y, r.width, r.height)
 
   local track = pw.Atlas(bar, "BACKGROUND", t.cells.rankBackground)
   if track then pcall(track.SetAllPoints, track, bar) end
@@ -460,7 +614,8 @@ function pw.BuildRank(win)
     win.rankText = pw.Label(textFrame, M.fontSize.small, t.rankTextColor,
                             "CENTER", "GameFontHighlightSmall")
     if win.rankText and win.rankFill then
-      pcall(win.rankText.SetPoint, win.rankText, "CENTER", win.rankFill, "CENTER", 0, 0)
+      pcall(win.rankText.SetPoint, win.rankText, "CENTER", win.rankFill, "CENTER", 0,
+            r.textY or 0)
     end
   end
   win.rankBar = bar
@@ -533,12 +688,19 @@ function pw.ApplyRecipeColor(row)
   pw.SetColor(row.count, color)
 end
 
+-- The header glyph's 128RedButton hover bloom, shown only while a header
+-- row is hovered.
+function pw.PaintCollapseHover(row)
+  pw.SetShown(row.collapseHover, row.hovered and row.entry ~= nil and
+              row.entry.kind == "header")
+end
+
 function pw.OnRowEnter(win, row)
   local t = pw.Token()
   row.hovered = true
   if row.entry and row.entry.kind == "header" then
     pw.SetColor(row.headerLabel, t.headerHoverColor)
-    pw.SetShown(row.collapseHover, true)
+    pw.PaintCollapseHover(row)
   elseif row.entry then
     pw.ApplyRecipeColor(row)
     pw.SetShown(row.highlight, not row.selected)
@@ -549,7 +711,7 @@ function pw.OnRowLeave(win, row)
   local t = pw.Token()
   row.hovered = false
   pw.SetColor(row.headerLabel, t.headerColor)
-  pw.SetShown(row.collapseHover, false)
+  pw.PaintCollapseHover(row)
   if row.entry and row.entry.kind ~= "header" then pw.ApplyRecipeColor(row) end
   pw.SetShown(row.highlight, false)
 end
@@ -559,9 +721,14 @@ function pw.OnRowClick(win, row)
   if not entry then return end
   if entry.kind == "header" then
     local method = entry.expanded and win.kind.collapse or win.kind.expand
+    if entry.expanded then win.selectionHidden = true end
     local ok, err = pw.Call(method, entry.index)
-    if not ok and err then U.Error("professions " .. method .. ": " .. tostring(err)) end
+    if not ok then
+      win.selectionHidden = nil
+      if err then U.Error("professions " .. method .. ": " .. tostring(err)) end
+    end
   else
+    win.selectionHidden = nil
     if entry.index ~= pw.Selected(win) then win.count = 1 end
     local ok, err = pw.Call(win.kind.select, entry.index)
     if not ok and err then U.Error("professions select: " .. tostring(err)) end
@@ -628,13 +795,10 @@ function pw.BuildRow(win, index)
   -- 2026-09-17); the cap already carries the lift.
   pw.Place(row.collapse, row.headerRight, "RIGHT", -h.collapsePadding, 0,
            h.collapseWidth, h.collapseHeight)
-  row.collapseHover = pw.Atlas(row, "OVERLAY", t.cells.expanded)
-  if row.collapseHover and row.collapse then
-    pcall(function()
-      row.collapseHover:SetAllPoints(row.collapse)
-      row.collapseHover:SetBlendMode("ADD")
-      row.collapseHover:Hide()
-    end)
+  -- Hover is the 128RedButton bloom over the glyph, as on the red buttons
+  -- (user request, 2026-09-24); the glyph itself is never re-lit.
+  if type(U.ModernWowRedButtonGlow) == "function" then
+    row.collapseHover = U.ModernWowRedButtonGlow(row, row.collapse)
   end
   row.headerLabel = pw.Label(row, M.fontSize.normal, t.headerColor)
   if row.headerLabel then
@@ -668,8 +832,16 @@ function pw.BuildRow(win, index)
     pcall(row.count.SetPoint, row.count, "LEFT", row.label, "RIGHT", r.countGap, 0)
   end
   row.recipeRegions = { row.skill, row.label, row.count }
-  -- Shown per entry in pw.FillRow, only while the recipe is tracked.
-  row.check = pw.Texture(row, "OVERLAY", pw.TrackCheckPath(win))
+  -- Shown per entry in pw.FillRow, only while the recipe is tracked: the
+  -- "Track this recipe" box's own game-settings tick (user request,
+  -- 2026-09-23), never the client's old gold check. Without that tick the row
+  -- carries no mark rather than the old one.
+  row.check = pw.Texture(row, "OVERLAY")
+  if row.check and not (type(U.SetGameSettingsTick) == "function" and
+                        U.SetGameSettingsTick(row.check)) then
+    pcall(row.check.Hide, row.check)
+    row.check = nil
+  end
   pw.Place(row.check, row, "RIGHT", -r.checkRight, r.checkY, r.checkSize, r.checkSize)
   pw.SetShown(row.check, false)
 
@@ -706,8 +878,7 @@ function pw.FillRow(win, row, entry, selectedIndex)
     pw.SetText(row.headerLabel, entry.name)
     local cell = entry.expanded and t.cells.expanded or t.cells.collapsed
     pw.AtlasCoords(row.collapse, cell)
-    pw.AtlasCoords(row.collapseHover, cell)
-    pw.SetShown(row.collapseHover, row.hovered)
+    pw.PaintCollapseHover(row)
     pw.SetColor(row.headerLabel, row.hovered and t.headerHoverColor or t.headerColor)
     return
   end
@@ -976,7 +1147,9 @@ function pw.SchematicSize()
   local t = pw.Token()
   local l, s = t.list, t.schematic
   local width = t.design.width - (l.x + l.width + s.gap) - s.right
-  local height = t.design.height - l.y - s.bottom
+  -- The form's top lines up with the left column's, which is the filter
+  -- strip above the list.
+  local height = t.design.height - t.filter.y - s.bottom
   return width, height
 end
 
@@ -986,6 +1159,12 @@ function pw.PlaceArt(win)
   local art = win.art
   if not art then return end
   local width, height = pw.SchematicSize()
+  -- The art fills the form inside its rim (pw.PanelFill), so it is cropped
+  -- to that area's aspect rather than the form's.
+  if type(U.ModernWowThinBorderInsets) == "function" then
+    local left, top, right, bottom = U.ModernWowThinBorderInsets()
+    width, height = width - left - right, height - top - bottom
+  end
   local rect, canvas = t.artRect, t.artCanvas
   local left, top, right, bottom = rect.left, rect.top, rect.right, rect.bottom
   local sourceWidth, sourceHeight = right - left, bottom - top
@@ -1049,11 +1228,11 @@ function pw.BuildSchematic(win)
 
   local form = pw.Frame("Frame", win.cover, t.levels.panel, true)
   if not form then return end
-  pw.Place(form, win.frame, "TOPLEFT", l.x + l.width + s.gap, -l.y, width, height)
+  pw.Place(form, win.frame, "TOPLEFT", l.x + l.width + s.gap, -t.filter.y, width, height)
   win.schematic = form
 
   win.art = pw.Texture(form, "BACKGROUND")
-  if win.art then pcall(win.art.SetAllPoints, win.art, form) end
+  pw.PanelFill(win.art, form)
   pw.PlaceArt(win)
   if type(U.ModernWowThinBorder) == "function" then pcall(U.ModernWowThinBorder, form) end
 
@@ -1141,27 +1320,116 @@ end
 function pw.BuildTrack(win)
   local tr = pw.Token().track
   local form = win.schematic
-  local name = "UnrealUIProfessionsTrack" .. win.kind.id
-  local ok, box = pcall(CreateFrame, "CheckButton", name, form, "UICheckButtonTemplate")
-  if not ok or not box then return end
+  -- The game settings checkbox, as every Modern WoW checkbox
+  -- (rules/unreal-ui-design.md): the shared control dressed by
+  -- U.StyleGameSettingsCheckbox. Not a UICheckButtonTemplate CheckButton --
+  -- its stock gold check is drawn by the engine and cannot be removed
+  -- (reported in game 2026-09-23). Its label stays to the box's left, an
+  -- owned FontString in the form's label colour.
+  local control = U.CreateCheckbox(form, {
+    name = "UnrealUIProfessionsTrack" .. win.kind.id,
+    text = "", size = tr.size, textWidth = 1,
+    onChange = function() pw.ToggleTrack(win) end,
+  })
+  if not control then return end
+  control.SetPoint("TOPRIGHT", form, "TOPRIGHT", -tr.right, tr.y)
+  pcall(control.box.SetFrameLevel, control.box, pw.Level(form) + tr.levelLift)
+  if type(U.StyleGameSettingsCheckbox) == "function" then
+    U.StyleGameSettingsCheckbox(control, function() end)
+  end
 
-  pcall(function()
-    box:SetWidth(tr.size)
-    box:SetHeight(tr.size)
-    box:SetPoint("TOPRIGHT", form, "TOPRIGHT", -tr.right, tr.y)
-    box:SetFrameLevel(pw.Level(form) + tr.levelLift)
-  end)
-  local label = U.G(name .. "Text")
+  local label = pw.Label(form, M.fontSize.small, pw.Token().labelColor, "RIGHT",
+                         "GameFontNormalSmall")
   if label then
     pcall(function()
       label:SetText(U.L("PROFESSIONS_TRACK_RECIPE"))
-      label:ClearAllPoints()
-      label:SetPoint("RIGHT", box, "LEFT", -tr.labelGap, 0)
+      label:SetPoint("RIGHT", control.box, "LEFT", -tr.labelGap, 0)
     end)
   end
+  control.trackLabel = label
+  win.track = control
+end
 
-  box:SetScript("OnClick", function() pw.ToggleTrack(win) end)
-  win.track = box
+-- One filter toggle: the shared checkbox dressed as the game-settings
+-- checkbox (user request, 2026-09-23), its label in the given colour. The
+-- whole item, label included, is its hit row.
+function pw.BuildFilterBox(win, config, suffix, key, text, color, x, y, width)
+  local f = pw.Token().filter
+  local control = U.CreateCheckbox(win.filters, {
+    name = "UnrealUIProfessionsFilter" .. win.kind.id .. suffix,
+    text = text, value = config[key],
+    size = f.size, rowHover = true, rowWidth = width,
+    rowHeight = f.size, textWidth = width - f.size - 6,
+    onChange = function(value) pw.SetFilter(win, key, value) end,
+  })
+  if not control then return end
+  control.filterKey = key
+  control.SetPoint("TOPLEFT", win.filters, "TOPLEFT", x, -y)
+  local function PaintLabel(c) pw.SetColor(c.label, color) end
+  if type(U.StyleGameSettingsCheckbox) ~= "function" or
+     not U.StyleGameSettingsCheckbox(control, PaintLabel) then
+    local apply = control.Apply
+    control.Apply = function() apply() PaintLabel(control) end
+    control.Apply()
+  end
+  table.insert(win.filterControls, control)
+end
+
+-- The difficulty dropdown and the reagent filter above the recipe list.
+function pw.BuildFilters(win)
+  local t = pw.Token()
+  local f = t.filter
+  local config = pw.FilterConfig()
+  win.filterControls = {}
+  win.filters = pw.Frame("Frame", win.cover, t.levels.panel, true)
+  if not win.filters then return end
+  pw.Place(win.filters, win.frame, "TOPLEFT", f.x, -f.y, f.width, f.height)
+  local bed = pw.Atlas(win.filters, "BACKGROUND", f.cell)
+  pw.PanelFill(bed, win.filters)
+  if type(U.ModernWowThinBorder) == "function" then
+    pcall(U.ModernWowThinBorder, win.filters)
+  end
+
+  -- The trainer's Filter control, called the way modules/trainer.lua styles
+  -- it under Modern WoW: its bed, its menu art and settings-checkbox rows.
+  win.difficulty = U.ProfessionsDifficultyDropdown(win.filters, {
+    name = "UnrealUIProfessionsDifficulty" .. win.kind.id,
+    width = f.dropdown.width,
+    style = { checkboxes = true, modernWow = true, textY = f.dropdown.textY,
+              bed = M.modernWow.trainer.filter.bed },
+    filters = pw.FILTERS,
+    config = pw.FilterConfig,
+    colorOf = function(kind) return pw.DifficultyColor({ kind = kind }) end,
+    onToggle = function(key, value) pw.SetFilter(win, key, value) end,
+  })
+  if win.difficulty then
+    pcall(function()
+      win.difficulty:SetFrameLevel(pw.Level(win.filters) + 2)
+      win.difficulty:ClearAllPoints()
+      win.difficulty:SetPoint("TOPLEFT", win.filters, "TOPLEFT", f.dropdown.x,
+                              -f.dropdown.y)
+    end)
+  end
+  pw.BuildFilterBox(win, config, "Reagents", "allReagents",
+                    U.L("PROFESSIONS_FILTER_ALL_REAGENTS"), t.bodyColor,
+                    f.reagents.x, f.reagentTop, f.reagents.width)
+  if type(U.CreateSearchBox) == "function" then
+    win.search = U.CreateSearchBox(win.filters, {
+      name = "UnrealUIProfessionsSearch" .. win.kind.id,
+      placeholder = U.L("BAGS_SEARCH"),
+      onChange = function(text) pw.SetQuery(win, text) end,
+    })
+  end
+  if win.search then
+    pcall(function()
+      win.search:ClearAllPoints()
+      win.search:SetPoint("TOPLEFT", win.filters, "TOPLEFT", f.search.x, -f.search.y)
+      win.search:SetPoint("TOPRIGHT", win.filters, "TOPRIGHT", -f.search.right,
+                          -f.search.y)
+      U.LevelSearchBox(win.search, pw.Level(win.filters) + 3)
+      U.PaintSearchBox(win.search)
+    end)
+  end
 end
 
 -- The selected recipe's reagents and the count one craft needs.
@@ -1193,37 +1461,20 @@ function pw.ToggleTrack(win)
                                          profession, win.kind.id)
     end
   end
-  if box then pcall(box.SetChecked, box, tracked and true or nil) end
+  if box then box.SetValue(tracked) end
   -- The list's tracked checks follow the box.
   pw.Queue(win)
 end
 
--- The tick the "Track this recipe" box draws when checked, reused by the
--- list rows. Read once from that addon-created CheckButton (Get*Texture on a
--- button's own state art, not a region walk); the token's fallback covers a
--- window whose box failed to build.
-function pw.TrackCheckPath(win)
-  if win.checkPath then return win.checkPath end
-  local path
-  local box = win.track
-  if box then
-    local ok, texture = pcall(box.GetCheckedTexture, box)
-    if ok and texture then
-      local pathOk, value = pcall(texture.GetTexture, texture)
-      if pathOk and type(value) == "string" and value ~= "" then path = value end
-    end
-  end
-  win.checkPath = path or pw.Token().recipe.checkFallback
-  return win.checkPath
-end
-
 function pw.FillTrack(win, entry)
-  local box = win.track
-  if not box then return end
+  local control = win.track
+  if not control then return end
   local available = entry ~= nil and type(U.CraftTrackerIsTracked) == "function"
-  pw.SetShown(box, available)
+  pw.SetShown(control.box, available)
+  pw.SetShown(control.trackLabel, available)
   if available then
-    pcall(box.SetChecked, box, U.CraftTrackerIsTracked(entry.name) and true or nil)
+    local tracked = U.CraftTrackerIsTracked(entry.name) and true or false
+    if (control.value and true or false) ~= tracked then control.SetValue(tracked) end
   end
 end
 
@@ -1931,15 +2182,25 @@ function pw.Refresh(win)
   -- The visible list as the client reports it: headers and the recipes of
   -- expanded headers, in order.
   local pending = pw.pending
-  local wantsPending = pending and
+  local wantsPending = (not win.query or win.query == "") and pending and
                        (not pending.kind or pending.kind == win.kind.id) and
                        (not pending.profession or pending.profession == name)
-  if wantsPending then pw.Call(win.kind.expand, 0) end
+  if wantsPending then
+    pw.Call(win.kind.expand, 0)
+  elseif win.expandForSearch then
+    win.expandForSearch = nil
+    pw.Call(win.kind.expand, 0)
+  end
 
+  -- An expanded category is listed only once one of its recipes passes the
+  -- filters; a collapsed one always is, since its recipes are not reported.
   local entries = {}
+  local openHeader, config = nil, pw.FilterConfig()
+  pw.SyncFilters(win, config)
   local countOk, count = pw.Call(win.kind.count)
   count = (countOk and tonumber(count)) or 0
-  local firstRecipe, pendingEntry
+  local selected = pw.Selected(win)
+  local firstRecipe, pendingEntry, selectedEntry
   local i
   for i = 1, count do
     local rName, kind, available, expanded, sub, points, raw = pw.Info(win, i)
@@ -1947,10 +2208,24 @@ function pw.Refresh(win)
       local entry = { index = i, name = rName, kind = kind, available = available,
                       expanded = expanded and true or false, sub = sub,
                       points = points, raw = raw }
-      table.insert(entries, entry)
-      if kind ~= "header" and not firstRecipe then firstRecipe = entry end
-      if kind ~= "header" and wantsPending and rName == pending.recipe then
-        pendingEntry = entry
+      if kind == "header" then
+        openHeader = entry.expanded and entry or nil
+        if not entry.expanded and (not win.query or win.query == "") then
+          pw.AppendEntry(entries, entry)
+        end
+      else
+        local pendingMatch = wantsPending and rName == pending.recipe
+        if (pw.RecipeVisible(config, entry) and pw.RecipeMatchesSearch(win, entry)) or
+           pendingMatch then
+          if openHeader then
+            pw.AppendEntry(entries, openHeader)
+            openHeader = nil
+          end
+          pw.AppendEntry(entries, entry)
+          if not firstRecipe then firstRecipe = entry end
+          if i == selected then selectedEntry = entry end
+          if pendingMatch then pendingEntry = entry end
+        end
       end
       if kind ~= "header" and type(U.CraftTrackerRememberSource) == "function" and
          U.CraftTrackerIsTracked(rName) then
@@ -1958,31 +2233,18 @@ function pw.Refresh(win)
       end
     end
   end
-  -- A recipe directly followed by a category header ends its category; a
-  -- header directly followed by a recipe starts one.
-  for i = 1, table.getn(entries) - 1 do
-    local header, nextHeader = entries[i].kind == "header", entries[i + 1].kind == "header"
-    entries[i].groupEnd = not header and nextHeader
-    entries[i].groupStart = header and not nextHeader
-  end
   win.entries = entries
 
-  local selected = pw.Selected(win)
   if pendingEntry then
     selected = pendingEntry.index
+    selectedEntry = pendingEntry
     pw.Call(win.kind.select, selected)
     win.count = 1
     win.reveal = true
     pw.pending = nil
   end
-  local selectedEntry
-  for i = 1, table.getn(entries) do
-    if entries[i].index == selected and entries[i].kind ~= "header" then
-      selectedEntry = entries[i]
-      break
-    end
-  end
-  if not selectedEntry and firstRecipe then
+  if selectedEntry then win.selectionHidden = nil end
+  if not selectedEntry and firstRecipe and not win.selectionHidden then
     selectedEntry = firstRecipe
     selected = firstRecipe.index
     pw.Call(win.kind.select, selected)
@@ -2025,12 +2287,68 @@ function U.ModernWowProfessionsOpenRecipe(recipe, kind, profession)
   return false
 end
 
+-- Collapsing a category in this window could freeze the client outright
+-- (reported 2026-09-23: Leatherworking, Consumable collapsed, then Trade
+-- Goods). The client's own TradeSkill/Craft window is still alive under the
+-- addon list and handles TRADE_SKILL_UPDATE / CRAFT_UPDATE by re-applying the
+-- stored selection through <Frame>_SetSelection. The stored selection is a
+-- bare list index, so a collapse shifts it onto whatever row now has that
+-- number -- and when that row is a category header, the Blizzard 1.12
+-- SetSelection does not select it: it TOGGLES it (collapse if expanded, else
+-- expand). That toggle fires the update event again, which re-applies the
+-- same header index and toggles it back, forever. WORKING_SOURCE: the 1.12
+-- FrameXML behaviour, not read from this client's files (none are local).
+-- The freeze and this guard's fix are USER_CONFIRMED_INGAME 2026-09-23
+-- (knowledge.json / professions.header_selection_toggle_loop_freezes_client).
+--
+-- The native list rows that legitimately toggle a header through
+-- SetSelection are covered by the addon window, which toggles headers with
+-- Expand/Collapse directly, so while an addon window owns the host a header
+-- index reaching SetSelection can only be that loop. It is dropped; any other
+-- index passes through untouched. Installed only when an addon window is
+-- built on the host, so the native-chrome themes keep the stock behaviour.
+function U.ProfessionsGuardHeaderSelection(kindId, setSelection)
+  pw.guardedSelection = pw.guardedSelection or {}
+  if pw.guardedSelection[setSelection] then return true end
+  local original = U.G(setSelection)
+  if type(original) ~= "function" then return false end
+  local guard = function(id, a2, a3)
+    local header = false
+    if kindId == "trade" then
+      local ok, _, kind = pw.Call("GetTradeSkillInfo", id)
+      header = ok and kind == "header"
+    else
+      local ok, _, _, kind = pw.Call("GetCraftInfo", id)
+      header = ok and kind == "header"
+    end
+    if header then
+      U.Debug("professions: dropped " .. setSelection .. "(" .. tostring(id) ..
+              ") on a header")
+      return
+    end
+    return original(id, a2, a3)
+  end
+  U.SetG(setSelection, guard)
+  if U.G(setSelection) ~= guard then
+    U.Debug("professions: could not guard " .. setSelection)
+    return false
+  end
+  pw.guardedSelection[setSelection] = true
+  return true
+end
+
 function pw.RefreshAll()
   local i
   for i = 1, table.getn(pw.windows) do
     local win = pw.windows[i]
     if pw.Shown(win.frame) then pw.Queue(win) end
   end
+end
+
+function pw.ResetSearch(win)
+  win.query = ""
+  win.expandForSearch = nil
+  if type(U.ResetSearchBox) == "function" then U.ResetSearchBox(win.search) end
 end
 
 -- ---------------------------------------------------------------------------
@@ -2076,12 +2394,13 @@ function pw.Build(kind)
 
   pw.BuildChrome(win)
   pw.BuildRank(win)
+  pw.BuildFilters(win)
 
   local l = t.list
   win.list = pw.Frame("Frame", win.cover, t.levels.panel, true)
   pw.Place(win.list, frame, "TOPLEFT", l.x, -l.y, l.width, d.height - l.y - l.bottom)
   local listBackground = pw.Atlas(win.list, "BACKGROUND", t.cells.listBackground)
-  if listBackground then pcall(listBackground.SetAllPoints, listBackground, win.list) end
+  pw.PanelFill(listBackground, win.list)
   if type(U.ModernWowThinBorder) == "function" then pcall(U.ModernWowThinBorder, win.list) end
   -- Built before the rows so it stays underneath them.
   win.wheel = U.CreateWheelCatcher(win.list, function(direction)
@@ -2121,13 +2440,17 @@ function pw.Build(kind)
     pw.Refresh(win)
     pw.Queue(win)
   end)
-  U.PostHookScript(frame, "OnHide", pw.HideTip)
+  U.PostHookScript(frame, "OnHide", function()
+    pw.HideTip()
+    pw.ResetSearch(win)
+  end)
   -- Fixed-signature native update: safe for U.PostHookGlobal
   -- (knowledge.json / lua.posthook_global_fixed_arity_breaks_vararg_frameXML).
   -- Deferred, never inline, so nothing runs inside the native update chain.
   if type(U.G(kind.update)) == "function" then
     U.PostHookGlobal(kind.update, function() pw.Queue(win) end)
   end
+  U.ProfessionsGuardHeaderSelection(kind.id, kind.setSelection)
 
   win.built = true
   table.insert(pw.windows, win)

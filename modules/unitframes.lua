@@ -1070,6 +1070,12 @@ function classicNative.SetCustomVisuals(frame, shown)
     end
   end
 
+  -- Hide the flat portrait fill and outline explicitly; its backdrop can remain
+  -- visible behind the native Classic pet portrait after the box is hidden.
+  if frame.portrait and type(U.SetBackdropShown) == "function" then
+    U.SetBackdropShown(frame.portrait, shown)
+  end
+
   -- These state icons have their own refresh functions, all of which defer to
   -- the native client while Classic is active. They are hidden with the base
   -- visuals but are never blindly shown by the fallback.
@@ -1944,33 +1950,48 @@ end
 -- them, which is the same gate as pfUI's explicit HUNTER check without needing
 -- the class read.
 --
--- The indicator is unrealUI's own flat swatch rather than the Blizzard face:
--- rules/unreal-ui-design.md removes native state art, and the stock texture is
--- one more Vanilla path this client is not known to draw (see the elite icon
--- notes above). Colour carries the band -- red / amber / green is game state,
--- so it is outside the accent restraint. It rides the portrait's corner, so a
--- client without SetPortraitTexture (portrait_model_crash fallback) has no
--- happiness swatch either rather than one laid over the bar text.
+-- The indicator uses the supplied three-state artwork rather than the stock
+-- client face. It rides the portrait's corner, so a client without
+-- SetPortraitTexture (portrait_model_crash fallback) has no happiness icon
+-- either rather than one laid over the bar text.
 --
 -- No event: the pet frame already takes a full refresh on every scheduled
 -- sweep (see RefreshScheduledUnits), which is where the band is re-read.
 -- ---------------------------------------------------------------------------
-local HAPPINESS_SIZE = 10
+local HAPPINESS_SIZE = 24
 
-local HAPPINESS_TINTS = {
-  [1] = { 0.80, 0.20, 0.20 },   -- unhappy: losing loyalty, reduced damage
-  [2] = { 0.85, 0.65, 0.10 },   -- content
-  [3] = { 0.25, 0.75, 0.30 },   -- happy: full damage bonus
+-- User-requested modern-theme adjustment (2026-09-24): shrink the flat badge
+-- and nudge it up/right relative to the modern-wow layout below.
+local MODERN_HAPPINESS_SCALE = 0.6
+local MODERN_HAPPINESS_TOP_OFFSET = 6
+local MODERN_HAPPINESS_RIGHT_OFFSET = 1
+
+local HAPPINESS_CELLS = {
+  [1] = { 48 / 128, 72 / 128, 0, 24 / 64 }, -- sad
+  [2] = { 24 / 128, 48 / 128, 0, 24 / 64 }, -- neutral
+  [3] = { 0, 24 / 128, 0, 24 / 64 },        -- happy
 }
 
 local function BuildHappinessIndicator(frame, border)
   local box = frame.portrait
   if not box then return end
 
+  local size, topOffset, rightOffset = HAPPINESS_SIZE, 0, 0
+  local themeStyle = U.GetActiveThemeStyle()
+  if themeStyle == "modern-wow" then
+    local layout = M.modernWow.unitFrame.happiness
+    size = size * layout.scale
+    topOffset = layout.topOffset
+  elseif themeStyle == "modern" then
+    size = size * MODERN_HAPPINESS_SCALE
+    topOffset = MODERN_HAPPINESS_TOP_OFFSET
+    rightOffset = MODERN_HAPPINESS_RIGHT_OFFSET
+  end
+
   local badge = CreateFrame("Frame", nil, box)
-  badge:SetWidth(HAPPINESS_SIZE)
-  badge:SetHeight(HAPPINESS_SIZE)
-  badge:SetPoint("TOPRIGHT", box, "TOPRIGHT", -border, -border)
+  badge:SetWidth(size)
+  badge:SetHeight(size)
+  badge:SetPoint("TOPRIGHT", box, "TOPRIGHT", rightOffset - border, topOffset - border)
   -- Same raised-child-layer guard the classification icon and combo pips use:
   -- the portrait texture is a sibling region and art on the same level can end
   -- up behind it.
@@ -1978,12 +1999,9 @@ local function BuildHappinessIndicator(frame, border)
   if levelOk and tonumber(level) then
     pcall(badge.SetFrameLevel, badge, level + 10)
   end
-  U.CreateBackdrop(badge, { border = M.color.unitFrameBorder })
-
   local fill = badge:CreateTexture(nil, "ARTWORK")
-  fill:SetTexture(M.texture.plain)
-  fill:SetPoint("TOPLEFT", badge, "TOPLEFT", border, -border)
-  fill:SetPoint("BOTTOMRIGHT", badge, "BOTTOMRIGHT", -border, border)
+  fill:SetTexture(M.texture.petHappiness)
+  fill:SetAllPoints(badge)
   badge.fill = fill
 
   pcall(badge.Hide, badge)
@@ -2007,18 +2025,18 @@ local function ApplyHappinessIndicator(frame)
     if ok then band = tonumber(value) end
   end
 
-  local tint = band and HAPPINESS_TINTS[band]
-  local state = tint and band or false
+  local cell = band and HAPPINESS_CELLS[band]
+  local state = cell and band or false
   -- Nothing below needs to run again while the band has not changed.
   if frame.happinessState == state then return end
   frame.happinessState = state
 
-  if not tint then
+  if not cell then
     pcall(badge.Hide, badge)
     return
   end
 
-  U.SetColor(badge.fill, tint[1], tint[2], tint[3], 1)
+  pcall(badge.fill.SetTexCoord, badge.fill, cell[1], cell[2], cell[3], cell[4])
   pcall(badge.Show, badge)
 end
 
@@ -3548,10 +3566,10 @@ local function ApplyHealthColor(frame)
     if r then textured = true end
   end
 
-  -- A checked custom colour always wins over the health gradient. With it
-  -- off, keep the default full-health colour and fade into the pastel
-  -- gradient. A missing class palette entry safely falls back to this path.
-  if not r and (cfg.customColors or perc >= 1) then
+  -- Forever's authored Modern WoW fill keeps its locked white vertex colour;
+  -- its pixels already contain the full health hue and gradient. Custom and
+  -- class colours retain their explicit tint paths.
+  if not r and (cfg.customColors or frame.uuiModernWow or perc >= 1) then
     r, g, b = cr, cg, cb
   elseif not r then
     r, g, b = PastelBar(Gradient(perc))

@@ -2,7 +2,7 @@
 ## Title: |cffffffffUnreal |cfff5ae0aUI
 ## Notes: Unreal Azeroth native UI addon.
 ## Author: unrealUI
-## Version: 0.9.1
+## Version: 0.9.2
 ## X-License: MIT
 ## SavedVariables: UnrealUIDB, UnrealUIProfiles, UnrealUIDiagDB, UnrealUIPriceDB
 ## SavedVariablesPerCharacter: UnrealUIProfileDB, UnrealUIFavoriteDB, UnrealUIBankCountDB, UnrealUIBankCacheDB
@@ -63,6 +63,8 @@ core\itemcategory.lua
 core\itemsort.lua
 core\itemstack.lua
 core\widgets.lua
+# The addon's one search field (game settings, bags, banks).
+core\searchbox.lua
 core\stockui.lua
 # The one Modern WoW scrollbar (MinimalScrollBar art over a stock Slider),
 # used by every Modern WoW surface that draws one. Needs core\stockui.lua.
@@ -130,6 +132,8 @@ modules\stancebar.lua
 modules\rogue.lua
 modules\bagfavorites.lua
 modules\bagdesign.lua
+# The category view shared by the bag and bank windows; loaded before both.
+modules\bagcategoryview.lua
 modules\bags.lua
 
 # The HUD bag bar. Loaded after modules\bags.lua because it stands in for

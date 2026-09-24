@@ -242,8 +242,13 @@ function lw.BuildChrome(frame, g)
   local fill = lw.Texture(chrome, "BACKGROUND", "Interface\\Buttons\\WHITE8X8")
   if fill then
     pcall(fill.SetVertexColor, fill, M.Unpack(t.fill))
-    fill:SetPoint("TOPLEFT", chrome, "TOPLEFT", 2, -2)
-    fill:SetPoint("BOTTOMRIGHT", chrome, "BOTTOMRIGHT", -2, 2)
+    -- Stopped at the ThinBorder rim's line (rules/unreal-ui-design.md,
+    -- ThinBorder rim): a flat 2 left 0.5 of fill under the bottom shadow.
+    if not (type(U.ModernWowThinBorderFill) == "function" and
+            U.ModernWowThinBorderFill(fill, chrome)) then
+      fill:SetPoint("TOPLEFT", chrome, "TOPLEFT", 2, -2)
+      fill:SetPoint("BOTTOMRIGHT", chrome, "BOTTOMRIGHT", -2, 2)
+    end
   end
 
   local streak = lw.Texture(chrome, "BACKGROUND", t.streak)
@@ -364,7 +369,10 @@ function lw.BuildFace(owner, size)
     if color then pcall(rim.SetVertexColor, rim, M.Unpack(color)) end
     rim:SetWidth(size + (slot.grow or 0))
     rim:SetHeight(size + (slot.grow or 0))
-    rim:SetPoint("CENTER", owner, "CENTER", 0, 0)
+    -- Centred on the icon square at the owner's top-left, not on the owner:
+    -- a ghost is wider than its icon, and centring on it left the rim sliding
+    -- mid-row instead of riding the icon (user request, 2026-09-23).
+    rim:SetPoint("CENTER", owner, "TOPLEFT", size / 2, -size / 2)
   end
 
   return rightCap

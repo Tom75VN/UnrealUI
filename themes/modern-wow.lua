@@ -37,22 +37,19 @@ U.RegisterThemeStyle("modern-wow", {
     M.color.unitFrameBorder[1], M.color.unitFrameBorder[2] = 0.04, 0.03
     M.color.unitFrameBorder[3], M.color.unitFrameBorder[4] = 0.02, 1.00
 
-    -- Dragonflight's health green. Bright and fully saturated, not the
-    -- desaturated UnrealUI fill: this theme reproduces a specific interface,
-    -- and modules/unitframes.lua now holds this one colour at every health
-    -- level under this theme rather than fading into the pastel gradient.
-    M.color.healthFull[1], M.color.healthFull[2] = 0.10, 0.80
-    M.color.healthFull[3], M.color.healthFull[4] = 0.10, 1.00
+    -- Forever locks the bar colour; its atlas member already carries the
+    -- dark-green to lime gradient and bevel.
+    M.color.healthFull[1], M.color.healthFull[2] = 1.00, 1.00
+    M.color.healthFull[3], M.color.healthFull[4] = 1.00, 1.00
 
     -- The power palette is deliberately NOT overridden here. M.power is
     -- UnrealUI's own semantic colour set, no other theme writes it, and it is
     -- a feature of the addon rather than part of the layout this theme
-    -- reproduces. The bar colour settings -- custom colours, class health
-    -- colours, the pastel gradient -- all keep working exactly as they do
-    -- under `modern`; only the geometry is Dragonflight's.
+    -- reproduces. Custom and class health colours remain explicit overrides;
+    -- only the default health path uses Forever's locked authored colour.
 
-    -- The imported fills already carry their own vertical shading, so the
-    -- pastel gradient UnrealUI applies on top of a flat bar would double it.
+    -- The imported fill carries both colour and shading, so do not recolour it
+    -- with UnrealUI's health-percentage gradient.
     M.unitFrame.usePastelGradient = false
     M.unitFrame.statusTexture = M.modernWow.texture.healthFill
 

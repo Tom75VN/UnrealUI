@@ -2142,9 +2142,10 @@ function U.CreateMoneyCoin(parent, denom, size)
   icon:SetWidth(iconSize)
   icon:SetHeight(iconSize)
   -- The coin fills its own texture, so it centres on the holder rather than
-  -- being raised to compensate for an atlas slice. The number keeps the common
-  -- text baseline used by bags and status.
-  icon:SetPoint("RIGHT", holder, "RIGHT", 0, 0)
+  -- being raised to compensate for an atlas slice; M.money.iconY lifts it
+  -- above the number, which keeps the common text baseline used by bags and
+  -- status and so anchors to the holder rather than to the icon.
+  icon:SetPoint("RIGHT", holder, "RIGHT", 0, M.money.iconY or 0)
   pcall(icon.SetTexture, icon, spec.texture)
   holder.icon = icon
   holder.iconWidth = iconSize
@@ -2155,7 +2156,7 @@ function U.CreateMoneyCoin(parent, denom, size)
     inherits = "GameFontNormalSmall",
   })
   if holder.label then
-    holder.label:SetPoint("RIGHT", icon, "LEFT", -1, 0)
+    holder.label:SetPoint("RIGHT", holder, "RIGHT", -(iconSize + 1), 0)
   end
 
   return holder

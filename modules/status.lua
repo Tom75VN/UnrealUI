@@ -106,8 +106,8 @@ local function BuildCoin(parent, denom, color, width)
   holder.icon:SetWidth(12)
   holder.icon:SetHeight(12)
   -- The coin fills its own texture, so it centres on the holder and the
-  -- number keeps the common text baseline.
-  holder.icon:SetPoint("RIGHT", holder, "RIGHT", 0, 0)
+  -- number keeps the common text baseline; M.money.iconY lifts the icon only.
+  holder.icon:SetPoint("RIGHT", holder, "RIGHT", 0, M.money.iconY or 0)
   pcall(holder.icon.SetTexture, holder.icon, M.money[denom].texture)
 
   holder.label = U.CreateLabel(holder, {
@@ -116,7 +116,7 @@ local function BuildCoin(parent, denom, color, width)
     color = color,
     inherits = "GameFontNormalSmall",
   })
-  if holder.label then holder.label:SetPoint("RIGHT", holder.icon, "LEFT", -1, 0) end
+  if holder.label then holder.label:SetPoint("RIGHT", holder, "RIGHT", -13, 0) end
   return holder
 end
 

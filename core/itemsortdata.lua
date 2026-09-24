@@ -10,6 +10,7 @@ local U = UnrealUI
 local SD = {}
 
 SD.CATEGORY_SPAN = 67108864
+SD.FAMILY_SPAN = 262144
 
 -- Category ids are part of the generated-data contract. "favorite" is not
 -- present here: it is a player-owned view overlay, never an item property.
@@ -72,4 +73,12 @@ end
 function U.ItemSortStaticCategory(link)
   local _, _, category = U.ItemSortStaticInfo(link)
   return category
+end
+
+-- Trade-goods detail starts with the material family. Keep this generated-data
+-- contract here so category callers do not decode the packed value themselves.
+function U.ItemSortStaticTradeFamily(link)
+  local _, _, category, detail = U.ItemSortStaticInfo(link)
+  if category ~= "tradegoods" or type(detail) ~= "number" then return nil end
+  return math.floor(detail / SD.FAMILY_SPAN)
 end

@@ -97,6 +97,7 @@ M.texture = {
   classicCastbarSpark = "Interface\\CastingBar\\UI-CastingBar-Spark",
   chatResizeGrip = "Interface\\AddOns\\unrealUI\\media\\resize",
   restIcon = "Interface\\AddOns\\unrealUI\\media\\rest-icon",
+  petHappiness = "Interface\\AddOns\\unrealUI\\media\\Textures\\ui-pethappiness",
   -- The modern unit frame's resting flipbook. This is an addon-owned copy of
   -- the user-supplied 42-cell sheet used by modern-wow, kept outside that
   -- theme's media tree so the two visual families do not depend on each
@@ -284,24 +285,16 @@ M.classicWow.layout = {
 -- ---------------------------------------------------------------------------
 M.modernWow = {}
 M.modernWow.unitFrame = {
+  happiness = { scale = 0.63, topOffset = 10 },
   -- themes/modern-wow.lua applies the same colour globally. Classic module
   -- mixing cannot mutate that shared token without recolouring native Classic
   -- surfaces, so the dressed unit-frame path reads this scoped copy instead.
-  healthFull = { 0.10, 0.80, 0.10, 1.00 },
+  -- Forever locks this StatusBar's colour; the atlas member supplies its hue.
+  healthFull = { 1.00, 1.00, 1.00, 1.00 },
 
-  -- `texture.healthFill` (DF-main's player health status fill) is opaque from
-  -- its canvas top to its canvas bottom, where the DFRL fill this surface
-  -- shipped first (`texture.healthFillPadded`) carried its own transparent
-  -- padding: measured on that file, its opaque band is rows 5-24 of 32, and
-  -- rows 4 and 25-26 are a near-invisible 8/255 shadow. The StatusBar is
-  -- therefore inset inside its box by those same fractions, so the drawn fill
-  -- keeps the band the authored housing recess was placed around while its
-  -- shading ramps to the edge instead of cutting off at an alpha edge. Labels
-  -- anchor to the box and not to the bar, so the inset moves no text
-  -- (modules/modernwow.lua mw.PlaceBar).
-  --
-  -- Reverting to the padded fill means pointing `texture.healthFill` back at
-  -- `texture.healthFillPadded` and setting both fractions here to 0.
+  -- The exact Forever atlas member is 124x20. Keep its StatusBar in the same
+  -- 20-row band the previous 128x32 source occupied inside the housing; labels
+  -- anchor to the outer box and do not move (modules/modernwow.lua mw.PlaceBar).
   healthFillInset = { top = 5 / 32, bottom = 7 / 32 },
 }
 M.modernWow.path = "Interface\\AddOns\\unrealUI\\media\\Textures\\modern-wow\\"
@@ -327,9 +320,8 @@ M.modernWow.texture = {
   restingFlipbook = M.modernWow.path .. "unitframes\\resting-flipbook",
   portraitBackground = M.modernWow.path ..
                        "unitframes\\unit-frame-portrait-background",
-  -- Both authored health fills are shipped. `healthFill` is the one every
-  -- dressed frame draws; `healthFillPadded` is the DFRL fill it replaced,
-  -- kept so the choice can be reverted -- see unitFrame.healthFillInset.
+  -- Forever's exact coloured player-health atlas member; the older neutral
+  -- DFRL fill remains available for user-selected tinting paths.
   healthFill      = M.modernWow.path .. "unitframes\\health-fill-full",
   healthFillPadded = M.modernWow.path .. "unitframes\\health-fill",
   healthFillMinus = M.modernWow.path .. "unitframes\\health-fill-minus",
@@ -394,7 +386,19 @@ M.modernWow.texture = {
   questParchment   = M.modernWow.path .. "ui\\questbackgroundparchment",
   questScrollChannel = M.modernWow.path .. "ui\\questlog-dualpane-right",
   horizontalBar    = M.modernWow.path .. "ui\\borders\\ui-dialogbox-divider",
+  verticalBar      = M.modernWow.path .. "ui\\borders\\ui-dialogbox-divider-vertical",
   questFooter      = M.modernWow.path .. "ui\\frame\\background-rock",
+  portraitRing     = M.modernWow.path .. "ui\\frame\\portrait-ring",
+  -- ForeverFrameXML Blizzard_TrainerUI/Mainline art, imported unchanged from
+  -- the build's PNGs: the sheet carries the list parchment plus the normal,
+  -- hover and selected service-row cells, and the money file is the footer's
+  -- 148x34 coin recess. The window's outer border and its buttons are the
+  -- theme's own metal frame and 128RedButton, not Forever chrome.
+  trainerSheet     = M.modernWow.path .. "ui\\trainer\\trainertextures",
+  trainerMoney     = M.modernWow.path .. "ui\\moneyframe\\ui-moneyframe-border",
+  merchantLabel    = M.modernWow.path .. "ui\\merchant\\ui-merchant-labelslots",
+  merchantBuyback  = M.modernWow.path .. "ui\\merchant\\ui-buyback-icon",
+  merchantRepair   = M.modernWow.path .. "ui\\merchant\\ui-merchant-repair-icons",
 
   -- Blizzard's action-button proc alert, as two flipbook grids: the one-shot
   -- burst and the loop it settles into. Both are 5 columns x 6 rows of 30
@@ -459,6 +463,15 @@ M.modernWow.texture = {
 
   chatArrowUp   = M.modernWow.path .. "chat\\arrow-up",
   chatArrowDown = M.modernWow.path .. "chat\\arrow-down",
+}
+
+M.modernWow.settingStepperIcon = {
+  texture = M.modernWow.texture.settingUI,
+  sheet = 512,
+  back = { 393, 427, 183, 217 },
+  backDisabled = { 429, 463, 183, 217 },
+  next = { 465, 499, 183, 217 },
+  nextDisabled = { 393, 427, 237, 271 },
 }
 
 -- Forever 1.60.1.69913 Blizzard_SwingTimer.xml. The source atlas is 512x256;
@@ -748,6 +761,7 @@ M.modernWow.npcDialog = {
     inner = { 0.018, 0.014, 0.010, 0.94 },
   },
 }
+
 
 -- The Social window (FriendsFrame) under the `social` surface (user request,
 -- 2026-09-19): the 384x512 paperdoll quadrants, the Character window's
@@ -1071,7 +1085,7 @@ M.modernWow.questDialog = {
   -- NPC name, centred in the title strip between the ring and the close
   -- button; close button inset from the art's top-right corner.
   title = { x = 203, y = 24, color = { 1.00, 0.82, 0.00, 1.00 } },
-  close = { right = 6, top = 5 },
+  close = { size = 17, right = 6, top = 5 },
   -- Greeting-row labels on parchment. The dark-panel questState gold is
   -- illegible here: available and ready-to-turn-in quests take the heading
   -- ink, an accepted unfinished quest a faded ink (ActiveQuestIcon's grey
@@ -1083,6 +1097,244 @@ M.modernWow.questDialog = {
     unknown   = { 0.16, 0.12, 0.08, 1.00 },
     hover     = { 0.62, 0.22, 0.02, 1.00 },
   },
+}
+
+-- The merchant follows ForeverFrameXML's MerchantFrame structure inside the
+-- Modern WoW NPC housing: two columns of five 153x44 item rows, page controls,
+-- repair and last-buyback columns, then a full-width player-money row.
+-- The outer frame, portrait ring, tabs, item-slot rim, rock and
+-- money recess already belong to this theme. The merchant row plate, buyback
+-- portrait, repair icons and service frame come from the pinned Forever
+-- build.
+M.modernWow.merchant = {
+  width = M.modernWow.questDialog.designWidth,
+  height = M.modernWow.questDialog.designHeight,
+  art = M.modernWow.questDialog.art,
+  title = M.modernWow.questDialog.title,
+  titleOffsetY = 2,
+  close = M.modernWow.questDialog.close,
+  row = {
+    count = 10, left = 24, top = 78,
+    width = 153, height = 44, columnGap = 10, rowGap = 8, buybackGap = 2,
+    label = { left = 36, top = 0, width = 128, height = 64 },
+    nameOffsetX = -4,
+    costCoinScale = 0.80,
+    costCoinOffsetY = -1,
+  },
+  slot = { borderSize = 18 },
+  page = {
+    left = 42, right = 322, top = 345,
+    textColor = { 1.00, 0.82, 0.00, 1.00 },
+    disabledTextColor = { 0.60, 0.60, 0.60, 1.00 },
+    icon = {
+      atlas = M.modernWow.settingStepperIcon,
+      size = 17,
+      hitPadding = 5,
+      pressShade = 0.70,
+      disabledShade = 0.90,
+      hoverAlpha = 0.45,
+    },
+  },
+  buyback = { left = 217, top = 367, width = 115, height = 37 },
+  footer = {
+    atlas = M.modernWow.questDialog.footer.atlas,
+    shade = M.modernWow.questDialog.footer.shade,
+    left = 24, top = 362, right = 340, bottom = 426,
+    service = {
+      texture = M.modernWow.texture.merchantRepair,
+      left = 15, top = 356, width = 334, height = 49,
+      sheetWidth = 512, sheetHeight = 256,
+      cell = { 1, 333, 1, 62 },
+    },
+  },
+  money = {
+    left = 215, top = 407, width = 128, height = 21, plateHeight = 19,
+    contentRight = -6, readoutOffsetY = 2,
+    coinOffsetY = 1, textOffsetY = 2,
+    sourceWidth = 128, sourceHeight = 32, cropHeight = 20, cap = 5,
+  },
+  repairs = {
+    right = 172, top = 367, size = 36, gap = 2,
+    icon = {
+      texture = M.modernWow.texture.merchantRepair,
+      sheetWidth = 512, sheetHeight = 256,
+      repair = { 75, 147, 64, 136 },
+      repairAll = { 1, 73, 138, 210 },
+      repairAllGuild = { 75, 147, 138, 210 },
+    },
+  },
+  tabs = { left = 28, top = 440, gap = 3 },
+}
+
+-- The trainer window (ClassTrainerFrame) under the `trainer` surface. Its
+-- housing is the gossip window's (user request, 2026-09-23): the same 384x512
+-- paperdoll quadrants, NPC portrait ring, title strip, close button and rock
+-- footer, so the art-bound numbers are read from M.modernWow.questDialog
+-- rather than re-measured. Inside the recess it follows ForeverFrameXML's
+-- Mainline Blizzard_TrainerUI: one list of 47-high TrainerTextures service
+-- rows over the sheet's list parchment, then a footer holding the coin
+-- recess on the left and Train / Exit on the right. The client's fixed rows
+-- are laid into that list; there is deliberately no detail pane. All
+-- rectangles are in the 384x512 design space, which is also this client's
+-- native trainer size.
+-- The open dropdown menu of the game settings window, shared by every bed
+-- dropdown that should read as that one (user request, 2026-09-23: the
+-- trainer's Filter menu takes the settings menu's corners and size). Both
+-- draw from modern-wow/buttons/setting-ui.tga (M.modernWow.texture.settingUI).
+-- MenuStyle2Mixin:Generate: common-dropdown-c-bg anchored TOPLEFT -17,12 and
+-- BOTTOMRIGHT 17,-22 of the menu, drawn at the art's own 0.5 unit per texel
+-- (the member is 180x180 at twice the unit size). Measured on the cell
+-- (2026-09-22): a 2-texel bronze rim at x 33..146, y 23..136, a 12-texel
+-- chamfer, and a shadow of 33 texels left and right, 23 on top and 43 below
+-- -- which at 0.5 are exactly Forever's anchor offsets, so the rim lands on
+-- the menu's edge. Nine-sliced with a cut per side (shadow + chamfer: 45 /
+-- 35 / 45 / 56) so the corners keep their chamfer and only the plain rim runs
+-- stretch. A first version cut 45 on every side and drew it at 13 units,
+-- which squeezed the corners and cut the deeper bottom shadow through the rim
+-- (reported in game with a screenshot beside Forever's).
+M.modernWow.settingMenu = {
+  cell = { 1, 181, 1, 181 },
+  cut = { left = 45, right = 45, top = 35, bottom = 56 },
+  scale = 0.5,
+  inset = { left = 16.5, top = 11.5, right = 16.5, bottom = 21.5 },
+}
+
+M.modernWow.trainer = {
+  width = M.modernWow.questDialog.designWidth,
+  height = M.modernWow.questDialog.designHeight,
+  -- Seven rows instead of six (user request, 2026-09-23): the housing is
+  -- lengthened (one 47-high row, less 4, 3, 4, 10 and 6 more by user requests, same day: 20) the
+  -- way the Social window's is
+  -- (mw.DressWindow `extend`: the bottom quadrants drop, the top pair's last
+  -- rows repeat 1:1). The frame keeps its 512 height; the drop is taken from
+  -- the art's 75 transparent bottom rows, so everything from the list's
+  -- bottom down sits `extend` lower than on gossip.
+  extend = 20,
+  art = { left = M.modernWow.questDialog.art.left,
+          top = M.modernWow.questDialog.art.top,
+          right = M.modernWow.questDialog.art.right,
+          bottom = M.modernWow.questDialog.art.bottom - 20 },
+  title = M.modernWow.questDialog.title,
+  close = M.modernWow.questDialog.close,
+  -- The recess's lower band, divider on its top edge: the gossip footer,
+  -- `extend` lower, and shorter from the top (38 -> 27 -> 23, user requests,
+  -- 2026-09-23), which gives the list those 15 units.
+  footer = { atlas = M.modernWow.questDialog.footer.atlas,
+             shade = M.modernWow.questDialog.footer.shade,
+             left = M.modernWow.questDialog.footer.left,
+             right = M.modernWow.questDialog.footer.right,
+             top = M.modernWow.questDialog.footer.bottom + 20 - 23,
+             bottom = M.modernWow.questDialog.footer.bottom + 20 },
+  -- Between the title strip (ends y 35) and the recess (starts y 73), right
+  -- of the portrait ring (ends x 72).
+  status = { left = 80, top = 46, width = 130, height = 18 },
+  -- WowStyle1FilterDropdownTemplate (Blizzard_Menu/Mainline/MenuTemplates.xml,
+  -- user request, 2026-09-23): an 18-high button level with the skill bar, as
+  -- FrameXML puts both at y -35. `width` is UnrealUI's: the template sizes
+  -- itself to its text plus 60, which "Filter" keeps near 100; halved to 50
+  -- (user request, 2026-09-23), its right edge kept, then widened by 10 twice to 70
+  -- (same day). Handed to the shared dropdown as its `bed` (core/dropdown.lua).
+  filter = {
+    right = 340, top = 46, width = 70,
+    bed = {
+      -- The common-dropdown atlas, FileDataID 5412379, which the build also
+      -- lists for every member below. Rectangles are `query.py atlasmap
+      -- <name> --exact`; the sheet is authored at twice the unit size.
+      texture = M.modernWow.texture.settingUI,
+      sheet = 512,
+      -- common-dropdown-b-button, 97x26 at atlas size, is anchored 4 outside
+      -- the 18-high button on every side: 18 + 2*4 = 26.
+      controlHeight = 18,
+      height = 26,
+      overhang = 4,
+      -- Measured by alpha and luminance: an 8-texel shadow and bevelled rim
+      -- on the left (plain body from x 16); on the right the printed arrow
+      -- (x 162-171) and the rim, so the arrow never stretches.
+      capLeft = 16,
+      capRight = 40,
+      -- States as WowStyle1FilterDropdownMixin:GetBackgroundAtlas picks them
+      -- (Mainline MenuConstants.lua). The component draws no separate open
+      -- state; -open (197,391,237,289) is the enabled face in Classic.
+      normal   = {   1, 195, 183, 235 },
+      hover    = {   1, 195, 237, 289 },
+      pressed  = {   1, 195, 291, 343 },
+      disabled = { 197, 391, 183, 235 },
+      -- The template's Text: GameFontNormal gold, centred on the button.
+      textColor = { 1.00, 0.82, 0.00, 1 },
+      textAlign = "CENTER",
+      -- 4: just inside the left cap (8 drawn, 4 of it overhang), so the
+      -- 50-wide control keeps 26 units for "Filter" before the arrow's cap.
+      -- It was 20 at the 100 width.
+      textInset = 4,
+      -- The game settings window's open menu, corners and all (user
+      -- request, 2026-09-23), replacing MenuStyle1's smaller
+      -- common-dropdown-bg (cell 183,319,1,137, cut 26/26/26/36, inset 10/3,
+      -- alpha 0.925).
+      menu = M.modernWow.settingMenu,
+    },
+  },
+  -- The list parchment from the recess's left rim to the scrollbar gutter;
+  -- the gutter (x 315-340) stays the recess's own dark rim, as on gossip.
+  list = { left = 24, top = 73, right = 315, bottom = 423 },
+  -- Seven authored 47-high rows fill the list above its bottom margin.
+  scroll = { left = 28, top = 76, width = 284 },
+  scrollBar = { left = 320, top = 94, bottom = 401 },
+  -- Coin recess: only the art's visible top 20 of 32 texel rows are drawn,
+  -- at Forever's 148 width, centred in the footer. The money readout's RIGHT
+  -- edge sits `contentRight` past the recess, as ClassTrainerMoneyFrame does.
+  money = { left = 28, top = 426, width = 148, height = 21,
+            texCoord = { 0, 1, 0, 0.625 }, contentRight = 8 },
+  -- Train alone (Exit removed, user request, 2026-09-23) in the gossip
+  -- Goodbye button's bed: `right` is its outer edge, `bottom` its bottom
+  -- edge; `gap` is unused since. `height`: the red button 30% shorter than
+  -- its 30 (user request, 2026-09-23), centred in the 23-high footer.
+  button = { width = 76, gap = 4, right = 336, bottom = 447, height = 21 },
+  -- ClassTrainerSkillButtonTemplate: 36 icon at LEFT 6; name TOPLEFT of the
+  -- icon's TOPRIGHT 6,-1 (GameFontNormal); rank 5 right of the name
+  -- (GameFontNormalSmall); requirements 19 under the name
+  -- (SystemFont_Shadow_Small, white); cost TOPRIGHT. An unavailable service
+  -- takes GRAY_FONT_COLOR, a darker row (modules/trainer.lua, state.disabled)
+  -- and its icon dimmed to the template's 0.55; an unaffordable cost is red. Headers are TrainerUICategoryTemplate: gold
+  -- label with no shadow, white while hovered, on a bar centred in the row.
+  row = {
+    -- `gap`: space between two rows (user request, 2026-09-23). Seven rows
+    -- and six gaps end at y 417, inside the list's 423.
+    count = 7, width = 284, height = 47, gap = 2,
+    -- How far the row under a category header is drawn up: the bar is 26
+    -- high in a 47 row, so 10.5 below it plus the 2 gap; 6 halved that, and
+    -- 8 took the remaining 6.5 down another 30% to 4.5, and 9 takes that down
+    -- about 20% more to 3.5, then 13 takes 4 more (user requests,
+    -- 2026-09-23); the next row now meets the bar's bottom edge.
+    headerPull = 13,
+    -- How far a header row itself is drawn up, trimming the space above its
+    -- bar (user request, 2026-09-23: 3).
+    headerTopPull = 3,
+    icon = 36, iconLeft = 6,
+    nameLeft = 6, nameTop = -1, rankGap = 5,
+    -- The name's one-line ceiling: from the icon's edge (x 48) to the cost
+    -- column, leaving the rank room beside most names.
+    nameWidth = 180,
+    subTop = -20, subWidth = 226, costRight = 7, costTop = -7,
+    -- The cost's coin icons, raised above their numbers (user request,
+    -- 2026-09-23: 2 up).
+    coinIconY = 2,
+    nameText = { 1.00, 0.82, 0.00, 1 },
+    rankText = { 1.00, 0.82, 0.00, 1 },
+    subText = { 1.00, 1.00, 1.00, 1 },
+    unavailableText = { 0.50, 0.50, 0.50, 1 },
+    costRed = { 1.00, 0.125, 0.125, 1 },
+    disabledShade = 0.55,
+    headerText = { 1.00, 0.82, 0.00, 1 },
+    headerHover = { 1.00, 1.00, 1.00, 1 },
+    headerY = 0,
+    -- The category label's own offset on top of the professions list's
+    -- tuned one, negative lowers it (user requests, 2026-09-23: 6 down, then 1 up).
+    headerLabelY = -5,
+    normal = { 0.00195313, 0.57421875, 0.65820313, 0.75000000 },
+    highlight = { 0.00195313, 0.57421875, 0.75390625, 0.84570313 },
+    selected = { 0.00195313, 0.57421875, 0.84960938, 0.94140625 },
+  },
+  listBackground = { 0.00195313, 0.58593750, 0.00195313, 0.65429688 },
 }
 
 -- The high-resolution Quest Log art keeps transparent padding on the right
@@ -1884,7 +2136,16 @@ M.modernWow.talents = {
     -- retail-only template supplies the textured rim around every tree;
     -- without it the parent inset shows through as a black separator. The
     -- ThinBorder sources are 32px canvases authored to draw at 16 units.
-    border = { size = 16 },
+    -- `fillInset`: texels, on that 32 canvas, from each outer edge to the
+    -- outer edge of the rim's opaque line, measured by alpha (2026-09-23):
+    -- left and top carry a 3-texel outer shadow, the bottom 5 (its shadow
+    -- runs to the edge). The right side is drawn as the left mirrored
+    -- (tal.BuildPanelBorder), so it is 3 too; the authored right piece, kept
+    -- only beside a caller's real bottom-right corner, measures 5. A panel's
+    -- own fill stops there, so it never shows outside the rim (user report
+    -- with a screenshot, 2026-09-23). U.ModernWowThinBorderFill.
+    border = { size = 16,
+               fillInset = { left = 3, top = 3, right = 3, bottom = 5 } },
   },
   -- BgTopLeft 198x256 and BgBottomLeft 198x75, cropped to the tree art's
   -- painted columns; the TopRight/BottomRight pieces stay unused as in DF-main.
@@ -2114,10 +2375,24 @@ M.modernWow.professions = {
   -- and close button stay above both.
   levels = { cover = 10, panel = 1, rim = 6, handle = 10 },
 
-  rank = { x = 280, y = 40, width = 451, height = 29,
+  -- Centred horizontally on the window (user request, 2026-09-23), so it has
+  -- no x; `y` is its top below the window's top.
+  -- textY: the skill value's SetPoint offset on the fill, negative lowers it
+  -- (user request, 2026-09-23: 1 down).
+  rank = { y = 40, width = 451, height = 29, textY = -1,
            fillX = 5, fillY = 3, fillWidth = 441, fillHeight = 18 },
 
-  list = { x = 5, y = 72, width = 274, bottom = 5,
+  -- Recipe filter strip above the list: difficulty and reagents on the first
+  -- row, with the shared recipe search beneath.
+  filter = {
+    x = 5, y = 72, width = 274, height = 60, gap = 4,
+    size = 20, reagentTop = 7,
+    cell = { left = 1, top = 79, right = 269, bottom = 113 },
+    dropdown = { x = 10, y = 8, width = 110, textY = -2 },
+    reagents = { x = 136, width = 138 },
+    search = { x = 12, y = 29, right = 8 },
+  },
+  list = { x = 5, y = 136, width = 274, bottom = 5,
            rowLeft = 8, rowTop = 10, rowRight = 20, rowBottom = 8 },
   header = { height = 25, pieceWidth = 14, pieceHeight = 26, lift = 2,
              labelX = 10,
@@ -2149,14 +2424,12 @@ M.modernWow.professions = {
              -- category header (user request, 2026-09-17).
              groupGap = 6,
              -- Tracked-recipe check at the row's right edge (user request,
-             -- 2026-09-17). Its art is read from the "Track this recipe"
-             -- CheckButton's own checked texture, so the list shows the same
-             -- tick the box does; `checkFallback` is used only if that read
-             -- fails.
+             -- 2026-09-17). It is the "Track this recipe" box's own game
+             -- settings tick (U.SetGameSettingsTick, user request,
+             -- 2026-09-23), so the list shows the same tick the box does.
              -- checkY: SetPoint offset, negative lowers it (user request,
              -- 2026-09-17: 2px down).
-             checkSize = 16, checkRight = 2, checkY = -2, checkGap = 2,
-             checkFallback = "Interface\\Buttons\\UI-CheckBox-Check" },
+             checkSize = 16, checkRight = 2, checkY = -2, checkGap = 2 },
   -- Same MinimalScrollBar geometry as Character > Skills. The Slider owns
   -- only the track; U.StyleModernWowScrollbar hangs its 11px arrows 8px past
   -- either end, so the two 19px gaps keep the complete control in the list.
@@ -2457,6 +2730,27 @@ M.modernWow.bags = {
   -- gap. 2 units below the close button's top edge (close.top 9).
   actions = { left = 34, top = 11, gap = 6, height = 22 },
   money = { right = 10, bottom = 5 },
+  -- Header search (user request, 2026-09-24): Forever's settings search field
+  -- (built by modules/gamesettingslist.lua), stretched on the icon row from
+  -- the last header icon to the close button. `left` includes the field's
+  -- 5-unit left-cap overhang, so about 4 units show past the icon's rim;
+  -- `right` is the gap to the close cell. Non-matching slots take a black
+  -- shade at `dimAlpha` (texture SetAlpha; see modules/bags.lua), and their
+  -- rim and quality glow drop to `borderAlpha`, the opacity the shade leaves
+  -- the icon at (user request, 2026-09-24). `poll` is
+  -- how often, in seconds, the field is refitted to its lane while shown. `lift` raises the field
+  -- above the close cell's centre line (negative lowers it); `widthScale` is the share of that
+  -- lane the field takes, right-aligned (user requests, 2026-09-24).
+  -- A hit is ringed with the talent advisor's gold icon alert (`match`, user
+  -- request, 2026-09-24). Measured by alpha on its 68-texel canvas, the solid
+  -- line is centred `line` texels in from every edge, so the art is drawn at
+  -- the rim's size * sheet / (sheet - 2 * line) to lay that line on the rim;
+  -- the glow outside it spills onto the gap between slots. It draws at 80%
+  -- opacity (`alpha`, user request, 2026-09-24).
+  search = { left = 12, right = 6, lift = -3, widthScale = 0.85,
+             dimAlpha = 0.8, borderAlpha = 0.2, poll = 0.1,
+             match = { texture = M.modernWow.texture.talentIconAlert,
+                       sheet = 68, line = 14, alpha = 0.8 } },
   -- Used-slot readout, bottom left (shown in the category view).
   slotCount = { left = 10, bottom = 7 },
   slot = {
@@ -3650,8 +3944,16 @@ M.professions = {
   -- rankTextColor.
   rankTextColor = { 1.00, 1.00, 1.00, 1.00 },
 
+  filter = {
+    -- Difficulty and reagents share the first row; recipe search is beneath.
+    x = 10, y = 50, width = 276, height = 54, gap = 4,
+    size = 20, rowHeight = 20, reagentTop = 4,
+    dropdown = { x = 6, y = 4, width = 120, height = 20, textY = -2 },
+    reagents = { x = 138, width = 138 },
+    search = { x = 8, y = 25, right = 4 },
+  },
   list = {
-    x = 10, y = 50, width = 276, bottom = 42,
+    x = 10, y = 108, width = 276, bottom = 42,
     inset = 6, rowHeight = 22, headerHeight = 24,
     headerGap = 3, groupGap = 3,
     scrollWidth = 16, scrollArrow = 16, scrollPad = 3, scrollRight = 4,
@@ -4019,6 +4321,16 @@ M.qualityBorder = {
 -- in-game bag screenshot showed on almost every slot.
 M.qualityLimit = 1
 
+-- Same tuning as M.qualityBorder, for quest reward NAME text (U.QuestRewardColor):
+-- the client's own Poor colour (~0.62 grey, matching M.quality[0]) reads fine on
+-- native tooltip/merchant backgrounds but nearly disappears against the dark
+-- Quest Log/quest-giver reward slot bezel (USER_CONFIRMED_INGAME, a taught-spell
+-- reward's grey item name). Brightened only for that one legibility case; still
+-- visibly dimmer than Common so the semantic distinction survives.
+M.qualityText = {
+  [0] = { 0.78, 0.78, 0.78 },   -- Poor
+}
+
 M.slotBorder = {
   empty = { 0.16, 0.16, 0.16, 1.00 },   -- empty slot
   plain = { 0.32, 0.32, 0.32, 1.00 },   -- poor / common item
@@ -4035,6 +4347,34 @@ M.slot = {
   tray    = 26,   -- keyring / bag-slot button
   icon    = 16,   -- small header button (close)
   headerIcon = 22, -- header icon group: key, bags, sell, sort, merge
+  -- `modern` bag footer (user request, 2026-09-24): the money readout bottom
+  -- right and the used-slot readout bottom left, as the bag design places
+  -- them. 16-high money row plus a 4-unit gap to the grid.
+  footer = 20,
+  -- `modern` bag and bank header search (U.FlatBagSearch, user requests,
+  -- 2026-09-24): the field's gap to the last icon (`left`) and to the lane end
+  -- (`right`), its share of the lane (`widthScale`, right-aligned), the refit
+  -- interval (`poll`), and the shade a miss gets (`dimAlpha`) with its
+  -- quality glow's fade (`borderAlpha`) -- the bag design's values.
+  -- A hit is ringed with the bag design's gold icon alert (`match`, user
+  -- request, 2026-09-24), shared by reference: the talent advisor's own
+  -- marks already use this Blizzard art under `modern` (M.talentAdvisor).
+  search = { left = 8, right = 6, widthScale = 0.85, poll = 0.1,
+             dimAlpha = 0.8, borderAlpha = 0.2,
+             match = M.modernWow.bags.search.match },
+}
+
+-- Category view of the bag and bank windows (modules/bagcategoryview.lua).
+-- Each category box is sized to its own content and several share a row while
+-- they fit the flat grid's width; the window is never widened for them: box
+-- insets and gutters come out of the same width.
+M.bagCategory = {
+  title     = 18,  -- heading strip above each category box
+  toggle    = 16,  -- the +/- collapse box in that strip
+  inset     = 4,   -- slot inset inside a category box (flat)
+  gap       = 6,   -- between one category box and the next heading
+  columnGap = 6,   -- between category boxes that share a row
+  titlePad  = 4,   -- toggle-to-title gap, and title-to-box-edge room
 }
 
 -- ---------------------------------------------------------------------------
@@ -4059,6 +4399,9 @@ M.slot = {
 -- textures.addon_tga_paths_require_extensionless confirms and every other
 -- media/icons entry above already uses.
 M.money = {
+  -- Every coin icon sits this far above its number's baseline (user request,
+  -- 2026-09-24: 1 up); the number stays where it was.
+  iconY = 1,
   gold = {
     texture = "Interface\\AddOns\\unrealUI\\media\\icons\\coin-gold",
     color = { 1.00, 0.82, 0.00, 1.00 },
@@ -5059,31 +5402,16 @@ M.foreverWow.control = {
       hover    = {   1,  79, 345, 423 },
       pressed  = {  81, 159, 425, 503 },
       disabled = { 321, 399,  85, 163 },
-      iconTexture = M.modernWow.texture.settingUI,
-      iconSheet = 512,
-      back         = { 393, 427, 183, 217 },
-      backDisabled = { 429, 463, 183, 217 },
-      next         = { 465, 499, 183, 217 },
-      nextDisabled = { 393, 427, 237, 271 },
+      iconTexture = M.modernWow.settingStepperIcon.texture,
+      iconSheet = M.modernWow.settingStepperIcon.sheet,
+      back = M.modernWow.settingStepperIcon.back,
+      backDisabled = M.modernWow.settingStepperIcon.backDisabled,
+      next = M.modernWow.settingStepperIcon.next,
+      nextDisabled = M.modernWow.settingStepperIcon.nextDisabled,
     },
-    -- MenuStyle2Mixin:Generate, the open menu: common-dropdown-c-bg anchored
-    -- TOPLEFT -17,12 and BOTTOMRIGHT 17,-22 of the menu, drawn at the art's
-    -- own 0.5 unit per texel (the member is 180x180 at twice the unit size).
-    -- Measured on the cell (2026-09-22): a 2-texel bronze rim at x 33..146,
-    -- y 23..136, a 12-texel chamfer, and a shadow of 33 texels left and
-    -- right, 23 on top and 43 below -- which at 0.5 are exactly Forever's
-    -- anchor offsets, so the rim lands on the menu's edge. Nine-sliced with
-    -- a cut per side (shadow + chamfer: 45 / 35 / 45 / 56) so the corners
-    -- keep their chamfer and only the plain rim runs stretch. A first
-    -- version cut 45 on every side and drew it at 13 units, which squeezed
-    -- the corners and cut the deeper bottom shadow through the rim (reported
-    -- in game with a screenshot beside Forever's).
-    menu = {
-      cell = { 1, 181, 1, 181 },
-      cut = { left = 45, right = 45, top = 35, bottom = 56 },
-      scale = 0.5,
-      inset = { left = 16.5, top = 11.5, right = 16.5, bottom = 21.5 },
-    },
+    -- The open menu, shared with the Modern WoW trainer's Filter menu:
+    -- M.modernWow.settingMenu, where its measurements are recorded.
+    menu = M.modernWow.settingMenu,
   },
   -- SettingsCheckboxTemplate: 30x29, checkbox-minimal as the normal and
   -- pushed bed, checkmark-minimal / -disabled as the checked faces, all three

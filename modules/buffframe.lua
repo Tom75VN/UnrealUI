@@ -1,8 +1,7 @@
 -- unrealUI :: modules/buffframe.lua
 --
 -- The client's own buff / debuff display beside the minimap, left exactly as
--- the client draws it, with one unrealUI addition: a mover handle so it can be
--- placed like the rest of the interface.
+-- the client draws it, with a mover handle and Rogue poison charge counts.
 --
 -- This is modules/petbar.lua's shape, for the same reason. The native aura
 -- display is never hidden, reskinned, re-parented or click-handled; an
@@ -65,6 +64,7 @@
 --     reading a buff button.
 
 local U = UnrealUI
+local M = U.media
 
 local BF = U.RegisterModule("buffframe")
 
@@ -127,6 +127,7 @@ local driving = false
 local editShown = nil      -- advanced visibility gate; nil follows config
 local toggle = nil         -- the collapse arrow beside the row
 local toggleOffsetX = nil  -- last x offset written for it, to avoid rewrites
+local chargeOverlays = {}
 -- Forward declaration: SetEditShown below refreshes the arrow, which cannot be
 -- built until the anchor exists further down the file.
 local UpdateToggle
@@ -167,6 +168,120 @@ end
 local function IsVisible(frame)
   local ok, shown = pcall(frame.IsShown, frame)
   return (ok and shown and shown ~= 0) and true or false
+end
+
+-- Resolved by exact stock name each pass; no native child is retained or used
+-- as a persistent anchor.
+local TEMP_ENCHANT_BUTTONS = { "TempEnchant1", "TempEnchant2" }
+
+local function HideChargeOverlays()
+  local i
+  for i = 1, table.getn(chargeOverlays) do
+    chargeOverlays[i]:Hide()
+  end
+end
+
+local function ChargeOverlay(index)
+  local overlay = chargeOverlays[index]
+  if overlay then return overlay end
+
+  overlay = CreateFrame("Frame", nil, anchor)
+  overlay:SetWidth(NATIVE_ICON_SIZE)
+  overlay:SetHeight(NATIVE_ICON_SIZE)
+  overlay.label = U.CreateLabel(overlay, {
+    size = M.fontSize.small,
+    color = M.color.text,
+    inherits = "GameFontNormalSmall",
+  })
+  if overlay.label then
+    overlay.label:SetPoint("BOTTOMRIGHT", overlay, "BOTTOMRIGHT", -1, 1)
+  end
+  overlay:Hide()
+  chargeOverlays[index] = overlay
+  return overlay
+end
+
+local function FrameRect(frame)
+  if not frame then return nil end
+
+  local okLeft, left = pcall(frame.GetLeft, frame)
+  local okBottom, bottom = pcall(frame.GetBottom, frame)
+  local okWidth, width = pcall(frame.GetWidth, frame)
+  local okHeight, height = pcall(frame.GetHeight, frame)
+  left = okLeft and tonumber(left) or nil
+  bottom = okBottom and tonumber(bottom) or nil
+  width = okWidth and Number(width) or nil
+  height = okHeight and Number(height) or nil
+  if not left or not bottom or not width or not height then return nil end
+  return left, bottom, width, height
+end
+
+local function PlaceChargeOverlay(index, count)
+  local button = U.G(TEMP_ENCHANT_BUTTONS[index])
+  if not count or count < 1 or not button or not IsVisible(button) then
+    local overlay = chargeOverlays[index]
+    if overlay then overlay:Hide() end
+    return
+  end
+
+  local left, bottom, width, height = FrameRect(button)
+  local anchorLeft, anchorBottom = FrameRect(anchor)
+  if not left or not anchorLeft then
+    local overlay = chargeOverlays[index]
+    if overlay then overlay:Hide() end
+    return
+  end
+
+  local overlay = ChargeOverlay(index)
+  local x, y = left - anchorLeft, bottom - anchorBottom
+  if overlay.uuiX ~= x or overlay.uuiY ~= y or
+     overlay.uuiWidth ~= width or overlay.uuiHeight ~= height then
+    overlay:ClearAllPoints()
+    overlay:SetPoint("BOTTOMLEFT", anchor, "BOTTOMLEFT", x, y)
+    overlay:SetWidth(width)
+    overlay:SetHeight(height)
+    overlay.uuiX, overlay.uuiY = x, y
+    overlay.uuiWidth, overlay.uuiHeight = width, height
+  end
+
+  local okLevel, level = pcall(button.GetFrameLevel, button)
+  level = okLevel and tonumber(level) or nil
+  if level and overlay.uuiLevel ~= level then
+    pcall(overlay.SetFrameLevel, overlay, level + 5)
+    overlay.uuiLevel = level
+  end
+
+  local text = tostring(math.floor(count))
+  if overlay.uuiText ~= text then
+    overlay.uuiText = text
+    if overlay.label then overlay.label:SetText(text) end
+  end
+  if overlay.label then overlay:Show() end
+end
+
+local function UpdatePoisonCharges()
+  local shown = editShown
+  if shown == nil then shown = IconsShown() end
+  if not shown or not anchor or type(U.IsRogue) ~= "function" or
+     not U.IsRogue() then
+    HideChargeOverlays()
+    return
+  end
+
+  local get = U.G("GetWeaponEnchantInfo")
+  if type(get) ~= "function" then
+    HideChargeOverlays()
+    return
+  end
+
+  local ok, main, mainTime, mainCharges, off, offTime, offCharges = pcall(get)
+  if not ok then
+    HideChargeOverlays()
+    return
+  end
+
+  PlaceChargeOverlay(1, main and tonumber(mainCharges) or nil)
+  PlaceChargeOverlay(2, off and tonumber(offCharges) or nil)
 end
 
 local function EnforceVisibility()
@@ -387,6 +502,7 @@ end
 
 local function Apply()
   EnforceVisibility()
+  UpdatePoisonCharges()
   if not anchor or not root then return end
 
   UpdateToggle()
@@ -586,6 +702,10 @@ local function RegisterEvents()
   -- a hidden display cannot reappear for a whole updater tick when an aura
   -- lands; it is still only an accelerator for the tick below.
   U.RegisterEvent("UNIT_AURA", function(event, unit)
+    if unit == nil or unit == "player" then Apply() end
+  end)
+  -- WORKING_SOURCE in UnrealPfUI; the one-second updater remains the guarantee.
+  U.RegisterEvent("UNIT_INVENTORY_CHANGED", function(event, unit)
     if unit == nil or unit == "player" then Apply() end
   end)
 end

@@ -94,6 +94,57 @@ local function StyleTitleRow(i)
   end
 end
 
+local function LayoutTitleRows(rows)
+  -- GetStringHeight is absent here; Button:GetTextHeight includes the
+  -- measured height of a wrapped label.
+  local previous
+  local i
+  for i = 1, rows do
+    local button = G("GossipTitleButton" .. i)
+    local shown = false
+    if button and button.IsShown then
+      local shownOk
+      shownOk, shown = pcall(button.IsShown, button)
+      shown = shownOk and shown
+    end
+
+    if shown then
+      if not button.uuiGossipBaseHeight and button.GetHeight then
+        local heightOk, height = pcall(button.GetHeight, button)
+        height = heightOk and tonumber(height) or nil
+        if height and height > 0 then
+          button.uuiGossipBaseHeight = height
+        end
+      end
+
+      local height = button.uuiGossipBaseHeight or 0
+      if button.GetTextHeight then
+        local textOk, textHeight = pcall(button.GetTextHeight, button)
+        textHeight = textOk and tonumber(textHeight) or nil
+        if textHeight and textHeight + 2 > height then
+          height = textHeight + 2
+        end
+      end
+      if height > 0 and button.SetHeight then
+        pcall(button.SetHeight, button, height)
+      end
+
+      if previous then
+        pcall(function()
+          button:ClearAllPoints()
+          button:SetPoint("TOPLEFT", previous, "BOTTOMLEFT", 0, -1)
+        end)
+      end
+      previous = button
+    end
+  end
+
+  local scroll = G("GossipGreetingScrollFrame")
+  if scroll and scroll.UpdateScrollChildRect then
+    pcall(scroll.UpdateScrollChildRect, scroll)
+  end
+end
+
 -- No compact-DB record for how many GossipTitleButton rows FrameXML ever
 -- instantiates. Same convention as modules/trainer.lua's CLASS_TRAINER_
 -- SKILLS_DISPLAYED fallback: try the documented constant, fall back to a
@@ -104,6 +155,7 @@ local function StyleTitleRows()
   for i = 1, rows do
     StyleTitleRow(i)
   end
+  LayoutTitleRows(rows)
 end
 
 -- Theme-only row finish on parchment: heading ink at rest and the warmer
