@@ -296,7 +296,20 @@ function pm.RecipeMatchesSearch(win, entry)
   local query = win and win.query
   if type(query) ~= "string" or query == "" then return true end
   local name = type(U.SearchFold) == "function" and U.SearchFold(entry.name) or ""
-  return string.find(name, query, 1, true) ~= nil
+  if string.find(name, query, 1, true) then return true end
+
+  local countOk, count = pm.Call(win.kind.numReagents, entry.index)
+  count = (countOk and tonumber(count)) or 0
+  local i
+  for i = 1, count do
+    local ok, reagentName = pm.Call(win.kind.reagent, entry.index, i)
+    if ok and type(reagentName) == "string" then
+      local folded = type(U.SearchFold) == "function" and
+                     U.SearchFold(reagentName) or ""
+      if string.find(folded, query, 1, true) then return true end
+    end
+  end
+  return false
 end
 
 function pm.SyncFilters(win, config)
@@ -784,7 +797,7 @@ function pm.BuildFilters(win)
   if type(U.CreateSearchBox) == "function" then
     win.search = U.CreateSearchBox(win.filters, {
       name = "UnrealUIProfessionsModernSearch" .. win.kind.id,
-      placeholder = U.L("BAGS_SEARCH"),
+      placeholder = U.L("PROFESSIONS_SEARCH"),
       onChange = function(text) pm.SetQuery(win, text) end,
     })
   end
@@ -876,9 +889,7 @@ pm.SCANNER_NAME = "UnrealUIProfessionsModernScan"
 
 function pm.Scanner()
   if pm.scanner then return pm.scanner end
-  local ok, tip = pcall(CreateFrame, "GameTooltip", pm.SCANNER_NAME, nil,
-                        "GameTooltipTemplate")
-  if ok and tip then pm.scanner = tip end
+  pm.scanner = U.CreateScannerTooltip(pm.SCANNER_NAME)
   return pm.scanner
 end
 
@@ -929,8 +940,11 @@ function pm.StatLines(win, index)
 
   local tip = pm.Scanner()
   if not tip or type(tip[kind.tipRecipe]) ~= "function" then return nil end
-  pcall(tip.ClearLines, tip)
-  pcall(tip.SetOwner, tip, U.G("WorldFrame") or UIParent, "ANCHOR_NONE")
+  return U.ScanWithTooltip(tip, pm.ReadStatLines, kind, index)
+end
+
+-- Read on the armed scanner; U.ScanWithTooltip hides it afterwards.
+function pm.ReadStatLines(tip, kind, index)
   if not pcall(tip[kind.tipRecipe], tip, index) then return nil end
 
   local countOk, count = pcall(tip.NumLines, tip)

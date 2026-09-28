@@ -206,25 +206,27 @@ function bb.Has(name)
   return type(U.G(name)) == "function"
 end
 
--- Free and total carried slots, across the backpack and the four bags.
+-- Used, free and total slots of every carried bag: the backpack and all four
+-- equipped bags, specialty bags (quiver, ammo pouch, herb, soul...) included
+-- (user request, 2026-09-28). Used / total is the bag window's own readout.
+--
 -- GetContainerNumSlots and GetContainerItemInfo are documented but not runtime
 -- verified here (knowledge.json / bags.container_api_contract_unverified), and
 -- this client answers an empty slot with texture "" rather than nil -- which is
 -- why the shared reader in core/compat.lua is used rather than the raw call.
-function bb.FreeSlots()
-  local free, total, bag, slot = 0, 0, nil, nil
+function bb.SlotCounts()
+  local used, total, bag, slot = 0, 0, nil, nil
 
   for bag = bb.BACKPACK_BAG, bb.SLOT_COUNT do
     local ok, count = pcall(GetContainerNumSlots, bag)
     count = (ok and tonumber(count)) or 0
     total = total + count
     for slot = 1, count do
-      local texture = U.ContainerSlotInfo(bag, slot)
-      if not texture then free = free + 1 end
+      if U.ContainerSlotHasItem(bag, slot) then used = used + 1 end
     end
   end
 
-  return free, total
+  return used, total - used, total
 end
 
 -- ---------------------------------------------------------------------------
@@ -253,17 +255,30 @@ bb.mw = {
   -- ring. Expressed as an inset so it follows bb.SLOT if that changes.
   iconInset = 5,
   -- An equipped bag's own item icon is square where DF rounds it off with
-  -- SetPortraitToTexture (see DressIcon), so at DF's icon size its corners sit
-  -- on the ring. Asked for after seeing the bar in game: trim 3px off the
-  -- extra-bag icons only, which pulls those corners inside the rim. The
-  -- backpack (its own DF bag picture) and the keyring (the atlas key picture)
-  -- are already authored to their art and keep the plain inset.
-  bagIconTrim = 3,
+  -- SetPortraitToTexture (see DressIcon). Sized to the rim instead (user
+  -- request, 2026-09-28: the trimmed 17px icon read too small): the rim cell's
+  -- solid metal runs over texels 2-6 and 49-53 of its 61px cell, drawn at
+  -- 30.5 -- an opening of radius 10.5 and an outer edge of radius 13 units.
+  -- The largest square whose corners stay under that metal is 26 / sqrt(2) =
+  -- 18.4, so the icon fills the opening and its corners never show past the
+  -- ring. `crop` trims the dark frame baked into every client item icon, so
+  -- the bag picture itself uses that whole square. The backpack (its own DF
+  -- bag picture) and the keyring (the atlas key picture) are authored to their
+  -- art and keep the plain inset.
+  bagIcon = { size = 18, crop = 0.07 },
   -- ...and drop the whole extra-bag cell -- ring, rim, state rings and icon --
   -- 3px, which is the other half of the same in-game correction: the slots
   -- read high against the backpack's larger ring beside them. The keyring keeps
   -- the plain cell offset, so this is passed in rather than folded into cellY.
   bagDrop = 3,
+  -- Gap between two extra-bag slots, one unit tighter than bb.GAP (user
+  -- request, 2026-09-28: the round rims read further apart than the flat
+  -- squares did). The flat themes keep bb.GAP.
+  slotGap = 2,
+  -- The collapse arrow drops 2 units off the row's centre line (user request,
+  -- 2026-09-28), level with the dropped extra-bag cells (bagDrop) rather
+  -- than with the backpack's centre.
+  arrowDrop = 2,
 }
 
 function bb.mw.Texture(parent, layer, path, cell)
@@ -283,22 +298,69 @@ function bb.mw.Size(texture, size)
   pcall(texture.SetHeight, texture, size)
 end
 
--- Points one of a button's own state textures at the atlas hover cell. The
--- slot is left to the client to show and hide; only its art is replaced.
-function bb.mw.StateCell(button, setter, getter, size, y)
-  if type(button[setter]) ~= "function" then return end
-  if not pcall(button[setter], button, M.modernWow.texture.bagSlotFrame) then
-    return
+-- Empties one of a button's own state slots (checked, pushed). The slot is a
+-- CheckButton, whose checked state flips on every click -- including the click
+-- that picks the bag up -- and the atlas glow cell handed to it through
+-- SetCheckedTexture(path) drew as an opaque plate over the icon until the next
+-- click: the bag looked gone while it was still equipped (in game,
+-- 2026-09-28). SetHighlightTexture(path) had already drawn that cell as an
+-- opaque square. Retail shows no checked art on these slots and presses with
+-- the plain border, so the rim alone is the resting and pressed face here.
+function bb.mw.ClearStateArt(button, setter, getter)
+  if type(button[getter]) == "function" then
+    local ok, region = pcall(button[getter], button)
+    if ok and region then U.HideRegion(region) end
+  end
+  if type(button[setter]) == "function" then
+    pcall(button[setter], button, "")
+  end
+end
+
+-- The hover glow: an owned texture over the rim, shown from OnEnter/OnLeave.
+-- Plain blend, full strength -- the backpack's original, working recipe. The
+-- Retail treatment (SetBlendMode("ADD") with a .4 vertex shade, see
+-- M.modernWow.bagHover) left every bag with no visible hover in game
+-- (2026-09-28), so neither is applied here.
+--
+-- `clearNative` empties the template's own HighlightTexture first, for the
+-- equipped-bag slots: re-pointed through SetHighlightTexture it drew an opaque
+-- square, and edited in place it never appeared (probe baghover, 2026-09-28).
+-- The flat themes empty the same slot the same way. The backpack is an
+-- UnrealUI button with no native highlight of its own, so it is left alone.
+function bb.mw.HoverGlow(button, path, size, x, y, clearNative, alpha)
+  if clearNative then
+    local ok, native = pcall(button.GetHighlightTexture, button)
+    if ok and native then U.HideRegion(native) end
+    pcall(button.SetHighlightTexture, button, "")
   end
 
-  local ok, region = pcall(button[getter], button)
-  if not ok or not region then return end
+  local glow = bb.mw.Texture(button, "OVERLAY", path)
+  if not glow then return nil end
+  if alpha then pcall(glow.SetVertexColor, glow, 1, 1, 1, alpha) end
+  bb.mw.Size(glow, size)
+  pcall(glow.SetPoint, glow, "CENTER", button, "CENTER", x or 0, y or 0)
+  pcall(glow.Hide, glow)
+  button.uuiModernWowHover = glow
+  return glow
+end
 
-  pcall(region.SetTexCoord, region, M.Unpack(M.modernWow.bagCell.highlight))
-  pcall(region.ClearAllPoints, region)
-  bb.mw.Size(region, size)
-  pcall(region.SetPoint, region, "CENTER", button, "CENTER",
-        bb.mw.cellX, y or bb.mw.cellY)
+-- The extra-bag glow's size and offset from the rim cell's anchor, so its
+-- ring lands exactly on the rim's (M.modernWow.bagHover.slotArt / rimArt).
+-- `ring` is the rim cell's drawn size; texels scale by the same factor.
+function bb.mw.SlotGlowPlacement(ring)
+  local hover = M.modernWow.bagHover
+  local rim, art = hover.rimArt, hover.slotArt
+  local scale = ring / rim.size
+  -- Screen y grows upward, texel y downward.
+  local dx = ((rim.centerX - rim.size / 2) - (art.centerX - art.size / 2)) * scale
+  local dy = ((art.centerY - art.size / 2) - (rim.centerY - rim.size / 2)) * scale
+  return art.size * scale, dx, dy
+end
+
+function bb.mw.ShowHover(button, shown)
+  local glow = button and button.uuiModernWowHover
+  if not glow then return end
+  if shown then pcall(glow.Show, glow) else pcall(glow.Hide, glow) end
 end
 
 -- One round bag-slot face: the empty-slot cell behind the icon and the rim
@@ -313,7 +375,7 @@ function bb.mw.DressSlot(button, size, cells, drop)
   local cellY = bb.mw.cellY - (drop or 0)
 
   local face = bb.mw.Texture(button, "BACKGROUND", art, cells.face)
-  local rim = bb.mw.Texture(button, "OVERLAY", art, cells.rim)
+  local rim = bb.mw.Texture(button, cells.rimLayer or "OVERLAY", art, cells.rim)
 
   -- Both structural pieces or neither: a half-dressed round slot reads worse
   -- than the flat square it would otherwise have been.
@@ -331,12 +393,14 @@ function bb.mw.DressSlot(button, size, cells, drop)
 
   U.SetBackdropShown(button, false)
 
-  -- Hover and, on a CheckButton, the checked state are the button's own state
-  -- slots rather than textures of ours, so the client keeps driving them.
-  bb.mw.StateCell(button, "SetHighlightTexture", "GetHighlightTexture",
-                  ring, cellY)
-  bb.mw.StateCell(button, "SetCheckedTexture", "GetCheckedTexture", ring, cellY)
-  bb.mw.StateCell(button, "SetPushedTexture", "GetPushedTexture", ring, cellY)
+  -- Hover is an owned glow (bb.mw.HoverGlow), created after the rim so it
+  -- lies over it; checked/pushed draw nothing (bb.mw.ClearStateArt).
+  local glowSize, glowX, glowY = bb.mw.SlotGlowPlacement(ring)
+  bb.mw.HoverGlow(button, M.modernWow.bagHover.slot, glowSize,
+                  bb.mw.cellX + glowX, cellY + glowY, true,
+                  M.modernWow.bagHover.alpha)
+  bb.mw.ClearStateArt(button, "SetCheckedTexture", "GetCheckedTexture")
+  bb.mw.ClearStateArt(button, "SetPushedTexture", "GetPushedTexture")
 
   button.uuiModernWowBag = { face = face, rim = rim }
 end
@@ -353,13 +417,52 @@ function bb.mw.DressIcon(button, name, size, drop)
   local icon = U.G(name .. "IconTexture")
   if not icon then return end
 
+  local extent = bb.mw.bagIcon.size
+  local crop = bb.mw.bagIcon.crop
   pcall(icon.ClearAllPoints, icon)
   pcall(icon.SetPoint, icon, "CENTER", button, "CENTER", 0, -(drop or 0))
-  local extent = size - bb.mw.iconInset * 2 - bb.mw.bagIconTrim
   pcall(icon.SetWidth, icon, extent)
   pcall(icon.SetHeight, icon, extent)
+  pcall(icon.SetTexCoord, icon, crop, 1 - crop, crop, 1 - crop)
   pcall(icon.SetDrawLayer, icon, "BORDER")
   button.uuiModernWowIcon = icon
+
+  -- The template's stack count -- the ammo total on an equipped ammo pouch or
+  -- quiver -- sits in the icon's layer, under the rim. Lifted over it (user
+  -- request, 2026-09-28); the rim moved down to ARTWORK for the same reason.
+  -- Reached by its global name, so its setters are the real object's.
+  local count = U.G(name .. "Count")
+  if count then pcall(count.SetDrawLayer, count, "OVERLAY") end
+
+  -- A copy of the icon on a texture of our own, drawn exactly over the
+  -- template's. Probe bagicon.v1 (2026-09-28): after a bag is picked up and
+  -- the world is clicked, the cursor empties with no ITEM_LOCK_CHANGED and the
+  -- client stops drawing the template's IconTexture while every Lua read of it
+  -- (texture, IsShown, IsVisible, alpha, layer, anchor) is unchanged; the
+  -- addon-owned face and rim on the same button kept drawing. Neither a
+  -- redraw nor ClearCursor brought it back, so the bag picture is carried by
+  -- a texture the client does not tie to the inventory slot. Where both show,
+  -- they are the same image in the same place.
+  local owned = bb.mw.Texture(button, "BORDER")
+  if owned then
+    pcall(owned.SetPoint, owned, "CENTER", button, "CENTER", 0, -(drop or 0))
+    pcall(owned.SetWidth, owned, extent)
+    pcall(owned.SetHeight, owned, extent)
+    pcall(owned.SetTexCoord, owned, crop, 1 - crop, crop, 1 - crop)
+    pcall(owned.Hide, owned)
+    button.uuiBagIcon = owned
+  end
+end
+
+-- Mirrors the equipped bag's picture onto the owned icon (bb.mw.DressIcon).
+function bb.mw.PaintIcon(button, texture)
+  local owned = button and button.uuiBagIcon
+  if not owned then return end
+  if texture and pcall(owned.SetTexture, owned, texture) then
+    pcall(owned.Show, owned)
+  else
+    pcall(owned.Hide, owned)
+  end
 end
 
 -- The backpack wears DragonflightUI's own bag picture rather than a client
@@ -371,8 +474,6 @@ function bb.mw.DressBackpack(button, size)
   local bag = bb.mw.Texture(button, "ARTWORK", M.modernWow.texture.bagSlot)
   local rim = bb.mw.Texture(button, "OVERLAY",
                             M.modernWow.texture.bagSlotCutout)
-  local hover = bb.mw.Texture(button, "OVERLAY",
-                              M.modernWow.texture.bagSlotHighlight)
 
   if not bag then return false end
 
@@ -385,12 +486,8 @@ function bb.mw.DressBackpack(button, size)
     bb.mw.Size(rim, ring)
     rim:SetPoint("CENTER", button, "CENTER", 0, 0)
   end
-  if hover then
-    bb.mw.Size(hover, ring)
-    hover:SetPoint("CENTER", button, "CENTER", 0, 0)
-    pcall(hover.Hide, hover)
-    button.uuiModernWowHover = hover
-  end
+  bb.mw.HoverGlow(button, M.modernWow.bagHover.backpack, ring, 0, 0, false,
+                  M.modernWow.bagHover.alpha)
 
   button.uuiModernWowBag = { face = bag, rim = rim }
   return true
@@ -455,15 +552,15 @@ function bb.CreateBackpack()
   button:SetScript("OnEnter", function()
     if not bb.mw.active then
       U.SetBorderColor(button, M.Unpack(M.color.accentDim))
-    elseif button.uuiModernWowHover then
-      pcall(button.uuiModernWowHover.Show, button.uuiModernWowHover)
+    else
+      bb.mw.ShowHover(button, true)
     end
 
     local tip = U.G("GameTooltip")
     if tip then
       pcall(tip.SetOwner, tip, button, "ANCHOR_RIGHT")
       pcall(tip.SetText, tip, U.L("BAGBAR_BACKPACK"))
-      local free, total = bb.FreeSlots()
+      local _, free, total = bb.SlotCounts()
       pcall(tip.AddLine, tip, U.L("BAGBAR_FREE_SLOTS", free, total),
             0.65, 0.65, 0.65, 1)
       -- Not while the merged bag window owns the container UI: bags.lua points
@@ -481,8 +578,8 @@ function bb.CreateBackpack()
   button:SetScript("OnLeave", function()
     if not bb.mw.active then
       U.SetBorderColor(button, M.Unpack(M.color.border))
-    elseif button.uuiModernWowHover then
-      pcall(button.uuiModernWowHover.Hide, button.uuiModernWowHover)
+    else
+      bb.mw.ShowHover(button, false)
     end
     local tip = U.G("GameTooltip")
     if tip then pcall(tip.Hide, tip) end
@@ -508,8 +605,17 @@ function bb.CreateSlot(i)
     bb.mw.DressSlot(button, bb.SLOT, {
       face = M.modernWow.bagCell.slot,
       rim = M.modernWow.bagCell.border,
+      -- ARTWORK, not OVERLAY: still over the BORDER icon, but under the
+      -- stack count, which the ammo pouch shows (bb.mw.DressIcon).
+      rimLayer = "ARTWORK",
     }, bb.mw.bagDrop)
     bb.mw.DressIcon(button, name, bb.SLOT, bb.mw.bagDrop)
+    U.PostHookScript(button, "OnEnter", function()
+      bb.mw.ShowHover(button, true)
+    end)
+    U.PostHookScript(button, "OnLeave", function()
+      bb.mw.ShowHover(button, false)
+    end)
   else
     -- The explicit border is the whole hover state under the flat themes, the
     -- same treatment the bag window's equipped-bag row uses.
@@ -521,6 +627,24 @@ function bb.CreateSlot(i)
       U.SetBorderColor(button, M.Unpack(M.color.border))
     end)
   end
+
+  -- Retail Combined Bags marks every item slot belonging to the hovered bag.
+  -- The merged bag module owns that paint; when it is disabled this is a
+  -- harmless no-op because it has no item slots to visit.
+  U.PostHookScript(button, "OnEnter", function()
+    if type(U.HighlightBagContents) == "function" then
+      U.HighlightBagContents(button.slot, true)
+    end
+  end)
+  U.PostHookScript(button, "OnLeave", function()
+    -- Redraw the icon on the way out, as the bag window's row does: a click
+    -- or drag through the template can leave it blank (see ITEM_LOCK_CHANGED
+    -- in bb.Build).
+    bb.mw.PaintIcon(button, U.RefreshBagSlotIcon(button))
+    if type(U.HighlightBagContents) == "function" then
+      U.HighlightBagContents(button.slot, false)
+    end
+  end)
 
   return button
 end
@@ -580,6 +704,8 @@ function bb.CreateKeyring()
       pcall(icon.SetWidth, icon, bb.SLOT - inset * 2)
       pcall(icon.SetHeight, icon, bb.SLOT - inset * 2)
     end
+    button:SetScript("OnEnter", function() bb.mw.ShowHover(button, true) end)
+    button:SetScript("OnLeave", function() bb.mw.ShowHover(button, false) end)
   else
     button:SetScript("OnEnter", function()
       U.SetBorderColor(button, M.Unpack(M.color.accentDim))
@@ -666,10 +792,10 @@ end
 -- the bar rather than to the one before it, so a control of a different height
 -- -- the backpack is half again as tall as the slots beside it -- sits on that
 -- one line instead of inheriting its neighbour's centre down the row.
-function bb.Place(control, size, offset)
+function bb.Place(control, size, offset, y)
   if not control then return offset end
   control:ClearAllPoints()
-  control:SetPoint("RIGHT", bb.anchor, "RIGHT", -offset, 0)
+  control:SetPoint("RIGHT", bb.anchor, "RIGHT", -offset, y or 0)
   control:Show()
   return offset + size
 end
@@ -690,7 +816,8 @@ function bb.Layout()
       if expanded then
         -- The wider lead belongs to whichever slot ends up first, which is
         -- not necessarily slot 1 if the client refused to build one.
-        local gap = (offset == bb.BACKPACK) and bb.LEAD or bb.GAP
+        local gap = bb.mw.active and bb.mw.slotGap or bb.GAP
+        if offset == bb.BACKPACK then gap = bb.LEAD end
         offset = bb.Place(button, bb.SLOT, offset + gap)
       else
         button:Hide()
@@ -717,7 +844,8 @@ function bb.Layout()
   end
 
   if bb.arrow then
-    offset = bb.Place(bb.arrow, bb.ARROW, offset + bb.GAP)
+    offset = bb.Place(bb.arrow, bb.ARROW, offset + bb.GAP,
+                      bb.mw.active and -bb.mw.arrowDrop or 0)
     bb.SetArrowDirection(expanded)
   end
 
@@ -737,7 +865,7 @@ function bb.Refresh()
   for i = 1, bb.SLOT_COUNT do
     local button = bb.slots[i]
     if button then
-      U.RefreshBagSlotIcon(button)
+      bb.mw.PaintIcon(button, U.RefreshBagSlotIcon(button))
       if not bb.mw.active then
         U.SetBorderColor(button, M.Unpack(M.color.border))
       end
@@ -746,8 +874,9 @@ function bb.Refresh()
 
   if bb.backpack and bb.backpack.freeText then
     local label = bb.backpack.freeText
-    local free, total = bb.FreeSlots()
-    pcall(label.SetText, label, U.L("BAGBAR_FREE_FORMAT", free, total))
+    -- Used / total, the bag window's own readout (BAGS_SLOT_COUNT).
+    local used, free, total = bb.SlotCounts()
+    pcall(label.SetText, label, U.L("BAGBAR_FREE_FORMAT", used, total))
     -- A full bag is the one state worth calling out, and the accent is the
     -- addon's own active-state colour rather than a new semantic token.
     local color = (free == 0) and M.color.accent or M.color.textDim
@@ -820,6 +949,12 @@ function bb.Build()
   U.RegisterEvent("PLAYER_ENTERING_WORLD", bb.MarkDirty)
   U.RegisterEvent("BAG_UPDATE", bb.MarkDirty)
   U.RegisterEvent("UNIT_INVENTORY_CHANGED", bb.MarkDirty)
+  -- Picking a bag up and dropping it back fires only ITEM_LOCK_CHANGED: no
+  -- container or inventory item changes. The template's own handler redraws
+  -- the slot with the id it resolved in OnLoad, which a CreateFrame'd button
+  -- does not have, and blanks the icon. The bag window's row redraws on this
+  -- event for the same reason (modules/bags.lua, MarkAllBagsDirty).
+  U.RegisterEvent("ITEM_LOCK_CHANGED", bb.MarkDirty)
   U.RegisterUpdate("bagbar.refresh", 0.2, bb.ProcessDirty)
 
   -- Refresh ends in a full layout, so the row is placed by the same code that

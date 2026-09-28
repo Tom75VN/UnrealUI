@@ -68,6 +68,33 @@ local function NudgeRowText(row)
   end)
 end
 
+local function AddDetailRequirementsGap()
+  if useModernWow then return end
+  local requirements = G("ClassTrainerSkillRequirements")
+  if not requirements or requirements.uuiTrainerGap then return end
+  local ok, point, relTo, relPoint, x, y =
+    pcall(requirements.GetPoint, requirements, 1)
+  if not ok or not point then return end
+  requirements.uuiTrainerGap = true
+  pcall(function()
+    requirements:ClearAllPoints()
+    requirements:SetPoint(point, relTo, relPoint or point, x or 0, (y or 0) - 6)
+  end)
+end
+
+local function NudgeDetailName()
+  if useModernWow then return end
+  local name = G("ClassTrainerSkillName")
+  if not name or name.uuiTrainerNudged then return end
+  local ok, point, relTo, relPoint, x, y = pcall(name.GetPoint, name, 1)
+  if not ok or not point then return end
+  name.uuiTrainerNudged = true
+  pcall(function()
+    name:ClearAllPoints()
+    name:SetPoint(point, relTo, relPoint or point, x or 0, (y or 0) - 3)
+  end)
+end
+
 -- Per-row skill headers use the shared collapse box instead of the native
 -- +/- art. Native click/collapse behaviour is untouched; only the icon and
 -- its click routing are unrealUI's, same treatment as modules/questlog.lua's
@@ -185,6 +212,24 @@ function rows.RowId(row)
   return ok and tonumber(value) or nil
 end
 
+function rows.ServiceTextColor(serviceType)
+  local colors = M.trainer and M.trainer.serviceText
+  return colors and colors[serviceType] or WHITE
+end
+
+function rows.NativeLabel(row)
+  if not row then return nil end
+  local rowName = row.GetName and row:GetName()
+  local label = RowFontString(row)
+  local labelName
+  if label and label.GetName then
+    local ok, value = pcall(label.GetName, label)
+    if ok and type(value) == "string" and value ~= "" then labelName = value end
+  end
+  return (labelName and G(labelName)) or
+         (rowName and G(rowName .. "Text")) or label
+end
+
 -- The client's row label, rank text and state slots: hidden on every pass,
 -- because the native update rewrites them.
 --
@@ -197,13 +242,8 @@ end
 function rows.HideNative(row)
   local name = row.GetName and row:GetName()
   local label = RowFontString(row)
-  local labelName
-  if label and label.GetName then
-    local ok, value = pcall(label.GetName, label)
-    if ok and type(value) == "string" and value ~= "" then labelName = value end
-  end
   local natives = {
-    labelName and G(labelName),
+    rows.NativeLabel(row),
     name and G(name .. "Text"),
     name and G(name .. "SubText"),
   }
@@ -295,17 +335,17 @@ function rows.Refresh(row)
   U.SetColor(state.icon, shade, shade, shade, 1)
 
   state.name:SetText(name or "")
-  U.SetStockFont(state.name, M.fontSize.normal,
-                 unavailable and t.unavailableText or t.nameText)
+  local serviceColor = rows.ServiceTextColor(serviceType)
+  U.SetStockFont(state.name, M.fontSize.normal, serviceColor)
   U.FitLineToText(state.name)
   if type(rank) == "string" and rank ~= "" then
     state.rank:SetText("(" .. rank .. ")")
   else
     state.rank:SetText("")
   end
-  U.SetStockFont(state.rank, M.fontSize.small, t.rankText)
+  U.SetStockFont(state.rank, M.fontSize.small, serviceColor)
   state.subText:SetText(id and rows.Requirements(id, serviceType) or "")
-  U.SetStockFont(state.subText, M.fontSize.small, t.subText)
+  U.SetStockFont(state.subText, M.fontSize.small, serviceColor)
 
   local cost = tonumber((id and rows.Call("GetTrainerServiceCost", id))) or 0
   if serviceType ~= "used" and cost > 0 then
@@ -444,7 +484,10 @@ local function BuildModernRow(row)
 
     -- name: TOPLEFT of the icon's TOPRIGHT +6,-1; rank: BOTTOMLEFT of the
     -- name's BOTTOMRIGHT +5,-1; requirements: 19 under the name.
-    state.name = U.CreateLabel(row, { size = M.fontSize.normal, color = t.nameText })
+    state.name = U.CreateLabel(row, {
+      size = M.fontSize.normal,
+      color = rows.ServiceTextColor("available"),
+    })
     state.name:SetPoint("TOPLEFT", state.icon, "TOPRIGHT", t.nameLeft, t.nameTop)
     state.name:SetJustifyH("LEFT")
     -- One line (user request, 2026-09-23). U.FitLineToText keeps the first
@@ -454,7 +497,10 @@ local function BuildModernRow(row)
     state.name.uuiNativeWidth = t.nameWidth
     pcall(state.name.SetNonSpaceWrap, state.name, false)
 
-    state.rank = U.CreateLabel(row, { size = M.fontSize.small, color = t.rankText })
+    state.rank = U.CreateLabel(row, {
+      size = M.fontSize.small,
+      color = rows.ServiceTextColor("available"),
+    })
     state.rank:SetPoint("BOTTOMLEFT", state.name, "BOTTOMRIGHT", t.rankGap, -1)
     state.rank:SetJustifyH("LEFT")
 
@@ -560,7 +606,14 @@ local function StyleSkillRows()
         BuildModernRow(row)
       else
         U.StripStockTextures(row)
-        SetTrainerFont(row, M.fontSize.normal, WHITE)
+        local id = rows.RowId(row)
+        local serviceType
+        if id then
+          local _, _
+          _, _, serviceType = rows.Call("GetTrainerServiceInfo", id)
+        end
+        SetTrainerFont(rows.NativeLabel(row) or row, M.fontSize.normal,
+                       rows.ServiceTextColor(serviceType))
         U.StyleStockCollapseButton(row)
         NudgeRowText(row)
       end
@@ -615,10 +668,9 @@ local function StyleSkillIcon()
   end)
 end
 
--- Requested: name + greeting + skill rows all read as plain white, not the
--- accent heading color other stock windows use for their title. Reapplied on
--- every OnShow and native update (below) since talking to a new trainer NPC
--- re-sets both FontStrings' text/color through native code, not just once.
+-- The trainer name and greeting stay plain white; service rows take their
+-- learnability colour in StyleSkillRows. Reapplied after native updates since
+-- talking to a new trainer NPC resets the FontStrings' colour.
 local function ReapplyHeaderText()
   if useModernWow then
     -- The gossip window's title: warm gold on the quadrants' title strip.
@@ -744,7 +796,7 @@ end
 -- alone cannot move the control: raising it only grows the box upward while the
 -- centre stays pinned. Keep the pair in step -- both Y offsets move together --
 -- until the stretch itself is fixed by reducing this to a single anchor point.
-local FILTER_Y = 5
+local FILTER_Y = 17
 
 local function RepositionFilterDropdown()
   local filterDropdown = G("ClassTrainerFrameFilterDropDown")
@@ -929,6 +981,8 @@ local function Reapply()
     BuildModernLayout()
     SyncModernButtons()
   else
+    NudgeDetailName()
+    AddDetailRequirementsGap()
     RepositionFilterDropdown()
   end
 end
@@ -1024,6 +1078,8 @@ local function BuildFrame()
   end
 
   if not useModernWow then StyleSkillIcon() end
+  NudgeDetailName()
+  AddDetailRequirementsGap()
   StyleSkillRows()
 
   U.StyleStockButton(G("ClassTrainerCancelButton"))

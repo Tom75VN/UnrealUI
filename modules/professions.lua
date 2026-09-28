@@ -172,7 +172,20 @@ function pw.RecipeMatchesSearch(win, entry)
   local query = win and win.query
   if type(query) ~= "string" or query == "" then return true end
   local name = type(U.SearchFold) == "function" and U.SearchFold(entry.name) or ""
-  return string.find(name, query, 1, true) ~= nil
+  if string.find(name, query, 1, true) then return true end
+
+  local countOk, count = pw.Call(win.kind.numReagents, entry.index)
+  count = (countOk and tonumber(count)) or 0
+  local i
+  for i = 1, count do
+    local ok, reagentName = pw.Call(win.kind.reagent, entry.index, i)
+    if ok and type(reagentName) == "string" then
+      local folded = type(U.SearchFold) == "function" and
+                     U.SearchFold(reagentName) or ""
+      if string.find(folded, query, 1, true) then return true end
+    end
+  end
+  return false
 end
 
 -- The difficulty filter as a dropdown whose menu rows carry checkboxes, the
@@ -490,7 +503,8 @@ function pw.HideTip()
 end
 
 -- ---------------------------------------------------------------------------
--- Window chrome (DF-main ButtonFrameTemplateNoPortrait + FrameBackgroundSolid)
+-- Window chrome (the Character housing's PortraitFrameTemplate metal +
+-- FrameBackgroundSolid; M.modernWow.professions.frame)
 -- ---------------------------------------------------------------------------
 function pw.BuildChrome(win)
   local t = pw.Token()
@@ -559,29 +573,24 @@ function pw.BuildChrome(win)
     right:SetPoint("BOTTOMRIGHT", br, "TOPRIGHT", 0, 0)
   end)
 
-  -- Portrait: the profession icon over the stone disc, in DF-main's ring.
-  local p = f.portrait
-  local holder = pw.Frame("Frame", rim, 1, false)
-  if holder then
+  -- Portrait: the profession icon over the stone disc, in the PortraitMetal
+  -- corner's own ring (user request, 2026-09-29: the Character window's
+  -- frame). Regions of the rim under its metal (OVERLAY), so the ring's band
+  -- covers the disc's and icon's edges, as Character's class icon sits.
+  local p = t.portrait
+  local function Portrait(texture, size)
+    if not texture then return end
     pcall(function()
-      holder:SetWidth(p.ring)
-      holder:SetHeight(p.ring)
-      holder:SetPoint("CENTER", frame, "TOPLEFT", p.x + p.size / 2, p.y - p.size / 2)
+      texture:SetWidth(size)
+      texture:SetHeight(size)
+      texture:SetPoint("CENTER", frame, "TOPLEFT", p.x, -p.y)
     end)
-    local disc = pw.Texture(holder, "BACKGROUND", tex.portraitBackground)
-    pw.Place(disc, holder, "CENTER", 0, 0, t.portrait.discSize, t.portrait.discSize)
-    win.portrait = pw.Texture(holder, "ARTWORK")
-    pw.Place(win.portrait, holder, "CENTER", 0, 0,
-             t.portrait.iconSize, t.portrait.iconSize)
-    if win.portrait then
-      pcall(win.portrait.SetTexCoord, win.portrait, 0.08, 0.92, 0.08, 0.92)
-    end
-    local ring = pw.Texture(holder, "OVERLAY", tex.portraitRing)
-    if ring then
-      local c = p.ringTexCoord
-      pcall(ring.SetTexCoord, ring, c[1], c[2], c[3], c[4])
-      pcall(ring.SetAllPoints, ring, holder)
-    end
+  end
+  Portrait(pw.Texture(rim, "BACKGROUND", tex.portraitBackground), p.discSize)
+  win.portrait = pw.Texture(rim, "ARTWORK")
+  Portrait(win.portrait, p.iconSize)
+  if win.portrait then
+    pcall(win.portrait.SetTexCoord, win.portrait, 0.08, 0.92, 0.08, 0.92)
   end
 
   win.title = pw.Label(rim, M.fontSize.normal, t.titleColor, "CENTER")
@@ -1416,7 +1425,7 @@ function pw.BuildFilters(win)
   if type(U.CreateSearchBox) == "function" then
     win.search = U.CreateSearchBox(win.filters, {
       name = "UnrealUIProfessionsSearch" .. win.kind.id,
-      placeholder = U.L("BAGS_SEARCH"),
+      placeholder = U.L("PROFESSIONS_SEARCH"),
       onChange = function(text) pw.SetQuery(win, text) end,
     })
   end
@@ -1643,9 +1652,7 @@ pw.SCANNER_NAME = "UnrealUIProfessionsScan"
 
 function pw.Scanner()
   if pw.scanner then return pw.scanner end
-  local ok, tip = pcall(CreateFrame, "GameTooltip", pw.SCANNER_NAME, nil,
-                        "GameTooltipTemplate")
-  if ok and tip then pw.scanner = tip end
+  pw.scanner = U.CreateScannerTooltip(pw.SCANNER_NAME)
   return pw.scanner
 end
 
@@ -1685,8 +1692,11 @@ function pw.StatLines(win, index)
 
   local tip = pw.Scanner()
   if not tip or type(tip[kind.tipRecipe]) ~= "function" then return nil end
-  pcall(tip.ClearLines, tip)
-  pcall(tip.SetOwner, tip, U.G("WorldFrame") or UIParent, "ANCHOR_NONE")
+  return U.ScanWithTooltip(tip, pw.ReadStatLines, kind, index)
+end
+
+-- Read on the armed scanner; U.ScanWithTooltip hides it afterwards.
+function pw.ReadStatLines(tip, kind, index)
   if not pcall(tip[kind.tipRecipe], tip, index) then return nil end
 
   local countOk, count = pcall(tip.NumLines, tip)

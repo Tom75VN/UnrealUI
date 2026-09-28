@@ -690,6 +690,14 @@ local function ShowSelfCheck()
     if table.getn(micro.missing) > 0 then
       U.Print("    missing: " .. table.concat(micro.missing, ", "))
     end
+    if micro.anchor then
+      local a = micro.anchor
+      U.Print("    bar: shown " .. tostring(a.shown) ..
+              ", visible " .. tostring(a.visible) ..
+              ", left " .. tostring(a.left) ..
+              ", top " .. tostring(a.top) ..
+              ", width " .. tostring(a.width))
+    end
     -- Real edge-to-edge spacing per pair. The skinned row wants every gap to
     -- equal micro.gap; one odd value names the button something re-anchored
     -- or resized after the bar laid itself out.
@@ -700,7 +708,9 @@ local function ShowSelfCheck()
               " scale " .. tostring(b.scale) ..
               " points " .. tostring(b.points) ..
               " gap " .. tostring(b.gap or "-") ..
-              " (want " .. tostring(micro.gap) .. ")")
+              " (want " .. tostring(micro.gap) .. ")" ..
+              " visible " .. tostring(b.visible) ..
+              " plate " .. tostring(b.plate))
       U.Print("      anchor " .. tostring(b.point) .. " -> " ..
               tostring(b.relative) .. " " .. tostring(b.relativePoint) ..
               " x " .. tostring(b.x))

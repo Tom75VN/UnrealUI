@@ -52,6 +52,26 @@ function classicCastbar.SetDynamicShown(widget, shown)
   classicCastbar.UpdateSpark(widget)
 end
 
+-- Installed as widget.uuiResize: modules/castbar.lua's edit-mode size sliders
+-- (player bar). The stock border and spark carry transparent padding around
+-- the bar they were drawn for, so they are scaled by the same factor as the
+-- bar rather than stretched to it; the fill and bed follow the bar's own size.
+function classicCastbar.Resize(widget, width, height)
+  if not widget or not width or not height then return end
+  widget:SetWidth(width)
+  widget:SetHeight(height)
+  local scaleX = width / classicCastbar.WIDTH
+  local scaleY = height / classicCastbar.HEIGHT
+  if widget.uuiBorder then
+    widget.uuiBorder:SetWidth(classicCastbar.BORDER_WIDTH * scaleX)
+    widget.uuiBorder:SetHeight(classicCastbar.BORDER_HEIGHT * scaleY)
+  end
+  if widget.uuiSpark then
+    widget.uuiSpark:SetHeight(classicCastbar.SPARK_HEIGHT * scaleY)
+  end
+  if widget.name then pcall(widget.name.SetWidth, widget.name, width - 10) end
+end
+
 function U.CreateClassicCastbar(frameName)
   -- Exact-theme gate: no other native-chrome or Modern theme inherits this
   -- ornamental stock art merely because it shares module infrastructure.
@@ -117,6 +137,8 @@ function U.CreateClassicCastbar(frameName)
   widget.showIcon = false
   widget.uuiKeepNativeTint = true
   widget.uuiSpark = spark
+  widget.uuiBorder = border
+  widget.uuiResize = classicCastbar.Resize
   if spark then
     widget.uuiUpdateSpark = classicCastbar.UpdateSpark
     widget.uuiSetDynamicShown = classicCastbar.SetDynamicShown

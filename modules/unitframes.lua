@@ -3540,13 +3540,34 @@ end
 -- Class colouring matches the player tooltip exactly and takes priority over
 -- both the theme gradient and a custom health colour. Non-player units keep
 -- the normal theme/custom path below.
-local function HealthTexture(frame, textured)
+local function HealthTexture(frame, textured, modernFill)
   if not textured then return M.texture.plain end
-  if frame and frame.uuiModernWow and M.modernWow and M.modernWow.texture and
-     M.modernWow.texture.healthFill then
-    return M.modernWow.texture.healthFill
+  local t = M.modernWow and M.modernWow.texture
+  -- A dressed frame whose housing ships its own fills (the Retail target and
+  -- the party rows, modules/modernwow.lua) draws those instead of the shared
+  -- player-sized pair.
+  local own = frame and frame.uuiModernWow
+  if modernFill == "green" then
+    if own and own.healthFill then return own.healthFill end
+    if t and t.healthFill then return t.healthFill end
+  end
+  if modernFill == "tint" then
+    if own and own.healthFillTint then return own.healthFillTint end
+    if t and t.healthFillTint then return t.healthFillTint end
   end
   return M.unitFrame.statusTexture
+end
+
+-- The Forever artwork is already green. It therefore belongs exclusively to
+-- the default colour mode; a custom colour, or a class colour actually
+-- applied to this unit, draws the neutral fill so only that tint shows. The
+-- theme's M.unitFrame.statusTexture is the green fill too, so the neutral one
+-- has to be named here rather than left to that fallback. Units the class
+-- option does not colour (NPCs) keep the green.
+local function ModernHealthFill(frame, textured, cfg, classTinted)
+  if not (textured and frame and frame.uuiModernWow) then return nil end
+  if cfg.customColors or classTinted then return "tint" end
+  return "green"
 end
 
 local function ApplyHealthColor(frame)
@@ -3555,6 +3576,7 @@ local function ApplyHealthColor(frame)
   local cr, cg, cb = HealthBaseColor(frame)
 
   local r, g, b
+  local classTinted = false
   -- Target and party health always carry normTex2, including theme-colour
   -- mode. Other health bars use it only for class colouring.
   local textured = frame.spec and frame.spec.healthTexture and true or false
@@ -3563,7 +3585,7 @@ local function ApplyHealthColor(frame)
     textured = false
   elseif cfg.classHealthColors and frame.data.isPlayer and frame.data.class then
     r, g, b = M.ClassColor(frame.data.class)
-    if r then textured = true end
+    if r then textured, classTinted = true, true end
   end
 
   -- Forever's authored Modern WoW fill keeps its locked white vertex colour;
@@ -3583,12 +3605,17 @@ local function ApplyHealthColor(frame)
     r, g, b = r * brightness, g * brightness, b * brightness
   end
 
+  local modernFill = ModernHealthFill(frame, textured, cfg, classTinted)
+
   if frame.healthColorR == r and frame.healthColorG == g and
      frame.healthColorB == b and
-     frame.healthColorTextured == textured then return end
+     frame.healthColorTextured == textured and
+     frame.healthColorModernFill == modernFill then return end
   frame.healthColorR, frame.healthColorG, frame.healthColorB = r, g, b
   frame.healthColorTextured = textured
-  U.SetStatusBarTexture(frame.health.bar, HealthTexture(frame, textured))
+  frame.healthColorModernFill = modernFill
+  U.SetStatusBarTexture(frame.health.bar,
+                        HealthTexture(frame, textured, modernFill))
   U.SetStatusBarColor(frame.health.bar, r, g, b, 1)
 end
 
@@ -4042,12 +4069,16 @@ local function RefreshFrame(frame, mode)
       if frame.power then SetBar(frame.power.bar, 0, 1) end
       local r, g, b = HealthBaseColor(frame)
       local textured = frame.spec and frame.spec.healthTexture and true or false
+      local modernFill = ModernHealthFill(frame, textured, ColorConfig(), false)
       if frame.healthColorR ~= r or frame.healthColorG ~= g or
          frame.healthColorB ~= b or
-         frame.healthColorTextured ~= textured then
+         frame.healthColorTextured ~= textured or
+         frame.healthColorModernFill ~= modernFill then
         frame.healthColorR, frame.healthColorG, frame.healthColorB = r, g, b
         frame.healthColorTextured = textured
-        U.SetStatusBarTexture(frame.health.bar, HealthTexture(frame, textured))
+        frame.healthColorModernFill = modernFill
+        U.SetStatusBarTexture(frame.health.bar,
+                              HealthTexture(frame, textured, modernFill))
         U.SetStatusBarColor(frame.health.bar, r, g, b, 1)
       end
       ClearTexts(frame)
@@ -4350,6 +4381,7 @@ function U.ApplyUnitFrameColors()
     if frame and frame.data then
       frame.healthColorR, frame.healthColorG, frame.healthColorB = nil, nil, nil
       frame.healthColorTextured = nil
+      frame.healthColorModernFill = nil
       frame.powerColorR, frame.powerColorG = nil, nil
       frame.powerColorB, frame.powerColorA = nil, nil
 
@@ -4360,8 +4392,11 @@ function U.ApplyUnitFrameColors()
       else
         local r, g, b = HealthBaseColor(frame)
         local textured = frame.spec and frame.spec.healthTexture and true or false
+        local modernFill = ModernHealthFill(frame, textured, ColorConfig(), false)
         frame.healthColorTextured = textured
-        U.SetStatusBarTexture(frame.health.bar, HealthTexture(frame, textured))
+        frame.healthColorModernFill = modernFill
+        U.SetStatusBarTexture(frame.health.bar,
+                              HealthTexture(frame, textured, modernFill))
         U.SetStatusBarColor(frame.health.bar, r, g, b, 1)
       end
 

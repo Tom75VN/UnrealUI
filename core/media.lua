@@ -125,6 +125,8 @@ M.texture = {
   -- client does not let us inventory and which render blank when absent.
   -- Central because the sort and stack buttons appear in both the bag and
   -- bank windows.
+  -- Retained only as the bag sell button's media fallback; its normal path is
+  -- the same Retail SellJunk atlas cell the Modern WoW merchant draws.
   sellGreysIcon = "Interface\\AddOns\\unrealUI\\media\\icons\\sell-grey-items-64",
   sortIcon = "Interface\\AddOns\\unrealUI\\media\\icons\\sort-bags-64",
   stackIcon = "Interface\\AddOns\\unrealUI\\media\\icons\\bag-auto-stack-64",
@@ -156,6 +158,8 @@ M.texture = {
   targetSkinRare  = "Interface\\AddOns\\unrealUI\\media\\frame-rare-350",
   targetSkinElite = "Interface\\AddOns\\unrealUI\\media\\frame-elite-350",
   targetSkinBoss  = "Interface\\AddOns\\unrealUI\\media\\frame-boss-350",
+  fullscreenLowHealth = "Interface\\AddOns\\unrealUI\\media\\Textures\\fullscreen\\low-health",
+  fullscreenOutOfControl = "Interface\\AddOns\\unrealUI\\media\\Textures\\fullscreen\\out-of-control",
 }
 
 -- ---------------------------------------------------------------------------
@@ -311,11 +315,45 @@ M.modernWow.texture = {
   -- here also means swapping the geometry in M.modernWow.targetReaction,
   -- whose two sets are recorded there.
   targetReaction  = M.modernWow.path .. "unitframes\\target-reaction-type",
-  frameRare       = M.modernWow.path .. "unitframes\\frame-rare",
-  frameElite      = M.modernWow.path .. "unitframes\\frame-elite",
-  frameRareElite  = M.modernWow.path .. "unitframes\\frame-rare-elite",
-  frameBoss       = M.modernWow.path .. "unitframes\\frame-boss",
-  partyFrame      = M.modernWow.path .. "unitframes\\party-frame",
+  -- The Retail target frame at its 2x resolution (M.modernWow.retailTarget
+  -- below). The housing is split in two (tools/import_modern_wow_media.py
+  -- retail_split): the flat bed under the bars, and the rim lines, their
+  -- shadows and the ring over them, so the bars are shaded and bordered the
+  -- way the player frame's are. The gold ring swaps for the silver one on a
+  -- silver-dragon tier. The dragons are one Retail sheet plus the derived
+  -- silver-winged cell Retail does not ship.
+  targetHousing      = M.modernWow.path .. "unitframes\\target-under-2x",
+  targetHousingRare  = M.modernWow.path .. "unitframes\\target-rare-under-2x",
+  targetRing         = M.modernWow.path .. "unitframes\\target-over-2x",
+  targetRingRare     = M.modernWow.path .. "unitframes\\target-rare-over-2x",
+  targetDragons      = M.modernWow.path .. "unitframes\\target-dragons-2x",
+  targetDragonSilverWinged = M.modernWow.path ..
+                       "unitframes\\target-dragon-silver-winged-2x",
+  targetReaction2x   = M.modernWow.path .. "unitframes\\target-reaction-2x",
+  -- Retail's grey target mana fill at 2x, tinted per power type like the 1x
+  -- powerFillTarget it replaces on the Retail target. Only the member's flat
+  -- band (rows 4-15 of 20): the Retail target's housing is under its bars, so
+  -- nothing covers the member's baked top and bottom bevel the way the player
+  -- rim covers its fill's, and the bar read darker than the player's.
+  powerFillTarget2x  = M.modernWow.path ..
+                       "unitframes\\power-fill-target-flat-2x",
+  -- Retail's target health fills at 2x (252x40, the 126x20 HealthBar): the
+  -- green member drawn white, and its grey Status twin for class and custom
+  -- colours. An entry names them (mw.units healthFill / healthFillTint) and
+  -- modules/unitframes.lua HealthTexture prefers them over the shared pair.
+  targetHealthFill2x     = M.modernWow.path ..
+                           "unitframes\\target-health-fill-2x",
+  targetHealthFillTint2x = M.modernWow.path ..
+                           "unitframes\\target-health-fill-tint-2x",
+  -- The party and party-pet housing: Retail's target-of-target housing at 2x
+  -- (240x98 at the top-left of 256x128), the HD version of the 128x64 pet
+  -- border those rows drew before, so M.modernWow.partyLayout's 128x64 units
+  -- still describe it. Its fills are the same frame's 2x members.
+  partyFrame      = M.modernWow.path .. "unitframes\\party-frame-2x",
+  partyHealthFill2x     = M.modernWow.path .. "unitframes\\party-health-fill-2x",
+  partyHealthFillTint2x = M.modernWow.path ..
+                          "unitframes\\party-health-fill-tint-2x",
+  partyPowerFill2x      = M.modernWow.path .. "unitframes\\party-power-fill-2x",
   playerStatus    = M.modernWow.path .. "unitframes\\player-status-large",
   restingFlipbook = M.modernWow.path .. "unitframes\\resting-flipbook",
   portraitBackground = M.modernWow.path ..
@@ -323,6 +361,10 @@ M.modernWow.texture = {
   -- Forever's exact coloured player-health atlas member; the older neutral
   -- DFRL fill remains available for user-selected tinting paths.
   healthFill      = M.modernWow.path .. "unitframes\\health-fill-full",
+  -- DF-main's neutral grey player health bar, opaque to its canvas like
+  -- healthFill so it fits the same inset band. Class health colours tint this
+  -- one; the green member would mix its baked hue into the class colour.
+  healthFillTint  = M.modernWow.path .. "unitframes\\health-fill-tint",
   healthFillPadded = M.modernWow.path .. "unitframes\\health-fill",
   healthFillMinus = M.modernWow.path .. "unitframes\\health-fill-minus",
   powerFill       = M.modernWow.path .. "unitframes\\power-fill-player",
@@ -455,6 +497,7 @@ M.modernWow.texture = {
   bagSlotHighlight = M.modernWow.path .. "bags\\slot-highlight",
   bagSlotCutout    = M.modernWow.path .. "bags\\slot-cutout",
   bagHighlight     = M.modernWow.path .. "bags\\highlight",
+  bagIndicator     = M.modernWow.path .. "bags\\item-highlight",
   bagExpand        = M.modernWow.path .. "bags\\expand",
   bagKeyring       = M.modernWow.path .. "bags\\keyring",
 
@@ -463,6 +506,23 @@ M.modernWow.texture = {
 
   chatArrowUp   = M.modernWow.path .. "chat\\arrow-up",
   chatArrowDown = M.modernWow.path .. "chat\\arrow-down",
+}
+
+-- Main action-bar housing. Retail gives only MainActionBar a bar-level
+-- BorderArt region; its MultiBars keep their button chrome without that
+-- background (Retail 12.1.0 MainActionBar.xml / MultiActionBars.xml). The
+-- shipped Modern WoW texture is authored as one half, so Bar 1 draws it twice
+-- with the right half mirrored, using DragonflightUI's source geometry.
+M.modernWow.actionBar = {
+  buttonGrow = 5,
+  -- Inner edge of button-border's opaque line as a fraction of its canvas,
+  -- measured by alpha on the 128 texture: the line runs to texel 8 on the
+  -- left/top and from 118 on the right/bottom, so 8 is the thinner side.
+  -- Bars without the face plate (2-10) extend the icon to it, so nothing
+  -- shows between icon and ring.
+  borderOpening = 8 / 128,
+  background = { x = 6, y = 14 },
+  ornament = { size = 144, inset = 30, y = 10 },
 }
 
 M.modernWow.settingStepperIcon = {
@@ -660,10 +720,13 @@ M.modernWow.minimap = {
   zoneColor = { 1.00, 0.82, 0.00, 1.00 },
   -- Seconds between zone-name readbacks; zone events are unverified here.
   zoneRefresh = 1,
-  zoomScale = 0.64,
-  -- In the buttons' scaled units (screen px / 0.64): -5 plus 10 screen px left.
-  zoomX = -20.6,
-  zoomY = 47.8,  -- 40 plus 5 screen px up
+  -- 0.64 less 15%, then less 20% (user requests, 2026-09-28).
+  zoomScale = 0.4352,
+  -- In the buttons' scaled units (screen px / zoomScale), so the offsets were
+  -- divided by 0.68 with the scale: the top-left corner stays where it was at
+  -- 0.64 (-20.6, 47.8 there: -5 plus 10 screen px left, 40 plus 5 px up).
+  zoomX = -30.294,
+  zoomY = 70.294,
   mailX = -2,
   mailY = -1,
   -- No mail size here any more: the letter is the shared flipbook
@@ -1101,7 +1164,7 @@ M.modernWow.questDialog = {
 
 -- The merchant follows ForeverFrameXML's MerchantFrame structure inside the
 -- Modern WoW NPC housing: two columns of five 153x44 item rows, page controls,
--- repair and last-buyback columns, then a full-width player-money row.
+-- sell-junk, repair and last-buyback controls, then the player-money row.
 -- The outer frame, portrait ring, tabs, item-slot rim, rock and
 -- money recess already belong to this theme. The merchant row plate, buyback
 -- portrait, repair icons and service frame come from the pinned Forever
@@ -1117,6 +1180,10 @@ M.modernWow.merchant = {
     count = 10, left = 24, top = 78,
     width = 153, height = 44, columnGap = 10, rowGap = 8, buybackGap = 2,
     label = { left = 36, top = 0, width = 128, height = 64 },
+    -- MerchantItemTemplate's name point, moved from $parentSlotTexture onto
+    -- the row: the 64x64 slot sits at (-13, 13), so its RIGHT is (51, -19),
+    -- and the name's LEFT is that plus (-5, 7).
+    name = { left = 46, top = 12 },
     nameOffsetX = -4,
     costCoinScale = 0.80,
     costCoinOffsetY = -1,
@@ -1155,9 +1222,13 @@ M.modernWow.merchant = {
   },
   repairs = {
     right = 172, top = 367, size = 36, gap = 2,
+    -- Retail MerchantSellAllJunkButton: a 36x36 service button. It occupies
+    -- the open cell immediately right of repair-all and left of Buyback.
+    junk = { left = 174, top = 367 },
     icon = {
       texture = M.modernWow.texture.merchantRepair,
       sheetWidth = 512, sheetHeight = 256,
+      sellJunk = { 1, 73, 64, 136 },
       repair = { 75, 147, 64, 136 },
       repairAll = { 1, 73, 138, 210 },
       repairAllGuild = { 75, 147, 138, 210 },
@@ -1292,9 +1363,10 @@ M.modernWow.trainer = {
   -- ClassTrainerSkillButtonTemplate: 36 icon at LEFT 6; name TOPLEFT of the
   -- icon's TOPRIGHT 6,-1 (GameFontNormal); rank 5 right of the name
   -- (GameFontNormalSmall); requirements 19 under the name
-  -- (SystemFont_Shadow_Small, white); cost TOPRIGHT. An unavailable service
-  -- takes GRAY_FONT_COLOR, a darker row (modules/trainer.lua, state.disabled)
-  -- and its icon dimmed to the template's 0.55; an unaffordable cost is red. Headers are TrainerUICategoryTemplate: gold
+  -- (SystemFont_Shadow_Small); cost TOPRIGHT. Service text takes the shared
+  -- trainer state colour (green available, red unavailable, grey known). An
+  -- unavailable row is also darkened and its icon dimmed to the template's
+  -- 0.55; an unaffordable cost is red. Headers are TrainerUICategoryTemplate: gold
   -- label with no shadow, white while hovered, on a bar centred in the row.
   row = {
     -- `gap`: space between two rows (user request, 2026-09-23). Seven rows
@@ -1318,10 +1390,7 @@ M.modernWow.trainer = {
     -- The cost's coin icons, raised above their numbers (user request,
     -- 2026-09-23: 2 up).
     coinIconY = 2,
-    nameText = { 1.00, 0.82, 0.00, 1 },
-    rankText = { 1.00, 0.82, 0.00, 1 },
     subText = { 1.00, 1.00, 1.00, 1 },
-    unavailableText = { 0.50, 0.50, 0.50, 1 },
     costRed = { 1.00, 0.125, 0.125, 1 },
     disabledShade = 0.55,
     headerText = { 1.00, 0.82, 0.00, 1 },
@@ -1489,13 +1558,15 @@ M.modernWow.spellBook = {
            canvas = 512 },
 
   -- Spell buttons: two columns of six. `textGap` separates the ornate border
-  -- from its name; `placedTextGap` preserves the Professions page's spacing,
-  -- where that border is hidden. The name column is what remains.
+  -- from its name; `placedTextGap` is the Professions page's, where that
+  -- border is hidden: about 5 screen pixels between the icon and its name and
+  -- rank (user request, 2026-09-29; 18 left a ~34 px gap in game). The name
+  -- column is what remains.
   -- `buttonScale` shrinks the spell button, and with it the slot frame,
   -- background and name shadow sized from it (user request, 2026-09-13: 30%
   -- smaller than the client's own button).
   grid = { left = 90, top = 36, columnPitch = 200, rowPitch = 64,
-           columns = 2, textGap = 1, placedTextGap = 18,
+           columns = 2, textGap = 1, placedTextGap = 2,
            textInset = 4, nameY = -3,
            -- Rank/subtext (Racial, Passive, Apprentice...) below the name;
            -- 4 units higher than the old -2 (user request, 2026-09-13).
@@ -1602,7 +1673,12 @@ M.modernWow.spellBook = {
   -- the ring; the native checkbox is 20 units.
   toggle = { left = 80, top = 44 },
   close = { size = 20, right = 14 },
-  bottomTab = { left = 14, top = 440, gap = 3 },
+  -- `top` hangs the strip on the Retail housing's bottom edge (user request,
+  -- 2026-09-29): the PortraitMetal bottom line is solid down to y 435 (the
+  -- edge cell's alpha-255 rows 52-53 of 64, on a 32-unit piece ending at
+  -- 13 + 424 + 3 = 440), and the tab art, opaque from its first row, draws
+  -- M.modernWow.tab.lift (3) above the tab, so 438 puts it on that line.
+  bottomTab = { left = 14, top = 438, gap = 3 },
   dragInset = 60,
 
   titleColor = { 1.00, 0.82, 0.00, 1.00 },
@@ -2534,6 +2610,10 @@ M.modernWow.professions = {
 -- contrast cannot alter the frozen modern or classic-wow drawing paths.
 M.modernWow.craftTracker = {
   width = 220, minHeight = 20, indent = 8, lineGap = 2, recipeGap = 8,
+  -- The frame's size while nothing is tracked, which is what Move UI's handle
+  -- covers then (user requests, 2026-09-29): first 110x100, then enlarged by
+  -- 20% in width and 40% in height, so the empty anchor is a usable grab target.
+  emptyWidth = 132, emptyHeight = 140,
   handleLevel = 2,
   headerColor  = { 1.00, 0.82, 0.00, 1.00 },
   headerHoverColor = { 1.00, 1.00, 1.00, 1.00 },
@@ -2542,17 +2622,37 @@ M.modernWow.craftTracker = {
   pendingColor = { 0.60, 0.60, 0.60, 1.00 },
 }
 
--- UnrealQuest-measured three-slice action-button cells in buttons/128RedButton.tga
--- (512x2048). Each state combines the left bevel from a short 114x125 button
--- with the middle and right bevel from a 291x125 bar. At runtime the caps keep
--- their source aspect and only the middle stretches, exactly like UQ's three
--- Quest Log actions; stretching one full atlas row distorts both bevels.
+-- Three-slice action-button cells in buttons/128RedButton.tga (512x2048),
+-- after ForeverFrameXML's ThreeSliceButtonTemplate (`128-RedButton` art kit):
+-- the left end is the whole `128-RedButton-Left` member, the middle and right
+-- end come from `128-RedButton-Right` (the 291-wide bar). Rects are `query.py
+-- atlasmap <name> --exact` on sheet 1536801, whose rows this file shares;
+-- every x/top below is the member's first opaque texel (L+1, T+2), so a cell
+-- is 125 rows.
+--
+-- Every join is continuous art (reported in game 2026-09-26, both ends showed
+-- a seam):
+--   * `leftWidth` 113 draws the Left member to its last column, which matches
+--     the bar's first column (`barLeft`) to ~2/255 per row on all three
+--     states. Cutting the Left member short -- 24, then 40 -- joined its bevel
+--     to a different body: at 24 the left chamfer was lost, at 40 the top
+--     highlight stepped (189 vs 113).
+--   * the middle is the bar's own body, so it runs into the right end without
+--     a step. The `_128-RedButton-Center` strip was tried and dropped: it is a
+--     flat ~99 red, while the bar darkens to ~86 before its right bevel, which
+--     showed as a dark band where they met.
+--   * `cap` is the right end kept at its aspect: 40 texels hold the whole
+--     chamfer (the inner bevel runs ~36 in from the metal).
+-- The left end is therefore ~27 wide at the default 30 height; a button must
+-- be wider than both ends (~37), which every current caller is.
 M.modernWow.button128Red = {
   atlasWidth = 512,
   atlasHeight = 2048,
   cellHeight = 125,
   barWidth = 291,
-  cap = 24,
+  barLeft = 1,
+  leftWidth = 113,
+  cap = 40,
   height = 30,
   lift = 10,
   normal = { barTop = 523, capLeft = 392, capTop = 913 },
@@ -2584,9 +2684,15 @@ M.modernWow.button128Red = {
   -- bright and too large, and at -3 and 0.5 it could not be seen at all. The
   -- bloom is a dark red over an already-red face, so halving what it adds and
   -- cropping its core together leave nothing. These are the values between the
-  -- two -- the glow at the face's own rect, a fifth of its light taken off.
+  -- two -- a fifth of the light taken off.
+  --
+  -- Reported in game 2026-09-26: at 0 the bloom lit the metal rim too. The red
+  -- face starts 19-20 texels in from the cell's top, bottom and left (26 on
+  -- the right, bevel included), ~4 units at the 30 height, so the bloom is
+  -- inset by that and sits on the face alone. The whole cell is squeezed into
+  -- the smaller rect, not cropped, so its core stays.
   glow = { 15, 424, 418, 490 },
-  glowMargin = 0,
+  glowMargin = -4,
   glowIntensity = 0.8,
 }
 
@@ -2606,15 +2712,18 @@ M.modernWow.plusMinusCell = {
 }
 
 -- The gold-rimmed sibling, buttons/128GoldRedButton.tga (512x1024), with the same
--- bar/cap geometry. Each state's short button sits on the bar's own row, so
--- capTop equals barTop. Normal and hover are UnrealQuest's cells; the grey
+-- bar/left/cap geometry: its Left member (x 296-409) also runs into the bar's
+-- first column, to ~4-6/255 per row. Each state's short button sits on the
+-- bar's own row, so capTop equals barTop. Normal and hover are UnrealQuest's cells; the grey
 -- row between them is opaque at y 653-777 on the file's alpha (> 8).
 M.modernWow.button128GoldRed = {
   atlasWidth = 512,
   atlasHeight = 1024,
   cellHeight = 125,
   barWidth = 291,
-  cap = 24,
+  barLeft = 1,
+  leftWidth = 113,
+  cap = 40,
   normal   = { barTop = 523, capLeft = 296, capTop = 523 },
   hover    = { barTop = 783, capLeft = 296, capTop = 783 },
   disabled = { barTop = 653, capLeft = 296, capTop = 653 },
@@ -2627,7 +2736,7 @@ M.modernWow.button128GoldRed = {
   -- red file does not; it is not the bar's glow and is left alone.
   pressed = { barTop = 783, capLeft = 296, capTop = 783 },
   glow = { 15, 424, 418, 490 },
-  glowMargin = 0,
+  glowMargin = -4,
   glowIntensity = 0.8,
 }
 
@@ -2685,6 +2794,32 @@ M.modernWow.bagCell = {
   highlight = { 0.699219, 0.818359, 0.0078125, 0.484375 },
   keySlot   = { 0.822266, 0.941406, 0.0078125, 0.484375 },
   keyBorder = { 0.699219, 0.818359, 0.5,       0.976562 },
+}
+
+-- HUD bag-bar hover art. Retail BaseBagSlotButtonMixin:SetBagSlotAtlases
+-- (Blizzard_MainMenuBarBagButtons/Mainline/MainMenuBarBagButtons.lua:200-204,
+-- 12.1.0.69933) hovers the bag slots with atlas `bag-border-highlight` and the
+-- backpack with `bag-main-highlight` (:347); the imported equivalents are
+-- bags/highlight and bags/slot-highlight. Retail also draws them ADD at alpha
+-- .4, but that treatment left the glow invisible here (in game, 2026-09-28),
+-- so the bag bar draws them plain at full strength.
+M.modernWow.bagHover = {
+  slot = M.modernWow.texture.bagHighlight,
+  backpack = M.modernWow.texture.bagSlotHighlight,
+  -- Where each ring sits in its art, in texels, measured by alpha >= 200 (the
+  -- solid band, without the rim's drop shadow). Both rings are 52 texels
+  -- across, so the glow is drawn at the rim's texel scale and moved so the two
+  -- centres meet (user request, 2026-09-28: the glow sat off the rim).
+  --   `slotArt`: bags/highlight, a 64 canvas, ring x 6-57 / y 5-56.
+  --   `rimArt`: the bagCell `border` and `keyBorder` cells, 61 each, ring
+  --             x 2-53 / y 2-53 in both.
+  slotArt = { size = 64, centerX = 32, centerY = 31 },
+  -- Every bag-bar glow's opacity -- extra bags, keyring and backpack (user
+  -- requests, 2026-09-28). Applied as the vertex colour's alpha:
+  -- Texture:SetAlpha darkens instead of fading here
+  -- (rendering.texture_setalpha_darkens_not_translucent).
+  alpha = 0.85,
+  rimArt = { size = 61, centerX = 28, centerY = 28 },
 }
 
 -- Combined-bag window. The housing uses the shared Modern WoW metal frame;
@@ -2751,8 +2886,8 @@ M.modernWow.bags = {
              dimAlpha = 0.8, borderAlpha = 0.2, poll = 0.1,
              match = { texture = M.modernWow.texture.talentIconAlert,
                        sheet = 68, line = 14, alpha = 0.8 } },
-  -- Used-slot readout, bottom left (shown in the category view).
-  slotCount = { left = 10, bottom = 7 },
+  -- Used-slot readout, bottom left, centred on the money row (bags.lua).
+  slotCount = { left = 10 },
   slot = {
     background = M.modernWow.texture.actionButton,
     frame = M.modernWow.texture.actionButtonBorder,
@@ -2761,6 +2896,10 @@ M.modernWow.bags = {
     -- outline (vertex colour only, the file is unchanged).
     frameColor = { 0.55, 0.55, 0.55, 1 },
   },
+  -- Retail Combined Bags draws Interface\Store\store-item-highlight at its
+  -- native 64x64 size around a 37x37 item button. Preserve that proportion
+  -- when UnrealUI's compact slots highlight the contents of a hovered bag.
+  bagIndicator = { sheet = 64, slot = 37 },
 }
 
 -- Corpse loot window (modules/lootdesign.lua). The native LootFrame and its
@@ -2873,8 +3012,508 @@ M.modernWow.titleDropDown = { name = "PlayerTitleDropDown", x = -15, y = -15 }
 -- "<class> Level <n>" centred across the Character interface, immediately
 -- below the header name. `top` is its distance below the window's top edge;
 -- `levelAbove` lifts its holder frame over the window's own content.
+-- `guild`: the guild line's stand-in under it while the Retail housing shows
+-- (modules/modernwow.lua, mw.PlaceCharacterGuildLine), `top` below the
+-- window's top edge -- clear of the level line and above the stats inset's
+-- border at 73 -- in the native line's GameFontNormal gold.
 M.modernWow.characterLevelLine = {
   top = 46, levelAbove = 10,
+  guild = { top = 60, color = { 1.00, 0.82, 0.00, 1 } },
+}
+
+-- Character's paper-doll housing (user request, 2026-09-28): Retail's own
+-- expanded CharacterFrame (Blizzard_UIPanels_Game/Mainline/CharacterFrame.xml
+-- and .lua, RetailFrameXML 12.1.0.69933). One ButtonFrameTemplate, 540x424
+-- (CHARACTERFRAME_EXPANDED_WIDTH), in NineSliceLayouts.PortraitFrameTemplate
+-- metal; its Inset keeps the collapsed page's width (CharacterFrameMixin:
+-- UpdateSize) and its InsetRight holds CharacterStatsPane. The two insets'
+-- InsetFrameTemplate borders, one unit apart, are the only thing between the
+-- paper doll and the stats: title bar, streak and outer metal run unbroken.
+--
+-- The collapsed quadrants (panel-*) are this same 338x424 PortraitFrame drawn
+-- inside the native 384x512 canvas: their metal lines measure at x 14 / 349
+-- and y 15 / 434 by alpha (2026-09-28), exactly where Retail's slices put them
+-- for a frame at `left`, `top`. The housing starts there, so its left part
+-- lands on the collapsed art and the native paper doll keeps every anchor.
+--
+-- The metal, rock and streak sheets are pixel-identical to The War Within's
+-- FrameGeneral/UIFrameMetal2x, UIFrameMetalHorizontal2x,
+-- UIFrameMetalVertical2x, UI-Background-Rock and UIFrameHorizontal (verified
+-- 2026-09-28); the inset sheets and panel background are imported from the
+-- same export (ATTRIBUTION.md). Every `frame` and `insetBorder` number is
+-- Retail's: offsets follow SetPoint sign (positive y is up), sizes are each
+-- atlas member's logical size (the -2x metal members at half their pixels),
+-- texCoords its exact rectangle.
+-- One departure (user request, 2026-09-28): Retail's InsetRight stops 4
+-- units short of the right border, which read as a strip between the stats
+-- and the metal; here it meets the metal line (`insetRight.right` 2), and the
+-- housing is 2 narrower than CHARACTERFRAME_EXPANDED_WIDTH so the stats keep
+-- CharacterStatsPane's exact 197.
+M.modernWow.characterWindow = {
+  left = 13, top = 13,
+  width = 338, expandedWidth = 538, height = 424,
+  fill = { 0.025, 0.025, 0.025, 1.00 },
+  texture = {
+    metalCorners = M.modernWow.talents.texture.metalCorners,
+    metalHorizontal = M.modernWow.talents.texture.metalHorizontal,
+    metalVertical = M.modernWow.talents.texture.metalVertical,
+    backgroundRock = M.modernWow.talents.texture.backgroundRock,
+    topStreak = M.modernWow.talents.texture.topStreak,
+    -- UIFrameHorizontal is the streak's sheet; it also carries the inset's
+    -- top and bottom tiles.
+    insetHorizontal = M.modernWow.talents.texture.topStreak,
+    insetVertical = M.modernWow.path .. "ui\\frame\\inset-vertical",
+    insetCorners = M.modernWow.path .. "ui\\frame\\inset-corners",
+    panelBackground = M.modernWow.path .. "ui\\character\\panel-background",
+  },
+  frame = {
+    -- ButtonFrameBaseTemplate's Bg and TopTileStreaks. The rock keeps its
+    -- aspect: its full width is shown and its height cropped to the body's.
+    body = { left = 2, top = 21, right = 2, bottom = 2 },
+    streak = { left = 6, top = 21, right = 2, height = 43,
+               texCoord = { 0, 1, 0.0078125, 0.34375 } },
+    -- UI-Frame-PortraitMetal-CornerTopLeft, UI-Frame-Metal-CornerTopRight,
+    -- -CornerBottomLeft, -CornerBottomRight.
+    cornerTopLeft     = { width = 75, height = 75, x = -13, y = 16,
+                          texCoord = { 0.001953125, 0.294921875,
+                                       0.298828125, 0.591796875 } },
+    cornerTopRight    = { width = 75, height = 75, x = 4, y = 16,
+                          texCoord = { 0.298828125, 0.591796875,
+                                       0.001953125, 0.294921875 } },
+    cornerBottomLeft  = { width = 32, height = 32, x = -13, y = -3,
+                          texCoord = { 0.298828125, 0.423828125,
+                                       0.298828125, 0.423828125 } },
+    cornerBottomRight = { width = 32, height = 32, x = 4, y = -3,
+                          texCoord = { 0.427734375, 0.552734375,
+                                       0.298828125, 0.423828125 } },
+    -- _UI-Frame-Metal-EdgeTop / -EdgeBottom, !UI-Frame-Metal-EdgeLeft /
+    -- -EdgeRight, each anchored corner to corner as NineSliceUtil does.
+    edgeTop    = { height = 75, texCoord = { 0, 1, 0.00390625, 0.58984375 } },
+    edgeBottom = { height = 32, texCoord = { 0, 0.5, 0.59765625, 0.84765625 } },
+    edgeLeft   = { width = 75, texCoord = { 0.001953125, 0.294921875, 0, 1 } },
+    edgeRight  = { width = 75, texCoord = { 0.298828125, 0.591796875, 0, 1 } },
+  },
+  -- The class icon in the portrait ring. The ring's gold band measures radius
+  -- 27-30 around (`x`, `y` below the top); the icon's circle is 58 of each
+  -- 64-unit cell, so at `size` its edge ends under the band. Drawn below the
+  -- corner, as PortraitFrameBaseTemplate's 62x62 portrait sits in it.
+  portrait = { x = 25, y = 22, size = 60 },
+  -- ButtonFrameTemplate's Inset, at the paper-doll width UpdateSize gives it
+  -- (PANEL_DEFAULT_WIDTH + PANEL_INSET_RIGHT_OFFSET: `right` in from `width`),
+  -- and CharacterFrame.xml's InsetRight, `gap` to its right and `right` /
+  -- `bottom` in from the housing's edges. `right` 2 puts its border against
+  -- the metal's line (W-2..W-1 by alpha), not Retail's 4 (see above).
+  inset = { left = 4, top = 60, right = 6, bottom = 4 },
+  insetRight = { gap = 1, right = 2, bottom = 4 },
+  -- NineSliceLayouts.InsetFrameTemplate: UI-Frame-Inner* corners (6x6, the
+  -- bottom pair 1 below the inset) and _UI-Frame-InnerTop/BotTile,
+  -- !UI-Frame-InnerLeft/RightTile edges, 3 units thick.
+  insetBorder = {
+    corner = 6, edge = 3, bottomCornerY = -1,
+    topLeft     = { 0.7578125, 0.8046875, 0.5546875, 0.6015625 },
+    topRight    = { 0.8203125, 0.8671875, 0.5546875, 0.6015625 },
+    bottomLeft  = { 0.6328125, 0.6796875, 0.5546875, 0.6015625 },
+    bottomRight = { 0.6953125, 0.7421875, 0.5546875, 0.6015625 },
+    top    = { 0, 1, 0.90625, 0.9296875 },
+    bottom = { 0, 1, 0.8671875, 0.890625 },
+    left   = { 0.484375, 0.53125, 0, 1 },
+    right  = { 0.5625, 0.609375, 0, 1 },
+  },
+  -- Header. `title`: PortraitFrameBaseTemplate's TitleContainer runs from 58
+  -- in on the left to 24 in on the right, the name centred in it; `top` is
+  -- the height the collapsed page gives the name (modules/character.lua).
+  -- `close`: the red X at the corner offset it has on the collapsed page.
+  -- `titleDropDown`: at its stock place the native title dropdown would run
+  -- into the stats pane, so it moves into the band between the title bar
+  -- (21) and the insets (60), centred `y` below the top with its right edge
+  -- on InsetRight's -- where Retail keeps its paper-doll sidebar tabs.
+  title = { left = 58, right = 24, top = 7 },
+  close = { right = 3, top = 3 },
+  titleDropDown = { right = 2, y = 40.5 },
+}
+
+-- The profession window draws this housing's frame (user request,
+-- 2026-09-29): PortraitMetal with its own ring instead of DF-main's
+-- ButtonFrameTemplateNoPortrait and separate portrait ring. The window is the
+-- housing itself (origin 0, 0), so the icon centres at `portrait` x/y. A
+-- square icon has no circular mask here: `iconSize` keeps its corners under
+-- the ring's 27-30 band (half-diagonal 28.3), the stone disc fills the rest.
+M.modernWow.professions.frame = M.modernWow.characterWindow.frame
+M.modernWow.professions.portrait = {
+  iconSize = 40, discSize = 56,
+  x = M.modernWow.characterWindow.portrait.x,
+  y = M.modernWow.characterWindow.portrait.y,
+}
+
+-- The 3D preview inside the housing's paper-doll inset (user request,
+-- 2026-09-28): Retail's CharacterModelScene art from
+-- Blizzard_UIPanels_Game/Mainline/PaperDollFrame.xml (RetailFrameXML
+-- 12.1.0.69933) -- the race background SetPaperDollBackground draws,
+-- desaturated by PaperDollBgDesaturate, under its black BackgroundOverlay,
+-- and the PaperDollInnerBorder* ring of CharacterFrame.xml's Char-Corner /
+-- Char-Inner templates. Every number below is that XML's own.
+--
+-- `border` and `background` are offsets from Retail's Inset, which the XML
+-- anchors them to: `left`/`right` in from its sides, `top` down from its top,
+-- `bottom` up from its bottom (y as the XML's, positive up). Retail's gear
+-- slots sit at `slot` in that same Inset -- CharacterHeadSlot 4 in and 2
+-- down, CharacterHandsSlot 4 in from the right, CharacterMainHandSlot's middle
+-- 30.5 above its bottom (BOTTOMLEFT y 16 on a frame whose Inset stops 4 above
+-- it, plus half the 37-unit slot). This client's slots are measured and that
+-- Inset is rebuilt around them, so the ring lands beside the slot columns and
+-- its bottom line through the weapon row as it does in Retail
+-- (mw.PlaceCharacterScene); the housing's own inset is only the fallback.
+--
+-- The Char-Inner tiles are stretched rather than tiled: this client has no
+-- horizTile / vertTile, and each tile is uniform along its length (profiled
+-- 2026-09-28), so a stretch draws the same pixels.
+M.modernWow.characterScene = {
+  texture = {
+    parts = M.modernWow.path .. "ui\\character\\paperdoll-parts",
+    horizontal = M.modernWow.path .. "ui\\character\\paperdoll-horizontal",
+    vertical = M.modernWow.path .. "ui\\character\\paperdoll-vertical",
+    -- .. race key .. piece (1-4).
+    dressup = M.modernWow.path .. "ui\\character\\dressup\\",
+  },
+  -- The races this client plays, by UnitRace's numeric third return
+  -- (knowledge: unit.race_class_return_numeric_id), then by its file token.
+  raceById = { "human", "orc", "dwarf", "nightelf", "scourge", "tauren",
+               "gnome", "troll" },
+  raceByToken = {
+    HUMAN = "human", ORC = "orc", DWARF = "dwarf", NIGHTELF = "nightelf",
+    SCOURGE = "scourge", TAUREN = "tauren", GNOME = "gnome", TROLL = "troll",
+  },
+  -- SetPaperDollBackground's per-race BackgroundOverlay alpha.
+  overlayAlpha = { nightelf = 0.6, scourge = 0.3, troll = 0.6, orc = 0.6,
+                   default = 0.7 },
+  -- UnrealUI's choice (user request, 2026-09-28): every overlay drawn at 80%
+  -- of Retail's alpha, 20% less darkening for every race.
+  overlayScale = 0.8,
+  -- The overlay is drawn as vertex darkening (mw.BuildCharacterScene), and
+  -- this client darkens by roughly v ^ 2.2 rather than v: a Human at shade
+  -- 0.3 read 8-11/255 in game (user screenshot, 2026-09-28) against 142 x 0.3
+  -- = 43 for Retail's black overlay, and 142 x 0.3 ^ 2.2 = 10. The shade is
+  -- raised to 1 / shadeGamma so it lands where Retail's overlay does.
+  -- MEASURED from one screenshot; not yet probed.
+  shadeGamma = 2.2,
+  -- Every race but Human is toned at import so it reads as bright as Human
+  -- after this overlay (user request, 2026-09-28; one gamma per race,
+  -- tools/import_modern_wow_media.py, which mirrors overlayAlpha and
+  -- overlayScale -- keep them in step and re-run its --character-scene).
+  slot = { left = 4, top = 2, right = 4, weaponMiddle = 30.5 },
+  -- CharacterModelScene's TOPLEFT (CharacterFrame 52,-66 = Inset 48,-6) and
+  -- its four CharacterModelFrameBackground pieces, 212/19 wide and 245/128
+  -- high. Retail's overlay stops `overlayBottom` above the pieces' bottom,
+  -- where the lower pair's art turns transparent; here it is the pieces'
+  -- vertex colour (mw.BuildCharacterScene), so that number is reference only.
+  background = {
+    x = 48, y = 6,
+    width = { 212, 19, 212, 19 },
+    height = { 245, 245, 128, 128 },
+    coords = {
+      { 0.171875, 1, 0.0392156862745098, 1 },
+      { 0, 0.296875, 0.0392156862745098, 1 },
+      { 0.171875, 1, 0, 1 },
+      { 0, 0.296875, 0, 1 },
+    },
+    overlayBottom = 52,
+  },
+  -- PaperDollInnerBorder*: 7x7 corners at `left`/`right` in and `top` down
+  -- (`bottom` up for the lower pair), 5-unit edges anchored corner to corner
+  -- `shift` outwards, and Bottom2 across the whole Inset `bottom2` up.
+  border = {
+    left = 46, right = 47, top = 4, bottom = 31, bottom2 = 27,
+    corner = 7, edge = 5, shift = 1,
+    topLeft     = { 0.40625, 0.43359375, 0.8046875, 0.859375 },
+    topRight    = { 0.40625, 0.43359375, 0.734375, 0.7890625 },
+    bottomLeft  = { 0.40625, 0.43359375, 0.6640625, 0.71875 },
+    bottomRight = { 0.40625, 0.43359375, 0.59375, 0.6484375 },
+    innerTop    = { 0, 1, 0.5, 0.8125 },
+    innerBottom = { 0, 1, 0.0625, 0.375 },
+    innerLeft   = { 0.0625, 0.375, 0, 1 },
+    innerRight  = { 0.5, 0.8125, 0, 1 },
+  },
+}
+
+-- The Character window's integrated stats pane (user request, 2026-09-28):
+-- Retail's CharacterStatsPane art -- the class emblem backdrop, the category
+-- title bar and the stat row band -- cut 1:1 from PaperDollInfoPart1/2
+-- (media/Textures/modern-wow/ATTRIBUTION.md), inside the Character housing.
+-- Drawn by modules/characterstatspanel.lua, except the class backdrop, which
+-- the housing draws in its stats inset (U.ModernWowCharacterHousing); the
+-- rows come from modules/characterstats.lua.
+--
+-- Geometry that is Blizzard's: `pane`, CharacterStatsPane's anchors inside
+-- InsetRight (CharacterFrame.xml: 3 in, 2 up from the bottom), which leaves
+-- exactly `backdrop` 197x355 (UI-Character-Info-*-BG) in the Retail housing
+-- (M.modernWow.characterWindow); `category` 196x40 (UI-Character-Info-Title,
+-- drawn on a 197x40 frame in Camelot CharacterFrame.xml), `line` 157x19
+-- (UI-Character-Info-Line-Bounce, centred on a 187x15 row and shown on every
+-- other row). Everything else is UnrealUI's placement:
+--   * rows are `rowHeight` tall; a category takes `categoryHeight`, its art
+--     drawn at the authored aspect across the list width and centred on it;
+--   * `scroll` reserves the MinimalScrollBar's column at the list's right.
+-- `model`: the 3D preview fills the space between the slot columns, `gap`
+-- units clear of each column and of the weapon slots, once the stats below it
+-- are gone; it only grows to `fallbackHeight` if an edge is unreadable.
+-- `scale` is the character's own SetModelScale inside it (user request,
+-- 2026-09-28), since the frame's size does not scale the render. 1.8 put
+-- the head into the header, so it is reduced to fit (a first estimate, tune
+-- with /script CharacterModelFrame:SetModelScale(n)). `y` moves the whole
+-- preview's bottom edge down (user requests, same day: 8, then 8 more,
+-- then 15 more); its top stays at the head slot's, since the render is
+-- clipped there. `shift` then moves the whole frame down at that height,
+-- and `grow` extends only its top edge back up (user request, same day).
+M.modernWow.characterStats = {
+  texture = {
+    category = M.modernWow.path .. "ui\\character\\stat-category",
+    line = M.modernWow.path .. "ui\\character\\stat-line",
+    backdrop = {
+      WARRIOR = M.modernWow.path .. "ui\\character\\class-bg-warrior",
+      PALADIN = M.modernWow.path .. "ui\\character\\class-bg-paladin",
+      HUNTER = M.modernWow.path .. "ui\\character\\class-bg-hunter",
+      ROGUE = M.modernWow.path .. "ui\\character\\class-bg-rogue",
+      PRIEST = M.modernWow.path .. "ui\\character\\class-bg-priest",
+      SHAMAN = M.modernWow.path .. "ui\\character\\class-bg-shaman",
+      MAGE = M.modernWow.path .. "ui\\character\\class-bg-mage",
+      WARLOCK = M.modernWow.path .. "ui\\character\\class-bg-warlock",
+      DRUID = M.modernWow.path .. "ui\\character\\class-bg-druid",
+    },
+  },
+  pane = { left = 3, top = 3, right = 3, bottom = 2 },
+  backdrop = { width = 197, height = 355 },
+  -- `right`: how far the category bar runs past the scrollbar's left edge
+  -- (user request, 2026-09-28).
+  category = { width = 196, height = 40, right = 3 },
+  categoryHeight = 34,
+  -- `alpha`: the band's opacity. It is no longer drawn at Blizzard's 157 but
+  -- stretched from the pane's left border to `rightInset` short of its right
+  -- one, clear of the scrollbar (user requests, 2026-09-28); `width` and
+  -- `rowWidth` stay as the art's reference only. `x` then slides the whole
+  -- band sideways (user request, same day: 4 left). `alpha` 0.40 -> 0.28, 30%
+  -- lower (user request, same day).
+  line = { width = 157, height = 19, rowWidth = 187, alpha = 0.28,
+           rightInset = 5, x = -4 },
+  rowHeight = 16,
+  list = { left = 8, right = 8, top = 8, bottom = 8 },
+  labelX = 8,
+  valueX = -6,
+  -- Vertical text offsets (user requests, 2026-09-28): a category title sits
+  -- `titleY` from its bar's centre, a row's label `textY` and its value and
+  -- "?" `valueY` from the row's.
+  titleY = -2,
+  textY = -1,
+  valueY = -2,
+  -- The "?" that marks an estimated value: its column, and its hover area.
+  mark = { width = 10, gap = 2, hit = 14 },
+  -- `scroll.x`: the bar sits that far right of the list's edge (user
+  -- request, 2026-09-28).
+  scroll = { column = 16, arrowPad = 19, x = 6 },
+  font = { label = 11, value = 11, title = 12, mark = 11 },
+  labelColor = { 1.00, 0.82, 0.00, 1 },
+  titleColor = { 1.00, 1.00, 1.00, 1 },
+  markColor = { 0.60, 0.60, 0.60, 1 },
+  markHoverColor = { 1.00, 0.82, 0.00, 1 },
+  -- Refresh period while the panel is on screen, seconds.
+  refresh = 0.5,
+  model = { gap = 6, fallbackHeight = 300, scale = 1.45, y = 31, shift = 35,
+            grow = 20 },
+}
+
+-- The paper doll's three sidebar tabs over the stats pane (user request,
+-- 2026-09-28): Retail's PaperDollSidebarTabs frame and
+-- PaperDollSidebarTabTemplate (Blizzard_UIPanels_Game/Mainline/
+-- PaperDollFrame.xml:393-539, PAPERDOLL_SIDEBARS in PaperDollFrame.lua:79-109,
+-- RetailFrameXML 12.1.0.69933). Every size, offset and texture coordinate is
+-- the XML's own, all from the one PaperDollSidebarTabs sheet, whose members
+-- sit 1:1 in its pixels. Offsets follow SetPoint sign (positive y is up).
+-- Drawn by modules/charactersidebar.lua.
+--   * `strip`: 168x35, its bottom `y` below InsetRight's top (Retail -1).
+--     Retail puts it 6 in from InsetRight's right; here it is centred on
+--     InsetRight, end decorations and tabs together (user request,
+--     2026-09-28). Tab 3 sits `tab.right` in from the strip's right, the
+--     others `tab.gap` apart to its left.
+--   * `tab.height`: UnrealUI's choice (user request, 2026-09-28): the tab is
+--     square, `width` high instead of Retail's `authoredHeight` 35, and every
+--     height and vertical offset of the tab's own art (bed, icons, hider,
+--     highlight) is drawn at height / authoredHeight. The strip and its end
+--     decorations keep Retail's numbers.
+--   * `tabBg`: `texCoord` for a tab that is not shown, `selectedTexCoord` for
+--     the shown one. `hider` and `highlight` show only on the others.
+--   * `portrait`: tab 1 draws the player's portrait (SetPortraitTexture) at
+--     Tab1's OnLoad size and crop; a client without it gets the class circle.
+--   * `disabledAlpha`: OnDisable's SetAlpha(0.5), applied to each region
+--     because this client does not pass a frame's alpha to its regions
+--     (rendering.parent_alpha_not_propagated).
+--   * the hover names the tab in white and a disabled tab adds its reason in
+--     red (GameTooltip_SetTitle, GameTooltip_AddErrorLine: HIGHLIGHT_ and
+--     RED_FONT_COLOR), through UnrealUI's info tooltip.
+-- `titles`: the Titles pane, listed in the stats pane's own list (it replaces
+-- Retail's TitleManagerPane at the same place). Retail's PlayerTitleButton
+-- is 22 high with its check 16x16 at 8 in and the text 3 past it, even rows
+-- striped (0.9, 0.9, 1) at 0.1. Its SelectedBar and hover bar are ADD glows,
+-- which this client draws as opaque boxes (rendering.setblendmode_add_inert),
+-- so the selected title shows only the check (the game settings tick, as
+-- every Modern WoW row mark is) and a hover is a faint gold wash (`hover`).
+M.modernWow.characterSidebar = {
+  texture = M.modernWow.path .. "ui\\character\\sidebar-tabs",
+  strip = { width = 168, height = 35, y = -1 },
+  decorLeft  = { width = 28, height = 11,
+                 texCoord = { 0.015625, 0.453125, 0.00390625, 0.046875 } },
+  decorRight = { width = 28, height = 13,
+                 texCoord = { 0.015625, 0.453125, 0.0546875, 0.10546875 } },
+  tab = { width = 33, height = 33, authoredHeight = 35, right = 30, gap = 4 },
+  tabBg = { width = 50, height = 43, x = -9, y = -2,
+            texCoord = { 0.015625, 0.796875, 0.61328125, 0.78125 },
+            selectedTexCoord = { 0.015625, 0.796875, 0.7890625, 0.95703125 } },
+  icon = { width = 33, height = 35, x = 1, y = -2 },
+  portrait = { width = 29, height = 31, x = 1, y = 0,
+               texCoord = { 0.109375, 0.890625, 0.09375, 0.90625 } },
+  hider = { width = 34, height = 19,
+            texCoord = { 0.015625, 0.546875, 0.11328125, 0.1875 } },
+  highlight = { width = 31, height = 31, x = 2, y = -3,
+                texCoord = { 0.015625, 0.5, 0.1953125, 0.31640625 } },
+  titlesIcon = { 0.015625, 0.53125, 0.32421875, 0.4609375 },
+  equipmentIcon = { 0.015625, 0.53125, 0.46875, 0.60546875 },
+  disabledAlpha = 0.5,
+  nameColor = { 1.00, 1.00, 1.00, 1 },
+  errorColor = { 1.00, 0.125, 0.125, 1 },
+  titles = {
+    rowHeight = 22, check = 16, checkX = 8, textGap = 3, textRight = 3,
+    font = 10, color = { 1.00, 0.82, 0.00, 1 },
+    stripe = { 0.90, 0.90, 1.00, 0.10 },
+    hover = { 1.00, 0.82, 0.00, 0.12 },
+  },
+}
+
+-- The Equipment Manager behind the sidebar's third tab (user request,
+-- 2026-09-28): Retail's PaperDollEquipmentManagerPane, GearSetButtonTemplate
+-- and GearManagerPopupFrame (Blizzard_UIPanels_Game/Mainline/PaperDollFrame
+-- .xml/.lua) and the EquipmentFlyout beside each gear slot
+-- (Blizzard_FrameXML/EquipmentFlyout.xml/.lua), read from the Mainline source
+-- pinned in ForeverFrameXML 1.60.1.69913. Sizes, offsets and texture
+-- coordinates are that source's own unless noted. Drawn by
+-- modules/characterequipment.lua and modules/characterflyout.lua.
+--   * `pane`: EquipSet / SaveSet side by side at the pane's top, 22 high
+--     (Retail 87x22 each), the list `list.top` below the pane's top.
+--     `inset` is the pane's own list inset (M.modernWow.characterStats.list).
+--   * `row`: GearSetButtonTemplate, 44 high: the set icon 36 at 4 in (the New
+--     Set row's Character-Plus 30 at 7), the name 44 in, the equipped check
+--     16 at 8 from the right, Delete 14 at 2 from the bottom-right corner and
+--     Edit 16 left of it, both shown only while the row is hovered. Retail's
+--     SelectedBar and HighlightBar are ADD glows, which this client draws as
+--     opaque boxes (rendering.setblendmode_add_inert), so selection and hover
+--     are gold washes, as the Titles pane's are; the equipped check is the
+--     game settings tick, as every Modern WoW row mark is.
+--   * `popout`: EquipmentFlyoutPopoutButtonTemplate, 16x38 on the slot's
+--     right edge `overlap` into it, or 38x16 under a weapon slot
+--     (VERTICAL_FLYOUTS 16-18), each state's crop from
+--     PaperDollItemSlotButton_OnLoad / EquipmentFlyoutPopoutButton
+--     _SetReversed. Retail turns the art sideways with 8-value (rotated)
+--     texture coordinates, which this client ignores -- it drew the first
+--     four as a plain stretched strip (in game, 2026-09-28) -- so the side
+--     arrow draws `popoutSide`, the art turned 90 degrees clockwise at
+--     import, with the same cells as 4-value crops.
+--   * `flyout`: EquipmentFlyout's EQUIPMENTFLYOUT_* / EFITEM_* constants and
+--     its background cells; `highlight` the 50x50 ring around the open slot.
+--   * `popup`: GearManagerPopupFrame's place (TOPLEFT at the housing's
+--     TOPRIGHT, 0, 5). Its insides are UnrealUI's: the metal housing, the
+--     addon's own text field (U.CreateSearchBox, since this client may not
+--     script an EditBox) and a `rows` x `columns` icon grid that scrolls
+--     through the equipped items' icons and the macro icon library, on the
+--     stats pane's scrollbar `scrollGap` right of it.
+M.modernWow.equipmentManager = {
+  texture = {
+    popout = M.modernWow.path .. "ui\\character\\gearmanager-flyout-button",
+    popoutSide = M.modernWow.path .. "ui\\character\\gearmanager-flyout-button-side",
+    flyout = M.modernWow.path .. "ui\\character\\gearmanager-flyout",
+    ignoreSlot = M.modernWow.path .. "ui\\character\\gearmanager-leave-opaque",
+    ignoredMark = M.modernWow.path .. "ui\\character\\gearmanager-leave-transparent",
+    intoBags = M.modernWow.path .. "ui\\character\\gearmanager-into-bag",
+    unignore = M.modernWow.path .. "ui\\character\\gearmanager-undo",
+    highlight = M.modernWow.path .. "ui\\character\\gearmanager-highlight",
+    newSet = M.modernWow.path .. "ui\\character\\character-plus",
+    delete = M.modernWow.path .. "ui\\character\\grouploot-pass",
+    edit = M.modernWow.path .. "ui\\character\\gear-grey",
+    iconFolder = "Interface\\Icons\\",
+    unknownIcon = "INV_Misc_QuestionMark",
+    prevPage = {
+      normal = "Interface\\Buttons\\UI-SpellbookIcon-PrevPage-Up",
+      pushed = "Interface\\Buttons\\UI-SpellbookIcon-PrevPage-Down",
+      disabled = "Interface\\Buttons\\UI-SpellbookIcon-PrevPage-Disabled",
+    },
+    nextPage = {
+      normal = "Interface\\Buttons\\UI-SpellbookIcon-NextPage-Up",
+      pushed = "Interface\\Buttons\\UI-SpellbookIcon-NextPage-Down",
+      disabled = "Interface\\Buttons\\UI-SpellbookIcon-NextPage-Disabled",
+    },
+    pageHighlight = "Interface\\Buttons\\UI-Common-MouseHilight",
+  },
+  pane = { buttonHeight = 22, buttonGap = 4, listGap = 6 },
+  row = {
+    height = 44, icon = 36, iconX = 4, plusIcon = 30, plusX = 7,
+    textX = 44, textRight = 30, font = 11,
+    check = 16, checkRight = 8,
+    delete = 14, deleteInset = 2, edit = 16, editGap = 1, buttonAlpha = 0.5,
+    doubleClick = 0.35,
+  },
+  nameColor = { 1.00, 0.82, 0.00, 1 },
+  missingColor = { 1.00, 0.125, 0.125, 1 },
+  newColor = { 0.10, 1.00, 0.10, 1 },
+  stripe = { 0.90, 0.90, 1.00, 0.10 },
+  hover = { 1.00, 0.82, 0.00, 0.12 },
+  selected = { 1.00, 0.82, 0.00, 0.24 },
+  popout = {
+    long = 38, short = 16, overlap = 8, verticalOverlap = 4,
+    vertical = {
+      normal = { 0.15625, 0.84375, 0.5, 0 },
+      highlight = { 0.15625, 0.84375, 1, 0.5 },
+      openNormal = { 0.15625, 0.84375, 0, 0.5 },
+      openHighlight = { 0.15625, 0.84375, 0.5, 1 },
+    },
+    -- On `popoutSide`: Retail's rotated cells, left/right mirrored to open.
+    horizontal = {
+      normal = { 0.5, 1, 0.15625, 0.84375 },
+      highlight = { 0, 0.5, 0.15625, 0.84375 },
+      openNormal = { 1, 0.5, 0.15625, 0.84375 },
+      openHighlight = { 0.5, 0, 0.15625, 0.84375 },
+    },
+  },
+  ignoredMark = 40,
+  flyout = {
+    perRow = 5, maxRows = 4, border = 3, item = 37, xGap = 4, rowStep = 42,
+    height = 43, anchorY = -3, bgX = -5, bgY = 4,
+    oneSlot = {
+      height = 54,
+      left = { width = 25, coords = { 0, 0.09765625, 0.5546875, 0.77734375 } },
+      right = { width = 24, coords = { 0.41796875, 0.51171875, 0.5546875, 0.77734375 } },
+    },
+    oneRow = {
+      height = 54,
+      left = { width = 43, coords = { 0, 0.16796875, 0.5546875, 0.77734375 } },
+      center = { width = 41, coords = { 0.16796875, 0.328125, 0.5546875, 0.77734375 } },
+      right = { width = 47, coords = { 0.328125, 0.51171875, 0.5546875, 0.77734375 } },
+    },
+    multiRow = {
+      width = 214,
+      top = { height = 49, coords = { 0, 0.8359375, 0, 0.19140625 } },
+      middle = { height = 42, coords = { 0, 0.8359375, 0.19140625, 0.35546875 } },
+      bottom = { height = 49, coords = { 0, 0.8359375, 0.35546875, 0.546875 } },
+    },
+    nav = {
+      width = 214, height = 41, x = -5,
+      coords = { 0, 0.8359375, 0.7890625, 0.94921875 },
+      button = 32, prevX = 6, nextX = -3, y = 1, textX = 36, nextTextX = -33,
+    },
+    highlight = { size = 50, x = -7, coords = { 0, 0.78125, 0, 0.78125 } },
+    countFont = 10,
+  },
+  popup = {
+    x = 0, y = 5, inset = 16, gap = 6, font = 11,
+    icon = 36, iconGap = 4, columns = 7, rows = 5, scrollGap = 6,
+    selectedGrow = 8,
+    buttonWidth = 110, buttonHeight = 22,
+  },
 }
 
 -- Character gear slots: the four diamond-stud corners of the user-supplied
@@ -3085,29 +3724,118 @@ M.modernWow.xpbar = {
   },
 }
 
--- Micro-bar glyphs, keyed by the UnrealUI button they belong to rather than by
--- the source's glyph names, with one entry per interaction state. Kept as a
--- table because the micro-bar surface will look these up by button id and
--- state, which a flat list of 31 token names cannot serve.
-M.modernWow.micro = {}
-M.modernWow.microOrder = {
-  "menu", "character", "spellbook", "talents", "quest", "log",
-  "social", "guild", "pet", "help",
-}
+-- The micro bar under `modern-wow` and `modern` (user requests, 2026-09-28):
+-- Retail's micro menu, drawn only from Retail's own micro-menu atlas
+-- (microbar/micromenu, FileDataID 4708813, 1024x512). Every rectangle is the
+-- build's UiTextureAtlasMember (ForeverFrameXML `query.py filedata 4708813`),
+-- given here in pixels as L, T, R, B; each member is 64x82, drawn at its
+-- atlas size of 32x41.
+--
+-- Geometry is Blizzard_MicroMenu/Mainline: MainMenuBarMicroButton is 32x40,
+-- its Background / PushedBackground (`ButtonBG-Up` / `-Down`) sit CENTER at
+-- atlas size, and MicroMenuTemplate lays the row out with childXPadding -5.
+--
+-- `map` names the atlas icon each UnrealUI button draws. Retail's Character
+-- button is a live player portrait; this one uses the atlas's shield
+-- (`Achievements` cells) instead, like every other button (user request,
+-- 2026-09-28: the 2D portrait snapshot is too low-resolution, and the
+-- shield is the character icon the Dragonflight row used). Retail has no World
+-- Map or Help micro button: World Map takes AdventureGuide (the book, as the
+-- earlier glyph row did), and MainMenu / Help keep the vanilla meanings of
+-- this client's own buttons -- the "W" logo (Retail's `Shop` cells) for the
+-- game menu and the "?" (Retail's `GameMenu` cells) for Help.
 do
-  local microIndex
-  for microIndex = 1, table.getn(M.modernWow.microOrder) do
-    local id = M.modernWow.microOrder[microIndex]
-    M.modernWow.micro[id] = {
-      normal    = M.modernWow.path .. "microbar\\" .. id,
-      highlight = M.modernWow.path .. "microbar\\" .. id .. "-highlight",
-      faded     = M.modernWow.path .. "microbar\\" .. id .. "-faded",
+  local sheetW, sheetH = 1024, 512
+  local function Cell(l, t, r, b)
+    return { l / sheetW, r / sheetW, t / sheetH, b / sheetH }
+  end
+  local function Icon(up, down, over, disabled)
+    return {
+      normal    = Cell(up[1], up[2], up[1] + 64, up[2] + 82),
+      pushed    = Cell(down[1], down[2], down[1] + 64, down[2] + 82),
+      highlight = Cell(over[1], over[2], over[1] + 64, over[2] + 82),
+      disabled  = Cell(disabled[1], disabled[2], disabled[1] + 64,
+                       disabled[2] + 82),
     }
   end
-  -- The one disabled state the source ships.
-  M.modernWow.micro.talents.disabled =
-    M.modernWow.path .. "microbar\\talents-disabled"
+  M.modernWow.microMenu = {
+    texture = M.modernWow.path .. "microbar\\micromenu",
+    width = 32, height = 40,
+    atlasWidth = 32, atlasHeight = 41,
+    padding = -5,
+    -- The row's base size, multiplied by the player's Size slider
+    -- (modules/microbar.lua) and applied to dimensions, never as a frame
+    -- scale. An earlier 0.5 here was applied through SetScale, which these
+    -- buttons ignore on this client (MEASURED, group `microbarvis`, span.v2,
+    -- 2026-09-28): the bar was always drawn at Retail's full size, and that
+    -- is the size the player tuned against, so it is the base.
+    scale = 1,
+    -- Retail's SetPushed: the Down cell as the highlight, ADD at half alpha.
+    pushedHighlightAlpha = 0.5,
+
+    plateUp   = Cell(67, 253, 131, 335),   -- ButtonBG-Up
+    plateDown = Cell(67, 169, 131, 251),   -- ButtonBG-Down
+
+    -- Up, Down, Mouseover, Disabled cell origins.
+    icons = {
+      Achievements       = Icon({ 1, 253 }, { 1, 85 }, { 1, 169 },
+                                { 1, 1 }),
+      SpellbookAbilities = Icon({ 595, 169 }, { 595, 1 }, { 595, 85 },
+                                { 529, 421 }),
+      Professions        = Icon({ 397, 337 }, { 397, 169 }, { 397, 253 },
+                                { 397, 85 }),
+      SpecTalents        = Icon({ 529, 337 }, { 529, 169 }, { 529, 253 },
+                                { 529, 85 }),
+      Questlog           = Icon({ 463, 169 }, { 463, 1 }, { 463, 85 },
+                                { 397, 421 }),
+      GuildCommunities   = Icon({ 265, 421 }, { 199, 421 }, { 265, 337 },
+                                { 199, 337 }),
+      Groupfinder        = Icon({ 199, 253 }, { 199, 85 }, { 199, 169 },
+                                { 199, 1 }),
+      AdventureGuide     = Icon({ 67, 85 }, { 1, 421 }, { 67, 1 },
+                                { 1, 337 }),
+      Shop               = Icon({ 529, 1 }, { 463, 421 }, { 463, 337 },
+                                { 463, 253 }),
+      GameMenu           = Icon({ 133, 421 }, { 133, 253 }, { 133, 337 },
+                                { 133, 169 }),
+    },
+
+    map = {
+      CharacterMicroButton          = "Achievements",
+      SpellbookMicroButton          = "SpellbookAbilities",
+      UnrealUIProfessionMicroButton = "Professions",
+      TalentMicroButton             = "SpecTalents",
+      QuestLogMicroButton           = "Questlog",
+      SocialsMicroButton            = "GuildCommunities",
+      UnrealUIGroupFinderMicroButton = "Groupfinder",
+      WorldMapMicroButton           = "AdventureGuide",
+      MainMenuMicroButton           = "Shop",
+      HelpMicroButton               = "GameMenu",
+    },
+  }
 end
+
+-- The micro bar's Professions button where the bar keeps the client's own
+-- micro-button art: classic-wow's "action only" bar (`modern` draws the row
+-- above). The client has no professions micro button, so this one is
+-- assembled the way its Character button is: the blank
+-- portrait plate with a picture in the portrait window. `plate*` are
+-- fallbacks only -- the button copies CharacterMicroButton's own face paths
+-- when it can read them. Window geometry and the pressed shift are Vanilla
+-- FrameXML's MicroButtonPortrait (18x25, TOP 0,-28; the pressed crop moves
+-- 0.0666 on each axis, alpha 0.5), WORKING_SOURCE rather than measured here;
+-- the crop is moved inside the icon's own border.
+M.microProfession = {
+  icon = "Interface\\Icons\\Trade_BlackSmithing",
+  plateUp = "Interface\\Buttons\\UI-MicroButtonCharacter-Up",
+  plateDown = "Interface\\Buttons\\UI-MicroButtonCharacter-Down",
+  highlight = "Interface\\Buttons\\UI-MicroButton-Hilight",
+  width = 28, height = 58,
+  iconWidth = 18, iconHeight = 25, iconTop = 28,
+  iconNormal = { 0.2, 0.8, 0.14, 0.92 },
+  iconPushed = { 0.2666, 0.8666, 0.0734, 0.8534 },
+  iconPushedAlpha = 0.5,
+}
 
 -- Class-portrait cells in ui/class-portraits, which is the stock
 -- UI-Classes-Circles layout: a 256x256 atlas of 64px cells, four per row,
@@ -3252,6 +3980,11 @@ M.modernWow.targetReaction = {
 -- The content box is this file's measured alpha extent (x1..118, y2..47 at an
 -- alpha threshold of 8), trimmed by a pixel. Unlike the large layout it needs
 -- no outward padding: there are no classification ornaments on this canvas.
+--
+-- The canvas is now drawn from Retail's 2x target-of-target housing
+-- (texture.partyFrame, 256x128 pixels = these 128x64 units). Its rims fall on
+-- the same rows -- opaque peaks at y16, y27 and y35 -- and its right edge
+-- within a unit, so every number here, measured on the 1x file, still holds.
 -- ---------------------------------------------------------------------------
 M.modernWow.partyLayout = {
   artWidth = 128, artHeight = 64,
@@ -3316,6 +4049,134 @@ M.modernWow.partyLayout = {
   -- to PetFrame and PartyMemberFrame, which are portrait-left frames, and puts
   -- the portrait at CENTER -40. So a portrait-left frame draws it as authored.
   authoredRight = false,
+}
+
+-- ---------------------------------------------------------------------------
+-- The Retail target frame (user request, 2026-09-27), reconstructed from
+-- RetailFrameXML 12.1.0.69933: Blizzard_UnitFrame/Mainline/TargetFrame.xml
+-- 53-330 and TargetFrame.lua 387-447. Retail's target is a 232x100 frame with
+-- the 192x67 housing centred in it, so the housing's top-left sits at frame
+-- (20, 16.5); every number below is in the housing canvas's units, which are
+-- 2 pixels of the 2x art (the 512x256 canvas is 256x128 units):
+--
+--   health  126x20  HealthBarsContainer BOTTOMRIGHT = LEFT +149,-10
+--                   (TargetFrame.lua:423-425) -> frame x 23..149, y 40..60
+--                   -> canvas x 3..129, y 23.5..43.5
+--   mana    134x10  TOPRIGHT = health BOTTOMRIGHT +8,-1 (TargetFrame.xml:214-
+--                   216) -> frame x 23..157, y 61..71 -> canvas 3..137, 44.5
+--   type    135x18  ReputationColor TOPRIGHT -75,-25 (TargetFrame.xml:106-108)
+--                   -> frame x 22..157, y 25..43
+--
+-- Measured against the art: the rim lines of the bar openings are at canvas
+-- pixel rows 45-46, 87-88 and 109-110, so the two bars fill their openings
+-- exactly and need no fill inset. Like every layout here the x numbers are in
+-- portrait-LEFT reading order (256 - authored x), because BuildHousing flips
+-- the rectangles for a portrait-right frame.
+--
+-- Retail draws the housing under the bars (FrameTexture, BACKGROUND) and trims
+-- the bar ends with mask textures, which this client lacks. artUnderBars
+-- splits it instead (user request, 2026-09-27, to match the player frame):
+-- the entry's `art` (the flat bed) goes under the bars, and its `ring` (rim
+-- lines, rim shadows and the portrait ring) over them, so the rim borders and
+-- shades the fills as the player frame's art does. The portrait is raised
+-- above the fills too, as Retail's is, so the mana bar's end -- which reaches
+-- into the ring's opening -- tucks under it the way Retail's mask trims it.
+-- ---------------------------------------------------------------------------
+M.modernWow.retailTarget = {
+  artWidth = 256, artHeight = 128,
+
+  -- Health: authored x 2..129 -- Retail's 3..129 plus one unit under the
+  -- left rim line (canvas 1.5..2.5), which now lies over the fill, so the
+  -- fill reaches the rim with no gap. The right edge is Retail's.
+  barX = 127, barWidth = 127,
+  healthY = 23.5, healthHeight = 20,
+  -- Mana: authored x 2..137, the same left edge, 8 wider.
+  powerBarX = 119, powerWidth = 135,
+  powerY = 44.5, powerHeight = 10,
+  healthFillInset = { top = 0, bottom = 0 },
+
+  -- The housing's own extent, authored x 0..192, y 0..67. The dragons are
+  -- separate textures and reach past it, as Retail's do past its frame.
+  contentLeft = 64, contentRight = 256,
+  contentTop = 0, contentBottom = 67,
+
+  circleX = 100, circleY = 31.25,
+  -- Fallback only; M.modernWow.ring.targetHousing is what sizes it.
+  portraitSize = 63,
+
+  artUnderBars = true,
+  authoredRight = true,
+
+  -- Retail's Name sits 8 units above the health bar, centred on the type
+  -- strip (TargetFrame.xml:113-118); BuildHousing anchors the row's bottom
+  -- 2 + headerY above the bar, so 1 centres a small-font row there; 0 drops
+  -- it one unit lower (user request, 2026-09-27).
+  headerY = 0,
+
+  -- The reaction wash is Retail's type strip at its 2x resolution
+  -- (texture.targetReaction2x, 270x36 member at the top-left of 512x64),
+  -- anchored like M.modernWow.targetReaction: `left` and `right` are insets
+  -- from the health bar's edges (negative extends outward), `y` places the
+  -- strip's bottom edge relative to the bar's top. Retail: x 22..157 against
+  -- the bar's 23..149, bottom at 43 against the bar top's 40. The strip is
+  -- opaque down to its pixel row 30 of 36, so Retail's bar covers its last
+  -- half unit. This wash draws ABOVE the bars, so it sits half a unit higher
+  -- (y -2.5 rather than -3) and what shows ends exactly on the bar's top edge.
+  reaction = {
+    texture = "targetReaction2x",
+    coords = { 0, 270 / 512, 0, 36 / 64 },
+    height = 18,
+    left = -1,
+    right = -8,
+    y = -2.5,
+  },
+}
+
+-- Target classification art on the Retail frame, in the spelling
+-- UnitClassification returns here (elite, rareelite, worldboss, rare, normal;
+-- this client documents no "minus" or "trivial"). Every tier draws the whole
+-- housing; `rare` tiers swap to Retail's silver-ring housing, which is what
+-- TargetFrame.lua:410-414 does for rare and rareelite. A dragon is a separate
+-- texture above the ring (BossPortraitFrameTexture, TargetFrame.xml:93-97).
+--
+-- Retail differs in two places, by user request (2026-09-27): it draws no
+-- dragon on a plain rare (a Rare-Star icon instead, not used here), and gives
+-- rare elite the plain silver dragon. Here rare wears the silver dragon and
+-- rare elite the derived silver-winged one. worldboss stands in for Retail's
+-- UnitIsBossMob, which this client does not document.
+M.modernWow.targetTier = {
+  normal    = { housing = "targetHousing",     ring = "targetRing" },
+  elite     = { housing = "targetHousing",     ring = "targetRing",
+                dragon = "gold" },
+  worldboss = { housing = "targetHousing",     ring = "targetRing",
+                dragon = "goldWinged" },
+  rare      = { housing = "targetHousingRare", ring = "targetRingRare",
+                dragon = "silver" },
+  rareelite = { housing = "targetHousingRare", ring = "targetRingRare",
+                dragon = "silverWinged" },
+}
+
+-- Dragon cells. `cell` is L, R, T, B in pixels of the named texture, whose
+-- side is `sheet`; width and height are the atlas size in units (half the
+-- pixels). `right` and `top` place the texture's top-right corner in the
+-- layout's authored canvas units, from Retail's TOPRIGHT anchors on the
+-- 232x100 frame (TargetFrame.lua:433-444): -11,-8 for the plain dragons, 8,-8
+-- for the winged one -> frame right 221 / 240, top 8 -> canvas 201 / 220, -8.5.
+-- The winged cells share the plain ones' left edge (141 in frame units), which
+-- is why the derived silver-winged cell takes the winged anchor unchanged.
+M.modernWow.targetDragon = {
+  gold         = { texture = "targetDragons", sheet = 512,
+                   cell = { 1, 161, 165, 323 }, width = 80, height = 79,
+                   right = 201, top = -8.5 },
+  silver       = { texture = "targetDragons", sheet = 512,
+                   cell = { 1, 161, 325, 483 }, width = 80, height = 79,
+                   right = 201, top = -8.5 },
+  goldWinged   = { texture = "targetDragons", sheet = 512,
+                   cell = { 1, 199, 1, 163 }, width = 99, height = 81,
+                   right = 220, top = -8.5 },
+  silverWinged = { texture = "targetDragonSilverWinged", sheet = 256,
+                   cell = { 0, 198, 0, 162 }, width = 99, height = 81,
+                   right = 220, top = -8.5 },
 }
 
 -- Aura rows use the bar opening as their usable span under this theme. The
@@ -3469,24 +4330,35 @@ M.modernWow.ring = {
   playerFrame    = { size = 68, x = 74, y = 43.0, model = 43,
                      backgroundTrim = 2, backgroundY = 1 },
   targetFrame    = { size = 65, x = 71, y = 43.5, model = 43 },
-  -- The classification tiers share the target's ornament, so they carry the
-  -- same numbers. Nothing sizes from them today -- the target entry's art is
-  -- "targetFrame" and a tier change only swaps the texture, never the portrait
-  -- -- but a stale value here would be a trap the day one does.
-  frameRare      = { size = 65, x = 71, y = 43.5, model = 43 },
-  frameElite     = { size = 65, x = 71, y = 43.5, model = 43 },
-  frameRareElite = { size = 65, x = 71, y = 43.5, model = 43 },
-  frameBoss      = { size = 65, x = 71, y = 43.5, model = 43 },
+  -- The Retail target housing, in M.modernWow.retailTarget's units. Size 63,
+  -- not TargetFrame.xml's 58x58 Portrait (user request, 2026-09-27): at 58
+  -- the 2D portrait's circle stopped short of the ring. 63 keeps the old
+  -- targetFrame relation -- portrait 1.5 over the rim's outer diameter
+  -- (65 on 63.5; here 61.5) -- so its edge lies under the metal all round.
+  -- The 3D model keeps its own corner-safe `model` size. The centre is the
+  -- ring's measured one
+  -- (alpha > 128: x 251..373, y 3..122 of the 2x canvas, so 156, 31.25),
+  -- which the artwork decides rather than the XML anchor a unit away; x is
+  -- mirrored like every layout number (256 - 156). model: sqrt(2) x the
+  -- rim's thinnest outer radius, 29.75.
+  -- iconX / iconY: a nudge for the 2D portrait only, in screen order
+  -- (negative x = left, positive y = up), user request 2026-09-27. The ring,
+  -- the 3D model and its stone background keep the measured centre.
+  -- iconGrow: pixels added to (negative: taken from) the 2D portrait's side,
+  -- centred on that nudge.
+  targetHousing  = { size = 63, x = 100, y = 31.25, model = 42,
+                     iconX = 1, iconY = 0, iconGrow = -1 },
 
-  -- The small canvas, in ITS 128x64 pixels rather than the large layout's.
-  -- Measured rim: 3 pixels thick, inner opening x7..40 and y8..39, so the hole
-  -- is 34 across and centred on 23.5,23.5. 38 is the same trick the two large
-  -- rings use -- a portrait a little wider than the opening, so the rim crops
-  -- it instead of leaving a gap at the edge. DragonflightUI's own value is the
-  -- opening's 35.
+  -- The small canvas, in ITS 128x64 units rather than the large layout's.
+  -- Measured on the 2x file (alpha > 128, halved): rim x 5..44.5 and
+  -- y 3..42.5, inner opening x 8..40.5 and y 6.5..38.5, so the hole is ~32
+  -- across and centred on 24.5,22.75 (the old 1x file measured 23.5,23.5).
+  -- 38 is the same trick the two large rings use -- a portrait a little
+  -- wider than the opening, so the rim crops it instead of leaving a gap.
+  -- `model`: sqrt(2) x the rim's outer radius, 19.75, kept at the old 27.
   -- `modelScale` overrides M.modernWow.portraitModelScale for this ring only:
-  -- the thin 3-pixel party rim showed the 3D portrait's corners at 1.1.
-  partyFrame     = { size = 38, x = 23.5, y = 23.5, model = 27,
+  -- the thin party rim showed the 3D portrait's corners at 1.1.
+  partyFrame     = { size = 38, x = 24.5, y = 22.75, model = 27,
                      modelScale = 1.05 },
 }
 
@@ -3748,6 +4620,14 @@ M.color = {
   moverGuide = { 1.00, 0.20, 0.20, 0.90 },
 }
 
+M.trainer = {
+  serviceText = {
+    available   = { 0.25, 0.85, 0.30, 1.00 },
+    unavailable = { 1.00, 0.25, 0.25, 1.00 },
+    used        = M.color.textDim,
+  },
+}
+
 -- The flat tab strip every `modern` stock window wears through
 -- U.StyleStockTabGroup (core/stockui.lua): Character, Social, Spellbook, Mail
 -- and Merchant all read their tab face from here rather than passing their own
@@ -3787,6 +4667,95 @@ M.tab = {
   -- M.color.text on purpose: this is the one tab state that has to read as
   -- "the cursor is here" against both the accent and the grey.
   hoverTextColor = { 1.00, 1.00, 1.00, 1.00 },
+}
+
+-- Character workspace, modern theme. The behavior is shared with the
+-- Modern-WoW paper doll (stats, titles, equipment sets and slot flyouts), but
+-- every surface here is from UnrealUI's flat component family. No token in
+-- this table points at the Modern-WoW media tree.
+M.characterModern = {
+  window = {
+    left = 10, top = 10, width = 344, expandedWidth = 642, height = 430,
+    gap = 6,
+    pane = { top = 8, right = 8, bottom = 8 },
+  },
+  stats = {
+    pane = { left = 0, top = 0, right = 0, bottom = 0 },
+    category = { right = 0 },
+    categoryHeight = 24,
+    line = { height = 20, alpha = 0.08, rightInset = 0, x = 0 },
+    rowHeight = 20,
+    list = { left = 8, right = 8, top = 40, bottom = 8 },
+    labelX = 8, valueX = -6, titleY = -2, textY = -1, valueY = -2,
+    mark = { width = 10, gap = 2, hit = 14 },
+    scroll = { column = 16, arrowPad = 19, x = 0 },
+    font = { label = 11, value = 11, title = 11, mark = 11 },
+    labelColor = M.color.textDim,
+    titleColor = M.color.accent,
+    -- Category bars: neutral grey band with a white title (user request,
+    -- 2026-09-28). titleColor stays the accent tooltip heading.
+    categoryColor = { 0.22, 0.22, 0.22, 0.95 },
+    categoryTextColor = { 1.00, 1.00, 1.00, 1.00 },
+    markColor = M.color.textDim,
+    markHoverColor = M.color.accent,
+    refresh = 0.5,
+    model = { gap = 6, fallbackHeight = 300, scale = 1.45, y = 31,
+              shift = 35, grow = 20 },
+  },
+  sidebar = {
+    height = M.tab.height, gap = 3, inset = 8,
+    nameColor = M.color.text,
+    errorColor = { 1.00, 0.25, 0.25, 1.00 },
+    -- A disabled sidebar tab's label, at rest and under the pointer.
+    disabledTextColor = { 0.60, 0.60, 0.60, 0.40 },
+    titleDropDownName = "PlayerTitleDropDown",
+    titles = {
+      rowHeight = 22, check = 14, checkX = 8, textGap = 4, textRight = 3,
+      font = M.fontSize.small, color = M.color.text,
+      stripe = { 1.00, 1.00, 1.00, 0.035 },
+      hover = { 0.96, 0.68, 0.04, 0.12 },
+    },
+  },
+  equipment = {
+    texture = {
+      iconFolder = "Interface\\Icons\\",
+      unknownIcon = "INV_Misc_QuestionMark",
+    },
+    pane = { buttonHeight = 22, buttonGap = 4, listGap = 6 },
+    row = {
+      height = 40, icon = 32, iconX = 4, plusIcon = 24, plusX = 8,
+      textX = 42, textRight = 40, font = M.fontSize.normal,
+      -- The equipped mark sits in the row's top-right corner, centred over
+      -- Delete's column (deleteInset + (delete - check) / 2), so it never
+      -- meets Edit/Delete in the bottom-right corner.
+      check = 14, checkRight = 3, checkTop = 3,
+      delete = 16, deleteInset = 2, edit = 16, editGap = 2,
+      buttonAlpha = 0.75, doubleClick = 0.35,
+    },
+    nameColor = M.color.text,
+    missingColor = { 1.00, 0.25, 0.25, 1.00 },
+    newColor = M.color.accent,
+    stripe = { 1.00, 1.00, 1.00, 0.035 },
+    hover = { 0.96, 0.68, 0.04, 0.12 },
+    selected = M.color.accentFill,
+    popout = { long = 32, short = 16, overlap = 8, verticalOverlap = 4 },
+    ignoredMark = 30,
+    flyout = {
+      perRow = 5, maxRows = 4, border = 4, item = 37, xGap = 4,
+      rowStep = 42, height = 45, anchorY = -3, bgX = -4, bgY = 4,
+      nav = {
+        width = 212, height = 26, x = -4, button = 16,
+        prevX = 5, nextX = -5, y = 0, textX = 25, nextTextX = -25,
+      },
+      highlight = { size = 43, x = -3 },
+      countFont = M.fontSize.small,
+    },
+    popup = {
+      x = 6, y = 0, inset = 12, gap = 6, font = M.fontSize.normal,
+      icon = 34, iconGap = 4, columns = 7, rows = 5, scrollGap = 6,
+      selectedGrow = 4, buttonWidth = 110, buttonHeight = 22,
+    },
+  },
 }
 
 -- The label face modern-wow keeps once mw.DressTab takes one of those flat
@@ -4185,6 +5154,10 @@ M.itemCompare = {
 -- draws finished and unfinished objectives.
 M.craftTracker = {
   width = 220, minHeight = 20, indent = 8, lineGap = 2, recipeGap = 8,
+  -- The frame's size while nothing is tracked, which is what Move UI's handle
+  -- covers then (user requests, 2026-09-29): first 110x100, then enlarged by
+  -- 20% in width and 40% in height, so the empty anchor is a usable grab target.
+  emptyWidth = 132, emptyHeight = 140,
   -- Direct-drag Button above the text frame (modules/crafttracker.lua).
   handleLevel = 2,
   headerColor  = { 1.00, 0.82, 0.00, 1.00 },
@@ -4362,6 +5335,18 @@ M.slot = {
   search = { left = 8, right = 6, widthScale = 0.85, poll = 0.1,
              dimAlpha = 0.8, borderAlpha = 0.2,
              match = M.modernWow.bags.search.match },
+}
+
+-- Retail ContainerFrameItemButtonTemplate's bags-junkcoin. The source slot is
+-- 37x37; shared item-slot code scales the exact 20x18 member and its +1,0
+-- TOPLEFT anchor to the compact UnrealUI slot under every theme.
+M.junkCoin = {
+  texture = M.modernWow.path .. "bags\\junk-coin",
+  sourceSlot = 37,
+  width = 20,
+  height = 18,
+  x = 1,
+  y = 0,
 }
 
 -- Category view of the bag and bank windows (modules/bagcategoryview.lua).

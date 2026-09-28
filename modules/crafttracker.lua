@@ -373,7 +373,15 @@ function ct.Refresh()
     ct.headers[i].line = nil
     pcall(ct.headers[i].Hide, ct.headers[i])
   end
-  pcall(ct.frame.SetHeight, ct.frame, math.max(t.minHeight, height))
+  -- Empty, the frame is only Move UI's grab target, so it takes the empty
+  -- anchor size; with recipes tracked it is the list's own column again.
+  if used > 0 then
+    pcall(ct.frame.SetWidth, ct.frame, t.width)
+    pcall(ct.frame.SetHeight, ct.frame, math.max(t.minHeight, height))
+  else
+    pcall(ct.frame.SetWidth, ct.frame, t.emptyWidth or t.width)
+    pcall(ct.frame.SetHeight, ct.frame, t.emptyHeight or t.minHeight)
+  end
   -- An empty tracker draws nothing, so it must not catch clicks either.
   if ct.handle then
     pcall(ct.handle.EnableMouse, ct.handle, used > 0)
@@ -481,8 +489,9 @@ function CT:OnEnable()
   -- Always shown and empty of art: an untracked HUD draws nothing, but the
   -- mover handle still needs a frame to sit on in Move UI mode.
   local frame = CreateFrame("Frame", "UnrealUICraftTracker", UIParent)
-  frame:SetWidth(t.width)
-  frame:SetHeight(t.minHeight)
+  -- Built empty; ct.Refresh below sizes it for what is tracked.
+  frame:SetWidth(t.emptyWidth or t.width)
+  frame:SetHeight(t.emptyHeight or t.minHeight)
   -- Persistent HUD, below open windows, as the quest tracker is.
   pcall(frame.SetFrameStrata, frame, "LOW")
   pcall(frame.EnableMouse, frame, false)

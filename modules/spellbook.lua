@@ -1016,14 +1016,12 @@ function missing.Scanner()
   if missing.scannerBuilt then return missing.scanner end
   missing.scannerBuilt = true
 
-  local ok, tip = pcall(CreateFrame, "GameTooltip", missing.SCANNER, nil,
-                        "GameTooltipTemplate")
-  if not ok or not tip then
+  local tip = U.CreateScannerTooltip(missing.SCANNER)
+  if not tip then
     U.Debug("spellbook: action scanner unavailable, bar hint inactive")
     return nil
   end
 
-  pcall(tip.SetOwner, tip, G("WorldFrame") or UIParent, "ANCHOR_NONE")
   missing.scanner = tip
   return tip
 end
@@ -1057,9 +1055,12 @@ end
 function missing.ScanSlot(slot)
   local tip = missing.Scanner()
   if not tip or type(tip.SetAction) ~= "function" then return nil end
+  return U.ScanWithTooltip(tip, missing.ReadSlot, slot)
+end
 
-  pcall(tip.ClearLines, tip)
-  pcall(tip.SetOwner, tip, G("WorldFrame") or UIParent, "ANCHOR_NONE")
+-- Read while the armed scanner is still shown: the TextRight1 guard needs the
+-- line visible, and U.ScanWithTooltip hides the scanner only afterwards.
+function missing.ReadSlot(tip, slot)
   if not pcall(tip.SetAction, tip, slot) then return nil end
 
   local name = missing.LineText("TextLeft1", false)

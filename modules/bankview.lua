@@ -502,14 +502,14 @@ function view.StopDrag()
   U.CheckOnScreen(frame)
 end
 
--- Spans the header up to the close glyph. The labels under it take no mouse
--- input, so the strip swallows no click; the close button stays clear of it.
+-- The whole header is the grab strip, with the close button above it
+-- (U.BuildBagDragStrip, shared with the bag and bank windows; user request,
+-- 2026-09-27). The labels take no mouse input. The search field is built
+-- after this and lifted there.
 function view.BuildDragHandle()
   local frame = view.frame
-  local handle = CreateFrame("Button", "UnrealUIBankViewDrag", frame)
-  handle:SetPoint("TOPLEFT", frame, "TOPLEFT", 0, 0)
-  handle:SetPoint("TOPRIGHT", frame.close, "TOPLEFT", -4, 0)
-  handle:SetHeight(view.Header())
+  local handle = U.BuildBagDragStrip(frame, "UnrealUIBankViewDrag",
+                                     view.Header(), { frame.close })
   handle:RegisterForDrag("LeftButton")
   pcall(handle.EnableMouse, handle, true)
 
@@ -645,6 +645,9 @@ function view.Build()
         end
       end,
     })
+    if view.search then
+      U.RaiseOverBagDragStrip(frame, { view.search.field })
+    end
   end
   pcall(frame.SetMovable, frame, true)
   U.GuardOnScreen(frame, { id = VIEW_POSITION_ID })

@@ -1,16 +1,22 @@
-## UnrealUI 0.9.2
+## UnrealUI 0.10.0
 
-- Redesigned the trainer interface for the modern WoW theme.
-- Added crafting filters for difficulty and having all reagents.
-- Redesigned the merchant interface for the modern WoW theme.
-- Added a recipe search bar to the crafting interface.
-- Added charges to the Rogue poison buff (need a test).
-- Added a search bar to bags and the bank.
-- Added an empty slot in bags category-based view.
-- Bags category-based view now also applies to the bank.
-- Added more detailed categories to bags category-based view.
-- Improved category columns to reduce the overall window size.
-- Special bags now show separately in their own bag slot in category-based view.
-- Modern WoW theme now uses the native pet happiness icon.
-- Fixed a client freeze when collapsing crafting recipes.
-- Fixed the pet spellbook tab.
+- New character interface with a side panel showing all stats
+- Added the Equipment Manager
+- Added HUD effects for low health and loss of control
+- Added a gold coin icon to junk items in bags when talking to a merchant
+- Improved the microbar
+- Added profession icons to the microbar
+- New minimap for the modern-WoW theme
+- Special bags in unified bags are now split
+- Items related to special bags now appear in those bags with a category-based side view
+- Added reagent search to the crafting interface
+- New HD rare/elite unit frame textures for the modern-WoW theme
+- Removed slot backgrounds from the extra action bar and added a border to Bar 1
+- New HD party frame textures for the modern-WoW theme
+- Fixed class-colored health bars on the player frame
+- Improved interface textures for the modern-WoW theme
+- Buffs and debuffs are now split in Edit Mode
+- Improved the bag bar for modern-WoW with some fixes
+- Improved Edit Mode with size options for more anchors
+- Fixed item name alignment on the merchant interface in the modern theme
+- Trainer entries now use colored names for available, unavailable, and already known

@@ -61,6 +61,7 @@ local layoutDirty = true
 local bagDirty = {}
 local cooldownDirty = false
 local keyringDirty = false
+local merchantOpen = false
 
 local pending    -- { items, index, mode = "sell"|"delete", startGold }
 
@@ -90,7 +91,8 @@ local function EnsureConfig()
   if not config then
     config = U.ModuleConfig("bags",
                             { enabled = true, categories = false,
-                              collapsed = {}, collapsedBank = {} })
+                              collapsed = {}, collapsedBank = {},
+                              specialOffsets = {} })
   end
   return config
 end
@@ -136,7 +138,13 @@ function U.BagsCategoriesEnabled()
 end
 
 function U.SetBagsCategories(value)
+  local wasOn = EnsureConfig().categories
   EnsureConfig().categories = value and true or false
+  -- Switching the view on also moves the items already in the ordinary bags
+  -- that belong in an equipped specialty bag (modules/bagroute.lua).
+  if value and not wasOn and type(U.BagRouteExisting) == "function" then
+    U.BagRouteExisting()
+  end
   -- Both views run on the same buttons, so the next refresh tick simply draws
   -- the other one. Nothing to reload and nothing to rebuild. The bank follows
   -- the same setting.
@@ -452,10 +460,12 @@ function modernBag.StyleHeader(window)
     if control then U.ModernWowBagHeaderIcon(control, HEADER_ICON) end
   end
 
+  -- On the money row's centre line (user request, 2026-09-27): the money
+  -- readout is 16 high and sits token.money.bottom above the window's edge.
   if window.slotCount then
     window.slotCount:ClearAllPoints()
-    window.slotCount:SetPoint("BOTTOMLEFT", window, "BOTTOMLEFT",
-                              token.slotCount.left, token.slotCount.bottom)
+    window.slotCount:SetPoint("LEFT", window, "BOTTOMLEFT",
+                              token.slotCount.left, token.money.bottom + 8)
   end
 
   U.ModernWowBagSeparator(window)
@@ -494,6 +504,13 @@ end
 -- ---------------------------------------------------------------------------
 -- Grey-item scan, shared by the tooltip, the button state and the action.
 -- ---------------------------------------------------------------------------
+local function MerchantIsOpen()
+  local merchant = U.G("MerchantFrame")
+  if not merchant then return false end
+  local ok, shown = pcall(merchant.IsShown, merchant)
+  return ok and shown and true or false
+end
+
 local function CollectGreyItems()
   local list = {}
   local i
@@ -613,6 +630,31 @@ local function RunGreyQueue(items, atVendor)
   end
 end
 
+function U.BagJunkItemCount()
+  return table.getn(CollectGreyItems())
+end
+
+-- The Modern WoW merchant's Retail-style button uses the same guarded queue
+-- as the bag header, but can never fall through to the destructive away-from-
+-- merchant action if its dialog outlives the vendor window.
+function U.SellBagJunkAtMerchant()
+  if pending or not MerchantIsOpen() then return false end
+
+  local items = CollectGreyItems()
+  if table.getn(items) == 0 then return false end
+
+  local function Start(finalItems)
+    if MerchantIsOpen() then RunGreyQueue(finalItems, true) end
+  end
+
+  if type(U.ConfirmBagFavoriteBatch) == "function" then
+    U.ConfirmBagFavoriteBatch(items, "sell", Start)
+  else
+    Start(items)
+  end
+  return true
+end
+
 local function SellOrDeleteGreys()
   if pending then return end
 
@@ -622,12 +664,7 @@ local function SellOrDeleteGreys()
     return
   end
 
-  local atVendor = false
-  local merchant = U.G("MerchantFrame")
-  if merchant then
-    local ok, shown = pcall(merchant.IsShown, merchant)
-    atVendor = ok and shown and true or false
-  end
+  local atVendor = MerchantIsOpen()
 
   -- A grey item can still be marked as a favourite, and this sweep is exactly
   -- the "by mistake" the mark exists to stop. modules/bagfavorites.lua asks
@@ -938,6 +975,9 @@ local function UpdateSlotAppearance(bag, slot)
   local link = texture and U.ContainerSlotLink(bag, slot) or nil
   locked = locked and true or false
 
+  U.SetItemSlotJunk(button, merchantOpen and bag >= 0 and bag <= 4 and
+                    texture and quality == 0)
+
   if button.uuiSlotCached and button.uuiSlotLink == link and
      button.uuiSlotTexture == texture and button.uuiSlotCount == count and
      button.uuiSlotQuality == quality then
@@ -969,7 +1009,7 @@ local function InvalidateSlotCache()
   local bag, bagSlots
   for bag, bagSlots in pairs(slots) do
     local slot
-    for slot = 1, table.getn(bagSlots) do
+    for slot in pairs(bagSlots) do
       if bagSlots[slot] then bagSlots[slot].uuiSlotCached = nil end
     end
   end
@@ -1006,7 +1046,7 @@ local function RefreshBag(bag)
   if not bagSlots then return end
 
   local slot
-  for slot = 1, table.getn(bagSlots) do
+  for slot in pairs(bagSlots) do
     if bagSlots[slot] and bagSlots[slot]:IsShown() then
       UpdateSlotAppearance(bag, slot)
     end
@@ -1079,21 +1119,49 @@ end
 -- as an item slot. Unlike pfUI this also calls SetID with the inventory id the
 -- stock template derives its bag from, since pfUI leaves it at the default.
 -- ---------------------------------------------------------------------------
--- The template's bag picture is native button artwork, which StyleItemSlot
--- deliberately removes with the rest of the stock chrome.  Populate its item
--- texture explicitly, just as modules/bank.lua does for equipped bank bags.
--- This also makes a newly equipped bag appear without recreating the tray.
-local function HighlightBagSlots(bag, on)
+-- Retail Combined Bags' blue BagIndicator, sized by its native 64:37
+-- texture-to-slot ratio (core/media.lua).
+local function BagIndicator(item)
+  if item.uuiBagIndicator then return item.uuiBagIndicator end
+
+  local ok, indicator = pcall(item.CreateTexture, item, nil, "OVERLAY")
+  if not ok or not indicator then return nil end
+  if not pcall(indicator.SetTexture, indicator,
+               M.modernWow.texture.bagIndicator) then
+    return nil
+  end
+
+  local sizeOk, width = pcall(item.GetWidth, item)
+  width = sizeOk and tonumber(width) or SLOT_SIZE
+  local token = M.modernWow.bags.bagIndicator
+  local size = width * token.sheet / token.slot
+  pcall(indicator.SetWidth, indicator, size)
+  pcall(indicator.SetHeight, indicator, size)
+  pcall(indicator.SetPoint, indicator, "CENTER", item, "CENTER", 0, 0)
+  pcall(indicator.Hide, indicator)
+  item.uuiBagIndicator = indicator
+  return indicator
+end
+
+function U.HighlightBagContents(bag, on)
   local bagSlots = bag and slots[bag]
   if not bagSlots then return end
 
+  local themed = modernBag.Active()
   local slot
-  for slot = 1, table.getn(bagSlots) do
+  for slot in pairs(bagSlots) do
     local item = bagSlots[slot]
-    if item and item:IsShown() then
-      if on then
-        U.SetBorderColor(item, M.Unpack(M.color.accent))
-      else
+    if item then
+      if on and item:IsShown() then
+        local indicator = themed and BagIndicator(item)
+        if indicator then
+          pcall(indicator.Show, indicator)
+        else
+          U.SetBorderColor(item, M.Unpack(M.color.accent))
+        end
+      elseif not on and item.uuiBagIndicator then
+        pcall(item.uuiBagIndicator.Hide, item.uuiBagIndicator)
+      elseif not on then
         -- The accent border lives outside the per-slot cache, so an unchanged
         -- slot would otherwise short-circuit and keep the highlight.
         item.uuiSlotCached = nil
@@ -1103,6 +1171,9 @@ local function HighlightBagSlots(bag, on)
   end
 end
 
+-- The template's bag picture is native button artwork, which StyleItemSlot
+-- removes with the rest of the stock chrome. Populate its item texture
+-- explicitly so a newly equipped bag appears without recreating the tray.
 local function RefreshBagSlotButton(button)
   if not button or not button.uuiInventoryId then return end
   U.RefreshBagSlotIcon(button)
@@ -1187,11 +1258,11 @@ local function LayoutBagSlots()
       RefreshBagSlotButton(button)
       U.PostHookScript(button, "OnEnter", function()
         U.SetBorderColor(button, M.Unpack(M.color.accentDim))
-        HighlightBagSlots(button.slot, true)
+        U.HighlightBagContents(button.slot, true)
       end)
       U.PostHookScript(button, "OnLeave", function()
         RefreshBagSlotButton(button)
-        HighlightBagSlots(button.slot, false)
+        U.HighlightBagContents(button.slot, false)
       end)
       button:Show()
     end
@@ -1210,12 +1281,10 @@ end
 -- modules/bagcategoryview.lua, shared with the bank window; this file keeps
 -- only the window's side of it.
 -- ---------------------------------------------------------------------------
--- Used / total carried slots, shown in the header beside the money readout.
---
--- It belongs to the category view alone. The flat grid draws every free slot as
--- an empty square, so the same information is already on screen there and a
--- second copy of it would just be header noise; the category view only draws
--- one empty slot as a drop target, which is why it needs the number.
+-- Used / total carried slots, on the money readout's line (bottom left under
+-- the footer themes, in the header under Classic). Both views show it (user
+-- request, 2026-09-27): the category view counts every carried bag, the flat
+-- grid only the bags it draws, since each specialty bag window has its own.
 --
 -- Keyring slots are excluded on purpose: BAG_IDS is what the window shows, and
 -- a keyring the player has not opened must not change a count that is meant to
@@ -1237,8 +1306,268 @@ end
 -- window hands it its containers and slot buttons (see Build) and sizes
 -- itself from the result in onLayout. The sort button goes: the view already
 -- shows every category in sorted order.
+-- ---------------------------------------------------------------------------
+-- Specialty-bag windows (user request, 2026-09-27)
+--
+-- In the flat grid an equipped specialty bag (quiver, ammo pouch, herb, soul,
+-- enchanting... bag) is not mixed into the main grid: each draws in its own
+-- small window beside the bag, titled with the client's own subtype name and
+-- its used/total count. The category view already gives each one its own
+-- section, so these windows exist only while the flat grid is drawn.
+--
+-- The slot buttons are the very ones the main grid and the category view use;
+-- they are only anchored over the panel. The panel is built like the keyring
+-- tray (same housing under every theme) and sits at the bag frame's own level,
+-- below the item roots (grid + 5), so its housing can never cover a slot.
+-- Panels stack upwards from the bag's bottom edge on its left, or on its right
+-- when the bag is too close to the screen's left edge to fit them.
+--
+-- Each panel can be dragged by its title strip (user request, 2026-09-27).
+-- The spot it is dropped on is stored as an offset from the bag window's
+-- bottom-left corner (config specialOffsets, keyed by bag id) and the panel is
+-- anchored to the bag window at that offset, so moving the bag carries every
+-- panel with it. /uui reset returns them to the automatic stack.
+-- ---------------------------------------------------------------------------
+local specialBag = { panels = {} }
+
+function specialBag.Label(bag)
+  if bag == 0 or type(U.BagSpecialtyLabel) ~= "function" then return nil end
+  return U.BagSpecialtyLabel(bag)
+end
+
+function specialBag.Panel(bag)
+  local panel = specialBag.panels[bag]
+  if panel then return panel end
+
+  panel = U.CreatePanel(frame, {
+    name = "UnrealUIBagSpecial" .. bag,
+    width = SLOT_SIZE + PADDING * 2,
+    height = SLOT_SIZE + PADDING * 2,
+  })
+  local levelOk, level = pcall(frame.GetFrameLevel, frame)
+  if levelOk and tonumber(level) then
+    pcall(panel.SetFrameLevel, panel, level)
+  end
+  classicBag.StylePanel(panel, false)
+  modernBag.StylePanel(panel)
+  pcall(panel.EnableMouse, panel, true)
+
+  local titleColor = M.color.accent
+  if modernBag.Active() and M.modernWow and M.modernWow.bags and
+     M.modernWow.bags.title then
+    titleColor = M.modernWow.bags.title.color
+  end
+  panel.title = U.CreateLabel(panel, {
+    size = M.fontSize.small,
+    color = titleColor,
+    inherits = "GameFontNormalSmall",
+    justify = "LEFT",
+  })
+  if panel.title then
+    -- 4 units further in than the slots (user request, 2026-09-27).
+    panel.title:SetPoint("LEFT", panel, "TOPLEFT", PADDING + 4,
+                         -(PADDING + math.floor(M.bagCategory.title / 2)))
+  end
+  panel.count = U.CreateLabel(panel, {
+    size = M.fontSize.small,
+    color = M.color.textDim,
+    inherits = "GameFontNormalSmall",
+    justify = "RIGHT",
+  })
+  if panel.count then
+    -- 6 units further in than the slots (user request, 2026-09-27).
+    panel.count:SetPoint("RIGHT", panel, "TOPRIGHT", -(PADDING + 6),
+                         -(PADDING + math.floor(M.bagCategory.title / 2)))
+  end
+
+  -- Title-strip drag handle: a Button parented to the panel it moves
+  -- (frames.movable_drag_requires_button_handle), above the panel and below
+  -- the item roots, so it never takes a slot's clicks.
+  local handle = CreateFrame("Button", nil, panel)
+  handle:SetPoint("TOPLEFT", panel, "TOPLEFT", 0, 0)
+  handle:SetPoint("TOPRIGHT", panel, "TOPRIGHT", 0, 0)
+  handle:SetHeight(PADDING + M.bagCategory.title)
+  local panelOk, panelLevel = pcall(panel.GetFrameLevel, panel)
+  if panelOk and tonumber(panelLevel) then
+    pcall(handle.SetFrameLevel, handle, panelLevel + 1)
+  end
+  handle:RegisterForDrag("LeftButton")
+  pcall(handle.EnableMouse, handle, true)
+  handle:SetScript("OnDragStart", function() specialBag.StartDrag(bag) end)
+  handle:SetScript("OnDragStop", function() specialBag.StopDrag(bag) end)
+  panel.dragHandle = handle
+
+  panel:Hide()
+  specialBag.panels[bag] = panel
+  return panel
+end
+
+function specialBag.Offsets()
+  return EnsureConfig().specialOffsets
+end
+
+-- The same throwaway StartMoving/StopMovingOrSizing pair the bag's own drag
+-- uses before the real StartMoving.
+function specialBag.StartDrag(bag)
+  local panel = specialBag.panels[bag]
+  if not panel or not pcall(panel.SetMovable, panel, true) then return end
+  if pcall(panel.StartMoving, panel) then
+    pcall(panel.StopMovingOrSizing, panel)
+  end
+  if pcall(panel.StartMoving, panel) then panel.uuiDragging = true end
+end
+
+-- Read back where the panel landed relative to the bag window and re-anchor it
+-- there, so it follows the bag from now on. Both are in the bag window's
+-- coordinate space (the panel is its child), so no scale conversion applies.
+function specialBag.StopDrag(bag)
+  local panel = specialBag.panels[bag]
+  if not panel or not panel.uuiDragging then return end
+  pcall(panel.StopMovingOrSizing, panel)
+  panel.uuiDragging = nil
+  -- StartMoving marks a frame user-placed; the client must not restore this
+  -- one from its own layout cache over the anchor set here.
+  pcall(panel.SetUserPlaced, panel, false)
+
+  local okL, left = pcall(panel.GetLeft, panel)
+  local okB, bottom = pcall(panel.GetBottom, panel)
+  local okFL, frameLeft = pcall(frame.GetLeft, frame)
+  local okFB, frameBottom = pcall(frame.GetBottom, frame)
+  left, bottom = okL and tonumber(left), okB and tonumber(bottom)
+  frameLeft, frameBottom = okFL and tonumber(frameLeft),
+                           okFB and tonumber(frameBottom)
+  if left and bottom and frameLeft and frameBottom then
+    specialBag.Offsets()[bag] = {
+      x = math.floor(left - frameLeft + 0.5),
+      y = math.floor(bottom - frameBottom + 0.5),
+    }
+  end
+  layoutDirty = true
+end
+
+function specialBag.ResetPositions()
+  local offsets = specialBag.Offsets()
+  local bag
+  for bag in pairs(offsets) do offsets[bag] = nil end
+  layoutDirty = true
+end
+
+function specialBag.HideAll()
+  local bag, panel
+  for bag, panel in pairs(specialBag.panels) do panel:Hide() end
+end
+
+function specialBag.TextWidth(label)
+  if not label then return 0 end
+  local ok, w = pcall(label.GetStringWidth, label)
+  return (ok and tonumber(w)) or 0
+end
+
+-- Side and bottom inset from the panel's edge to its slots: the main bag
+-- window's own (wider under Modern WoW, whose grown slot faces would
+-- otherwise overlap the metal rails), plus one unit under Classic, whose
+-- action-button rim overhangs the slot as classicBag.SlotGap explains.
+function specialBag.Insets()
+  local side = classicBag.SidePad()
+  local bottom = U.ModernWowBagMetric("bottomPad", PADDING)
+  if classicBag.ready then side, bottom = side + 1, bottom + 1 end
+  return side, bottom
+end
+
+-- list: { { bag = id, label = subtype, n = slots }, ... } in bag order.
+function specialBag.Layout(list)
+  local slotGap = classicBag.SlotGap()
+  local side, bottom = specialBag.Insets()
+  local pitch = SLOT_SIZE + slotGap
+  local header = M.bagCategory.title
+  local shown = {}
+  local totalWidth = 0
+  local i
+
+  for i = 1, table.getn(list) do
+    local spec = list[i]
+    local panel = specialBag.Panel(spec.bag)
+    local used = 0
+    local columns = math.min(math.max(spec.n, 1), COLUMNS)
+    local slot
+
+    for slot = 1, spec.n do
+      local button = EnsureSlot(spec.bag, slot, grid)
+      if button then
+        local col = math.mod(slot - 1, columns)
+        local row = math.floor((slot - 1) / columns)
+        PlaceSlot(button, panel, side + col * pitch,
+                  -(PADDING + header + row * pitch))
+        UpdateSlotAppearance(spec.bag, slot)
+        button:Show()
+      end
+      if U.ContainerSlotHasItem(spec.bag, slot) then used = used + 1 end
+    end
+
+    if panel.title then panel.title:SetText(spec.label) end
+    if panel.count then
+      panel.count:SetText(U.L("BAGS_SLOT_COUNT", used, spec.n))
+    end
+
+    local rows = math.max(1, math.ceil(spec.n / columns))
+    local width = math.max(columns * pitch - slotGap,
+                           specialBag.TextWidth(panel.title) + 8 + 4 + 6 +
+                           specialBag.TextWidth(panel.count))
+    panel:SetWidth(width + side * 2)
+    panel:SetHeight(PADDING + header + rows * pitch - slotGap + bottom)
+    modernBag.ResizePanel(panel)
+    totalWidth = math.max(totalWidth, width + side * 2)
+    table.insert(shown, panel)
+  end
+
+  -- A panel the player placed keeps its offset from the bag. The rest stack
+  -- left of the bag unless that would leave the screen. A panel being dragged
+  -- is left alone until it is dropped.
+  local leftOk, left = pcall(frame.GetLeft, frame)
+  local onRight = leftOk and tonumber(left) and
+                  (left - totalWidth - SLOT_GAP) < 0
+  local offsets = specialBag.Offsets()
+  local previous
+  for i = 1, table.getn(shown) do
+    local panel = shown[i]
+    local offset = offsets[list[i].bag]
+    if panel.uuiDragging then
+      -- Mid-drag: StartMoving owns its position.
+    elseif type(offset) == "table" and tonumber(offset.x) and
+       tonumber(offset.y) then
+      panel:ClearAllPoints()
+      panel:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", offset.x, offset.y)
+    else
+      panel:ClearAllPoints()
+      if previous then
+        if onRight then
+          panel:SetPoint("BOTTOMLEFT", previous, "TOPLEFT", 0, SLOT_GAP)
+        else
+          panel:SetPoint("BOTTOMRIGHT", previous, "TOPRIGHT", 0, SLOT_GAP)
+        end
+      elseif onRight then
+        panel:SetPoint("BOTTOMLEFT", frame, "BOTTOMRIGHT", SLOT_GAP, 0)
+      else
+        panel:SetPoint("BOTTOMRIGHT", frame, "BOTTOMLEFT", -SLOT_GAP, 0)
+      end
+      previous = panel
+    end
+    panel:Show()
+  end
+
+  local bag, panel
+  for bag, panel in pairs(specialBag.panels) do
+    local keep = false
+    for i = 1, table.getn(shown) do
+      if shown[i] == panel then keep = true end
+    end
+    if not keep then panel:Hide() end
+  end
+end
+
 local function LayoutCategories()
   SetSortButtonShown(false)
+  specialBag.HideAll()
   catView.Layout()
 end
 
@@ -1248,21 +1577,32 @@ end
 local function LayoutSlots()
   local x, y = 0, 0
   local slotGap = classicBag.SlotGap()
+  local specials = {}
   local i
 
   -- Switching back out of the category view leaves its boxes and its header
   -- readout behind otherwise; the slot buttons themselves are re-anchored below.
   if catView then catView.Clear() end
-  RefreshSlotCount(nil, nil)
   SetSortButtonShown(true)
+  -- Used / total of the bags this grid draws (user request, 2026-09-27); a
+  -- specialty bag carries its own count on its own window.
+  local usedSlots, totalSlots = 0, 0
 
   for i = 1, table.getn(BAG_IDS) do
     local bag = BAG_IDS[i]
     local ok, n = pcall(GetContainerNumSlots, bag)
     n = (ok and tonumber(n)) or 0
 
+    -- A specialty bag draws in its own window (specialBag above), not here.
+    local label = n > 0 and specialBag.Label(bag) or nil
+    if label then
+      table.insert(specials, { bag = bag, label = label, n = n })
+    end
+
     local slot
-    for slot = 1, n do
+    for slot = 1, (label and 0 or n) do
+      totalSlots = totalSlots + 1
+      if U.ContainerSlotHasItem(bag, slot) then usedSlots = usedSlots + 1 end
       local button = EnsureSlot(bag, slot, grid)
       if button then
         PlaceSlot(button, grid, x * (SLOT_SIZE + slotGap),
@@ -1282,11 +1622,14 @@ local function LayoutSlots()
     local bagSlots = slots[bag]
     if bagSlots then
       local stale
-      for stale = n + 1, table.getn(bagSlots) do
-        if bagSlots[stale] then bagSlots[stale]:Hide() end
+      for stale in pairs(bagSlots) do
+        if stale > n and bagSlots[stale] then bagSlots[stale]:Hide() end
       end
     end
   end
+
+  specialBag.Layout(specials)
+  RefreshSlotCount(usedSlots, totalSlots)
 
   if x > 0 then y = y + 1 end
   if y == 0 then y = 1 end
@@ -1306,6 +1649,13 @@ local function ProcessDirty()
   -- Closed: leave the flags pending. OnShow forces a layout pass, which reads
   -- every slot again, so nothing drawn while hidden would survive anyway.
   if not frame:IsShown() then return end
+
+  local shown = MerchantIsOpen()
+  if shown ~= merchantOpen then
+    merchantOpen = shown
+    local i
+    for i = 1, table.getn(BAG_IDS) do bagDirty[BAG_IDS[i]] = true end
+  end
 
   if layoutDirty then
     layoutDirty = false
@@ -1351,7 +1701,7 @@ local function ProcessDirty()
       local bagSlots = slots[bagId]
       if bagSlots then
         local slot
-        for slot = 1, table.getn(bagSlots) do UpdateCooldown(bagId, slot) end
+        for slot in pairs(bagSlots) do UpdateCooldown(bagId, slot) end
       end
     end
   end
@@ -1566,16 +1916,35 @@ local function BuildHeader()
     frame.pickLock:SetPoint("LEFT", frame.bagsToggle, "RIGHT", classicBag.IconGap(), 0)
   end
 
+  -- The bag and merchant actions deliberately share one Retail atlas cell.
+  -- Keep the old standalone icon only as a fail-closed media fallback.
+  local sellIcon = M.modernWow and M.modernWow.merchant and
+                   M.modernWow.merchant.repairs and
+                   M.modernWow.merchant.repairs.icon
   frame.sell = U.CreateIconButton(frame, {
     name = "UnrealUIBagSell",
     tooltipFrames = BagTooltipFrames,
     size = HEADER_ICON,
-    texture = M.texture.sellGreysIcon,
+    texture = sellIcon and sellIcon.texture or M.texture.sellGreysIcon,
+    uncropped = sellIcon and true or false,
     fallback = "$",
     title = U.L("BAGS_VENDOR_GRAYS"),
     onClick = SellOrDeleteGreys,
     detail = function() return U.L("BAGS_GREYS_HINT") end,
   })
+  if sellIcon and sellIcon.sellJunk and frame.sell.icon then
+    local cell = sellIcon.sellJunk
+    -- Match CreateIconButton's standard 0.08-0.92 crop used by every icon
+    -- beside this one, applied inside the SellJunk atlas member.
+    local inset = 0.08
+    local x = (cell[2] - cell[1]) * inset
+    local y = (cell[4] - cell[3]) * inset
+    pcall(frame.sell.icon.SetTexCoord, frame.sell.icon,
+          (cell[1] + x) / sellIcon.sheetWidth,
+          (cell[2] - x) / sellIcon.sheetWidth,
+          (cell[3] + y) / sellIcon.sheetHeight,
+          (cell[4] - y) / sellIcon.sheetHeight)
+  end
   classicBag.StyleIconButton(frame.sell)
   frame.sell:SetPoint("LEFT", frame.bagsToggle, "RIGHT", classicBag.IconGap(), 0)
 
@@ -1648,8 +2017,8 @@ local function BuildHeader()
   -- the Rogue Pick Lock shortcut is inserted before sell, RefreshRogueBagButton
   -- re-anchors sell when the skill is missing, stack follows sell or sort
   -- (SetSortButtonShown) and the saved-bank button follows stack, so following
-  -- it keeps the readout in place without repeating either rule. Hidden until
-  -- the category view asks for it; see RefreshSlotCount.
+  -- it keeps the readout in place without repeating either rule. Filled by
+  -- each layout pass; see RefreshSlotCount.
   frame.slotCount = U.CreateLabel(frame, {
     size = M.fontSize.small,
     color = M.color.textDim,
@@ -1735,32 +2104,16 @@ local function StopBagDrag()
   U.CheckOnScreen(anchor)
 end
 
--- The grab strip occupies header space without covering its controls.
+-- The whole header is the grab strip, with every header control above it
+-- (U.BuildBagDragStrip, shared with the bank windows).
 local function BuildDragHandle()
-  local handle = CreateFrame("Button", "UnrealUIBagDrag", frame)
-  if modernBag.Active() and search.field then
-    local token = M.modernWow.bags
-    -- The search field fills the icon row between the last icon and the
-    -- close button, so the strip is the rim above the row instead: the whole
-    -- width up to the close cell, down to the close cell's top edge. The
-    -- field (centred on the close cell) is levelled above it, so the edge it
-    -- shares with the strip still takes its clicks.
-    handle:SetPoint("TOPLEFT", frame, "TOPLEFT", 0, 0)
-    handle:SetPoint("TOPRIGHT", frame, "TOPRIGHT",
-                    -(token.close.right + token.close.width + 4), 0)
-    handle:SetHeight(token.close.top)
-  elseif modernBag.Active() then
-    local token = M.modernWow.bags
-    -- The icon row now shares the close button's line, so the strip starts
-    -- after its last control (bank view) instead of covering the icons.
-    handle:SetPoint("TOPLEFT", frame.bankView, "TOPRIGHT", 4, 0)
-    handle:SetPoint("TOPRIGHT", frame.close, "TOPLEFT", -4, 0)
-    handle:SetHeight(token.actions.height)
-  else
-    handle:SetPoint("TOPLEFT", frame.bankView, "TOPRIGHT", 4, 0)
-    handle:SetPoint("TOPRIGHT", frame.close, "TOPLEFT", -4, 0)
-    handle:SetHeight(HEADER_HEIGHT - PADDING)
-  end
+  local handle = U.BuildBagDragStrip(frame, "UnrealUIBagDrag",
+    BagHeaderHeight(), {
+      frame.close, frame.money, frame.keyToggle, frame.bagsToggle,
+      frame.pickLock, frame.sell, frame.sortBags, frame.stackBags,
+      frame.bankView, search.field,
+    })
+
   handle:RegisterForDrag("LeftButton")
   pcall(handle.EnableMouse, handle, true)
 
@@ -1852,13 +2205,19 @@ local function Build()
 
   -- Cooldowns are not part of the slot cache, and BAG_UPDATE_COOLDOWN is not
   -- processed while the window is closed.
+  -- The layout pass runs here rather than on the next refresh tick (up to
+  -- 0.2s later), so the window opens already laid out -- the specialty-bag
+  -- windows included (user request, 2026-09-27).
   frame:SetScript("OnShow", function()
     layoutDirty = true
     cooldownDirty = true
     search.Start()
+    ProcessDirty()
   end)
   -- rendering.parent_alpha_not_propagated: the trays are toggled explicitly
-  -- rather than left to follow the frame they hang off.
+  -- rather than left to follow the frame they hang off. The specialty-bag
+  -- windows are not: they are shown or hidden only by the layout, and hide
+  -- with the bag as its children, so they are already up when it reopens.
   frame:SetScript("OnHide", function()
     frame.keyring:Hide()
     frame.bagslots:Hide()
@@ -1872,6 +2231,7 @@ local function Build()
   pcall(anchor.SetMovable, anchor, true)
   ApplyBagPosition()
   U.OnPositionReset(ApplyBagPosition)
+  U.OnPositionReset(specialBag.ResetPositions)
   -- Its height follows the contents, so a full category view can outgrow the
   -- screen after a drop; core/screenguard.lua fits and clamps it while shown.
   U.GuardOnScreen(anchor, { id = BAG_POSITION_ID })

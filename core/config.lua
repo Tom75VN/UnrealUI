@@ -384,6 +384,10 @@ function U.LoadConfig()
       -- on first load. The old UnrealUIDB is kept untouched as a migration
       -- backup and is no longer the live settings table.
       profiles[active] = PrepareConfig(CopyTable(UnrealUIDB))
+      -- A new character always starts on the default theme (user request,
+      -- 2026-09-28). The legacy UnrealUIDB predates modern-wow and still
+      -- stores "modern", so copying it made every new character Modern.
+      profiles[active].themeStyle = defaults.themeStyle
     end
   end
 

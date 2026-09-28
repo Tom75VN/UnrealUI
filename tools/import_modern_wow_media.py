@@ -28,6 +28,7 @@ Run from the unrealUI addon folder:
     python -B tools/import_modern_wow_media.py
 """
 
+import math
 import os
 import struct
 import sys
@@ -123,59 +124,8 @@ IMPORTS = [
      "actionbar/page-down-highlight"),
 
     # -- Micro bar ---------------------------------------------------------
-    # Three states per icon (regular / highlight / faded) plus the one
-    # talents-disabled state the source ships. The names are the source's own
-    # glyph vocabulary because that is what identifies which button each is.
-    ("media/tex/micromenu/color_micro/wow-regular.tga", "microbar/menu"),
-    ("media/tex/micromenu/color_micro/wow-highlight.tga",
-     "microbar/menu-highlight"),
-    ("media/tex/micromenu/color_micro/wow-faded.tga", "microbar/menu-faded"),
-    ("media/tex/micromenu/color_micro/shield-regular.tga",
-     "microbar/character"),
-    ("media/tex/micromenu/color_micro/shield-highlight.tga",
-     "microbar/character-highlight"),
-    ("media/tex/micromenu/color_micro/shield-faded.tga",
-     "microbar/character-faded"),
-    ("media/tex/micromenu/color_micro/spellbook-regular.tga",
-     "microbar/spellbook"),
-    ("media/tex/micromenu/color_micro/spellbook-highlight.tga",
-     "microbar/spellbook-highlight"),
-    ("media/tex/micromenu/color_micro/spellbook-faded.tga",
-     "microbar/spellbook-faded"),
-    ("media/tex/micromenu/color_micro/talents-regular.tga", "microbar/talents"),
-    ("media/tex/micromenu/color_micro/talents-highlight.tga",
-     "microbar/talents-highlight"),
-    ("media/tex/micromenu/color_micro/talents-faded.tga",
-     "microbar/talents-faded"),
-    ("media/tex/micromenu/color_micro/talents-disabled.tga",
-     "microbar/talents-disabled"),
-    ("media/tex/micromenu/color_micro/quest-regular.tga", "microbar/quest"),
-    ("media/tex/micromenu/color_micro/quest-highlight.tga",
-     "microbar/quest-highlight"),
-    ("media/tex/micromenu/color_micro/quest-faded.tga", "microbar/quest-faded"),
-    ("media/tex/micromenu/color_micro/book-regular.tga", "microbar/log"),
-    ("media/tex/micromenu/color_micro/book-highlight.tga",
-     "microbar/log-highlight"),
-    ("media/tex/micromenu/color_micro/book-faded.tga", "microbar/log-faded"),
-    ("media/tex/micromenu/color_micro/eye-regular.tga", "microbar/social"),
-    ("media/tex/micromenu/color_micro/eye-highlight.tga",
-     "microbar/social-highlight"),
-    ("media/tex/micromenu/color_micro/eye-faded.tga", "microbar/social-faded"),
-    ("media/tex/micromenu/color_micro/tabard-regular.tga", "microbar/guild"),
-    ("media/tex/micromenu/color_micro/tabard-highlight.tga",
-     "microbar/guild-highlight"),
-    ("media/tex/micromenu/color_micro/tabard-faded.tga",
-     "microbar/guild-faded"),
-    ("media/tex/micromenu/color_micro/horseshoe-regular.tga", "microbar/pet"),
-    ("media/tex/micromenu/color_micro/horseshoe-highlight.tga",
-     "microbar/pet-highlight"),
-    ("media/tex/micromenu/color_micro/horseshoe-faded.tga",
-     "microbar/pet-faded"),
-    ("media/tex/micromenu/color_micro/question-regular.tga", "microbar/help"),
-    ("media/tex/micromenu/color_micro/question-highlight.tga",
-     "microbar/help-highlight"),
-    ("media/tex/micromenu/color_micro/question-faded.tga",
-     "microbar/help-faded"),
+    # None from DragonflightUI: the micro bar draws only Retail's micro-menu
+    # atlas (USER_SUPPLIED microbar/micromenu, user request 2026-09-28).
 
     # -- Bags --------------------------------------------------------------
     # bagslots2x is an atlas, not a single picture: six 61px cells on a
@@ -234,14 +184,6 @@ IMPORTS = [
 #
 # (destination name, the filename it was supplied as, note[, on-disk input])
 USER_SUPPLIED = [
-    ("unitframes/health-fill-full",
-     "ForeverFrameXML 4631591 / UI-HUD-UnitFrame-Player-PortraitOn-Bar-Health",
-     "Blizzard Forever build 1.60.1.69913 atlas member "
-     "`UI-HUD-UnitFrame-Player-PortraitOn-Bar-Health`: FileDataID 4631591, "
-     "atlas 2060, pixels L=693 R=817 T=238 B=258 (124x20). The member is "
-     "already coloured dark green to lime and carries its own bevel; "
-     "PlayerFrame.xml draws it as the HealthBar BarTexture and sets "
-     "lockColor=true, so UnrealUI draws it with a white vertex colour."),
     ("ui/class-portraits", "ui-classes-circles.png",
      "Blizzard UI-Classes-Circles class-icon atlas at 256x256: 64px "
      "cells, four per row, in CLASS_ICON_TCOORDS order (WARRIOR, MAGE, "
@@ -269,7 +211,11 @@ USER_SUPPLIED = [
      "yellow and grey arrow glyphs. Cells are addressed by texture "
      "coordinates rather than cut out, so one file serves every control that "
      "borrows from it. The talent advisor's drawer arrow draws the yellow "
-     "left and right glyphs (M.talentAdvisor.styles, toggle).",
+     "left and right glyphs (M.talentAdvisor.styles, toggle). The Modern WoW "
+     "trainer's Filter dropdown draws its `common-dropdown-b-button` state "
+     "cells and the `common-dropdown-bg` menu cell, as ForeverFrameXML's "
+     "WowStyle1FilterDropdownTemplate and MenuStyle1Mixin do "
+     "(M.modernWow.trainer.filter.bed).",
      "5412379.png"),
     ("ui/icon-alert-ants", "iconalertants.png",
      "Blizzard `Interface/SpellActivationOverlay/IconAlertAnts`, the marching "
@@ -290,6 +236,17 @@ USER_SUPPLIED = [
      "cells for the frame, background, main-hand, off-hand and ranged fills, "
      "title shadow and moving pip under the modern-wow theme.",
      "swing-bar.png"),
+    ("microbar/micromenu", "4708813.png",
+     "Blizzard Retail micro-menu atlas, FileDataID 4708813, at 1024x512, "
+     "imported whole. Its UI-HUD-MicroMenu-* members are addressed by "
+     "their UiTextureAtlasMember rectangles (ForeverFrameXML-1.60.1.69913 "
+     "`query.py filedata 4708813`, the same Mainline Blizzard_MicroMenu "
+     "RetailFrameXML 12.1 ships). It is the micro bar's only art under "
+     "modern-wow and modern: every button is rebuilt as "
+     "MainMenuBarMicroButton -- its icon's Up/Down/Mouseover/Disabled "
+     "cells over the ButtonBG Up/Down plate, the Character button on the "
+     "Achievements shield (M.modernWow.microMenu).",
+     "4708813.png"),
     ("ui/minimal-scrollbar-proportional", "MinimalScrollbarProportional.PNG",
      "Blizzard MinimalScrollBar proportional atlas at 64x64: up/down arrow "
      "states plus the track and thumb caps. The Modern WoW Skills scrollbar "
@@ -350,7 +307,9 @@ USER_SUPPLIED = [
      "Metal frame atlas at 8x, 512x2048: two plain bars, then four 238px "
      "corner pieces with a diamond stud (bottom-left, bottom-right, "
      "top-left, top-right). modern-wow draws the four corners around each "
-     "Character gear slot; cells are tokenised in core/media.lua.",
+     "Character gear slot, and the same atlas is the `M.modernWow.metalFrame` "
+     "housing (game menu window and its caption plate, among others); cells "
+     "are tokenised in core/media.lua.",
      "CharacterCreateDiamondMetal8x.PNG"),
     # Spellbook book art, supplied as the PNGs WoW-DragonflightUI ships beside
     # its BLPs (Textures/UI). modern-wow draws the Spellbook window from these;
@@ -592,6 +551,113 @@ USER_SUPPLIED = [
      "Blizzard Forever Edit Mode selected centre fill at 16x16, FileDataID "
      "4554386 (atlas 1962): one flat colour, RGBA 255/245/105/128.",
      "editmodeuiselectedbackground.png"),
+    ("buttons/minimal-slider-silver",
+     "minimal-slider-silver.png (256x1024, SHA-256 "
+     "8D3139AEDC79ACE5A7900E47BE71540D4AF60D910A36D8C36C6204F862E1458E)",
+     "**Derived art, not a Blizzard file.** A silver recolour of Forever's "
+     "bronze `MinimalSliderWithSteppers` sheet "
+     "(`forever-wow/settings/minimal-slider.tga`, FileDataID 8086434), made "
+     "by user request on 2026-09-22 because Blizzard's own grey sheet "
+     "(FileDataID 4567914) is in no reachable source. Produced by the user "
+     "with an image model from the 8x nearest-neighbour upscale of 8086434, "
+     "then reduced here to 32x128 with nearest-neighbour and re-encoded as "
+     "RLE TGA. Verified against 8086434: alpha mask identical at every one "
+     "of the 4096 pixels, each atlas member's alpha bounds unchanged, mean "
+     "saturation 0. This is a deliberate, user-approved exception to the "
+     "no-restyle-or-recolour import rule. Drawn by the grouped settings "
+     "window's sliders (`M.foreverWow.control.slider`) with 8086434's "
+     "member rectangles."),
+    ("ui/trainer/trainertextures",
+     "ForeverFrameXML-1.60.1.69913/wowdata-art-ui/interface/classtrainerframe/"
+     "trainertextures.png (SHA-256 "
+     "197EA24F721A503117CB15897F6F60641BDD043CA9BACBE24A8418F394AD211F)",
+     "Blizzard Forever `Interface/ClassTrainerFrame/TrainerTextures`, build "
+     "1.60.1.69913. RGBA PNG to 32-bit RLE bottom-up TGA, pixels verified "
+     "identical. `Blizzard_TrainerUI.xml` (Mainline) addresses it by texture "
+     "coordinates: the list parchment and the normal, highlight and selected "
+     "service-row cells, all tokenised in core/media.lua M.modernWow.trainer. "
+     "Drawn by the Modern WoW trainer window."),
+    ("ui/moneyframe/ui-moneyframe-border",
+     "ForeverFrameXML-1.60.1.69913/wowdata-art-ui/interface/moneyframe/"
+     "ui-moneyframe-border.png (SHA-256 "
+     "678D686951C119D73F263BE78F4C830C43CA33AA3FB17C5F3BC1DFA742B79056)",
+     "Blizzard Forever `Interface/MoneyFrame/UI-MoneyFrame-Border`, build "
+     "1.60.1.69913. RGBA PNG to 32-bit RLE bottom-up TGA, pixels verified "
+     "identical. The coin recess `ClassTrainerFrameMoneyBg` draws at 148x34 "
+     "in the trainer footer; the Modern WoW trainer window draws it the same "
+     "way (M.modernWow.trainer.money)."),
+    ("ui/merchant/ui-merchant-labelslots",
+     "ForeverFrameXML-1.60.1.69913/wowdata-art-ui/interface/merchantframe/"
+     "ui-merchant-labelslots.png (SHA-256 "
+     "703DD7D6930C9E4978626CCCD5D9B3AA2ABC96D86C8F99FD8F76CE185E03781A)",
+     "Blizzard Forever `Interface/MerchantFrame/UI-Merchant-LabelSlots`, "
+     "build 1.60.1.69913. RGBA PNG to 32-bit RLE bottom-up TGA, pixels "
+     "verified identical. ForeverFrameXML's Mainline `MerchantItemTemplate` "
+     "places this dark name-and-price plate behind each 153x44 merchant row; "
+     "the Modern WoW merchant keeps that structure while replacing its item-"
+     "slot ring with the theme's metal slot corners."),
+    ("ui/merchant/ui-buyback-icon",
+     "ForeverFrameXML-1.60.1.69913/wowdata-art-ui/interface/merchantframe/"
+     "ui-buyback-icon.png (SHA-256 "
+     "CC45372E5C63005D24940221D65666771BA1348DB884631A416B62BE76E3E1BD)",
+     "Blizzard Forever `Interface/MerchantFrame/UI-BuyBack-Icon`, build "
+     "1.60.1.69913. RGBA PNG to 32-bit RLE bottom-up TGA, pixels verified "
+     "identical. ForeverFrameXML swaps the NPC portrait to this icon on the "
+     "Buyback tab; the Modern WoW merchant does the same inside the theme's "
+     "existing portrait ring."),
+    ("ui/merchant/ui-merchant-repair-icons",
+     "ForeverFrameXML-1.60.1.69913/wowdata-art-ui/interface/unlisted/"
+     "5222222.png (SHA-256 "
+     "B56F19F657C06E8B425C7E0BB817CBF75C0BCC356BDC487F717063A5A1498D9A)",
+     "Blizzard Forever FileDataID 5222222, build 1.60.1.69913. RGBA PNG to "
+     "32-bit RLE bottom-up TGA, pixels verified identical. The Modern WoW "
+     "merchant draws the exact `SpellIcon-256x256-SellJunk`, "
+     "`SpellIcon-256x256-Repair`, "
+     "`SpellIcon-256x256-RepairAll`, and "
+     "`SpellIcon-256x256-RepairAllGuild` atlas members recorded by "
+     "ForeverFrameXML. Its `UI-Merchant-BotFrame` member replaces UnrealUI's "
+     "custom service-panel border and dividers beneath the sell-junk, repair "
+     "and buyback controls."),
+    ("unitframes/health-fill-tint",
+     "UI-HUD-UnitFrame-Player-PortraitOn-Bar-Health-Status.tga",
+     "WoW-DragonflightUI (DF-main) "
+     "`Textures/Unitframe/UI-HUD-UnitFrame-Player-PortraitOn-Bar-Health-Status.tga`, "
+     "the neutral grey Status variant of the player health bar, opaque to its "
+     "128x32 canvas. 24-bit uncompressed TGA to 32-bit RLE TGA, pixels "
+     "unchanged. Drawn instead of the green `health-fill-full` when class "
+     "health colours tint a Modern WoW unit frame, so the class colour is not "
+     "multiplied into baked-in green.",
+     "UI-HUD-UnitFrame-Player-PortraitOn-Bar-Health-Status.tga"),
+]
+
+# Exact crops from the pinned Forever FrameXML art bundle. These are kept
+# separate from USER_SUPPLIED so a full media re-import always re-derives the
+# shipped TGA from the authoritative atlas sheet rather than re-encoding an
+# older output in place.
+FOREVER_ATLAS_CROPS = [
+    ("unitframes/health-fill-full",
+     "ForeverFrameXML-1.60.1.69913/wowdata-art-ui/interface/unlisted/4642466.png",
+     (1651, 415, 1899, 455),
+     "ForeverFrameXML 4642466 / UI-HUD-UnitFrame-Player-PortraitOn-Bar-Health",
+     "Blizzard Forever build 1.60.1.69913 HD atlas member "
+     "`UI-HUD-UnitFrame-Player-PortraitOn-Bar-Health`: FileDataID 4642466, "
+     "atlas 2074, pixels L=1651 R=1899 T=415 B=455 (248x40). The member is "
+     "already coloured dark green to lime and carries its own bevel; "
+     "PlayerFrame.xml draws it as the HealthBar BarTexture and sets "
+     "lockColor=true, so UnrealUI draws it with a white vertex colour."),
+]
+
+# Retained authored TGA files that need attribution but must not be re-encoded
+# by this importer. The plus/minus atlas intentionally stays uncompressed.
+STATIC_USER_ART = [
+    ("buttons/plus-minus-button", "4496242.png",
+     "Blizzard's plus / minus tree button (FileDataID 4496242), converted "
+     "from the PNG kept beside it: RGBA PNG to 32-bit uncompressed bottom-up "
+     "TGA, pixels unchanged. Four 20x22 rounded buttons on a 64x64 sheet -- "
+     "plus over minus, normal in the left column (columns 2-21) and pushed "
+     "in the right (26-45); row runs 0-21 and 24-45. Drawn on the game-"
+     "settings category list's collapse controls; cells are tokenised in "
+     "core/media.lua."),
 ]
 
 
@@ -745,7 +811,9 @@ SHEET_CROPS = [
     ("ui/talents/icon-alert", "iconalert.png", (0, 68, 68, 136), None,
      "The middle, gold alert icon from the user-supplied three-icon strip. "
      "The modern-wow Talent Advisor keeps its authored thickness, tints it "
-     "red and pulses it over talents with ranks outside the selected build."),
+     "red and pulses it over talents with ranks outside the selected build. "
+     "The bag-family search also rings each matching slot with it, untinted "
+     "(user request, 2026-09-24)."),
     ("ui/spell-alert-loop", "spell-alert.png", (1277, 0, 1782, 606), None,
      "Blizzard `UI-HUD-ActionBar-Proc-Loop-Flipbook`, the looping gold border "
      "of a proc'd action button, cut from the 2048x2048 spell-alert sheet at "
@@ -758,6 +826,800 @@ SHEET_CROPS = [
      "roughly 120 units and no shipped texture here is larger; the grid, its "
      "cell fractions and the art are otherwise unchanged."),
 ]
+
+
+# The Retail (12.1.0.69933) target frame, at the 2x resolution Retail draws.
+# Geometry and atlas rectangles come from RetailFrameXML (`query.py atlasmap
+# <name> --exact`, Blizzard_UnitFrame/Mainline/TargetFrame.xml and .lua); the
+# pixels come from the two HD sheets kept beside the destination:
+#
+#   UIUnitFrame2x.BLP  interface/hud/uiunitframe2x, FileDataID 4642466
+#                      (2048x1024 BLP2 raw BGRA, user-supplied from a War
+#                      Within client, 2026-09-27)
+#   4703662.png        interface/hud/uiunitframeboss2x (512x512)
+#
+# Every member below sits at its Retail 12.1 rectangle in that sheet (each
+# crop's alpha extent fills its member). The Forever copy kept beside it,
+# 4642466.png, has pixel-identical housings but packs its bar strip
+# differently, so it is not a source here.
+RETAIL_HOUSING_SHEET = "UIUnitFrame2x.BLP"
+RETAIL_DRAGON_SHEET = "4703662.png"
+
+# Bar and strip members of the same sheet. (destination, atlas name, L, T, R,
+# B, canvas size or None for the member's own size, note)
+RETAIL_SHEET_MEMBERS = [
+    # Rows 4-15 of the 20-row member only (user request, 2026-09-27). The
+    # member bakes a bevel into rows 0-3 and 16-19 (red 47-161 against a flat
+    # 183-203). The player frame's rim is drawn over its power fill and hides
+    # that fill's shaded rows, so only its flat band shows; the Retail target
+    # draws its housing under the bars, so the whole bevel showed and the bar
+    # read darker at top and bottom. The flat band is what the player shows.
+    ("unitframes/power-fill-target-flat-2x",
+     "UI-HUD-UnitFrame-Target-PortraitOn-Bar-Mana-Status",
+     927, 461, 1195, 473, None,
+     "The neutral grey mana fill Retail tints by power type, cut to rows "
+     "4-15 of the 20-row member (the member is T=457 B=477): its flat band "
+     "without the baked top and bottom bevel, stretched over the 134x10 "
+     "Retail ManaBar so the target's bar reads like the player's, whose rim "
+     "hides the same bevel. Pixels kept are unchanged."),
+    ("unitframes/target-reaction-2x",
+     "UI-HUD-UnitFrame-Target-PortraitOn-Type",
+     891, 415, 1161, 451, (512, 64),
+     "The name strip Retail tints by reaction (ReputationColor), at the "
+     "top-left of a 512x64 canvas. Alpha unchanged; its flat grey RGB "
+     "(159-162) set to 203, the grey every vertex-coloured reaction wash "
+     "here is authored at, so it answers the same M.modernWow.targetReaction "
+     "alpha."),
+    ("unitframes/target-health-fill-2x",
+     "UI-HUD-UnitFrame-Target-PortraitOn-Bar-Health",
+     1603, 315, 1855, 355, None,
+     "Retail's green target health fill at its own 252x40 (the 126x20 "
+     "HealthBar). Drawn white on the Retail target, as the player's "
+     "Forever member is."),
+    ("unitframes/target-health-fill-tint-2x",
+     "UI-HUD-UnitFrame-Target-PortraitOn-Bar-Health-Status",
+     1603, 357, 1855, 397, None,
+     "The neutral grey variant of the member above, for class and custom "
+     "health colours on the Retail target."),
+    # The party block. Retail's own party frame (`uipartyframe.blp`, FileDataID
+    # 4681512) exists at 1x only, and is a different design from the one
+    # UnrealUI's party rows wear: those were DragonflightUI's `pet` border,
+    # which is Retail's target-of-target housing. Its 2x member differs from
+    # the old party-frame.tga by 14.5/255 per channel after a 2:1 reduction
+    # (the Retail party member by 40), and every rim and the ring sit within
+    # a unit of the old file, so it replaces it in the same 128x64 layout.
+    ("unitframes/party-frame-2x",
+     "UI-HUD-UnitFrame-TargetofTarget-PortraitOn",
+     387, 315, 627, 413, (256, 128),
+     "The target-of-target housing at 2x, at the top-left of a 256x128 "
+     "canvas: the 2x version of the 128x64 `party-frame` the party rows and "
+     "pet rows drew before, with transparent bar openings like it."),
+    ("unitframes/party-health-fill-2x",
+     "UI-HUD-UnitFrame-TargetofTarget-PortraitOn-Bar-Health",
+     1857, 315, 1997, 335, None,
+     "The green target-of-target health fill at its own 140x20 (70x10 "
+     "units), drawn on the party and party-pet rows."),
+    ("unitframes/party-health-fill-tint-2x",
+     "UI-HUD-UnitFrame-TargetofTarget-PortraitOn-Bar-Health-Status",
+     1857, 357, 1997, 377, None,
+     "The neutral grey variant of the member above, for class and custom "
+     "health colours on the party rows."),
+    ("unitframes/party-power-fill-2x",
+     "UI-HUD-UnitFrame-TargetofTarget-PortraitOn-Bar-Mana-Status",
+     1603, 399, 1751, 413, None,
+     "The grey target-of-target mana fill at its own 148x14 (74x7 units), "
+     "tinted per power type on the party rows."),
+]
+
+# Housing members, each placed at the top-left of a 512x256 canvas so a module
+# addresses the canvas in 2-pixel units (256x128) with no texture coordinates.
+# (destination, atlas name, L, T, R, B)
+RETAIL_HOUSINGS = [
+    ("unitframes/target",
+     "UI-HUD-UnitFrame-Target-PortraitOn", 1, 451, 385, 585),
+    ("unitframes/target-rare",
+     "UI-HUD-UnitFrame-Target-Rare-PortraitOn", 1, 587, 385, 721),
+]
+
+# The portrait ring of the housings above, in their own pixels: centre and the
+# radius that holds the solid rim plus one pixel of antialiasing (measured by
+# alpha > 128 along the centre row and column: x 251..373, y 3..122).
+RETAIL_RING_CENTRE = (312.0, 62.5)
+RETAIL_RING_RADIUS = 62.5
+
+# The bar zone of the housings: pixel rows 45-110 (the top rim line of the
+# health opening down to the bottom rim line of the mana opening), from the
+# left rim line (x 3) to the portrait ring's solid metal, whose outer radius
+# is 59. Inside it the housing is a flat black bed at alpha 102 with black
+# rim shadows laid over it -- every non-rim pixel there is (0, 0, 0).
+RETAIL_BAR_ROWS = (45, 110)
+RETAIL_BAR_LEFT = 3
+RETAIL_RING_SOLID = 59.0
+RETAIL_BED_ALPHA = 102
+
+# Dragon cells in 4703662 (Retail atlas 2131), for the derived silver-winged
+# dragon. The winged cell is the plain gold body shifted 2 rows down plus wings
+# (mean RGB difference 17/765 over the shared body at that offset).
+RETAIL_DRAGON_GOLD_WINGED = (1, 1, 199, 163)
+RETAIL_DRAGON_GOLD = (1, 165, 161, 323)
+RETAIL_DRAGON_SILVER = (1, 325, 161, 483)
+RETAIL_DRAGON_BODY_OFFSET = (0, 2)
+
+
+def retail_split(image):
+    """Split a housing into the part under the bars and the part over them.
+
+    Retail draws the whole housing under its bars and trims the bar ends with
+    masks; this client has no texture mask. The player frame's art instead
+    lies OVER its bars, with open bar holes, so its rim lines and their inner
+    shadows shade the fill (user request, 2026-09-27: the target must read
+    the same). The Retail housing is therefore drawn twice:
+
+    * under -- the housing with only the flat bed left in the bar zone;
+    * over  -- the rim lines, the rim shadows with the bed taken out of them,
+               and the portrait ring (with its drop shadow on the right).
+
+    The bed and shadows are pure black, so the split is exact: a shadow of
+    alpha `a` over the bed of alpha `b` is a black layer of alpha
+    (a - b) / (1 - b) over that bed. Where a bar is empty, over-on-under
+    recomposes the original pixel; where it is full, the rim and its shadow
+    lie on the fill, as on the player frame.
+    """
+    image = image.convert("RGBA")
+    under = image.copy()
+    over = Image.new("RGBA", image.size, (0, 0, 0, 0))
+    src, up, op = image.load(), under.load(), over.load()
+    cx, cy = RETAIL_RING_CENTRE
+    top, bottom = RETAIL_BAR_ROWS
+    bed = RETAIL_BED_ALPHA
+    for y in range(image.height):
+        for x in range(image.width):
+            r, g, b, a = src[x, y]
+            if not a:
+                continue
+            d = ((x - cx) ** 2 + (y - cy) ** 2) ** 0.5
+            in_bars = (top <= y <= bottom and x >= RETAIL_BAR_LEFT
+                       and x < cx and d > RETAIL_RING_SOLID)
+            if in_bars:
+                if (r, g, b) == (0, 0, 0):
+                    if a > bed:
+                        shadow = (a - bed) * 255.0 / (255 - bed)
+                        op[x, y] = (0, 0, 0, int(round(shadow)))
+                        up[x, y] = (0, 0, 0, bed)
+                else:
+                    op[x, y] = (r, g, b, a)
+            else:
+                # The ring: moved to the over half rather than copied, so an
+                # antialiased edge is not drawn twice.
+                keep = 1.0 if x >= cx else max(
+                    0.0, min(1.0, (RETAIL_RING_RADIUS + 1.0 - d) / 2.0))
+                if keep:
+                    op[x, y] = (r, g, b, int(round(a * keep)))
+                    up[x, y] = (r, g, b, int(round(a * (1.0 - keep))))
+    return under, over
+
+
+def retail_silver_winged(sheet):
+    """Derive the silver-winged dragon Retail does not ship.
+
+    The body is Retail's own silver dragon, untouched. Only the wings are new:
+    the gold-winged cell is recoloured through a gold-to-silver table learned
+    from the two plain bodies, which share one silhouette pixel for pixel
+    (each gold luminance maps to the mean silver colour found at the same
+    pixels, smoothed over +-3 levels), and the silver body is then laid over it
+    at the offset the gold body occupies in the winged cell.
+    """
+    winged = sheet.crop(RETAIL_DRAGON_GOLD_WINGED).convert("RGBA")
+    gold = sheet.crop(RETAIL_DRAGON_GOLD).convert("RGBA")
+    silver = sheet.crop(RETAIL_DRAGON_SILVER).convert("RGBA")
+
+    gp, sp = gold.load(), silver.load()
+    bins = [[0, 0, 0, 0] for _ in range(256)]
+    for y in range(gold.height):
+        for x in range(gold.width):
+            g, s = gp[x, y], sp[x, y]
+            if g[3] > 200 and s[3] > 200:
+                lum = int(0.299 * g[0] + 0.587 * g[1] + 0.114 * g[2])
+                acc = bins[lum]
+                acc[0] += s[0]
+                acc[1] += s[1]
+                acc[2] += s[2]
+                acc[3] += 1
+    known = [i for i in range(256) if bins[i][3]]
+    table = []
+    for i in range(256):
+        j = i if bins[i][3] else min(known, key=lambda k: abs(k - i))
+        acc = [0, 0, 0, 0]
+        for k in range(max(0, j - 3), min(255, j + 3) + 1):
+            for c in range(4):
+                acc[c] += bins[k][c]
+        table.append(tuple(acc[c] // acc[3] for c in range(3)))
+
+    wp = winged.load()
+    for y in range(winged.height):
+        for x in range(winged.width):
+            r, g, b, a = wp[x, y]
+            if a:
+                lum = int(0.299 * r + 0.587 * g + 0.114 * b)
+                wp[x, y] = table[lum] + (a,)
+    winged.alpha_composite(silver, RETAIL_DRAGON_BODY_OFFSET)
+
+    canvas = Image.new("RGBA", (256, 256), (0, 0, 0, 0))
+    canvas.paste(winged, (0, 0))
+    return canvas
+
+
+RETAIL_TEXTURE_ROOT = os.environ.get(
+    "UNREALUI_RETAIL_TEXTURES",
+    r"D:\Development\unrealUI_data\retail-ui-textures-live")
+
+
+def import_retail_bag_indicator(dest_root):
+    """Import Retail Combined Bags' per-bag item-slot highlight."""
+    source = os.path.join(RETAIL_TEXTURE_ROOT, "Store",
+                          "store-item-highlight.PNG")
+    if not os.path.isfile(source):
+        raise IOError("Retail bag indicator source missing: %s" % source)
+
+    dest_name = "bags/item-highlight"
+    dst = os.path.join(dest_root, dest_name.replace("/", os.sep) + ".tga")
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    image, _ = open_source(source)
+    width, height = write_rle_tga(image.convert("RGBA"), dst)
+    image.close()
+    row = {
+        "dest": dest_name + ".tga",
+        "size": "%dx%d" % (width, height),
+        "supplied": "Store/store-item-highlight.PNG",
+        "note": "Blizzard Retail `Interface\\Store\\store-item-highlight`, "
+                "used by ContainerFrameItemButtonTemplate's `BagIndicator` "
+                "and Combined Bags' `OnBagSlotEnter` to mark every item slot "
+                "belonging to the hovered bag; pixels unchanged.",
+    }
+    print("%-34s %-9s Retail bag indicator" % (dest_name, row["size"]))
+    return row
+
+
+def import_retail_junk_coin(dest_root):
+    """Import Retail's bags-junkcoin atlas member."""
+    source = os.path.join(RETAIL_TEXTURE_ROOT, "ContainerFrame", "Bags.PNG")
+    if not os.path.isfile(source):
+        raise IOError("Retail bags sheet missing: %s" % source)
+
+    dest_name = "bags/junk-coin"
+    dst = os.path.join(dest_root, dest_name.replace("/", os.sep) + ".tga")
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    image, _ = open_source(source)
+    # The available PNG is a 256x256 physical packing of Bags rather than the
+    # pinned atlas DB's 512x256 packing. Its same 20x18 coin cell is here.
+    member = image.crop((221, 72, 241, 90)).convert("RGBA")
+    image.close()
+    width, height = write_rle_tga(member, dst)
+    member.close()
+    row = {
+        "dest": dest_name + ".tga",
+        "size": "%dx%d" % (width, height),
+        "supplied": "ContainerFrame/Bags.PNG",
+        "note": "Blizzard Retail atlas member `bags-junkcoin` (logical "
+                "FileDataID 969828). The supplied 256x256 `Bags.PNG` uses a "
+                "different physical packing from the pinned 12.1.0.69933 "
+                "512x256 atlas metadata; its same 20x18 member is at pixels "
+                "L=221 R=241 T=72 B=90. Cropped there, pixels otherwise "
+                "unchanged. Retail's "
+                "ContainerFrameItemButtonTemplate shows it at TOPLEFT +1,0 "
+                "for Poor-quality items while MerchantFrame is shown.",
+    }
+    print("%-34s %-9s Retail junk coin" % (dest_name, row["size"]))
+    return row
+
+
+def import_retail_target(addons, dest_root):
+    """Write the Retail target-frame textures; returns their attribution rows."""
+    folder = os.path.join(dest_root, "unitframes")
+    rows = []
+
+    def emit(dest_name, image, supplied, note):
+        dst = os.path.join(dest_root, dest_name.replace("/", os.sep) + ".tga")
+        width, height = write_rle_tga(image, dst)
+        rows.append({"dest": dest_name + ".tga",
+                     "size": "%dx%d" % (width, height),
+                     "supplied": supplied, "note": note})
+        print("%-34s %-9s Retail HD" % (dest_name, rows[-1]["size"]))
+
+    sheet_path = os.path.join(folder, RETAIL_HOUSING_SHEET)
+    dragon_path = os.path.join(folder, RETAIL_DRAGON_SHEET)
+    for path in (sheet_path, dragon_path):
+        if not os.path.isfile(path):
+            raise IOError("Retail target source missing: %s" % path)
+
+    sheet, _ = open_source(sheet_path)
+    sheet = sheet.convert("RGBA")
+    for dest_name, atlas, left, top, right, bottom in RETAIL_HOUSINGS:
+        member = sheet.crop((left, top, right, bottom))
+        canvas = Image.new("RGBA", (512, 256), (0, 0, 0, 0))
+        canvas.paste(member, (0, 0))
+        where = ("FileDataID 4642466 (`interface/hud/uiunitframe2x`), atlas "
+                 "2074, pixels L=%d R=%d T=%d B=%d (%dx%d)"
+                 % (left, right, top, bottom, right - left, bottom - top))
+        under, over = retail_split(canvas)
+        emit(dest_name + "-under-2x", under, RETAIL_HOUSING_SHEET,
+             "Blizzard Retail 12.1.0.69933 atlas member `%s`: %s, placed at "
+             "the top-left of a 512x256 canvas. **Split with its `-over` twin "
+             "(derived).** This half is drawn under the bars: the member "
+             "unchanged, except that in the bar zone (pixel rows %d-%d, from "
+             "x %d to the ring's solid metal at radius %g about (%g, %g)) "
+             "each black rim shadow is cut back to the flat bed it lies on "
+             "(alpha %d)."
+             % (atlas, where, RETAIL_BAR_ROWS[0], RETAIL_BAR_ROWS[1],
+                RETAIL_BAR_LEFT, RETAIL_RING_SOLID, RETAIL_RING_CENTRE[0],
+                RETAIL_RING_CENTRE[1], RETAIL_BED_ALPHA))
+        emit(dest_name + "-over-2x", over, RETAIL_HOUSING_SHEET,
+             "**Derived from `%s`**, drawn over the bars so the target reads "
+             "like the player frame, whose art lies over its fills: the rim "
+             "lines of the bar zone unchanged, its black shadows with the bed "
+             "taken out (alpha (a - %d) / (1 - %d/255), exact because bed and "
+             "shadow are both black), and the portrait ring -- everything "
+             "right of x %g, and left of it within radius %g, feathered over "
+             "one pixel. Over-on-under recomposes the member wherever a bar "
+             "is empty."
+             % (atlas, RETAIL_BED_ALPHA, RETAIL_BED_ALPHA,
+                RETAIL_RING_CENTRE[0], RETAIL_RING_RADIUS))
+
+    for (dest_name, atlas, left, top, right, bottom, canvas_size,
+         note) in RETAIL_SHEET_MEMBERS:
+        member = sheet.crop((left, top, right, bottom))
+        if canvas_size:
+            canvas = Image.new("RGBA", canvas_size, (0, 0, 0, 0))
+            canvas.paste(member, (0, 0))
+            member = canvas
+        if dest_name.endswith("-reaction-2x"):
+            flat = Image.new("L", member.size, 203)
+            member = Image.merge("RGBA",
+                                 (flat, flat, flat, member.getchannel("A")))
+        emit(dest_name, member, RETAIL_HOUSING_SHEET,
+             "Blizzard Retail atlas member `%s`: FileDataID 4642466 "
+             "(`interface/hud/uiunitframe2x`), pixels L=%d R=%d T=%d B=%d "
+             "(%dx%d). %s"
+             % (atlas, left, right, top, bottom, right - left, bottom - top,
+                note))
+    sheet.close()
+
+    dragons, _ = open_source(dragon_path)
+    dragons = dragons.convert("RGBA")
+    emit("unitframes/target-dragons-2x", dragons, RETAIL_DRAGON_SHEET,
+         "Blizzard Retail 12.1.0.69933 FileDataID 4703662 "
+         "(`interface/hud/uiunitframeboss2x`, atlas 2131), the whole 512x512 "
+         "sheet, pixels unchanged. The target frame draws its members by "
+         "texture coordinates: `Boss-Gold-Winged` L=1 R=199 T=1 B=163, "
+         "`Boss-Gold` L=1 R=161 T=165 B=323, `boss-rare-silver` L=1 R=161 "
+         "T=325 B=483 (M.modernWow.targetDragon).")
+    emit("unitframes/target-dragon-silver-winged-2x",
+         retail_silver_winged(dragons), RETAIL_DRAGON_SHEET,
+         "**Derived art, not a Blizzard file** (user request, 2026-09-27: "
+         "rare elite wears a silver dragon with wings, which Retail does not "
+         "ship). Body: Retail `boss-rare-silver` unchanged, laid at (0, 2). "
+         "Wings: Retail `Boss-Gold-Winged` recoloured through a gold-to-silver "
+         "luminance table learned from the `Boss-Gold` and `boss-rare-silver` "
+         "bodies. 198x162 cell at the top-left of a 256x256 canvas, the "
+         "winged cell's own size, so it takes the winged anchors.")
+    dragons.close()
+    return rows
+
+
+# The Character window's stats side panel (user request, 2026-09-28): Retail's
+# CharacterStatsPane art, from the two PaperDollInfo sheets of the Retail
+# (The War Within) client's BlizzardInterfaceArt export, kept beside the output
+# in ui/character/ the way UIUnitFrame2x.BLP is kept for the Retail target.
+# Atlas geometry is the build's own UiTextureAtlasMember rectangle, read with
+# ForeverFrameXML's `query.py atlasmap <name> --exact`: sheet 1400895
+# (PaperDollInfoPart1, atlas 838, 1024x1024) and 1400896 (PaperDollInfoPart2,
+# atlas 839, 1024x512). Every member is cut 1:1; nothing is resampled.
+CHARACTER_STATS_FOLDER = "ui/character"
+CHARACTER_STATS_SHEETS = {
+    "PaperDollInfoPart1.BLP": ("1400895", "atlas 838"),
+    "PaperDollInfoPart2.BLP": ("1400896", "atlas 839"),
+}
+# (destination, sheet, atlas member, L, T, R, B)
+CHARACTER_STATS_MEMBERS = [
+    ("ui/character/stat-category", "PaperDollInfoPart1.BLP",
+     "UI-Character-Info-Title", 1, 715, 197, 755),
+    ("ui/character/stat-line", "PaperDollInfoPart1.BLP",
+     "UI-Character-Info-Line-Bounce", 1, 788, 158, 807),
+    ("ui/character/class-bg-mage", "PaperDollInfoPart1.BLP",
+     "UI-Character-Info-Mage-BG", 1, 1, 198, 356),
+    ("ui/character/class-bg-paladin", "PaperDollInfoPart1.BLP",
+     "UI-Character-Info-Paladin-BG", 200, 1, 397, 356),
+    ("ui/character/class-bg-priest", "PaperDollInfoPart1.BLP",
+     "UI-Character-Info-Priest-BG", 200, 358, 397, 713),
+    ("ui/character/class-bg-rogue", "PaperDollInfoPart1.BLP",
+     "UI-Character-Info-Rogue-BG", 399, 1, 596, 356),
+    ("ui/character/class-bg-shaman", "PaperDollInfoPart1.BLP",
+     "UI-Character-Info-Shaman-BG", 399, 358, 596, 713),
+    ("ui/character/class-bg-warlock", "PaperDollInfoPart1.BLP",
+     "UI-Character-Info-Warlock-BG", 598, 1, 795, 356),
+    ("ui/character/class-bg-warrior", "PaperDollInfoPart1.BLP",
+     "UI-Character-Info-Warrior-BG", 797, 1, 994, 356),
+    ("ui/character/class-bg-druid", "PaperDollInfoPart2.BLP",
+     "UI-Character-Info-Druid-BG", 399, 1, 596, 356),
+    ("ui/character/class-bg-hunter", "PaperDollInfoPart2.BLP",
+     "UI-Character-Info-Hunter-BG", 598, 1, 795, 356),
+]
+
+
+def import_character_stats(dest_root):
+    """Cut the stats side panel's Retail members; returns attribution rows."""
+    folder = os.path.join(dest_root, CHARACTER_STATS_FOLDER.replace("/", os.sep))
+    sheets = {}
+    for name in CHARACTER_STATS_SHEETS:
+        path = os.path.join(folder, name)
+        if not os.path.isfile(path):
+            raise IOError("Character stats source missing: %s" % path)
+        image, _ = open_source(path)
+        sheets[name] = image.convert("RGBA")
+        image.close()
+
+    rows = []
+    for dest_name, sheet, member, left, top, right, bottom in \
+            CHARACTER_STATS_MEMBERS:
+        dst = os.path.join(dest_root, dest_name.replace("/", os.sep) + ".tga")
+        crop = sheets[sheet].crop((left, top, right, bottom))
+        width, height = write_rle_tga(crop, dst)
+        crop.close()
+        fdid, atlas = CHARACTER_STATS_SHEETS[sheet]
+        rows.append({
+            "dest": dest_name + ".tga",
+            "size": "%dx%d" % (width, height),
+            "supplied": sheet,
+            "note": "Blizzard Retail (The War Within) atlas member `%s`: "
+                    "FileDataID %s (%s), pixels L=%d R=%d T=%d B=%d (%dx%d), "
+                    "cut 1:1 from the BLP kept beside it. Drawn by the "
+                    "Character window's stats side panel."
+                    % (member, fdid, atlas, left, right, top, bottom,
+                       right - left, bottom - top),
+        })
+        print("%-34s %-9s Retail character stats"
+              % (dest_name, rows[-1]["size"]))
+    for image in sheets.values():
+        image.close()
+    return rows
+
+
+# The Character window's Retail housing (user request, 2026-09-28): the
+# InsetFrameTemplate border whose two insets split the paper doll from the
+# stats pane, and CharacterFrame's own `character-panel-background`, read
+# straight from the Retail (The War Within) BlizzardInterfaceArt export the
+# user named. The metal nine-slice, rock body and title streak the housing
+# also draws are already here and pixel-identical to that export
+# (ui/frame/metal-corners = FrameGeneral/UIFrameMetal2x, metal-horizontal =
+# UIFrameMetalHorizontal2x, metal-vertical = UIFrameMetalVertical2x,
+# background-rock = UI-Background-Rock, top-streak = UIFrameHorizontal, which
+# also carries the inset's top and bottom tiles), so only these three are cut.
+# Geometry is the build's own UiTextureAtlasMember rectangle, read with
+# RetailFrameXML's `query.py atlasmap <name> --exact`. The two border sheets
+# are copied whole (their members are addressed by texture coordinate in
+# core/media.lua); the background is its one member, cut 1:1.
+RETAIL_ART_ROOT = os.environ.get(
+    "UNREALUI_RETAIL_ART",
+    r"C:\Games\WoW-The-War-Within\The War Within\BlizzardInterfaceArt\Interface")
+# (destination, source under RETAIL_ART_ROOT, FileDataID, atlas, crop, note)
+CHARACTER_HOUSING_ART = [
+    ("ui/frame/inset-corners", "Interface/FrameGeneral/UIFrame.BLP",
+     "1723831", "atlas 948", None,
+     "whole sheet; its members `UI-Frame-InnerTopLeft` (L=97 T=71), "
+     "`UI-Frame-InnerTopRight` (L=105 T=71), `UI-Frame-InnerBotLeftCorner` "
+     "(L=81 T=71) and `UI-Frame-InnerBotRight` (L=89 T=71), 6x6 each, are the "
+     "InsetFrameTemplate corners"),
+    ("ui/frame/inset-vertical", "FrameGeneral/UIFrameVertical.BLP",
+     "1723832", "atlas 949", None,
+     "whole sheet; its members `!UI-Frame-InnerLeftTile` (L=31 R=34) and "
+     "`!UI-Frame-InnerRightTile` (L=36 R=39), 3x256, are the "
+     "InsetFrameTemplate side tiles"),
+    ("ui/character/panel-background", "COMMON/CurrencyWindow.BLP",
+     "5882640", "atlas 2845", (1, 1, 451, 421),
+     "atlas member `character-panel-background`, pixels L=1 R=451 T=1 B=421 "
+     "(450x420), cut 1:1; CharacterFrame's Background over its Inset"),
+]
+
+
+def import_character_housing(dest_root):
+    """Cut the Character housing's Retail inset art; returns attribution rows."""
+    rows = []
+    for dest_name, source, fdid, atlas, crop, note in CHARACTER_HOUSING_ART:
+        src = os.path.join(RETAIL_ART_ROOT, source.replace("/", os.sep))
+        if not os.path.isfile(src):
+            raise IOError("Character housing source missing: %s" % src)
+        dst = os.path.join(dest_root, dest_name.replace("/", os.sep) + ".tga")
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        image, _ = open_source(src)
+        image = image.convert("RGBA")
+        if crop:
+            image = image.crop(crop)
+        width, height = write_rle_tga(image, dst)
+        image.close()
+        rows.append({
+            "dest": dest_name + ".tga",
+            "size": "%dx%d" % (width, height),
+            "supplied": source.split("/")[-1],
+            "note": "Blizzard Retail (The War Within) BlizzardInterfaceArt "
+                    "`Interface/%s`: FileDataID %s (%s), %s. Drawn by the "
+                    "Character window's Retail housing."
+                    % (source, fdid, atlas, note),
+        })
+        print("%-34s %-9s Retail character housing"
+              % (dest_name, rows[-1]["size"]))
+    return rows
+
+
+# The paper doll's three sidebar tabs over the stats pane (user request,
+# 2026-09-28): Retail's PaperDollSidebarTabs frame and PaperDollSidebarTabTemplate
+# (Blizzard_UIPanels_Game/Mainline/PaperDollFrame.xml:393-539, RetailFrameXML
+# 12.1.0.69933) draw every piece -- tab beds, hider, highlight, the Titles and
+# Equipment Manager icons and the strip's two end decorations -- from one
+# direct-path sheet by texture coordinate, so it is copied whole and
+# pixel-unchanged (identical to RetailFrameXML's registered PNG export).
+# FileDataID from the RetailFrameXML listfile.
+CHARACTER_SIDEBAR_ART = [
+    ("ui/character/sidebar-tabs",
+     "PaperDollInfoFrame/PaperDollSidebarTabs.blp", "514608"),
+]
+
+
+def import_character_sidebar(dest_root):
+    """Copy the paper-doll sidebar tab sheet; returns attribution rows."""
+    rows = []
+    for dest_name, source, fdid in CHARACTER_SIDEBAR_ART:
+        src = os.path.join(RETAIL_ART_ROOT, source.replace("/", os.sep))
+        if not os.path.isfile(src):
+            raise IOError("Character sidebar source missing: %s" % src)
+        dst = os.path.join(dest_root, dest_name.replace("/", os.sep) + ".tga")
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        image, _ = open_source(src)
+        width, height = write_rle_tga(image.convert("RGBA"), dst)
+        image.close()
+        rows.append({
+            "dest": dest_name + ".tga",
+            "size": "%dx%d" % (width, height),
+            "supplied": source.split("/")[-1],
+            "note": "Blizzard Retail (The War Within) BlizzardInterfaceArt "
+                    "`Interface/%s`: FileDataID %s, whole file, pixels "
+                    "unchanged; PaperDollSidebarTabTemplate's TabBg (both "
+                    "states), Hider and Highlight, PaperDollSidebarTabs' "
+                    "DecorLeft/DecorRight and the Titles / Equipment Manager "
+                    "icons, addressed by the XML's texture coordinates. Drawn "
+                    "by the Character window's sidebar tabs."
+                    % (source, fdid),
+        })
+        print("%-34s %-9s Retail character sidebar"
+              % (dest_name, rows[-1]["size"]))
+    return rows
+
+
+# The Character window's Equipment Manager (user request, 2026-09-28):
+# Retail's PaperDollEquipmentManagerPane / GearSetButtonTemplate and the
+# EquipmentFlyout beside each gear slot (Blizzard_UIPanels_Game/Mainline/
+# PaperDollFrame.xml and Blizzard_FrameXML/EquipmentFlyout.xml, Mainline
+# source) draw these direct-path files by texture coordinate, so each is
+# copied whole and pixel-unchanged. FileDataIDs are not recorded for them.
+EQUIPMENT_MANAGER_ART = [
+    ("ui/character/gearmanager-flyout-button",
+     "PaperDollInfoFrame/UI-GearManager-FlyoutButton.blp",
+     "EquipmentFlyoutPopoutButtonTemplate's normal and highlight"),
+    # Retail turns the same art sideways for a slot's right-hand arrow with an
+    # 8-value (rotated) SetTexCoord, which this client ignores, drawing the
+    # first four values as a plain rectangle (in game, 2026-09-28). The copy
+    # is turned 90 degrees clockwise instead, so a 4-value crop draws it.
+    ("ui/character/gearmanager-flyout-button-side",
+     "PaperDollInfoFrame/UI-GearManager-FlyoutButton.blp",
+     "EquipmentFlyoutPopoutButtonTemplate's normal and highlight, turned 90 "
+     "degrees clockwise (Retail's rotated texture coordinates, which this "
+     "client does not draw)", "rotate"),
+    ("ui/character/gearmanager-flyout",
+     "PaperDollInfoFrame/UI-GEARMANAGER-FLYOUT.BLP",
+     "EquipmentFlyoutTexture, the flyout's background"),
+    ("ui/character/gearmanager-leave-opaque",
+     "PaperDollInfoFrame/UI-GearManager-LeaveItem-Opaque.blp",
+     "the flyout's ignore-slot button"),
+    ("ui/character/gearmanager-leave-transparent",
+     "PaperDollInfoFrame/UI-GearManager-LeaveItem-Transparent.blp",
+     "PaperDollItemSlotButtonTemplate's ignoreTexture"),
+    ("ui/character/gearmanager-into-bag",
+     "PaperDollInfoFrame/UI-GearManager-ItemIntoBag.blp",
+     "the flyout's place-in-bags button"),
+    ("ui/character/gearmanager-undo",
+     "PaperDollInfoFrame/UI-GearManager-Undo.blp",
+     "the flyout's unignore-slot button"),
+    ("ui/character/gearmanager-highlight",
+     "PaperDollInfoFrame/UI-GearManager-ItemButton-Highlight.blp",
+     "EquipmentFlyoutFrame's Highlight around the open slot"),
+    ("ui/character/character-plus",
+     "PaperDollInfoFrame/Character-Plus.blp",
+     "the New Set row's icon"),
+    ("ui/character/grouploot-pass",
+     "Buttons/UI-GroupLoot-Pass-Up.blp",
+     "GearSetButtonTemplate's DeleteButton"),
+    ("ui/character/gear-grey",
+     "WorldMap/Gear_64Grey.blp",
+     "GearSetButtonTemplate's EditButton"),
+]
+
+
+def import_equipment_manager(dest_root):
+    """Copy the Equipment Manager's Retail art; returns attribution rows."""
+    rows = []
+    for entry in EQUIPMENT_MANAGER_ART:
+        dest_name, source, use = entry[0], entry[1], entry[2]
+        rotate = len(entry) > 3 and entry[3] == "rotate"
+        src = os.path.join(RETAIL_ART_ROOT, source.replace("/", os.sep))
+        if not os.path.isfile(src):
+            raise IOError("Equipment Manager source missing: %s" % src)
+        dst = os.path.join(dest_root, dest_name.replace("/", os.sep) + ".tga")
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        image, _ = open_source(src)
+        image = image.convert("RGBA")
+        if rotate:
+            image = image.transpose(Image.ROTATE_270)
+        width, height = write_rle_tga(image, dst)
+        image.close()
+        form = ("whole file turned 90 degrees clockwise, pixels otherwise "
+                "unchanged" if rotate else "whole file, pixels unchanged")
+        rows.append({
+            "dest": dest_name + ".tga",
+            "size": "%dx%d" % (width, height),
+            "supplied": source.split("/")[-1],
+            "note": "Blizzard Retail (The War Within) BlizzardInterfaceArt "
+                    "`Interface/%s`, %s; %s. Drawn by the Character window's "
+                    "Equipment Manager." % (source, form, use),
+        })
+        print("%-34s %-9s Retail equipment manager"
+              % (dest_name, rows[-1]["size"]))
+    return rows
+
+
+# The Character window's 3D preview (user request, 2026-09-28): Retail's
+# CharacterModelScene art (Blizzard_UIPanels_Game/Mainline/PaperDollFrame.xml
+# and CharacterFrame.xml, RetailFrameXML 12.1.0.69933) -- the Char-Inner /
+# Char-Corner border (the three Char-Paperdoll sheets, copied whole; their
+# members are addressed by the XML's own texture coordinates in
+# core/media.lua) and the race background SetPaperDollBackground draws, the
+# four DressUpBackground-<race>1..4 pieces of each race this client can play
+# (the eight Vanilla races). Whole files; the border is pixel-unchanged and
+# the race art is toned (below). FileDataIDs from the RetailFrameXML listfile.
+CHARACTER_SCENE_ART = [
+    ("ui/character/paperdoll-parts", "CHARACTERFRAME/Char-Paperdoll-Parts.blp",
+     "410248", "Char-Corner-UpperLeft/UpperRight/LowerLeft/LowerRight"),
+    ("ui/character/paperdoll-horizontal",
+     "CHARACTERFRAME/Char-Paperdoll-Horizontal.blp", "410247",
+     "Char-Inner-Top and Char-Inner-Bottom"),
+    ("ui/character/paperdoll-vertical",
+     "CHARACTERFRAME/Char-Paperdoll-Vertical.blp", "410249",
+     "Char-Inner-Left and Char-Inner-Right"),
+]
+# (race file token, destination token, first FileDataID of its four pieces)
+CHARACTER_SCENE_RACES = [
+    ("Human", "human", 131093), ("Orc", "orc", 131101),
+    ("Dwarf", "dwarf", 131089), ("NightElf", "nightelf", 131097),
+    ("Scourge", "scourge", 131105), ("Tauren", "tauren", 131109),
+    ("Gnome", "gnome", 455998), ("Troll", "troll", 456006),
+]
+for _race, _dest, _fdid in CHARACTER_SCENE_RACES:
+    for _piece in range(4):
+        CHARACTER_SCENE_ART.append((
+            "ui/character/dressup/%s%d" % (_dest, _piece + 1),
+            "DRESSUPFRAME/DressUpBackground-%s%d.blp" % (_race, _piece + 1),
+            str(_fdid + _piece),
+            "piece %d of the %s background (CharacterModelFrameBackground%s)"
+            % (_piece + 1, _race,
+               ("TopLeft", "TopRight", "BotLeft", "BotRight")[_piece])))
+
+# Race backgrounds are toned so every race reads as bright as Human on screen
+# (user request, 2026-09-28: Human in game is right, Scourge near-black, Tauren
+# a little dark). Retail darkens each race by its own BackgroundOverlay alpha,
+# mirrored here from M.modernWow.characterScene.overlayAlpha -- keep the two
+# in step. Human is the reference and stays pixel-unchanged; every other race
+# gets one smooth gamma curve over all four pieces, chosen so the median
+# luminance of its visible art, after its overlay, equals Human's.
+CHARACTER_SCENE_OVERLAY = {"nightelf": 0.6, "scourge": 0.3, "troll": 0.6,
+                           "orc": 0.6}
+CHARACTER_SCENE_OVERLAY_DEFAULT = 0.7
+# M.modernWow.characterScene.overlayScale.
+CHARACTER_SCENE_OVERLAY_SCALE = 0.8
+CHARACTER_SCENE_REFERENCE = "human"
+# The XML's texture coordinates (left, top, right) per piece: the part drawn.
+CHARACTER_SCENE_CROP = [(0.171875, 0.0392156862745098, 1),
+                        (0, 0.0392156862745098, 0.296875),
+                        (0.171875, 0, 1), (0, 0, 0.296875)]
+
+
+def character_scene_source(race, piece):
+    return os.path.join(RETAIL_ART_ROOT, "DRESSUPFRAME",
+                        "DressUpBackground-%s%d.blp" % (race, piece + 1))
+
+
+def character_scene_median(race):
+    """Median luminance of the drawn, mostly opaque pixels of one race."""
+    values = []
+    for piece in range(4):
+        image, _ = open_source(character_scene_source(race, piece))
+        image = image.convert("RGBA")
+        width, height = image.size
+        left, top, right = CHARACTER_SCENE_CROP[piece]
+        box = (int(left * width), int(top * height), int(right * width),
+               height)
+        luma = list(image.crop(box).convert("L").getdata())
+        alpha = list(image.crop(box).getchannel("A").getdata())
+        values.extend(l for l, a in zip(luma, alpha) if a >= 128)
+        image.close()
+    values.sort()
+    return values[len(values) // 2]
+
+
+def character_scene_gammas():
+    """{destination token: gamma} for every race, Human 1."""
+    shade = {}
+    median = {}
+    for race, dest, _fdid in CHARACTER_SCENE_RACES:
+        shade[dest] = 1 - CHARACTER_SCENE_OVERLAY_SCALE * \
+            CHARACTER_SCENE_OVERLAY.get(dest, CHARACTER_SCENE_OVERLAY_DEFAULT)
+        median[dest] = character_scene_median(race)
+    ref = CHARACTER_SCENE_REFERENCE
+    shown = median[ref] * shade[ref]
+    gammas = {}
+    for dest in median:
+        target = min(250.0, shown / shade[dest])
+        if dest == ref:
+            gammas[dest] = 1.0
+        else:
+            gammas[dest] = (math.log(target / 255.0)
+                            / math.log(max(1, median[dest]) / 255.0))
+    return gammas, median
+
+
+def tone_character_scene(image, gamma):
+    """Apply one gamma curve to RGB; alpha is untouched."""
+    if gamma == 1.0:
+        return image
+    table = [int(round(255 * (i / 255.0) ** gamma)) for i in range(256)]
+    r, g, b, a = image.split()
+    return Image.merge("RGBA", (r.point(table), g.point(table),
+                                b.point(table), a))
+
+
+def import_character_scene(dest_root):
+    """Copy the 3D preview's Retail border and race art; returns rows."""
+    rows = []
+    gammas, medians = character_scene_gammas()
+    for dest_name, source, fdid, members in CHARACTER_SCENE_ART:
+        src = os.path.join(RETAIL_ART_ROOT, source.replace("/", os.sep))
+        if not os.path.isfile(src):
+            raise IOError("Character scene source missing: %s" % src)
+        dst = os.path.join(dest_root, dest_name.replace("/", os.sep) + ".tga")
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        image, _ = open_source(src)
+        image = image.convert("RGBA")
+        conversion = "whole file, pixels unchanged"
+        if dest_name.startswith("ui/character/dressup/"):
+            race = dest_name.split("/")[-1].rstrip("1234")
+            gamma = gammas[race]
+            image = tone_character_scene(image, gamma)
+            if gamma != 1.0:
+                conversion = ("whole file, RGB toned by gamma %.3f (race "
+                              "median luminance %d brought to Human's "
+                              "on-screen brightness), alpha unchanged"
+                              % (gamma, medians[race]))
+        width, height = write_rle_tga(image, dst)
+        image.close()
+        rows.append({
+            "dest": dest_name + ".tga",
+            "size": "%dx%d" % (width, height),
+            "supplied": source.split("/")[-1],
+            "note": "Blizzard Retail (The War Within) BlizzardInterfaceArt "
+                    "`Interface/%s`: FileDataID %s, %s; %s. Drawn by the "
+                    "Character window's 3D preview (CharacterModelScene)."
+                    % (source, fdid, conversion, members),
+        })
+        print("%-34s %-9s Retail character scene"
+              % (dest_name, rows[-1]["size"]))
+    return rows
 
 
 def luma_to_alpha(image, peak, grey=203):
@@ -983,8 +1845,9 @@ def main():
 
         # Read fully before the re-encode overwrites it: PIL is lazy, and in
         # the in-place case the destination is also the source.
-        image, _ = open_source(src)
-        image = image.convert("RGBA")
+        source_image, _ = open_source(src)
+        image = source_image.convert("RGBA")
+        source_image.close()
         width, height = write_rle_tga(image, dst)
         image.close()
 
@@ -995,6 +1858,46 @@ def main():
             "note": note,
         })
         print("%-34s %-9s user-supplied" % (dest_name, user_rows[-1]["size"]))
+
+    for dest_name, supplied_as, note in STATIC_USER_ART:
+        dst = os.path.join(dest_root, dest_name.replace("/", os.sep) + ".tga")
+        if not os.path.isfile(dst):
+            sys.stderr.write("static user art missing: %s\n" % dst)
+            return 1
+        image, _ = open_source(dst)
+        width, height = image.size
+        image.close()
+        user_rows.append({
+            "dest": dest_name + ".tga",
+            "size": "%dx%d" % (width, height),
+            "supplied": supplied_as,
+            "note": note,
+        })
+        print("%-34s %-9s static user art"
+              % (dest_name, user_rows[-1]["size"]))
+
+    for dest_name, rel_source, box, supplied_as, note in FOREVER_ATLAS_CROPS:
+        src = os.path.join(addons, rel_source.replace("/", os.sep))
+        if not os.path.isfile(src):
+            sys.stderr.write("Forever atlas source missing: %s\n" % src)
+            return 1
+
+        dst = os.path.join(dest_root, dest_name.replace("/", os.sep) + ".tga")
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        image, _ = open_source(src)
+        crop = image.crop(box).convert("RGBA")
+        image.close()
+        width, height = write_rle_tga(crop, dst)
+        crop.close()
+
+        user_rows.append({
+            "dest": dest_name + ".tga",
+            "size": "%dx%d" % (width, height),
+            "supplied": supplied_as,
+            "note": note,
+        })
+        print("%-34s %-9s Forever atlas crop"
+              % (dest_name, user_rows[-1]["size"]))
 
     for dest_name, source_name, supplied_as, note in ROTATED:
         src = os.path.join(dest_root,
@@ -1140,6 +2043,14 @@ def main():
         print("%-34s %-9s user-supplied, sheet crop"
               % (dest_name, user_rows[-1]["size"]))
 
+    user_rows.append(import_retail_bag_indicator(dest_root))
+    user_rows.append(import_retail_junk_coin(dest_root))
+    user_rows.extend(import_retail_target(addons, dest_root))
+    user_rows.extend(import_character_stats(dest_root))
+    user_rows.extend(import_character_housing(dest_root))
+    user_rows.extend(import_character_scene(dest_root))
+    user_rows.extend(import_equipment_manager(dest_root))
+
     write_attribution(dest_root, rows, user_rows)
     print("")
     print("%d textures imported, %d user-supplied, in %s"
@@ -1147,5 +2058,139 @@ def main():
     return 0
 
 
+def main_retail_target():
+    """Re-cut only the Retail target textures, leaving every other file alone.
+
+    Prints their ATTRIBUTION.md rows exactly as a full run writes them, for a
+    working tree where a full re-import would re-encode unrelated files.
+    """
+    addons = os.path.abspath(os.path.join(os.getcwd(), os.pardir))
+    dest_root = os.path.join(os.getcwd(), DEST_SUBPATH)
+    for row in import_retail_target(addons, dest_root):
+        print("| `%s` | %s | `%s` | %s |"
+              % (row["dest"], row["size"], row["supplied"], row["note"]))
+    return 0
+
+
+def main_bag_indicator():
+    """Re-copy only Combined Bags' Retail item-slot highlight."""
+    dest_root = os.path.join(os.getcwd(), DEST_SUBPATH)
+    row = import_retail_bag_indicator(dest_root)
+    attribution = os.path.join(dest_root, "ATTRIBUTION.md")
+    rendered = "| `%s` | %s | `%s` | %s |" % (
+        row["dest"], row["size"], row["supplied"], row["note"])
+    with open(attribution, "r", encoding="utf-8") as handle:
+        lines = handle.read().splitlines()
+    prefix = "| `%s` |" % row["dest"]
+    found = False
+    for index, line in enumerate(lines):
+        if line.startswith(prefix):
+            lines[index] = rendered
+            found = True
+            break
+    if not found:
+        lines.append(rendered)
+    with open(attribution, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write("\n".join(lines) + "\n")
+    print(rendered)
+    return 0
+
+
+def main_junk_coin():
+    """Re-cut only Retail's bags-junkcoin and upsert its attribution row."""
+    dest_root = os.path.join(os.getcwd(), DEST_SUBPATH)
+    row = import_retail_junk_coin(dest_root)
+    attribution = os.path.join(dest_root, "ATTRIBUTION.md")
+    rendered = "| `%s` | %s | `%s` | %s |" % (
+        row["dest"], row["size"], row["supplied"], row["note"])
+    with open(attribution, "r", encoding="utf-8") as handle:
+        lines = handle.read().splitlines()
+    prefix = "| `%s` |" % row["dest"]
+    for index, line in enumerate(lines):
+        if line.startswith(prefix):
+            lines[index] = rendered
+            break
+    else:
+        lines.append(rendered)
+    with open(attribution, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write("\n".join(lines) + "\n")
+    print(rendered)
+    return 0
+
+
+def main_character_stats():
+    """Re-cut only the stats side panel textures, as main_retail_target does."""
+    dest_root = os.path.join(os.getcwd(), DEST_SUBPATH)
+    for row in import_character_stats(dest_root):
+        print("| `%s` | %s | `%s` | %s |"
+              % (row["dest"], row["size"], row["supplied"], row["note"]))
+    return 0
+
+
+def main_character_housing():
+    """Re-cut only the Character housing textures, as main_retail_target does."""
+    dest_root = os.path.join(os.getcwd(), DEST_SUBPATH)
+    for row in import_character_housing(dest_root):
+        print("| `%s` | %s | `%s` | %s |"
+              % (row["dest"], row["size"], row["supplied"], row["note"]))
+    return 0
+
+
+def main_character_sidebar():
+    """Re-copy only the sidebar tab sheet, as main_retail_target does."""
+    dest_root = os.path.join(os.getcwd(), DEST_SUBPATH)
+    for row in import_character_sidebar(dest_root):
+        print("| `%s` | %s | `%s` | %s |"
+              % (row["dest"], row["size"], row["supplied"], row["note"]))
+    return 0
+
+
+def main_character_scene():
+    """Re-copy only the 3D preview textures, as main_retail_target does."""
+    dest_root = os.path.join(os.getcwd(), DEST_SUBPATH)
+    for row in import_character_scene(dest_root):
+        print("| `%s` | %s | `%s` | %s |"
+              % (row["dest"], row["size"], row["supplied"], row["note"]))
+    return 0
+
+
+def main_equipment_manager():
+    """Re-copy only the Equipment Manager art and upsert its attribution rows,
+    as main_bag_indicator does."""
+    dest_root = os.path.join(os.getcwd(), DEST_SUBPATH)
+    attribution = os.path.join(dest_root, "ATTRIBUTION.md")
+    with open(attribution, "r", encoding="utf-8") as handle:
+        lines = handle.read().splitlines()
+    for row in import_equipment_manager(dest_root):
+        rendered = "| `%s` | %s | `%s` | %s |" % (
+            row["dest"], row["size"], row["supplied"], row["note"])
+        prefix = "| `%s` |" % row["dest"]
+        for index, line in enumerate(lines):
+            if line.startswith(prefix):
+                lines[index] = rendered
+                break
+        else:
+            lines.append(rendered)
+    with open(attribution, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write("\n".join(lines) + "\n")
+    return 0
+
+
 if __name__ == "__main__":
+    if "--junk-coin" in sys.argv[1:]:
+        sys.exit(main_junk_coin())
+    if "--bag-indicator" in sys.argv[1:]:
+        sys.exit(main_bag_indicator())
+    if "--retail-target" in sys.argv[1:]:
+        sys.exit(main_retail_target())
+    if "--character-stats" in sys.argv[1:]:
+        sys.exit(main_character_stats())
+    if "--character-housing" in sys.argv[1:]:
+        sys.exit(main_character_housing())
+    if "--character-scene" in sys.argv[1:]:
+        sys.exit(main_character_scene())
+    if "--character-sidebar" in sys.argv[1:]:
+        sys.exit(main_character_sidebar())
+    if "--equipment-manager" in sys.argv[1:]:
+        sys.exit(main_equipment_manager())
     sys.exit(main())

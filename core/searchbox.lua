@@ -614,6 +614,19 @@ function U.ResetSearchBox(box)
   SB.Paint(box)
 end
 
+-- Puts `text` in the field without calling its onChange, for an owner that
+-- opens it prefilled (the Equipment Manager's rename).
+function U.SetSearchBoxText(box, text)
+  if not box or not box.uuiSearch then return end
+  SB.SetText(box, string.sub(text or "", 1, SB.MAX_LETTERS), false)
+end
+
+-- Opens typing mode as a click on the field would, for an owner whose field
+-- takes the keyboard when it appears (the Equipment Manager's name popup).
+function U.BeginSearchTyping(box)
+  SB.Begin(box)
+end
+
 -- True while any search field has the keyboard: typed keys are text, not
 -- actions (modules/actionbar.lua).
 function U.SearchBoxTyping()

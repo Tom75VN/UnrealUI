@@ -116,6 +116,10 @@ local gs = {
   ROW_LABEL_INSET = 10,
   ROW_HEIGHT = 20,
   ROW_GAP = 0,
+  -- A row whose label wraps (long translations, e.g. the ruRU Interface >
+  -- Advanced tab) grows by this much per extra line, so the next row no longer
+  -- overlaps it (user request, 2026-09-27). The label stays centred on it.
+  ROW_WRAP_STEP = 13,
   -- Both section headers are list items and scroll with their rows.
   LIST_TOP = 0,
   -- The header band is as tall as the Close button it holds, plus 3 units
@@ -206,7 +210,6 @@ gs.PLATE_BOTTOM = M.foreverWow.panel.buttonInset.bottom +
                   M.foreverWow.panel.buttonHeight + gs.BOTTOM_GAP
 gs.LIST_DROP = M.foreverWow.panel.categoryInset.top -
                M.foreverWow.panel.innerInset.top
-
 -- Measured live, 2026-09-21 (settings.unified_window.v1). These sizes are only
 -- used until the client has laid a panel out once; after that the real size is
 -- read off the frame on every selection.
@@ -749,9 +752,30 @@ end
 --
 -- Frames only (GetChildren, never GetRegions), on attach, down the hierarchy
 -- that dump verified; gs.RELEVEL_DEPTH is only a guard against a cycle.
+--
+-- `strata`, when given, is also set on every frame of the subtree that reads
+-- "PARENT" or sits below it. Reported in game 2026-09-29, after that day's
+-- client update: the UnrealUI settings page drew UNDER the window's own art.
+-- The page used to be lifted by copying the host's strata -- which the host
+-- never set, so it read "PARENT" (frames.getframestrata_reads_parent_for_inherited)
+-- -- and trusting SetFrameStrata to carry it down the subtree. Neither is
+-- relied on any more: the strata is the window's resolved one (gs.HostStrata)
+-- and is written explicitly. A frame already above it (an open dropdown or
+-- popup) is left where it is.
 gs.RELEVEL_DEPTH = 8
+gs.STRATA_RANK = {
+  BACKGROUND = 1, LOW = 2, MEDIUM = 3, HIGH = 4, DIALOG = 5,
+  FULLSCREEN = 6, FULLSCREEN_DIALOG = 7, TOOLTIP = 8,
+}
 
-function gs.Relevel(frame, level, depth)
+function gs.Relevel(frame, level, depth, strata)
+  if strata and gs.STRATA_RANK[strata] then
+    local own = gs.Read(frame, "GetFrameStrata")
+    local rank = own and gs.STRATA_RANK[own]
+    if not rank or rank < gs.STRATA_RANK[strata] then
+      pcall(frame.SetFrameStrata, frame, strata)
+    end
+  end
   pcall(frame.SetFrameLevel, frame, level)
   if depth >= gs.RELEVEL_DEPTH or type(frame.GetChildren) ~= "function" then
     return
@@ -760,8 +784,39 @@ function gs.Relevel(frame, level, depth)
   if not ok or not kids then return end
   local i
   for i = 1, table.getn(kids) do
-    gs.Relevel(kids[i], level + 1, depth + 1)
+    gs.Relevel(kids[i], level + 1, depth + 1, strata)
   end
+end
+
+-- The window's resolved strata: the panel is the one frame in this window
+-- with a strata set, so it is read there, never from the host ("PARENT").
+function gs.HostStrata()
+  local strata = gs.panel and gs.Read(gs.panel, "GetFrameStrata")
+  if strata and gs.STRATA_RANK[strata] then return strata end
+  return "HIGH"
+end
+
+-- One level above every surface a hosted page sits on -- the content anchor,
+-- the host and the recessed plate -- rather than one above the host alone, so
+-- the page clears the plate even when the client levels those siblings
+-- differently. The rim and the action buttons stay above (panel + 6 / + 10).
+function gs.HostLevel()
+  local level = gs.Number(gs.host, "GetFrameLevel") or 1
+  local others = { gs.content, gs.panel and gs.panel.plate,
+                   gs.panel and gs.panel.bg }
+  local i
+  for i = 1, table.getn(others) do
+    local other = others[i] and gs.Number(others[i], "GetFrameLevel")
+    if other and other > level then level = other end
+  end
+  return level + 1
+end
+
+-- Lifts the UnrealUI settings page (modules/settings.lua) above the window.
+function gs.LiftIntegrated()
+  local frame = U.G("UnrealUIGameSettingsUI")
+  if not frame or not gs.host then return end
+  gs.Relevel(frame, gs.HostLevel(), 0, gs.HostStrata())
 end
 
 -- Escape closes the whole window (user request, 2026-09-21). The client's own
@@ -822,11 +877,7 @@ function gs.Attach(page)
                                               page.settingsScope)
     gs.SetIntegratedActionsShown(attached)
     if attached then
-      local frame = U.G("UnrealUIGameSettingsUI")
-      local strata = gs.Read(gs.host, "GetFrameStrata")
-      local level = gs.Number(gs.host, "GetFrameLevel")
-      if frame and strata then pcall(frame.SetFrameStrata, frame, strata) end
-      if frame and level then gs.Relevel(frame, level + 1, 0) end
+      gs.LiftIntegrated()
       gs.active = page
     end
     return attached
@@ -843,11 +894,11 @@ function gs.Attach(page)
   pcall(frame.SetParent, frame, gs.host)
 
   -- A reparented client frame keeps its own strata and level, so both come from
-  -- the host rather than being inherited.
-  local strata = gs.Read(gs.host, "GetFrameStrata")
-  if strata then pcall(frame.SetFrameStrata, frame, strata) end
-  local level = gs.Number(gs.host, "GetFrameLevel")
-  if level then gs.Relevel(frame, level + 1, 0) end
+  -- the window rather than being inherited. The strata is the panel's resolved
+  -- one, not the host's "PARENT" (see gs.Relevel); only the frame itself is
+  -- set, so gs.Detach's restore still carries the client's strata back down.
+  pcall(frame.SetFrameStrata, frame, gs.HostStrata())
+  gs.Relevel(frame, gs.HostLevel(), 0)
 
   -- Fit first, then anchor: a scaled frame is placed by its own scaled size,
   -- so centring before the scale is known puts it off by half the difference.
@@ -893,7 +944,7 @@ function gs.Attach(page)
   -- Again after Show and the skin pass: the first Show is where the client
   -- builds and levels anything it creates lazily, and a control built there
   -- would sit at its own level under the panel. See gs.Relevel.
-  if level then gs.Relevel(frame, level + 1, 0) end
+  gs.Relevel(frame, gs.HostLevel(), 0)
 
   -- A list page is rebuilt as Forever's settings list instead of being shown
   -- as a canvas; there is nothing left to fit.
@@ -1159,6 +1210,72 @@ function gs.RowFrame(name, indent)
   return row
 end
 
+function gs.SidebarRowWidth(contentWidth)
+  return M.foreverWow.panel.rowWidth * gs.LIST_SCALE +
+         (contentWidth - gs.SIDEBAR_CONTENT_WIDTH)
+end
+
+-- How many lines `text` wraps to at `width`. Measured on one hidden,
+-- width-less FontString: a label's own GetStringWidth is clamped by its
+-- SetWidth and lags a frame (knowledge.json /
+-- widgets.fontstring_stringwidth_clamped_by_setwidth), and this client has no
+-- GetStringHeight. The client's word wrap is replayed greedily, word by word.
+function gs.LabelLines(text, width)
+  if type(text) ~= "string" or text == "" or not width or width <= 1 then
+    return 1
+  end
+  local probe = gs.labelProbe
+  if not probe then
+    probe = U.CreateLabel(gs.sidebar, {
+      size = M.fontSize.normal,
+      inherits = "GameFontNormal",
+      justify = "LEFT",
+    })
+    if not probe then return 1 end
+    probe:SetPoint("TOPLEFT", gs.sidebar, "TOPLEFT", 0, 0)
+    pcall(probe.SetAlpha, probe, 0)
+    gs.labelProbe = probe
+  end
+  local function Width(value)
+    pcall(probe.SetText, probe, value)
+    return gs.Number(probe, "GetStringWidth") or 0
+  end
+  if Width(text) <= width then return 1 end
+
+  local lines, line, start = 1, nil, 1
+  while true do
+    local s, e = string.find(text, "%s+", start)
+    local word
+    if s then word = string.sub(text, start, s - 1)
+    else word = string.sub(text, start) end
+    if word ~= "" then
+      if line and Width(line .. " " .. word) > width then
+        lines = lines + 1
+        line = word
+      else
+        line = line and (line .. " " .. word) or word
+      end
+      -- One word wider than the row is broken inside it by the client too.
+      local wide = Width(line)
+      if wide > width then
+        lines = lines + math.ceil(wide / width) - 1
+        line = nil
+      end
+    end
+    if not s then break end
+    start = e + 1
+  end
+  return lines
+end
+
+function gs.SidebarRowHeight(row, contentWidth)
+  if not row or not row.label then return gs.ROW_HEIGHT end
+  local inset = row.uuiLabelInset or gs.ROW_LABEL_INSET
+  local width = math.max(1, gs.SidebarRowWidth(contentWidth) - inset - 4)
+  local lines = gs.LabelLines(gs.Read(row.label, "GetText"), width)
+  return gs.ROW_HEIGHT + (lines - 1) * gs.ROW_WRAP_STEP
+end
+
 function gs.SizeSidebarItem(row, contentWidth)
   if not row then return end
   if row.uuiListHeader or row == gs.listHeader then
@@ -1169,10 +1286,11 @@ function gs.SizeSidebarItem(row, contentWidth)
 
   local panel = M.foreverWow.panel
   local state = M.foreverWow.options.rowStateSize
-  local rowWidth = panel.rowWidth * gs.LIST_SCALE +
-                   (contentWidth - gs.SIDEBAR_CONTENT_WIDTH)
+  local rowWidth = gs.SidebarRowWidth(contentWidth)
   local plateWidth = rowWidth + (state.width - panel.rowWidth)
+  local rowHeight = row.uuiHeight or gs.ROW_HEIGHT
   pcall(row.SetWidth, row, rowWidth)
+  pcall(row.SetHeight, row, rowHeight)
   if row.hover then pcall(row.hover.SetWidth, row.hover, plateWidth) end
   if row.active then pcall(row.active.SetWidth, row.active, plateWidth) end
   if row.label then
@@ -1185,7 +1303,7 @@ function gs.SizeSidebarItem(row, contentWidth)
     pcall(row.uuiToggle.SetPoint, row.uuiToggle, "RIGHT", gs.sidebar,
           "RIGHT", right, 0)
     pcall(row.uuiToggle.SetPoint, row.uuiToggle, "TOP", row, "TOP", 0,
-          -(gs.ROW_HEIGHT - gs.TOGGLE_SIZE) / 2 + 1)
+          -(rowHeight - gs.TOGGLE_SIZE) / 2 + 1)
   end
 end
 
@@ -1373,9 +1491,7 @@ function gs.ClickTab(name, keepSidebar)
      type(U.SelectIntegratedSettingsPage) == "function" then
     local selected = U.SelectIntegratedSettingsPage(name, gs.active.settingsScope)
     if selected then
-      local frame = U.G("UnrealUIGameSettingsUI")
-      local level = gs.Number(gs.host, "GetFrameLevel")
-      if frame and level then gs.Relevel(frame, level + 1, 0) end
+      gs.LiftIntegrated()
       if sidebarOffset ~= nil then
         gs.sidebarOffset = sidebarOffset
         gs.revealSettingsSelection = nil
@@ -1546,6 +1662,59 @@ function gs.BuildListHeader()
   return header
 end
 
+-- Edit Mode is the UnrealUI mover overlay (core/mover.lua), the same mode the
+-- game menu's Edit Mode row opens. It is a mode, not a page, so the button
+-- closes this window first. It sits outside the category list, in the strip
+-- between the window header and the plate, on the same line as the search
+-- field (user request, 2026-09-29), and wears this window's own 128RedButton
+-- face (gs.DressButton).
+function gs.BuildEditModeButton()
+  if gs.editModeButton or not gs.panel then return end
+  local height = M.foreverWow.panel.buttonHeight
+  local button = U.CreateButton(gs.panel, {
+    name = "UnrealUIGameSettingsEditMode",
+    text = U.L("GAMEMENU_EDIT_MODE"),
+    width = gs.SIDEBAR_CONTENT_WIDTH,
+    height = height,
+    onClick = function()
+      gs.Close()
+      if type(U.UnlockUI) == "function" then U.UnlockUI() end
+    end,
+  })
+  if not button then return end
+  gs.DressButton(button, height)
+  -- Above the housing and the header drag handle.
+  local level = gs.Number(gs.panel, "GetFrameLevel") or 1
+  gs.Relevel(button, level + gs.ACTION_LEVEL, 0)
+  gs.editModeButton = button
+  gs.PlaceEditModeButton()
+end
+
+-- Options_HorizontalDivider, the rule under the page title. Exported so a
+-- hosted Unreal UI page can draw the same rule without reading M.foreverWow
+-- itself; the caller anchors it and sets its width.
+function gs.CreateDivider(parent)
+  local divider = gs.Cell(parent, "ARTWORK", M.foreverWow.texture.options,
+                          M.foreverWow.options.divider)
+  if divider then divider:SetHeight(M.foreverWow.options.dividerHeight) end
+  return divider
+end
+
+-- Left-aligned with the category list, and centred on the search field's own
+-- line: gs.list.BuildSearch centres the field in the header-to-plate strip, or
+-- drops it from the header's edge when it is taller than that strip.
+function gs.PlaceEditModeButton()
+  local button = gs.editModeButton
+  if not button then return end
+  local search = gs.list and gs.list.search
+  local lane = gs.PLATE_TOP - gs.HEADER_HEIGHT
+  local height = (search and gs.Number(search, "GetHeight")) or 0
+  local centre = gs.HEADER_HEIGHT + math.max(lane, height) / 2
+  pcall(button.ClearAllPoints, button)
+  pcall(button.SetPoint, button, "LEFT", gs.panel, "TOPLEFT",
+        M.foreverWow.panel.categoryInset.left, -centre)
+end
+
 -- Laid out from a running offset rather than from the row index: a category
 -- with tabs is followed by its own sub-rows while it is expanded (user
 -- request, 2026-09-22).
@@ -1651,24 +1820,45 @@ function gs.RenderList()
     return visible
   end
 
+  -- A row is as tall as its label's wrapped lines at the given width.
+  local function Measure(width)
+    local index
+    for index = 1, count do
+      local row = items[index].row
+      if not row.uuiListHeader and row ~= gs.listHeader then
+        row.uuiHeight = gs.SidebarRowHeight(row, width)
+        items[index].height = row.uuiHeight + gs.ROW_GAP
+      end
+    end
+  end
+
   -- The furthest useful offset is the first item in the shortest tail that
   -- fills the viewport. This keeps the final page at the bottom without a
   -- blank gap even though section headers are taller than ordinary rows.
-  local used, first = 0, count + 1
-  for i = count, 1, -1 do
-    local itemHeight = ItemHeight(i)
-    if first <= count and used + itemHeight > available then break end
-    used = used + itemHeight
-    first = i
+  local function Maximum()
+    local used, first = 0, count + 1
+    local index
+    for index = count, 1, -1 do
+      local itemHeight = ItemHeight(index)
+      if first <= count and used + itemHeight > available then break end
+      used = used + itemHeight
+      first = index
+    end
+    return math.max(0, first - 1)
   end
-  local maximum = math.max(0, first - 1)
-  local contentWidth = gs.SIDEBAR_WIDTH
-  if maximum > 0 then
-    contentWidth = gs.SIDEBAR_WIDTH - gs.SIDEBAR_SCROLLBAR_SEAT
+
+  -- Measured at the narrow, scrollbar-seated width first; when everything
+  -- then fits, the wider rows can only wrap less, so it still fits.
+  local contentWidth = gs.SIDEBAR_WIDTH - gs.SIDEBAR_SCROLLBAR_SEAT
+  Measure(contentWidth)
+  local maximum = Maximum()
+  if maximum == 0 then
+    contentWidth = gs.SIDEBAR_WIDTH
+    Measure(contentWidth)
+    maximum = Maximum()
   end
   gs.sidebarContentWidth = contentWidth
   for i = 1, count do gs.SizeSidebarItem(items[i].row, contentWidth) end
-
   gs.sidebarOffset = math.max(0, math.min(maximum, gs.sidebarOffset or 0))
   if gs.revealSettingsSelection then
     for i = 1, table.getn(items) do
@@ -4004,8 +4194,8 @@ end
 -- own UIPanelButtonTemplate faces are the old 128x32 UI-Panel-Button files,
 -- whose 22-row face drew soft at this size. The cuts are the measured
 -- M.modernWow.button128Red three-slice -- the same cells the Modern WoW
--- windows' action buttons use: a 24-texel cap each side kept at its aspect
--- and only the middle stretched, normal / hover / disabled. It is drawn here
+-- windows' action buttons use: the whole Left member and a 40-texel right
+-- cap kept at their aspect, and only the bar's body stretched, normal / hover / disabled. It is drawn here
 -- rather than through U.ModernWowRedButtonFace because that builder is gated
 -- to the Modern WoW theme, and this window looks the same under every theme.
 -- The atlas has no pressed cell, so a held button is its hover cell a step
@@ -4078,10 +4268,11 @@ function gs.DressButton(button, height)
 
   -- The caps keep the cell's aspect at the button's own height.
   local drawn = tonumber(height) or gs.Number(button, "GetHeight") or 22
+  local leftWidth = drawn * (token.leftWidth or token.cap) / token.cellHeight
   local capWidth = drawn * token.cap / token.cellHeight
   pcall(function()
     face.left:ClearAllPoints()
-    face.left:SetWidth(capWidth)
+    face.left:SetWidth(leftWidth)
     face.left:SetPoint("TOPLEFT", button, "TOPLEFT", 0, 0)
     face.left:SetPoint("BOTTOMLEFT", button, "BOTTOMLEFT", 0, 0)
     face.right:ClearAllPoints()
@@ -4136,8 +4327,12 @@ function gs.PaintButton(button)
     face.painted = wanted
     local cell = token[wanted] or token.normal
     local cap, bar = token.cap, token.barWidth
-    gs.ButtonSlice(face.left, token, cell.capLeft, cell.capLeft + cap, cell.capTop)
-    gs.ButtonSlice(face.middle, token, cap, bar - cap, cell.barTop)
+    -- Same cuts as mw.PaintActionButton: the whole Left member, then the
+    -- bar's body, so every join is continuous art.
+    gs.ButtonSlice(face.left, token, cell.capLeft,
+                   cell.capLeft + (token.leftWidth or cap), cell.capTop)
+    gs.ButtonSlice(face.middle, token, token.barLeft or cap, bar - cap,
+                   cell.barTop)
     gs.ButtonSlice(face.right, token, bar - cap, bar, cell.barTop)
   end
 
@@ -4399,6 +4594,7 @@ function gs.Build()
 
   gs.BuildListHeader()
   gs.BuildSidebarScrollbar()
+  gs.BuildEditModeButton()
   if type(U.CreateWheelCatcher) == "function" then
     gs.sidebarWheel = U.CreateWheelCatcher(gs.sidebar, function(delta)
       local maximum = gs.sidebarMaximum or 0
@@ -4417,10 +4613,8 @@ function gs.Build()
   -- Options_HorizontalDivider under the page title, the rule Forever draws
   -- across the top of its settings list. Stretched, never tiled: the member is
   -- 630x1, so there is nothing in it to repeat.
-  gs.divider = gs.Cell(gs.content, "ARTWORK", M.foreverWow.texture.options,
-                       M.foreverWow.options.divider)
+  gs.divider = gs.CreateDivider(gs.content)
   if gs.divider then
-    gs.divider:SetHeight(M.foreverWow.options.dividerHeight)
     gs.divider:SetPoint("TOPLEFT", gs.content, "TOPLEFT", 0,
                         -gs.CONTENT_HEADER)
     gs.divider:SetPoint("TOPRIGHT", gs.content, "TOPRIGHT", 0,
@@ -4555,6 +4749,7 @@ function gs.Open(id)
   if gs.list and type(gs.list.ShowSearch) == "function" then
     gs.list.ShowSearch()
   end
+  gs.PlaceEditModeButton()
   gs.RenderList()
   gs.SelectPage(id or (gs.active and gs.active.id) or gs.PAGES[1].id)
   gs.RaiseCloseX()

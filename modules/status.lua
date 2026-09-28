@@ -373,16 +373,13 @@ local function RefreshMoney()
 end
 
 local function BuildScanner()
-  local world = U.G("WorldFrame") or UIParent
-  local ok, tip = pcall(CreateFrame, "GameTooltip", "UnrealUIStatusScanner", nil,
-                        "GameTooltipTemplate")
-  if not ok or not tip then
+  local tip = U.CreateScannerTooltip("UnrealUIStatusScanner")
+  if not tip then
     U.Error("status: GameTooltipTemplate unavailable; durability cannot be read")
     return
   end
 
   scanner = tip
-  pcall(scanner.SetOwner, scanner, world, "ANCHOR_NONE")
 
   local template = U.G("DURABILITY_TEMPLATE")
   if type(template) == "string" then
@@ -400,8 +397,7 @@ local function ScanLowestDurability()
 
   local i
   for i = 1, table.getn(INVENTORY_SLOTS) do
-    pcall(scanner.ClearLines, scanner)
-    pcall(scanner.SetOwner, scanner, U.G("WorldFrame") or UIParent, "ANCHOR_NONE")
+    U.ArmScannerTooltip(scanner)
 
     local ok, hasItem = pcall(setInventoryItem, scanner, "player", INVENTORY_SLOTS[i])
     if ok and hasItem then
@@ -430,6 +426,8 @@ local function ScanLowestDurability()
       end
     end
   end
+  -- The loop has no early exit, so this one release covers every slot read.
+  U.ReleaseScannerTooltip(scanner)
 
   if foundItem then return lowest end
   return nil

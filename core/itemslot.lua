@@ -916,6 +916,69 @@ function U.SetItemSlotFavorite(button, favorite)
   pcall(layer.Show, layer)
 end
 
+-- Retail's junk-sale marker, shared by every bag theme. A raised child keeps
+-- it above the stock item icon and themed slot rim without taking mouse input.
+local function EnsureJunkCoin(button)
+  if button.uuiJunkCoin then return button.uuiJunkCoin end
+  local token = M.junkCoin
+  if not token or not token.texture or
+     type(button.GetFrameLevel) ~= "function" then return nil end
+
+  local ok, layer = pcall(CreateFrame, "Frame", nil, button)
+  if not ok or not layer then return nil end
+  pcall(layer.EnableMouse, layer, false)
+
+  local levelOk, level = pcall(button.GetFrameLevel, button)
+  if levelOk and tonumber(level) then
+    pcall(layer.SetFrameLevel, layer, level + 20)
+  end
+
+  local iconOk, icon = pcall(layer.CreateTexture, layer, nil, "OVERLAY")
+  if not iconOk or not icon then return nil end
+  pcall(icon.SetAllPoints, icon, layer)
+  pcall(icon.SetTexture, icon, token.texture)
+
+  pcall(layer.Hide, layer)
+  button.uuiJunkCoin = layer
+  button.uuiJunkCoinState = false
+  return layer
+end
+
+local function SizeJunkCoin(button, layer)
+  local token = M.junkCoin
+  local size = M.slot.size
+  local ok, width = pcall(button.GetWidth, button)
+  width = ok and tonumber(width) or nil
+  if width and width > 0 then size = width end
+  local scale = size / token.sourceSlot
+
+  pcall(layer.SetWidth, layer, token.width * scale)
+  pcall(layer.SetHeight, layer, token.height * scale)
+  pcall(layer.ClearAllPoints, layer)
+  pcall(layer.SetPoint, layer, "TOPLEFT", button, "TOPLEFT",
+        token.x * scale, token.y * scale)
+end
+
+function U.SetItemSlotJunk(button, junk)
+  if not button then return end
+  if not junk then
+    if button.uuiJunkCoin and button.uuiJunkCoinState ~= false then
+      button.uuiJunkCoinState = false
+      pcall(button.uuiJunkCoin.Hide, button.uuiJunkCoin)
+    end
+    return
+  end
+
+  local layer = EnsureJunkCoin(button)
+  if not layer then return end
+  SizeJunkCoin(button, layer)
+  if button.uuiJunkCoinState == true then return end
+
+  button.uuiJunkCoinState = true
+  pcall(layer.SetAlpha, layer, 1)
+  pcall(layer.Show, layer)
+end
+
 -- ---------------------------------------------------------------------------
 -- Update
 -- ---------------------------------------------------------------------------

@@ -61,6 +61,43 @@ end
 -- Chrome
 -- ---------------------------------------------------------------------------
 
+-- The drag strip of a bag-family window (bag, live bank, saved bank) is its
+-- whole header, rim included, under every theme (user requests, 2026-09-27):
+-- a strip fitted into the gaps between the header controls left only a sliver
+-- that could be grabbed. The strip is a Button parented to the window
+-- (frames.movable_drag_requires_button_handle) one level above it, and every
+-- header control is lifted one level above the strip, so a control still takes
+-- its own clicks and any other header space starts the drag. SetFrameLevel
+-- moves one frame, not its subtree, so a search field is levelled through
+-- U.LevelSearchBox (call U.RaiseOverBagDragStrip again for a field built
+-- after the strip).
+function U.BuildBagDragStrip(window, name, height, controls)
+  local handle = CreateFrame("Button", name, window)
+  handle:SetPoint("TOPLEFT", window, "TOPLEFT", 0, 0)
+  handle:SetPoint("TOPRIGHT", window, "TOPRIGHT", 0, 0)
+  handle:SetHeight(height)
+  local ok, level = pcall(window.GetFrameLevel, window)
+  level = (ok and tonumber(level)) or 0
+  pcall(handle.SetFrameLevel, handle, level + 1)
+  U.RaiseOverBagDragStrip(window, controls)
+  return handle
+end
+
+function U.RaiseOverBagDragStrip(window, controls)
+  local ok, level = pcall(window.GetFrameLevel, window)
+  level = ((ok and tonumber(level)) or 0) + 2
+  -- pairs, not table.getn: an optional control (the Rogue's Pick Lock) leaves
+  -- a hole in the list.
+  local _, control
+  for _, control in pairs(controls or {}) do
+    if control and control.uuiSearch and type(U.LevelSearchBox) == "function" then
+      U.LevelSearchBox(control, level)
+    elseif control then
+      pcall(control.SetFrameLevel, control, level)
+    end
+  end
+end
+
 -- Metal housing over the window's flat panel; call again after a resize.
 function U.ModernWowBagHousing(window)
   if not window or type(U.ModernWowMetalFrame) ~= "function" then

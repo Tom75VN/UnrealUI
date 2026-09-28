@@ -343,17 +343,20 @@ end
 --
 -- WORKING_SOURCE: DragonflightUI-Reforged modules/bars/bars.lua draws a 5px
 -- oversized HDActionBarBtn below each icon, the matching border above it and a
--- full-button highlight. Only that button geometry and art are reproduced
--- here, together with bar 1's faction ornaments. Its main-bar frame,
--- stock-button ownership, reparenting, paging, config, and update machinery
--- are intentionally not copied, so the bar itself matches the other bars.
+-- full-button highlight. Its main-bar housing and faction ornaments are
+-- reproduced on Bar 1 only, matching Retail's MainActionBar-only BorderArt;
+-- the per-button border is drawn on every bar (Retail's NormalTexture frame
+-- is never bar-owned) but the filled face plate is Bar-1-only, matching
+-- Retail's bar-owned SlotArt/SlotBackground swap
+-- (BaseActionButtonMixin:UpdateButtonArt, self.bar.hideBarArt); MultiBars
+-- 2-10 show a bordered but unfilled slot. Stock-button ownership,
+-- reparenting, paging, config, and update machinery
+-- are intentionally not copied.
 local modernWowAction = {
   active = false,
-  buttonGrow = 5,
-  -- Tuned from DF's 180px / 45px overlap: 80% size and 15px farther out.
-  ornamentSize = 144,
-  ornamentInset = 30,
-  ornamentY = 10,
+  buttonGrow = M.modernWow.actionBar.buttonGrow,
+  backgroundInset = M.modernWow.actionBar.background,
+  ornament = M.modernWow.actionBar.ornament,
 }
 
 function modernWowAction.Texture(parent, layer, path)
@@ -389,17 +392,40 @@ end
 function modernWowAction.StyleButton(button)
   if not modernWowAction.active or not button or button.uuiModernWow then return end
 
-  local face = modernWowAction.Texture(
-    button, "BACKGROUND", M.modernWow.texture.actionButton)
+  -- Bar-1-only fill, every bar keeps its border: Retail's
+  -- BaseActionButtonMixin:UpdateButtonArt always sets a NormalTexture frame
+  -- per button (UI-HUD-ActionBar-IconFrame on the main bar,
+  -- UI-HUD-ActionBar-IconFrame-AddRow on MultiBars) and only swaps in a
+  -- filled SlotBackground plate where self.bar.hideBarArt is false -- the
+  -- same bar that owns the full housing above. MultiBars 2-10 therefore keep
+  -- the border ring but never the filled face.
+  local onMainBar = button.uuiBar == 1
+
+  local face
+  if onMainBar then
+    face = modernWowAction.Texture(
+      button, "BACKGROUND", M.modernWow.texture.actionButton)
+  end
+
+  -- Bar 1's chrome is grown 5px past the icon (buttonGrow), so adjacent
+  -- buttons' oversized regions overlap in the gap between them. Sibling
+  -- button frames draw later-created on top of earlier ones, so a
+  -- same-parent border was getting painted over by the next button's opaque
+  -- face along the shared right/bottom edge. uuiCooldownLayer is already a
+  -- raised child frame (button's level + 10, see CreateButton) that exists
+  -- for every button regardless of theme; anchoring the border there instead
+  -- of directly on the button keeps it above every neighbor's face no matter
+  -- which button was created first.
   local border = modernWowAction.Texture(
-    button, "OVERLAY", M.modernWow.texture.actionButtonBorder)
+    button.uuiCooldownLayer or button, "OVERLAY", M.modernWow.texture.actionButtonBorder)
   local highlight = modernWowAction.Texture(
     button, "OVERLAY", M.modernWow.texture.actionButtonHover)
 
   -- A partial ornamental button is worse than the established flat fallback.
-  -- Leave the backdrop alone unless the two structural pieces both exist;
-  -- hover is optional and can safely degrade on its own.
-  if not face or not border then
+  -- The border is structural on every bar; the face is structural only where
+  -- Bar 1 is expected to draw one. Hover is optional and can safely degrade
+  -- on its own.
+  if not border or (onMainBar and not face) then
     modernWowAction.SetShown(face, false)
     modernWowAction.SetShown(border, false)
     modernWowAction.SetShown(highlight, false)
@@ -445,6 +471,19 @@ function modernWowAction.SizeButton(button, size)
     state.border:SetWidth(chromeSize)
     state.border:SetHeight(chromeSize)
   end
+
+  -- Bar 1's face plate fills between the icon (ICON_INSET) and the ring's
+  -- line; a faceless slot showed that gap see-through. There the icon runs
+  -- out to the line's inner edge instead, tucked under the ring's shadow.
+  local icon = button.uuiIcon
+  if icon and state.border and not state.face then
+    local inset = chromeSize * M.modernWow.actionBar.borderOpening -
+                  modernWowAction.buttonGrow / 2
+    if inset < 0 then inset = 0 end
+    icon:ClearAllPoints()
+    icon:SetPoint("TOPLEFT", button, "TOPLEFT", inset, -inset)
+    icon:SetPoint("BOTTOMRIGHT", button, "BOTTOMRIGHT", -inset, inset)
+  end
 end
 
 function modernWowAction.SetButtonBackground(button, shown)
@@ -470,6 +509,37 @@ function modernWowAction.StyleBarOrnaments(entry, bar)
   if not modernWowAction.active or not entry or bar ~= 1 then return end
   if entry.modernWowOrnaments then return end
 
+  -- BORDER, not DragonflightUI's BACKGROUND: this client stops a BACKGROUND
+  -- texture at its frame's right and bottom edges (the Character housing's
+  -- rock, modules/modernwow.lua mw.SizeHousingChrome), and the housing
+  -- overhangs the bar on every side, so its right and bottom rims were cut
+  -- off in game (user screenshot, 2026-09-28). The ornaments move up to
+  -- ARTWORK to stay above it; the buttons are child frames above both.
+  local backgroundLeft = modernWowAction.Texture(
+    entry.frame, "BORDER", M.modernWow.texture.actionBar)
+  local backgroundRight = modernWowAction.Texture(
+    entry.frame, "BORDER", M.modernWow.texture.actionBar)
+
+  if backgroundLeft then
+    backgroundLeft:SetPoint("LEFT", entry.frame, "LEFT",
+      -modernWowAction.backgroundInset.x, 0)
+    backgroundLeft:SetPoint("RIGHT", entry.frame, "CENTER", 0, 0)
+    backgroundLeft:SetPoint("TOP", entry.frame, "TOP", 0,
+      modernWowAction.backgroundInset.y)
+    backgroundLeft:SetPoint("BOTTOM", entry.frame, "BOTTOM", 0,
+      -modernWowAction.backgroundInset.y)
+  end
+  if backgroundRight then
+    backgroundRight:SetPoint("LEFT", entry.frame, "CENTER", 0, 0)
+    backgroundRight:SetPoint("RIGHT", entry.frame, "RIGHT",
+      modernWowAction.backgroundInset.x, 0)
+    backgroundRight:SetPoint("TOP", entry.frame, "TOP", 0,
+      modernWowAction.backgroundInset.y)
+    backgroundRight:SetPoint("BOTTOM", entry.frame, "BOTTOM", 0,
+      -modernWowAction.backgroundInset.y)
+    pcall(backgroundRight.SetTexCoord, backgroundRight, 1, 0, 0, 1)
+  end
+
   local faction = nil
   local factionFn = U.G("UnitFactionGroup")
   if type(factionFn) == "function" then
@@ -478,34 +548,44 @@ function modernWowAction.StyleBarOrnaments(entry, bar)
   end
   local ornamentPath = faction == "Horde" and
     M.modernWow.texture.actionWyvern or M.modernWow.texture.actionGryphon
-  local left = modernWowAction.Texture(entry.frame, "BORDER", ornamentPath)
-  local right = modernWowAction.Texture(entry.frame, "BORDER", ornamentPath)
+  local left = modernWowAction.Texture(entry.frame, "ARTWORK", ornamentPath)
+  local right = modernWowAction.Texture(entry.frame, "ARTWORK", ornamentPath)
 
   if left then
-    left:SetWidth(modernWowAction.ornamentSize)
-    left:SetHeight(modernWowAction.ornamentSize)
+    left:SetWidth(modernWowAction.ornament.size)
+    left:SetHeight(modernWowAction.ornament.size)
     left:SetPoint("RIGHT", entry.frame, "LEFT",
-      modernWowAction.ornamentInset, modernWowAction.ornamentY)
+      modernWowAction.ornament.inset, modernWowAction.ornament.y)
   end
   if right then
-    right:SetWidth(modernWowAction.ornamentSize)
-    right:SetHeight(modernWowAction.ornamentSize)
+    right:SetWidth(modernWowAction.ornament.size)
+    right:SetHeight(modernWowAction.ornament.size)
     right:SetPoint("LEFT", entry.frame, "RIGHT",
-      -modernWowAction.ornamentInset, modernWowAction.ornamentY)
+      -modernWowAction.ornament.inset, modernWowAction.ornament.y)
     pcall(right.SetTexCoord, right, 1, 0, 0, 1)
   end
 
-  entry.modernWowOrnaments = { left = left, right = right }
+  entry.modernWowOrnaments = {
+    backgroundLeft = backgroundLeft,
+    backgroundRight = backgroundRight,
+    left = left,
+    right = right,
+  }
 end
 
 function modernWowAction.SetBarOrnamentsShown(entry, shown)
   local state = entry and entry.modernWowOrnaments
   if not state then return end
+  modernWowAction.SetShown(state.backgroundLeft, shown)
+  modernWowAction.SetShown(state.backgroundRight, shown)
   -- The bar 1 "Gryphons" option; missing (older saved data) means shown.
   -- Literal key: Key() is declared further down this file.
-  if shown and cfg and cfg.bar1Gryphons == false then shown = false end
-  modernWowAction.SetShown(state.left, shown)
-  modernWowAction.SetShown(state.right, shown)
+  local ornamentsShown = shown
+  if ornamentsShown and cfg and cfg.bar1Gryphons == false then
+    ornamentsShown = false
+  end
+  modernWowAction.SetShown(state.left, ornamentsShown)
+  modernWowAction.SetShown(state.right, ornamentsShown)
 end
 
 function classicAction.Dimension(region, method)
@@ -912,12 +992,8 @@ function reagent.Scanner()
   if reagent.scannerBuilt then return reagent.scanner end
   reagent.scannerBuilt = true
 
-  local ok, tip = pcall(CreateFrame, "GameTooltip", reagent.scannerName, nil,
-                        "GameTooltipTemplate")
-  if not ok or not tip then return nil end
-  pcall(tip.SetOwner, tip, U.G("WorldFrame") or UIParent, "ANCHOR_NONE")
-  reagent.scanner = tip
-  return tip
+  reagent.scanner = U.CreateScannerTooltip(reagent.scannerName)
+  return reagent.scanner
 end
 
 function reagent.LineText(line, side)
@@ -975,12 +1051,23 @@ function reagent.ScanSlot(slot)
     return nil
   end
 
-  pcall(tip.ClearLines, tip)
-  pcall(tip.SetOwner, tip, U.G("WorldFrame") or UIParent, "ANCHOR_NONE")
-  if not pcall(tip.SetAction, tip, slot) then
+  local name = U.ScanWithTooltip(tip, reagent.ReadName, slot)
+  if not name then
     reagent.slots[slot] = false
     return nil
   end
+
+  reagent.slots[slot] = name
+  if reagent.counts[name] == nil then
+    reagent.counts[name] = reagent.CountItem(name)
+  end
+  return name
+end
+
+-- The reagent named on an armed scanner's SetAction tooltip, read while the
+-- lines are still shown (U.ScanWithTooltip hides the scanner afterwards).
+function reagent.ReadName(tip, slot)
+  if not pcall(tip.SetAction, tip, slot) then return nil end
 
   local ok, lineCount = pcall(tip.NumLines, tip)
   lineCount = ok and tonumber(lineCount) or 0
@@ -988,16 +1075,8 @@ function reagent.ScanSlot(slot)
   for line = 1, lineCount do
     local name = reagent.NameFromLine(reagent.LineText(line, "Left")) or
                  reagent.NameFromLine(reagent.LineText(line, "Right"))
-    if name then
-      reagent.slots[slot] = name
-      if reagent.counts[name] == nil then
-        reagent.counts[name] = reagent.CountItem(name)
-      end
-      return name
-    end
+    if name then return name end
   end
-
-  reagent.slots[slot] = false
   return nil
 end
 

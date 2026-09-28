@@ -147,19 +147,32 @@ function book.BuildChrome(frame)
   -- own regions always draw beneath its children, whatever its level.
   local chrome = frame
 
-  book.HousingRow(chrome, tex.panelTopLeft, tex.panelTopRight, 0)
-  book.HousingRow(chrome, tex.panelBottomLeft, tex.panelBottomRight,
-                  t.design.height / 2)
+  -- The Character window's Retail housing (user request, 2026-09-29), at the
+  -- collapsed Character width plus the book's `extra`, its one Inset around
+  -- the recess. It lands where the quadrants' metal did, so every measured
+  -- placement below still holds. The quadrants only if it cannot build.
+  local w = M.modernWow.characterWindow
+  if type(U.ModernWowRetailHousing) == "function" then
+    book.housing = U.ModernWowRetailHousing(chrome, {
+      width = w.width + L.extra, height = w.height,
+    })
+  end
+  if not book.housing then
+    book.HousingRow(chrome, tex.panelTopLeft, tex.panelTopRight, 0)
+    book.HousingRow(chrome, tex.panelBottomLeft, tex.panelBottomRight,
+                    t.design.height / 2)
+  end
 
-  -- Pages above the housing: BORDER over BACKGROUND, so the order does not
-  -- depend on creation order within one layer.
+  -- Pages above the housing and its inset background (BACKGROUND, BORDER):
+  -- ARTWORK, so the order does not depend on creation order within a layer.
+  -- The inset's border and the metal (OVERLAY) stay over the pages' edges.
   -- Kept, so the Professions page can swap its own art into the same two
   -- regions (U.ModernWowSpellBookSetPageArt).
   local vBottom = t.page.height / t.page.canvas
   local page1Width = t.page.width * L.kx
-  book.page1 = book.Texture(chrome, "BORDER", t.texture.page1, 0, 1, 0, vBottom)
+  book.page1 = book.Texture(chrome, "ARTWORK", t.texture.page1, 0, 1, 0, vBottom)
   book.Place(book.page1, L.pageLeft, L.pageTop, page1Width, L.pageHeight)
-  book.page2 = book.Texture(chrome, "BORDER", t.texture.page2,
+  book.page2 = book.Texture(chrome, "ARTWORK", t.texture.page2,
                             0, t.page.edgeWidth / t.page.edgeCanvas, 0, vBottom)
   book.Place(book.page2, L.pageLeft + page1Width, L.pageTop,
              t.page.edgeWidth * L.kx, L.pageHeight)
@@ -169,11 +182,16 @@ function book.BuildChrome(frame)
   local ok, _, class = pcall(UnitClass, "player")
   local cell = ok and class and M.modernWow.classCell[class]
   if cell then
-    local ring = t.ring
     book.portrait = book.Texture(chrome, "ARTWORK", tex.classPortraits,
                                  cell[1], cell[2], cell[3], cell[4])
-    book.Place(book.portrait, ring.left + ring.inset, ring.top + ring.inset,
-               ring.size - 2 * ring.inset, ring.size - 2 * ring.inset)
+    if book.housing then
+      local left, top, size = U.ModernWowHousingPortraitRect()
+      book.Place(book.portrait, left, top, size, size)
+    else
+      local ring = t.ring
+      book.Place(book.portrait, ring.left + ring.inset, ring.top + ring.inset,
+                 ring.size - 2 * ring.inset, ring.size - 2 * ring.inset)
+    end
   end
 
   return chrome

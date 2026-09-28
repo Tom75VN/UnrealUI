@@ -193,9 +193,7 @@ end
 function IS.Scanner()
   if IS.scanner then return IS.scanner end
 
-  local ok, tip = pcall(CreateFrame, "GameTooltip", IS.SCANNER_NAME, nil,
-                        "GameTooltipTemplate")
-  if ok and tip then IS.scanner = tip end
+  IS.scanner = U.CreateScannerTooltip(IS.SCANNER_NAME)
   return IS.scanner
 end
 
@@ -205,9 +203,11 @@ function IS.TooltipBagSubtype(inventoryId)
   local pattern = IS.SlotPattern()
   local tip = IS.Scanner()
   if not pattern or not tip then return nil end
+  return U.ScanWithTooltip(tip, IS.ReadBagSubtype, inventoryId, pattern)
+end
 
-  pcall(tip.ClearLines, tip)
-  pcall(tip.SetOwner, tip, U.G("WorldFrame") or UIParent, "ANCHOR_NONE")
+-- Read on the armed scanner; U.ScanWithTooltip hides it afterwards.
+function IS.ReadBagSubtype(tip, inventoryId, pattern)
   if not pcall(tip.SetInventoryItem, tip, "player", inventoryId) then
     return nil
   end

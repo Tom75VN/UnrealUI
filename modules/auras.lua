@@ -376,15 +376,11 @@ local function Scanner()
   if scannerBuilt then return scanner end
   scannerBuilt = true
 
-  local ok, frame = pcall(CreateFrame, "GameTooltip", SCANNER_NAME, UIParent,
-                          "GameTooltipTemplate")
-  if not ok or not frame then
+  scanner = U.CreateScannerTooltip(SCANNER_NAME, UIParent)
+  if not scanner then
     U.Debug("aura name scanner unavailable; timers will be inactive")
     return nil
   end
-
-  pcall(frame.SetOwner, frame, UIParent, "ANCHOR_NONE")
-  scanner = frame
   return scanner
 end
 
@@ -394,19 +390,26 @@ local function ScanName(unit, index, harmful)
 
   local setter = harmful and tip.SetUnitDebuff or tip.SetUnitBuff
   if type(setter) ~= "function" then return nil end
-  if not pcall(setter, tip, unit, index) then return nil end
 
-  -- The probe read this fontstring straight off _G. U.G prefers getglobal, and
-  -- nothing has verified the two agree for a region a template created, so the
-  -- measured path is tried first and U.G is the fallback.
-  local global = SCANNER_NAME .. "TextLeft1"
-  local line = nil
-  if _G then line = _G[global] end
-  if not line then line = U.G(global) end
-  if not line or type(line.GetText) ~= "function" then return nil end
-
-  local ok, text = pcall(line.GetText, line)
-  if not ok or type(text) ~= "string" or text == "" then return nil end
+  -- Armed before and hidden after every read: a shown scanner is drawn at the
+  -- screen centre on this client (U.CreateScannerTooltip). Every step between
+  -- is pcall'd, so the release below is reached on every path.
+  U.ArmScannerTooltip(tip)
+  local text = nil
+  if pcall(setter, tip, unit, index) then
+    -- The probe read this fontstring straight off _G. U.G prefers getglobal,
+    -- and nothing has verified the two agree for a region a template created,
+    -- so the measured path is tried first and U.G is the fallback.
+    local global = SCANNER_NAME .. "TextLeft1"
+    local line = nil
+    if _G then line = _G[global] end
+    if not line then line = U.G(global) end
+    if line and type(line.GetText) == "function" then
+      local ok, value = pcall(line.GetText, line)
+      if ok and type(value) == "string" and value ~= "" then text = value end
+    end
+  end
+  U.ReleaseScannerTooltip(tip)
   return text
 end
 

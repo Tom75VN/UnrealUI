@@ -95,13 +95,59 @@ function CV.drop.AuctionSubclasses(classIndex)
   return list
 end
 
-function CV.drop.SourceSubtype()
-  local source = CV.drop.source
-  if not source or not source.link then return nil end
+function CV.drop.LinkSubtype(link)
+  if not link then return nil end
 
-  local ok, _, _, _, _, _, subtype = pcall(GetItemInfo, source.link)
+  local ok, _, _, _, _, _, subtype = pcall(GetItemInfo, link)
   if ok and type(subtype) == "string" and subtype ~= "" then return subtype end
   return nil
+end
+
+-- Container subclass 2 is the Soul Bag, which takes Soul Shards and nothing
+-- else, while every other reagent shares the "reagent" category. Offering it
+-- another reagent only earns the client's refusal, so it is narrowed by id.
+CV.drop.SOUL_BAG_SUBCLASS = 2
+CV.drop.SOUL_SHARD_ID = 6265
+
+-- Would an equipped specialty bag of subtype `label` take this item? One rule
+-- for the empty-slot proxy and the automatic routing of newly arrived items
+-- (modules/bagroute.lua). Fail-closed: an unknown bag takes only a category
+-- already observed inside it (`acceptedCategories`).
+function CV.drop.Accepts(label, acceptedCategories, category, link)
+  if not label or not category then return false end
+
+  local containersList = CV.drop.AuctionSubclasses(3)
+  local i
+  for i = 2, table.getn(containersList) do
+    if label == containersList[i] then
+      if i == CV.drop.SOUL_BAG_SUBCLASS then
+        return U.ItemLinkId(link) == CV.drop.SOUL_SHARD_ID
+      end
+      local accepted = CV.drop.containerCategories[i]
+      return accepted and accepted[category] and true or false
+    end
+  end
+
+  -- Projectile and quiver subclasses use the same fixed positional pairing:
+  -- arrows -> quiver, bullets -> ammo pouch. Comparing the localized subclass
+  -- strings keeps this rule language-neutral.
+  local quivers = CV.drop.AuctionSubclasses(7)
+  for i = 1, table.getn(quivers) do
+    if label == quivers[i] then
+      local projectiles = CV.drop.AuctionSubclasses(6)
+      return category == "ammo" and
+             CV.drop.LinkSubtype(link) == projectiles[i]
+    end
+  end
+
+  -- A custom specialty bag not represented by the client's auction subclass
+  -- list is accepted only for a category already observed inside that same
+  -- bag. An empty unknown specialty bag therefore fails closed.
+  return acceptedCategories and acceptedCategories[category] and true or false
+end
+
+function U.BagSpecialtyAccepts(label, acceptedCategories, category, link)
+  return CV.drop.Accepts(label, acceptedCategories, category, link)
 end
 
 function CV.drop.Compatible(entry)
@@ -117,33 +163,8 @@ function CV.drop.Compatible(entry)
   if not entry.special then return true end
   if not source then return false end
 
-  local label = entry.bagType
-  local containersList = CV.drop.AuctionSubclasses(3)
-  local i
-  for i = 2, table.getn(containersList) do
-    if label == containersList[i] then
-      local accepted = CV.drop.containerCategories[i]
-      return accepted and accepted[source.category] and true or false
-    end
-  end
-
-  -- Projectile and quiver subclasses use the same fixed positional pairing:
-  -- arrows -> quiver, bullets -> ammo pouch. Comparing the localized subclass
-  -- strings keeps this rule language-neutral.
-  local quivers = CV.drop.AuctionSubclasses(7)
-  for i = 1, table.getn(quivers) do
-    if label == quivers[i] then
-      local projectiles = CV.drop.AuctionSubclasses(6)
-      return source.category == "ammo" and
-             CV.drop.SourceSubtype() == projectiles[i]
-    end
-  end
-
-  -- A custom specialty bag not represented by the client's auction subclass
-  -- list is accepted only for a category already observed inside that same
-  -- bag. An empty unknown specialty bag therefore fails closed.
-  return entry.acceptedCategories and
-         entry.acceptedCategories[source.category] and true or false
+  return CV.drop.Accepts(entry.bagType, entry.acceptedCategories,
+                         source.category, source.link)
 end
 
 function CV.drop.PlaceCursorItemIntoSlotTarget(view, target)
@@ -169,34 +190,52 @@ function CV.drop.PlaceCursorItemIntoSlotTarget(view, target)
   CV.drop.Trace("number of cached candidate slots=" ..
                 tostring(table.getn(emptySlots)))
 
-  local i
-  for i = 1, table.getn(emptySlots) do
-    local entry = emptySlots[i]
-    local empty = entry.emptySlot == 1 and
-                  not U.ContainerSlotHasItem(entry.bagNum, entry.slotNum)
-    local compatible = empty and not entry.preventEmptySlotStack and
-                       CV.drop.Compatible(entry)
-    CV.drop.Trace("candidate " .. entry.bagNum .. "/" .. entry.slotNum ..
-                  " empty=" .. tostring(empty) ..
-                  " compatibility=" .. tostring(compatible))
+  -- Which group of free slots is tried first (user request, 2026-09-27). An
+  -- item lifted from an ordinary bag goes to a specialty bag that takes it
+  -- (ammo to its pouch, herbs to the herb bag...): the proxy is the only free
+  -- slot the category view draws, so it is the player's only way to put an
+  -- item into its specialty bag. An item lifted out of a specialty bag goes to
+  -- an ordinary bag first, so the same drop is also the way to take it out.
+  -- The other group is still the fallback either way.
+  local source = CV.drop.source
+  local fromSpecial = source and source.bagNum and
+                      type(U.BagSpecialtyLabel) == "function" and
+                      U.BagSpecialtyLabel(source.bagNum) and true or false
+  local order = { not fromSpecial, fromSpecial }
 
-    if compatible then
-      CV.drop.Trace("selected destination=" .. entry.bagNum .. "/" ..
-                    entry.slotNum)
-      CV.drop.Trace("before PickupContainerItem")
-      U.PickupContainerSlot(entry.bagNum, entry.slotNum)
-      hasItem = U.CursorHasItem()
-      CV.drop.Trace("CursorHasItem after PickupContainerItem=" ..
-                    tostring(hasItem))
-      if not hasItem then
-        CV.drop.source = nil
-        if type(view.host.onDropped) == "function" then view.host.onDropped() end
-        return true
+  local pass, i
+  for pass = 1, 2 do
+    for i = 1, table.getn(emptySlots) do
+      local entry = emptySlots[i]
+      local inPass = (entry.special and true or false) == order[pass]
+      local empty = inPass and entry.emptySlot == 1 and
+                    not U.ContainerSlotHasItem(entry.bagNum, entry.slotNum)
+      local compatible = empty and not entry.preventEmptySlotStack and
+                         CV.drop.Compatible(entry)
+      if inPass then
+        CV.drop.Trace("candidate " .. entry.bagNum .. "/" .. entry.slotNum ..
+                      " empty=" .. tostring(empty) ..
+                      " compatibility=" .. tostring(compatible))
       end
 
-      -- Do not retry a destination the client just refused during this cache
-      -- lifetime. A BAG_UPDATE rebuilds the physical empty-slot entries.
-      entry.preventEmptySlotStack = 1
+      if compatible then
+        CV.drop.Trace("selected destination=" .. entry.bagNum .. "/" ..
+                      entry.slotNum)
+        CV.drop.Trace("before PickupContainerItem")
+        U.PickupContainerSlot(entry.bagNum, entry.slotNum)
+        hasItem = U.CursorHasItem()
+        CV.drop.Trace("CursorHasItem after PickupContainerItem=" ..
+                      tostring(hasItem))
+        if not hasItem then
+          CV.drop.source = nil
+          if type(view.host.onDropped) == "function" then view.host.onDropped() end
+          return true
+        end
+
+        -- Do not retry a destination the client just refused during this cache
+        -- lifetime. A BAG_UPDATE rebuilds the physical empty-slot entries.
+        entry.preventEmptySlotStack = 1
+      end
     end
   end
 
@@ -876,13 +915,19 @@ function CV.Layout(view)
   -- Everything this pass did not place: every physical empty slot represented
   -- by the proxy, every slot inside a collapsed category, and any button left
   -- over from a container since swapped for a smaller one.
+  --
+  -- pairs, not table.getn: this view only creates a button for a slot it
+  -- places, so a slot free since login leaves a hole in host.slots[bag], and
+  -- getn stops at it. Every button past the hole then escaped this sweep, and
+  -- a sold item's button stayed drawn at its old position (player report,
+  -- 2026-09-27). The hosts' other per-slot loops use pairs for the same reason.
   local bags = host.bags()
   for i = 1, table.getn(bags) do
     local bag = bags[i]
     local bagSlots = host.slots[bag]
     if bagSlots then
       local slot
-      for slot = 1, table.getn(bagSlots) do
+      for slot in pairs(bagSlots) do
         if bagSlots[slot] and not live[bag .. ":" .. slot] then
           bagSlots[slot]:Hide()
         end

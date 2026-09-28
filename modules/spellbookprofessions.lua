@@ -1085,6 +1085,13 @@ function prof.Enter()
   prof.host.ShowClassPortrait(false)
   pcall(prof.page.Show, prof.page)
   prof.Repaint()
+  prof.NotifyMicroBar()
+end
+
+-- The micro bar splits the Spellbook window between its Spellbook and
+-- Professions buttons by this page's state (modules/microbar.lua).
+function prof.NotifyMicroBar()
+  if type(U.MicroBarSync) == "function" then pcall(U.MicroBarSync) end
 end
 
 function prof.Leave()
@@ -1098,6 +1105,7 @@ function prof.Leave()
   prof.host.Redress()
   prof.Call("SpellBookFrame_Update", 1)
   prof.Repaint()
+  prof.NotifyMicroBar()
 end
 
 -- The window reopens on the book it closed on, as the native tabs do, so the
@@ -1292,4 +1300,49 @@ end
 -- True while the Professions page is shown, for a host's own tab state.
 function U.SpellBookProfessionsShown()
   return prof.active
+end
+
+-- The micro bar's Spellbook button while this page is open (Retail's
+-- behaviour): switch the window back to its Spellbook tab instead of closing
+-- it. Clicks the owned tab, so every host's tab hooks run as for a real
+-- click. False, doing nothing, when this page is not what the window shows.
+function U.SpellBookShowSpellsTab()
+  if not prof.active or not prof.spellTab then return false end
+  if not prof.Shown(prof.frame) or not prof.Shown(prof.spellTab) then
+    return false
+  end
+  return pcall(prof.spellTab.Click, prof.spellTab) and true or false
+end
+
+-- The micro bar's Professions button (modules/microbar.lua): Retail's
+-- ToggleProfessionsBook, on this client's Spellbook Professions page. Closes
+-- the window when that page is already showing; otherwise opens the book the
+-- way SpellbookMicroButton does and clicks the owned Professions tab, so each
+-- host's own tab hooks see an ordinary tab click (Button:Click,
+-- documentation.json). With no Professions tab (none of the three hosts
+-- built it, or no profession is known) it degrades to opening the Spellbook.
+function U.ToggleSpellBookProfessions()
+  local frame = prof.frame or U.G("SpellBookFrame")
+  if not frame then return false end
+
+  if prof.active and prof.Shown(frame) then
+    local hide = U.G("HideUIPanel")
+    if type(hide) == "function" then pcall(hide, frame)
+    else pcall(frame.Hide, frame) end
+    return true
+  end
+
+  if not prof.Shown(frame) then
+    local toggle = U.G("ToggleSpellBook")
+    local show = U.G("ShowUIPanel")
+    if type(toggle) == "function" then pcall(toggle, prof.BookType())
+    elseif type(show) == "function" then pcall(show, frame)
+    else pcall(frame.Show, frame) end
+  end
+
+  if prof.available and prof.tab and prof.Shown(prof.tab) and
+     prof.Shown(frame) then
+    pcall(prof.tab.Click, prof.tab)
+  end
+  return true
 end

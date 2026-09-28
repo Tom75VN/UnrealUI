@@ -368,6 +368,13 @@ end
 -- Rectangular NPC actions use the same measured three-slice construction as
 -- UnrealQuest's three Quest Log buttons: fixed-aspect bevel caps and only a
 -- stretched middle. The stock button remains the input/state owner.
+-- Drawn widths of a red button's left and right ends at `height`, each kept
+-- at its cell's aspect.
+function mw.ActionButtonEnds(token, height)
+  local scale = height / token.cellHeight
+  return (token.leftWidth or token.cap) * scale, token.cap * scale
+end
+
 function mw.ActionButtonSetSlice(texture, token, left, right, top)
   pcall(texture.SetTexCoord, texture,
         left / token.atlasWidth, right / token.atlasWidth,
@@ -455,12 +462,15 @@ function mw.PaintActionButton(button, hovered, pressed)
   if state.painted == wanted then return end
   state.painted = wanted
 
+  -- The whole Left member, then the bar's body and right end: each join is
+  -- continuous art (see M.modernWow.button128Red).
   local cell = token[wanted]
   local cap = token.cap
   local bar = token.barWidth
   mw.ActionButtonSetSlice(state.left, token, cell.capLeft,
-                          cell.capLeft + cap, cell.capTop)
-  mw.ActionButtonSetSlice(state.middle, token, cap, bar - cap, cell.barTop)
+                          cell.capLeft + (token.leftWidth or cap), cell.capTop)
+  mw.ActionButtonSetSlice(state.middle, token, token.barLeft or cap, bar - cap,
+                          cell.barTop)
   mw.ActionButtonSetSlice(state.right, token, bar - cap, bar, cell.barTop)
 end
 
@@ -539,9 +549,9 @@ function mw.DressActionButton(button)
     pcall(middle.SetTexture, middle, path)
     pcall(right.SetTexture, right, path)
 
-    local capWidth = token.height * token.cap / token.cellHeight
-    pcall(left.SetWidth, left, capWidth)
-    pcall(right.SetWidth, right, capWidth)
+    local leftWidth, rightWidth = mw.ActionButtonEnds(token, token.height)
+    pcall(left.SetWidth, left, leftWidth)
+    pcall(right.SetWidth, right, rightWidth)
     pcall(left.SetPoint, left, "TOPLEFT", button, "TOPLEFT", 0, 0)
     pcall(left.SetPoint, left, "BOTTOMLEFT", button, "BOTTOMLEFT", 0, 0)
     pcall(right.SetPoint, right, "TOPRIGHT", button, "TOPRIGHT", 0, 0)
@@ -603,9 +613,9 @@ function U.ModernWowTrainerActionButton(button, point, relative, relativePoint,
   local state = button.uuiModernWowAction
   local token = M.modernWow.button128Red
   if height and token then
-    local cap = height * token.cap / token.cellHeight
+    local leftWidth, cap = mw.ActionButtonEnds(token, height)
     pcall(button.SetHeight, button, height)
-    if state.left then pcall(state.left.SetWidth, state.left, cap) end
+    if state.left then pcall(state.left.SetWidth, state.left, leftWidth) end
     if state.right then pcall(state.right.SetWidth, state.right, cap) end
   end
   state.anchor = {
@@ -661,9 +671,9 @@ function U.ModernWowRedButtonFace(owner, height, gold)
 
   height = tonumber(height) or mw.Dimension(owner, "GetHeight")
   if height > 0 then
-    local capWidth = height * token.cap / token.cellHeight
-    pcall(state.left.SetWidth, state.left, capWidth)
-    pcall(state.right.SetWidth, state.right, capWidth)
+    local leftWidth, rightWidth = mw.ActionButtonEnds(token, height)
+    pcall(state.left.SetWidth, state.left, leftWidth)
+    pcall(state.right.SetWidth, state.right, rightWidth)
   end
 
   state.painted = nil
@@ -1064,18 +1074,19 @@ mw.units = {
     -- up; the target's does not, so this is per frame rather than shared.
     auraX = 3,
     header = { name = 3, level = -7 } },
-  { id = "target",       art = "targetFrame", bg = "targetFrameBg",
-    power = "powerFillTarget", classification = true, mirror = false,
+  -- The Retail target frame (core/media.lua M.modernWow.retailTarget): its own
+  -- 2x housing with no separate bed, a ring-only copy above the bars, and the
+  -- classification dragon (M.modernWow.targetTier). Its bars fill the Retail
+  -- openings exactly, so the old housing's rim insets are gone.
+  { id = "target",       art = "targetHousing", ring = "targetRing",
+    layout = "retailTarget",
+    power = "powerFillTarget2x", classification = true, mirror = false,
+    healthFill = "targetHealthFill2x", healthFillTint = "targetHealthFillTint2x",
     shiftLabels = true,
-    -- The target health fill only overruns the rim at its left edge.
-    healthLeftInset = 2,
-    -- The power bar reaches 2 units further right (user request, 2026-09-20).
-    -- Width only: the bar is anchored by its LEFT edge, and that anchor is
-    -- computed from the layout's own bar rectangle rather than from this
-    -- width, so the left edge and the health bar above it do not move.
-    powerWidthExtra = 2,
-    -- Extra rightward nudge for the power bar's percentage only.
-    powerPercentX = 2,
+    -- The power bar's value ends at the health bar's value x, not 8 further
+    -- right where the wider mana opening ends (user request, 2026-09-27); its
+    -- percentage already shares the health one's x (same left edge).
+    alignPowerValue = true,
     -- Extra upward nudge for the power bar's percentage only.
     powerPercentY = 2,
     -- The name is anchored by its RIGHT edge only (no width), so its last
@@ -1132,9 +1143,11 @@ do
       id = ids[i],
       art = "partyFrame",
       layout = "partyLayout",
-      -- DragonflightUI fills the party mana bar with the TARGET mana art
-      -- (mini.lua PartyFramesSetup), not the player's, so this matches it.
-      power = "powerFillTarget",
+      -- The housing's own 2x fills: Retail's target-of-target members, the
+      -- bars this canvas was authored around.
+      power = "partyPowerFill2x",
+      healthFill = "partyHealthFill2x",
+      healthFillTint = "partyHealthFillTint2x",
       -- The player's party row stays 1 unit taller; the four other member rows
       -- gain another unit. Kept per entry rather than in partyLayout: pet rows
       -- derive their health bar from that layout's power rectangle and must not
@@ -1180,6 +1193,8 @@ do
       id = "partypet" .. i,
       art = "partyFrame",
       layout = "partyLayout",
+      healthFill = "partyHealthFill2x",
+      healthFillTint = "partyHealthFillTint2x",
       mirror = true,
       header = { name = -2, level = -2 },
       -- Health value up 1 unit, by request (was 2, then down 1).
@@ -1192,16 +1207,6 @@ do
     })
   end
 end
-
--- Ornament art per target classification, in the spelling UnitClassification
--- returns on this client. A tier with no entry keeps the plain target ring,
--- which is also what an unreadable classification degrades to.
-mw.classification = {
-  rare      = "frameRare",
-  elite     = "frameElite",
-  rareelite = "frameRareElite",
-  worldboss = "frameBoss",
-}
 
 -- Answered for modules/unitframes.lua at frame-build time, which is why it is
 -- a plain predicate on U rather than anything that needs this module's state
@@ -1444,7 +1449,8 @@ end
 
 -- The icon fills the portrait, except while it carries the 3D portrait's
 -- stone background (modules/unitframes.lua sets uuiPortraitBackground) on a
--- ring with a measured backgroundTrim.
+-- ring with a measured backgroundTrim. The 2D icon takes the ring's optional
+-- iconX / iconY nudge; the stone background does not.
 function mw.AnchorPortraitIcon(portrait)
   local icon = portrait and portrait.icon
   if not icon then return end
@@ -1455,8 +1461,14 @@ function mw.AnchorPortraitIcon(portrait)
     icon:SetWidth(size)
     icon:SetHeight(size)
     icon:SetPoint("CENTER", portrait, "CENTER", 0, geometry.backgroundY or 0)
-  else
+  elseif portrait.uuiPortraitBackground then
     icon:SetAllPoints(portrait)
+  else
+    local x = geometry and geometry.iconX or 0
+    local y = geometry and geometry.iconY or 0
+    local half = (geometry and geometry.iconGrow or 0) / 2
+    icon:SetPoint("TOPLEFT", portrait, "TOPLEFT", x - half, y + half)
+    icon:SetPoint("BOTTOMRIGHT", portrait, "BOTTOMRIGHT", x + half, y - half)
   end
 end
 
@@ -1688,8 +1700,53 @@ function mw.BuildHousing(frame, entry)
   local u1, u2 = 0, 1
   if flipArt then u1, u2 = 1, 0 end
 
-  local frameArt = mw.Texture(overlay, "ARTWORK", art, u1, u2, 0, 1)
-  PlaceArt(frameArt)
+  -- A layout authored like Retail's (artUnderBars) carries a translucent bed
+  -- inside its bar openings, which would dim the bars from above. It goes
+  -- under them instead, on the housing, and the entry's ring-only copy of the
+  -- same canvas is drawn on the overlay, so the rim still covers the portrait
+  -- edge and the bar ends.
+  local frameArt, ringArt
+  if L.artUnderBars then
+    frameArt = mw.Texture(housing, "ARTWORK", art, u1, u2, 0, 1)
+    PlaceArt(frameArt)
+    local ring = entry.ring and M.modernWow.texture[entry.ring]
+    if ring then
+      ringArt = mw.Texture(overlay, "ARTWORK", ring, u1, u2, 0, 1)
+      PlaceArt(ringArt)
+    end
+  else
+    frameArt = mw.Texture(overlay, "ARTWORK", art, u1, u2, 0, 1)
+    PlaceArt(frameArt)
+  end
+
+  -- The classification dragon: one texture above the ring, re-pointed per
+  -- tier by mw.ApplyTargetTier. Its cells are authored ring-right like the
+  -- housing, so it flips with it, and M.modernWow.targetDragon places its
+  -- top-right corner in authored canvas units.
+  local dragon, placeDragon
+  if entry.classification and L.artUnderBars then
+    dragon = mw.Texture(overlay, "OVERLAY")
+    if dragon then
+      pcall(dragon.Hide, dragon)
+      placeDragon = function(d)
+        local path = M.modernWow.texture[d.texture]
+        if not path then return false end
+        local c, size = d.cell, d.sheet
+        local l, r = c[1] / size, c[2] / size
+        if flipArt then l, r = r, l end
+        pcall(dragon.SetTexture, dragon, path)
+        pcall(dragon.SetTexCoord, dragon, l, r, c[3] / size, c[4] / size)
+        dragon:SetWidth(d.width * s)
+        dragon:SetHeight(d.height * s)
+        dragon:ClearAllPoints()
+        dragon:SetPoint("TOPLEFT", frame, "TOPLEFT",
+                        FlipX((L.artWidth - d.right - L.contentLeft) * s,
+                              d.width * s),
+                        -(d.top - L.contentTop) * s)
+        return true
+      end
+    end
+  end
 
   -- Bars, in the art's own rectangles. A frame with no power bar gives its
   -- health bar both rows, so the housing opening is never left half empty.
@@ -1740,21 +1797,36 @@ function mw.BuildHousing(frame, entry)
 
   local healthLeftInset = tonumber(entry.healthLeftInset) or 0
   local healthRightInset = tonumber(entry.healthRightInset) or 0
-  mw.PlaceBar(frame.health, frame, s,
-              FlipX(barX, barW) + healthLeftInset +
-                (tonumber(entry.healthX) or 0), healthY,
-              barW - healthLeftInset - healthRightInset +
-                (tonumber(entry.healthWidthExtra) or 0), healthH,
-              M.modernWow.unitFrame.healthFillInset)
+  local healthLeft = FlipX(barX, barW) + healthLeftInset +
+                     (tonumber(entry.healthX) or 0)
+  local healthW = barW - healthLeftInset - healthRightInset +
+                  (tonumber(entry.healthWidthExtra) or 0)
+  mw.PlaceBar(frame.health, frame, s, healthLeft, healthY, healthW, healthH,
+              L.healthFillInset or M.modernWow.unitFrame.healthFillInset)
+  -- Offset that puts the power bar's value readout on the health bar's
+  -- (entry.alignPowerValue): the difference between the two boxes' right
+  -- edges, since each value is anchored to its own box's RIGHT.
+  local powerValueX = 0
   if frame.power then
+    -- A layout whose power opening differs from its health one (Retail's
+    -- target: same left edge, 8 wider) names its own rectangle.
+    local powerBarX = (tonumber(L.powerBarX) or L.barX) - L.contentLeft
+    local powerBarW = (tonumber(L.powerWidth) or L.barWidth) * s
+    powerBarX = powerBarX * s
     local powerInset = tonumber(entry.powerInset) or 0
-    mw.PlaceBar(frame.power, frame, s,
-                FlipX(barX, barW) + powerInset +
-                  (tonumber(entry.powerX) or 0),
+    local powerLeft = FlipX(powerBarX, powerBarW) + powerInset +
+                      (tonumber(entry.powerX) or 0)
+    local powerW = powerBarW - powerInset * 2 +
+                   (tonumber(entry.powerWidthExtra) or 0)
+    mw.PlaceBar(frame.power, frame, s, powerLeft,
                 (L.powerY - L.contentTop) * s +
                   (tonumber(entry.powerY) or 0),
-                barW - powerInset * 2 + (tonumber(entry.powerWidthExtra) or 0),
+                powerW,
                 L.powerHeight * s + (tonumber(entry.powerHeightExtra) or 0))
+    if entry.alignPowerValue then
+      powerValueX = (healthLeft + healthW) - (powerLeft + powerW) +
+                    (tonumber(entry.healthValueX) or 0)
+    end
   end
 
   -- -2 and -1 are modules/unitframes.lua's own BAR_LABEL_Y_OFFSET and
@@ -1769,7 +1841,8 @@ function mw.BuildHousing(frame, entry)
                          tonumber(M.modernWow.text.barLabelY) or 0) +
                    (tonumber(entry.healthLabelY) or 0),
                    entry.shiftLabels, entry.percentX, entry.healthValueX)
-  mw.ShiftBarLabel(frame.power, -1, entry.shiftLabels, entry.percentX)
+  mw.ShiftBarLabel(frame.power, -1, entry.shiftLabels, entry.percentX,
+                   powerValueX)
   -- Centred single-label bars (target-of-target) take their own vertical nudge.
   if entry.nameY and frame.health and frame.health.label and
      frame.health.textLayer then
@@ -1799,7 +1872,15 @@ function mw.BuildHousing(frame, entry)
     -- over a picture.
     --
     -- Stacking is now: bars, then portrait, then the frame art over both.
-    if level > 0 then pcall(portrait.SetFrameLevel, portrait, level + 1) end
+    --
+    -- A split (artUnderBars) housing lifts the portrait clear of the bar
+    -- fills (box level + 1, fill + 2), below their text layers (+11) and the
+    -- rim overlay (+20): Retail's mana bar reaches into the ring's opening,
+    -- and without its mask the portrait is what has to cover that end.
+    local portraitLevel = L.artUnderBars and level + 5 or level + 1
+    if level > 0 then
+      pcall(portrait.SetFrameLevel, portrait, portraitLevel)
+    end
 
     -- Geometry kept on the frame so the fixed portrait placement stays in one
     -- path and cannot diverge between the initial build and later reuse.
@@ -1808,6 +1889,9 @@ function mw.BuildHousing(frame, entry)
       backgroundSize = ring.backgroundTrim
         and (ring.size - ring.backgroundTrim) * s or nil,
       backgroundY = (ring.backgroundY or 0) * s,
+      iconX = (ring.iconX or 0) * s,
+      iconY = (ring.iconY or 0) * s,
+      iconGrow = (ring.iconGrow or 0) * s,
       modelSize = ring.model
         and ring.model
           * (ring.modelScale or M.modernWow.portraitModelScale or 1) * s
@@ -1837,16 +1921,23 @@ function mw.BuildHousing(frame, entry)
 
     local reaction = nil
     if entry.id == "target" and M.modernWow.targetReaction then
-      local token = M.modernWow.targetReaction
-      reaction = mw.Texture(textLayer, "ARTWORK",
-                            M.modernWow.texture.targetReaction)
+      -- A layout may carry its own strip and placement (Retail's 2x type
+      -- strip on the Retail target); the shared token is the fallback.
+      local token = L.reaction or M.modernWow.targetReaction
+      local path = M.modernWow.texture[token.texture or "targetReaction"]
+      local c = token.coords
+      if c then
+        reaction = mw.Texture(textLayer, "ARTWORK", path, c[1], c[2], c[3], c[4])
+      else
+        reaction = mw.Texture(textLayer, "ARTWORK", path)
+      end
       if reaction then
         reaction:SetHeight(token.height)
         reaction:SetPoint("BOTTOMLEFT", frame.health, "TOPLEFT",
                           token.left, token.y)
         reaction:SetPoint("BOTTOMRIGHT", frame.health, "TOPRIGHT",
                           -token.right, token.y)
-        mw.BuildReactionPulse(textLayer, reaction)
+        mw.BuildReactionPulse(textLayer, reaction, path, c)
       end
     end
 
@@ -1910,12 +2001,21 @@ function mw.BuildHousing(frame, entry)
   -- next member.
   frame.uuiModernWow = { housing = housing, overlay = overlay,
                          frameArt = frameArt, art = art, scale = s,
+                         ringArt = ringArt, dragon = dragon,
+                         placeDragon = placeDragon,
+                         -- The entry's own fills, when its housing has them;
+                         -- modules/unitframes.lua HealthTexture prefers these
+                         -- over the shared pair on every colour change.
+                         healthFill = M.modernWow.texture[entry.healthFill or ""],
+                         healthFillTint =
+                           M.modernWow.texture[entry.healthFillTint or ""],
                          height = contentH }
   -- Classic module mixing keeps Classic's global media tokens, so select this
   -- surface's authored health fill directly once the frame is marked dressed.
   -- Clearing the cache makes the next ordinary unit refresh retain that path.
   if frame.health and frame.health.bar then
-    pcall(U.SetStatusBarTexture, frame.health.bar, M.modernWow.texture.healthFill)
+    pcall(U.SetStatusBarTexture, frame.health.bar,
+          frame.uuiModernWow.healthFill or M.modernWow.texture.healthFill)
     frame.healthColorTextured = nil
   end
   return frame.uuiModernWow
@@ -2080,6 +2180,9 @@ function U.ModernWowRefreshHeader(frame)
   if not text then return end
 
   local data = frame.data or {}
+  if frame.uuiModernWow and frame.uuiModernWow.dragon then
+    mw.ApplyTargetTier(frame, data.classification)
+  end
   local reactionR, reactionG, reactionB
 
   if text.name then
@@ -2148,23 +2251,46 @@ function mw.ApplyPowerFill(frame, entry)
   pcall(U.SetStatusBarTexture, frame.power.bar, fill)
 end
 
--- Swaps only the ornament texture when the target's classification changes.
--- Nothing is rebuilt, and nothing native is read: UnitClassification is a unit
--- query, not a frame walk.
-function mw.RefreshClassification()
-  local frame = type(U.GetUnitFrame) == "function" and U.GetUnitFrame("target")
+-- Dresses the target for one classification (M.modernWow.targetTier): the
+-- gold or silver housing and ring, and the dragon above them. Nothing is
+-- rebuilt and nothing moves -- every tier shares the bar rectangles -- and a
+-- tier already shown costs one comparison. An unknown or unreadable
+-- classification degrades to the plain frame.
+function mw.ApplyTargetTier(frame, classification)
   local state = frame and frame.uuiModernWow
   if not state or not state.frameArt then return end
 
-  -- One texture swap. Every tier shares the same bar rectangle and differs
-  -- only in the ornament around the portrait, so nothing has to move: the
-  -- wider boss and rare-elite wings are already inside the drawn canvas.
-  local ok, tier = pcall(UnitClassification, "target")
-  local art = nil
-  if ok and type(tier) == "string" then
-    art = M.modernWow.texture[mw.classification[tier] or ""]
+  local key = M.modernWow.targetTier[classification or ""] and classification
+              or "normal"
+  if state.tier == key then return end
+  state.tier = key
+  local tier = M.modernWow.targetTier[key]
+
+  local housing = M.modernWow.texture[tier.housing]
+  if housing then pcall(state.frameArt.SetTexture, state.frameArt, housing) end
+  local ring = M.modernWow.texture[tier.ring]
+  if ring and state.ringArt then
+    pcall(state.ringArt.SetTexture, state.ringArt, ring)
   end
-  pcall(state.frameArt.SetTexture, state.frameArt, art or state.art)
+
+  if state.dragon then
+    local d = tier.dragon and M.modernWow.targetDragon[tier.dragon]
+    if d and state.placeDragon and state.placeDragon(d) then
+      pcall(state.dragon.Show, state.dragon)
+    else
+      pcall(state.dragon.Hide, state.dragon)
+    end
+  end
+end
+
+-- PLAYER_TARGET_CHANGED path. Reads the client directly because it can run
+-- before modules/unitframes.lua has refreshed frame.data; the header refresh
+-- below then re-applies from frame.data, which is what honours /uui elite.
+function mw.RefreshClassification()
+  local frame = type(U.GetUnitFrame) == "function" and U.GetUnitFrame("target")
+  if not frame or not frame.uuiModernWow then return end
+  local ok, tier = pcall(UnitClassification, "target")
+  mw.ApplyTargetTier(frame, ok and type(tier) == "string" and tier or nil)
 end
 
 function mw.BuildUnitFrames()
@@ -2488,9 +2614,16 @@ mw.reactionPulse = {
   active = false,
 }
 
-function mw.BuildReactionPulse(parent, wash)
-  local glow = mw.Texture(parent, "OVERLAY",
-                          M.modernWow.texture.targetReaction)
+-- `path` and `coords` are the wash's own, so the pulse keeps its exact shape.
+function mw.BuildReactionPulse(parent, wash, path, coords)
+  path = path or M.modernWow.texture.targetReaction
+  local glow
+  if coords then
+    glow = mw.Texture(parent, "OVERLAY", path,
+                      coords[1], coords[2], coords[3], coords[4])
+  else
+    glow = mw.Texture(parent, "OVERLAY", path)
+  end
   if not glow then return end
   glow:SetAllPoints(wash)
   pcall(glow.SetBlendMode, glow, "ADD")
@@ -3002,7 +3135,8 @@ function mw.BuildCastBar(name)
     widget.name:SetPoint("LEFT", bar, "LEFT", c.textInset, drop)
     -- knowledge.json / fonts.stretched_justification_ignored: one edge plus an
     -- explicit width, so a long name stops before the countdown.
-    pcall(widget.name.SetWidth, widget.name, width - 50)
+    widget.uuiNameWidth = width - 50
+    pcall(widget.name.SetWidth, widget.name, widget.uuiNameWidth)
     U.SetFont(widget.name, c.fontSize)
   end
   if widget.time then
@@ -3041,8 +3175,43 @@ function mw.BuildCastBar(name)
   widget.uuiFinishEnd = mw.CastFinishEnd
   widget.uuiCastKind = mw.CastKind
   widget.uuiDrainChannel = true
+  widget.uuiResize = mw.CastResize
 
   mw.CastFillUpdate(widget)
+end
+
+-- Installed as widget.uuiResize: modules/castbar.lua has just re-sized the
+-- bar's cells from its edit-mode size sliders. Rim, flash, bed and shadow are
+-- anchored to the bar and follow it; the spark height, the label drop and the
+-- name width were computed from the bar's size in mw.BuildCastBar, so they are
+-- recomputed here the same way. castbar.lua applies uuiNameWidth afterwards,
+-- since only it knows whether the pushback slot is taking space.
+function mw.CastResize(widget)
+  local state = widget and widget.uuiModernWow
+  local bar = widget and widget.bar
+  if not state or not bar then return end
+
+  local c = mw.cast
+  local width = mw.Dimension(bar, "GetWidth")
+  local height = mw.Dimension(bar, "GetHeight")
+  if state.spark then state.spark:SetHeight(height + c.sparkGrow) end
+
+  local drop = -(height / 2 + c.textGap)
+  widget.uuiTimeY = drop
+  widget.uuiNameWidth = width - 50
+  if widget.name then
+    widget.name:ClearAllPoints()
+    widget.name:SetPoint("LEFT", bar, "LEFT", c.textInset, drop)
+  end
+  if widget.pushback then
+    widget.pushback:ClearAllPoints()
+    widget.pushback:SetPoint("RIGHT", bar, "RIGHT", -c.textInset, drop)
+  end
+  -- While the pushback slot shows, the countdown hangs off it and moves with it.
+  if widget.time and not widget.pushbackShown then
+    widget.time:ClearAllPoints()
+    widget.time:SetPoint("RIGHT", bar, "RIGHT", -c.textInset, drop)
+  end
 end
 
 function mw.BuildCastBars()
@@ -3268,16 +3437,17 @@ function mw.DressWindow(frame, entry)
     br:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", 0, -extend)
   end
 
+  local ml, mr
   if extend > 0 then
     local v1 = 1 - extend / halfHeight
-    local ml = mw.Texture(chrome, "BACKGROUND",
+    ml = mw.Texture(chrome, "BACKGROUND",
                           M.modernWow.texture.panelTopLeft, 0, 1, v1, 1)
     if ml then
       ml:SetWidth(leftWidth)
       ml:SetHeight(extend)
       ml:SetPoint("TOPLEFT", frame, "TOPLEFT", 0, -halfHeight)
     end
-    local mr = mw.Texture(chrome, "BACKGROUND",
+    mr = mw.Texture(chrome, "BACKGROUND",
                           M.modernWow.texture.panelTopRight, 0, 1, v1, 1)
     if mr then
       mr:SetWidth(rightWidth)
@@ -3288,8 +3458,649 @@ function mw.DressWindow(frame, entry)
 
   mw.HideFlatEdges(frame)
 
-  frame.uuiModernWowWindow = { chrome = chrome }
+  frame.uuiModernWowWindow = {
+    chrome = chrome,
+    baseWidth = width,
+    baseHeight = height,
+    quadrants = { tl = tl, tr = tr, bl = bl, br = br, ml = ml, mr = mr },
+  }
   return frame.uuiModernWowWindow
+end
+
+-- Character's expanded housing (M.modernWow.characterWindow): Retail's own
+-- expanded CharacterFrame, built once and shown only with the paper doll. It
+-- replaces the four quadrants instead of extending them -- they are this same
+-- frame at its collapsed width, so the left part lands where they were -- and
+-- gives the whole window one outer metal border, one title bar and one
+-- streak. The paper doll and the stats pane sit in Retail's two insets, whose
+-- borders are the only divider between them; the stats inset carries
+-- Retail's class background (M.modernWow.characterStats), with its own inner
+-- frame, corner flourishes and emblem.
+--
+-- Every piece is a region of the chrome frame itself, the frame the
+-- quadrants are drawn on: its regions sit under every native region and child
+-- of the window and under the stats pane's rows, and one frame's layers are
+-- ordered deterministically. The class art first sat on the pane's own frame
+-- over a separate housing frame and did not show in game (user report,
+-- 2026-09-28). Nothing here takes the mouse or anchors to a native child.
+function mw.HousingTexture(parent, layer, path, coords)
+  if coords then
+    return mw.Texture(parent, layer, path,
+                      coords[1], coords[2], coords[3], coords[4])
+  end
+  return mw.Texture(parent, layer, path)
+end
+
+-- One housing region, hidden until the housing shows. A build that fails
+-- part-way therefore leaves nothing drawn.
+function mw.HousingPiece(housing, layer, path, coords)
+  local piece = mw.HousingTexture(housing.chrome, layer, path, coords)
+  if not piece then error("housing texture could not be created") end
+  pcall(piece.Hide, piece)
+  table.insert(housing.pieces, piece)
+  return piece
+end
+
+-- Anchors a piece's `point` at (`x`, `y`) of the housing: offsets from its
+-- top-left, y downwards.
+function mw.HousingAt(housing, piece, point, x, y)
+  local token = M.modernWow.characterWindow
+  piece:SetPoint(point, housing.chrome, "TOPLEFT",
+                 (housing.left or token.left) + x,
+                 -((housing.top or token.top) + y))
+end
+
+-- Places a stretched piece by its top-left corner and an explicit size. Two
+-- points both on the chrome stopped drawing at the chrome's own right edge
+-- (the native window's width): the rock and streak ended at x 384 in game
+-- (user screenshot, 2026-09-28), while single-point pieces and edges
+-- anchored to other pieces drew past it. One point and a size did not cure
+-- the rock (next screenshot, same day); mw.SizeHousingChrome does.
+function mw.HousingRect(housing, piece, x, y, width, height)
+  piece:SetWidth(width)
+  piece:SetHeight(height)
+  mw.HousingAt(housing, piece, "TOPLEFT", x, y)
+end
+
+-- Retail's NineSliceLayouts.InsetFrameTemplate around one inset: corners at
+-- the inset's own corners (the bottom pair `bottomCornerY` lower), edges
+-- anchored corner to corner as NineSliceUtil does. `x1`..`y2` are housing
+-- offsets.
+function mw.CharacterInsetBorder(housing, x1, y1, x2, y2)
+  local token = M.modernWow.characterWindow
+  local b = token.insetBorder
+  local tex = token.texture
+  local c, e = b.corner, b.edge
+
+  local function Corner(coords, point, x, y)
+    local piece = mw.HousingPiece(housing, "OVERLAY", tex.insetCorners, coords)
+    piece:SetWidth(c)
+    piece:SetHeight(c)
+    mw.HousingAt(housing, piece, point, x, y)
+    return piece
+  end
+  local tl = Corner(b.topLeft, "TOPLEFT", x1, y1)
+  local tr = Corner(b.topRight, "TOPRIGHT", x2, y1)
+  local bl = Corner(b.bottomLeft, "BOTTOMLEFT", x1, y2 - b.bottomCornerY)
+  local br = Corner(b.bottomRight, "BOTTOMRIGHT", x2, y2 - b.bottomCornerY)
+
+  local function Edge(path, coords, first, firstPoint, firstRelative,
+                      second, secondPoint, secondRelative, width, height)
+    local piece = mw.HousingPiece(housing, "OVERLAY", path, coords)
+    if width then piece:SetWidth(width) end
+    if height then piece:SetHeight(height) end
+    piece:SetPoint(firstPoint, first, firstRelative, 0, 0)
+    piece:SetPoint(secondPoint, second, secondRelative, 0, 0)
+  end
+  Edge(tex.insetHorizontal, b.top, tl, "TOPLEFT", "TOPRIGHT",
+       tr, "TOPRIGHT", "TOPLEFT", nil, e)
+  Edge(tex.insetHorizontal, b.bottom, bl, "BOTTOMLEFT", "BOTTOMRIGHT",
+       br, "BOTTOMRIGHT", "BOTTOMLEFT", nil, e)
+  Edge(tex.insetVertical, b.left, tl, "TOPLEFT", "BOTTOMLEFT",
+       bl, "BOTTOMLEFT", "TOPLEFT", e, nil)
+  Edge(tex.insetVertical, b.right, tr, "TOPRIGHT", "BOTTOMRIGHT",
+       br, "BOTTOMRIGHT", "TOPRIGHT", e, nil)
+end
+
+-- The player's race as a M.modernWow.characterScene background key, and its
+-- overlay alpha; nil for a race with no imported background.
+-- UnitRace's third return: MEASURED_RUNTIME
+-- (knowledge: unit.race_class_return_numeric_id).
+function mw.CharacterSceneRace()
+  local token = M.modernWow.characterScene
+  local ok, _, file, id = pcall(UnitRace, "player")
+  if not ok then return nil end
+  local key = token.raceById[tonumber(id) or 0]
+  if not key and type(file) == "string" then
+    key = token.raceByToken[string.upper(file)]
+  end
+  if not key then return nil end
+  return key, (token.overlayAlpha[key] or token.overlayAlpha.default) *
+              token.overlayScale
+end
+
+-- Retail's CharacterModelScene art around the 3D preview
+-- (M.modernWow.characterScene): the race background, darkened as its black
+-- overlay darkens it, and the PaperDollInnerBorder ring. Housing pieces on the
+-- chrome, like the rest of the housing: background in ARTWORK over the inset
+-- background (BORDER), ring in OVERLAY. A frame of its own one level over the
+-- chrome -- the window's own level -- hid the 3D model entirely (user report,
+-- 2026-09-28), while the model draws over the chrome's regions, so nothing
+-- here may sit on a frame above the chrome.
+-- The overlay is a vertex colour rather than a texture: a black layer at
+-- alpha `a` over the art is the art times (1 - a), and a third layer between
+-- the background and the ring does not exist on one frame. It covered exactly
+-- the opaque rows of the art (the lower pair turns transparent where it
+-- stopped), so the result is the same. Built hidden; mw.PlaceCharacterScene
+-- anchors it. Nothing here takes the mouse.
+function mw.BuildCharacterScene(housing)
+  local token = M.modernWow.characterScene
+  local tex, bg, b = token.texture, token.background, token.border
+  local s = { background = {} }
+
+  local function Piece(layer, path, coords)
+    return mw.HousingPiece(housing, layer, path, coords)
+  end
+
+  -- The four background pieces tile from the first, as the XML anchors them.
+  local race, alpha = mw.CharacterSceneRace()
+  if race then
+    local shade = (1 - alpha) ^ (1 / token.shadeGamma)
+    local i
+    for i = 1, 4 do
+      local piece = Piece("ARTWORK", tex.dressup .. race .. i, bg.coords[i])
+      piece:SetWidth(bg.width[i])
+      piece:SetHeight(bg.height[i])
+      pcall(piece.SetDesaturated, piece, true)
+      U.SetColor(piece, shade, shade, shade, 1)
+      s.background[i] = piece
+    end
+    local p = s.background
+    p[2]:SetPoint("TOPLEFT", p[1], "TOPRIGHT", 0, 0)
+    p[3]:SetPoint("TOPLEFT", p[1], "BOTTOMLEFT", 0, 0)
+    p[4]:SetPoint("TOPLEFT", p[1], "BOTTOMRIGHT", 0, 0)
+  end
+
+  local function Corner(coords)
+    local piece = Piece("OVERLAY", tex.parts, coords)
+    piece:SetWidth(b.corner)
+    piece:SetHeight(b.corner)
+    return piece
+  end
+  local tl, tr = Corner(b.topLeft), Corner(b.topRight)
+  local bl, br = Corner(b.bottomLeft), Corner(b.bottomRight)
+  s.topLeft, s.topRight, s.bottomLeft, s.bottomRight = tl, tr, bl, br
+
+  local edge = Piece("OVERLAY", tex.vertical, b.innerLeft)
+  edge:SetWidth(b.edge)
+  edge:SetPoint("TOPLEFT", tl, "BOTTOMLEFT", -b.shift, 0)
+  edge:SetPoint("BOTTOMLEFT", bl, "TOPLEFT", -b.shift, 0)
+  edge = Piece("OVERLAY", tex.vertical, b.innerRight)
+  edge:SetWidth(b.edge)
+  edge:SetPoint("TOPRIGHT", tr, "BOTTOMRIGHT", b.shift, 0)
+  edge:SetPoint("BOTTOMRIGHT", br, "TOPRIGHT", b.shift, 0)
+  edge = Piece("OVERLAY", tex.horizontal, b.innerTop)
+  edge:SetHeight(b.edge)
+  edge:SetPoint("TOPLEFT", tl, "TOPRIGHT", 0, b.shift)
+  edge:SetPoint("TOPRIGHT", tr, "TOPLEFT", 0, b.shift)
+  edge = Piece("OVERLAY", tex.horizontal, b.innerBottom)
+  edge:SetHeight(b.edge)
+  edge:SetPoint("BOTTOMLEFT", bl, "BOTTOMRIGHT", 0, -b.shift)
+  edge:SetPoint("BOTTOMRIGHT", br, "BOTTOMLEFT", 0, -b.shift)
+
+  -- PaperDollInnerBorderBottom2: the line through the weapon row, across
+  -- the whole Inset.
+  s.bottom2 = Piece("OVERLAY", tex.horizontal, b.innerBottom)
+  s.bottom2:SetHeight(b.edge)
+  return s
+end
+
+-- Retail's Inset as this client's slots place it (M.modernWow.characterScene
+-- `slot`), as left, top, right and bottom offsets from CharacterFrame's
+-- top-left (y downwards), plus whether it was measured. Only bounded numbers
+-- are read off the slots; nothing is anchored to them. Unreadable slots give
+-- the housing's own inset, which is Retail's.
+function mw.CharacterSceneInset(frame)
+  local w = M.modernWow.characterWindow
+  local slot = M.modernWow.characterScene.slot
+  local frameLeft = mw.Dimension(frame, "GetLeft")
+  local frameTop = mw.Dimension(frame, "GetTop")
+  local head = U.G("CharacterHeadSlot")
+  local main = U.G("CharacterMainHandSlot")
+  local headLeft = mw.Dimension(head, "GetLeft")
+  local headTop = mw.Dimension(head, "GetTop")
+  local handsRight = mw.Dimension(U.G("CharacterHandsSlot"), "GetRight")
+  local mainTop = mw.Dimension(main, "GetTop")
+  local mainBottom = mw.Dimension(main, "GetBottom")
+  if frameLeft > 0 and frameTop > 0 and headLeft > 0 and headTop > 0 and
+     handsRight > headLeft and mainBottom > 0 and mainTop > mainBottom then
+    return headLeft - frameLeft - slot.left,
+           frameTop - headTop - slot.top,
+           handsRight - frameLeft + slot.right,
+           frameTop - (mainTop + mainBottom) / 2 + slot.weaponMiddle,
+           true
+  end
+  return w.left + w.inset.left, w.top + w.inset.top,
+         w.left + w.width - w.inset.right, w.top + w.height - w.inset.bottom,
+         false
+end
+
+-- Anchors the scene from that Inset with PaperDollFrame.xml's offsets. Runs
+-- on every expand until a measurement succeeds, then keeps it.
+function mw.PlaceCharacterScene(frame, housing)
+  local s = housing.scene
+  if not s or s.measured then return end
+  local token = M.modernWow.characterScene
+  local bg, b = token.background, token.border
+  local w = M.modernWow.characterWindow
+  local left, top, right, bottom, measured = mw.CharacterSceneInset(frame)
+  -- The chrome's top-left is the window's in both states.
+  local chrome = housing.chrome
+
+  local function At(piece, point, x, y)
+    piece:ClearAllPoints()
+    piece:SetPoint(point, chrome, "TOPLEFT", x, -y)
+  end
+  local ok = pcall(function()
+    if s.background[1] then
+      At(s.background[1], "TOPLEFT", left + bg.x, top + bg.y)
+    end
+    At(s.topLeft, "TOPLEFT", left + b.left, top + b.top)
+    At(s.topRight, "TOPRIGHT", right - b.right, top + b.top)
+    At(s.bottomLeft, "BOTTOMLEFT", left + b.left, bottom - b.bottom)
+    At(s.bottomRight, "BOTTOMRIGHT", right - b.right, bottom - b.bottom)
+    -- Bottom2 spans the housing's own inset, whose border it meets.
+    s.bottom2:SetWidth(w.width - w.inset.left - w.inset.right)
+    At(s.bottom2, "BOTTOMLEFT", w.left + w.inset.left, bottom - b.bottom2)
+  end)
+  s.measured = ok and measured
+end
+
+-- Builds the housing; errors are caught by U.ModernWowCharacterHousing.
+-- Layers: rock, then streak and the paper-doll inset background, then the
+-- class background, the 3D preview's race background and the class icon,
+-- then inset borders, the preview's ring and metal (the ring over the icon's
+-- edge, as Retail's portrait sits in it).
+-- `collapsed` builds the same frame at Retail's collapsed width (`width`),
+-- as CharacterFrameMixin:UpdateSize gives it on Reputation, Skills and
+-- Honor (user request, 2026-09-29): rock, streak, metal and the one Inset,
+-- with no InsetRight, class background or 3D preview.
+function mw.BuildCharacterHousing(state, collapsed)
+  local token = M.modernWow.characterWindow
+  if collapsed then
+    return mw.BuildRetailHousing(state.chrome,
+                                 { width = token.width, height = token.height })
+  end
+  local width, height = token.expandedWidth, token.height
+  local housing = { chrome = state.chrome, pieces = {} }
+
+  local function Piece(layer, path, coords)
+    return mw.HousingPiece(housing, layer, path, coords)
+  end
+  local function At(piece, point, x, y)
+    mw.HousingAt(housing, piece, point, x, y)
+  end
+
+  mw.BuildHousingBody(housing, width, height)
+
+  -- The two insets: CharacterFrame's Background over the paper doll's; the
+  -- class background in the stats inset at CharacterStatsPane's corner and
+  -- its authored size (a plain bed only if the class has none).
+  local inset, right = token.inset, token.insetRight
+  local top, bottom = inset.top, height - inset.bottom
+  local split = token.width - inset.right
+  local rightLeft = split + right.gap
+  local rightRight = width - right.right
+  local rightBottom = height - right.bottom
+
+  mw.BuildHousingInset(housing, inset.left, top, split, bottom)
+
+  local stats = M.modernWow.characterStats
+  local okClass, _, class = pcall(UnitClass, "player")
+  local classArt = okClass and class and stats.texture.backdrop[class]
+  if classArt then
+    local art = Piece("ARTWORK", classArt)
+    art:SetWidth(stats.backdrop.width)
+    art:SetHeight(stats.backdrop.height)
+    At(art, "TOPLEFT", rightLeft + stats.pane.left, top + stats.pane.top)
+  else
+    local bed = Piece("ARTWORK", M.texture.plain)
+    U.SetColor(bed, M.Unpack(token.fill))
+    mw.HousingRect(housing, bed, rightLeft, top, rightRight - rightLeft,
+                   rightBottom - top)
+  end
+
+  mw.CharacterInsetBorder(housing, rightLeft, top, rightRight, rightBottom)
+
+  -- The 3D preview's art. A failure leaves the housing without it.
+  local okScene, scene = pcall(mw.BuildCharacterScene, housing)
+  if okScene and scene then
+    housing.scene = scene
+  else
+    U.Error("character scene: " .. tostring(scene))
+  end
+
+  mw.BuildHousingMetal(housing, width, height)
+  return housing
+end
+
+-- ButtonFrameBaseTemplate's Bg and TopTileStreaks: the rock at its own
+-- aspect (cropped, never squeezed, until the body is taller than wide), then
+-- the title streak over it.
+function mw.BuildHousingBody(housing, width, height)
+  local token = M.modernWow.characterWindow
+  local tex, f = token.texture, token.frame
+  local body = f.body
+  local bodyWidth = width - body.left - body.right
+  local bodyHeight = height - body.top - body.bottom
+  local rock = mw.HousingPiece(housing, "BACKGROUND", tex.backgroundRock,
+                               { 0, 1, 0, math.min(1, bodyHeight / bodyWidth) })
+  mw.HousingRect(housing, rock, body.left, body.top, bodyWidth, bodyHeight)
+
+  local streak = mw.HousingPiece(housing, "BORDER", tex.topStreak,
+                                 f.streak.texCoord)
+  mw.HousingRect(housing, streak, f.streak.left, f.streak.top,
+                 width - f.streak.left - f.streak.right, f.streak.height)
+end
+
+-- One Inset: CharacterFrame's Background inside InsetFrameTemplate's border.
+-- BORDER, under the 3D preview's race background (mw.BuildCharacterScene,
+-- ARTWORK) and the Spellbook's pages. It shares BORDER with the streak only
+-- in the streak's last row under the inset's top edge, where the streak's
+-- alpha is at most 7/255.
+function mw.BuildHousingInset(housing, x1, y1, x2, y2)
+  local panel = mw.HousingPiece(housing, "BORDER",
+                                M.modernWow.characterWindow.texture.panelBackground)
+  mw.HousingRect(housing, panel, x1, y1, x2 - x1, y2 - y1)
+  mw.CharacterInsetBorder(housing, x1, y1, x2, y2)
+end
+
+-- The Character window's Retail housing for another window (user requests,
+-- 2026-09-29): rock, streak, Inset(s) and PortraitMetal, drawn as regions of
+-- `parent`, shown. `spec.width` / `spec.height` are the housing's size,
+-- `spec.left` / `spec.top` its top-left in `parent` (default the Character
+-- window's 13, 13, where the paperdoll quadrants' metal lines sit), and
+-- `spec.insets` a list of { x1, y1, x2, y2 } housing offsets (default
+-- ButtonFrameTemplate's one Inset). Layers: rock BACKGROUND, streak and inset
+-- background BORDER, inset border and metal OVERLAY -- so a caller's own art
+-- over the inset belongs in ARTWORK. Nil if it cannot build; nothing is then
+-- drawn.
+function mw.BuildRetailHousing(parent, spec)
+  local token = M.modernWow.characterWindow
+  local width, height = spec.width, spec.height
+  local housing = {
+    chrome = parent, pieces = {},
+    left = spec.left or token.left, top = spec.top or token.top,
+  }
+  mw.BuildHousingBody(housing, width, height)
+  local inset = token.inset
+  local insets = spec.insets or {
+    { inset.left, inset.top, width - inset.right, height - inset.bottom },
+  }
+  local i
+  for i = 1, table.getn(insets) do
+    local r = insets[i]
+    mw.BuildHousingInset(housing, r[1], r[2], r[3], r[4])
+  end
+  mw.BuildHousingMetal(housing, width, height)
+  return housing
+end
+
+function U.ModernWowRetailHousing(parent, spec)
+  if not parent or type(spec) ~= "table" then return nil end
+  local ok, housing = pcall(mw.BuildRetailHousing, parent, spec)
+  if not ok or not housing then
+    U.Error("retail housing: " .. tostring(housing))
+    return nil
+  end
+  mw.ShowHousingPieces(housing, true)
+  return housing
+end
+
+-- The class/portrait icon's rect in the housing's PortraitMetal ring, as a
+-- TOPLEFT offset of the housing's parent and a size (default the Character
+-- portrait's), for an icon drawn below the metal (ARTWORK or lower).
+function U.ModernWowHousingPortraitRect(left, top, size)
+  local token = M.modernWow.characterWindow
+  local p = token.portrait
+  size = size or p.size
+  return (left or token.left) + p.x - size / 2,
+         (top or token.top) + p.y - size / 2, size
+end
+
+-- The metal: NineSliceLayouts.PortraitFrameTemplate, corners placed from
+-- the housing's own corners, edges corner to corner.
+function mw.BuildHousingMetal(housing, width, height)
+  local token = M.modernWow.characterWindow
+  local tex, f = token.texture, token.frame
+  local function Piece(layer, path, coords)
+    return mw.HousingPiece(housing, layer, path, coords)
+  end
+  local function At(piece, point, x, y)
+    mw.HousingAt(housing, piece, point, x, y)
+  end
+  local function Corner(spec, point, x, y)
+    local piece = Piece("OVERLAY", tex.metalCorners, spec.texCoord)
+    piece:SetWidth(spec.width)
+    piece:SetHeight(spec.height)
+    At(piece, point, x + spec.x, y - spec.y)
+    return piece
+  end
+  local tl = Corner(f.cornerTopLeft, "TOPLEFT", 0, 0)
+  local tr = Corner(f.cornerTopRight, "TOPRIGHT", width, 0)
+  local bl = Corner(f.cornerBottomLeft, "BOTTOMLEFT", 0, height)
+  local br = Corner(f.cornerBottomRight, "BOTTOMRIGHT", width, height)
+
+  local edge = Piece("OVERLAY", tex.metalHorizontal, f.edgeTop.texCoord)
+  edge:SetHeight(f.edgeTop.height)
+  edge:SetPoint("TOPLEFT", tl, "TOPRIGHT", 0, 0)
+  edge:SetPoint("TOPRIGHT", tr, "TOPLEFT", 0, 0)
+  edge = Piece("OVERLAY", tex.metalHorizontal, f.edgeBottom.texCoord)
+  edge:SetHeight(f.edgeBottom.height)
+  edge:SetPoint("BOTTOMLEFT", bl, "BOTTOMRIGHT", 0, 0)
+  edge:SetPoint("BOTTOMRIGHT", br, "BOTTOMLEFT", 0, 0)
+  edge = Piece("OVERLAY", tex.metalVertical, f.edgeLeft.texCoord)
+  edge:SetWidth(f.edgeLeft.width)
+  edge:SetPoint("TOPLEFT", tl, "BOTTOMLEFT", 0, 0)
+  edge:SetPoint("BOTTOMLEFT", bl, "TOPLEFT", 0, 0)
+  edge = Piece("OVERLAY", tex.metalVertical, f.edgeRight.texCoord)
+  edge:SetWidth(f.edgeRight.width)
+  edge:SetPoint("TOPRIGHT", tr, "BOTTOMRIGHT", 0, 0)
+  edge:SetPoint("BOTTOMRIGHT", br, "TOPRIGHT", 0, 0)
+
+  return housing
+end
+
+-- The class icon (mw.ClassIcon's own region on the chrome, ARTWORK) moves
+-- into the Retail ring while the housing shows; mw.CharacterClassIcon puts it
+-- back in the quadrants' ring.
+function mw.PlaceHousingPortrait(state)
+  local icon = state.classIcon
+  if not icon then return end
+  local token = M.modernWow.characterWindow
+  local p = token.portrait
+  pcall(function()
+    icon:ClearAllPoints()
+    icon:SetWidth(p.size)
+    icon:SetHeight(p.size)
+    icon:SetPoint("CENTER", state.chrome, "TOPLEFT", token.left + p.x,
+                  -(token.top + p.y))
+  end)
+end
+
+-- The header's native text and controls: centred on the housing's title bar
+-- and in its corner while a housing shows (`housed`; expanded or collapsed
+-- width), back on modules/character.lua's panel (the quadrants' placement)
+-- otherwise.
+function mw.PlaceCharacterHeader(frame, expanded, housed)
+  local token = M.modernWow.characterWindow
+  local main = U.G(mw.character.panel)
+  local width = expanded and token.expandedWidth or token.width
+  housed = expanded or housed
+  local name = U.G("CharacterNameText")
+  if name then
+    pcall(function()
+      name:ClearAllPoints()
+      if housed then
+        local t = token.title
+        name:SetPoint("TOP", frame, "TOPLEFT",
+                      token.left + (t.left + width - t.right) / 2,
+                      -(token.top + t.top))
+      elseif main then
+        name:SetPoint("TOP", main, "TOP", 0, -10)
+      end
+    end)
+  end
+
+  local close = U.G("CharacterFrameCloseButton")
+  if close then
+    pcall(function()
+      close:ClearAllPoints()
+      if housed then
+        close:SetPoint("TOPRIGHT", frame, "TOPLEFT",
+                       token.left + width - token.close.right,
+                       -(token.top + token.close.top))
+      elseif main then
+        close:SetPoint("TOPRIGHT", main, "TOPRIGHT", -6, -6)
+      end
+    end)
+  end
+
+  mw.PlaceCharacterTitleDropDown(frame, expanded)
+  mw.characterLevelPlaced = nil
+  mw.PlaceCharacterLevelLine(frame)
+  mw.PlaceCharacterGuildLine(frame)
+end
+
+-- The chrome spans the whole housing while it shows. Its BACKGROUND rock
+-- stopped at the chrome's own right edge -- the native window's 384 -- both
+-- with two points and with one point and a size (user screenshots,
+-- 2026-09-28), leaving the header band right of it open to the world, while
+-- the ARTWORK class art and OVERLAY borders past that edge drew. With the
+-- chrome as wide as the housing (and the corners' overhang, `left` again on
+-- the right) no piece crosses its edge. Collapsed, it goes back to the
+-- window's own rect. Only its right edge moves: every piece and the class
+-- icon are anchored to its top-left.
+function mw.SizeHousingChrome(frame, state, expanded)
+  local token = M.modernWow.characterWindow
+  local chrome = state.chrome
+  pcall(function()
+    chrome:ClearAllPoints()
+    if expanded then
+      chrome:SetPoint("TOPLEFT", frame, "TOPLEFT", 0, 0)
+      chrome:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", 0, 0)
+      chrome:SetWidth(token.left * 2 + token.expandedWidth)
+    else
+      chrome:SetAllPoints(frame)
+    end
+  end)
+end
+
+-- How far the title dropdown must move from its collapsed place to sit in
+-- the header band (M.modernWow.characterWindow.titleDropDown), in its own
+-- units. Read once from bounded numbers -- its edges and the window's --
+-- while both are laid out; nothing is anchored to it. Nil if unreadable.
+function mw.MeasureTitleDropDownShift(frame, dropdown)
+  local token = M.modernWow.characterWindow
+  local okVisible, visible = pcall(dropdown.IsVisible, dropdown)
+  if not (okVisible and visible) then return nil end
+  local left = mw.Dimension(frame, "GetLeft")
+  local top = mw.Dimension(frame, "GetTop")
+  local right = mw.Dimension(dropdown, "GetRight")
+  local upper = mw.Dimension(dropdown, "GetTop")
+  local lower = mw.Dimension(dropdown, "GetBottom")
+  if left == 0 or top == 0 or right == 0 or upper == 0 or lower == 0 then
+    return nil
+  end
+  local scale = 1
+  local frameScale = mw.Dimension(frame, "GetEffectiveScale")
+  local dropScale = mw.Dimension(dropdown, "GetEffectiveScale")
+  if frameScale > 0 and dropScale > 0 then scale = dropScale / frameScale end
+
+  local targetRight = token.left + token.expandedWidth -
+                      token.titleDropDown.right
+  local targetMiddle = token.top + token.titleDropDown.y
+  local currentRight = right * scale - left
+  local currentMiddle = top - (upper + lower) / 2 * scale
+  return { (targetRight - currentRight) / scale,
+           (currentMiddle - targetMiddle) / scale }
+end
+
+-- Always from the stock anchors (mw.ShiftStockPoints), so the two places
+-- never accumulate. A dropdown whose edges cannot be read stays put.
+function mw.PlaceCharacterTitleDropDown(frame, expanded)
+  local token = M.modernWow.titleDropDown
+  local dropdown = U.G(token.name)
+  if not dropdown then return end
+  mw.ShiftStockPoints(dropdown, token.x, token.y)
+  if not expanded then return end
+  if not mw.characterTitleShift then
+    mw.characterTitleShift = mw.MeasureTitleDropDownShift(frame, dropdown)
+    if not mw.characterTitleShift then return end
+  end
+  local shift = mw.characterTitleShift
+  mw.ShiftStockPoints(dropdown, token.x + shift[1], token.y + shift[2])
+end
+
+-- Shows Retail's expanded housing (true) or the same housing at its collapsed
+-- width (false; Reputation, Skills, Honor), and moves the header's text and
+-- controls with it. modules/characterstatspanel.lua drives it from the paper
+-- doll's show and hide. The first call builds both, hidden. Returns false,
+-- leaving the collapsed page untouched, if the expanded one cannot build; a
+-- collapsed one that cannot build leaves the quadrants on the other tabs.
+mw.characterQuadrants = { "tl", "tr", "bl", "br" }
+
+function mw.EnsureCharacterHousing(state, key, collapsed)
+  local failed = key .. "Failed"
+  if not state[key] and not state[failed] then
+    local ok, housing = pcall(mw.BuildCharacterHousing, state, collapsed)
+    if ok and housing then
+      state[key] = housing
+    else
+      U.Error("character housing: " .. tostring(housing))
+      state[failed] = true
+    end
+  end
+  return state[key]
+end
+
+function mw.ShowHousingPieces(housing, shown)
+  if not housing then return end
+  local i
+  for i = 1, table.getn(housing.pieces) do
+    local piece = housing.pieces[i]
+    if shown then pcall(piece.Show, piece) else pcall(piece.Hide, piece) end
+  end
+end
+
+function U.ModernWowCharacterHousing(frame, expanded)
+  local state = frame and frame.uuiModernWowWindow
+  if not state or not state.chrome or not state.quadrants then return false end
+  local housing = mw.EnsureCharacterHousing(state, "characterHousing", false)
+  if not housing then return false end
+  local collapsedHousing = mw.EnsureCharacterHousing(
+    state, "characterHousingCollapsed", true)
+  expanded = expanded and true or false
+  local housed = expanded or collapsedHousing ~= nil
+  mw.SizeHousingChrome(frame, state, expanded)
+  if expanded then mw.PlaceCharacterScene(frame, housing) end
+
+  local i
+  for i = 1, table.getn(mw.characterQuadrants) do
+    local piece = state.quadrants[mw.characterQuadrants[i]]
+    if piece then
+      if housed then pcall(piece.Hide, piece) else pcall(piece.Show, piece) end
+    end
+  end
+  mw.ShowHousingPieces(housing, expanded)
+  mw.ShowHousingPieces(collapsedHousing, not expanded)
+  -- mw.ClassIcon shows or hides the icon by class; this only moves it.
+  mw.CharacterClassIcon(frame)
+  if housed then mw.PlaceHousingPortrait(state) end
+
+  state.expanded = expanded or nil
+  mw.PlaceCharacterHeader(frame, expanded, housed)
+  return true
 end
 
 function mw.BuildWindows()
@@ -3872,9 +4683,16 @@ function mw.BuildCharacter()
 
   mw.CharacterClassIcon(frame)
   mw.DressGearSlots(frame)
-  mw.CharacterStatsFrame(frame)
   mw.ShiftTitleDropDown()
   mw.CharacterLevelLine(frame)
+  -- The stats side panel (modules/characterstatspanel.lua) replaces the stat
+  -- block under the model and expands the window into Retail's housing
+  -- (U.ModernWowCharacterHousing), which re-places the header's text and
+  -- controls placed above; the inset boxes are only drawn if it cannot build.
+  if not (type(U.BuildCharacterStatsPanel) == "function" and
+          U.BuildCharacterStatsPanel(frame)) then
+    mw.CharacterStatsFrame(frame)
+  end
 
   local i
   for i = 1, entry.tabCount do
@@ -4215,6 +5033,15 @@ function mw.RefreshCharacterLevelLine(level)
   pcall(text.SetText, text, U.L("CHARACTER_CLASS_LEVEL", name, level))
 end
 
+-- Centre x of the paper-doll Inset (the 3D model's pane), from the window's
+-- left edge: the level and guild lines sit over the model, not over the whole
+-- expanded housing (user request, 2026-09-28).
+function mw.CharacterPaperDollCentreX()
+  local window = M.modernWow.characterWindow
+  local inset = window.inset
+  return window.left + (inset.left + window.width - inset.right) / 2
+end
+
 -- The class/level line belongs to the themed housing, not to the native name
 -- or title-dropdown geometry. Anchoring it directly to the window keeps it
 -- horizontally centred even when the panel manager or UI scale moves the
@@ -4224,11 +5051,49 @@ function mw.PlaceCharacterLevelLine(frame)
   if not text or mw.characterLevelPlaced then return end
 
   local token = M.modernWow.characterLevelLine
+  local state = frame and frame.uuiModernWowWindow
   pcall(function()
     text:ClearAllPoints()
-    text:SetPoint("TOP", frame, "TOP", 0, -token.top)
+    if state and state.expanded then
+      text:SetPoint("TOP", frame, "TOPLEFT",
+                    mw.CharacterPaperDollCentreX(), -token.top)
+    else
+      text:SetPoint("TOP", frame, "TOP", 0, -token.top)
+    end
   end)
   mw.characterLevelPlaced = true
+end
+
+-- The guild line ("<rank> of <guild>", the native CharacterGuildText: global
+-- present in the 2026-08-16 dump). Its stock anchor follows the title
+-- dropdown, so with the dropdown in the header band it landed on the stats
+-- inset's top edge, half under the housing's border and class art (user
+-- screenshot, 2026-09-28). While the housing shows, the native line is faded
+-- out and its own text is mirrored on the level line's holder, centred under
+-- the level line; otherwise the native line is left as the client draws it.
+-- Only bounded reads of the native text: nothing is anchored to it.
+function mw.PlaceCharacterGuildLine(frame)
+  local mirror = mw.characterGuildText
+  if not mirror then return end
+  local state = frame and frame.uuiModernWowWindow
+  local expanded = state and state.expanded
+  local native = U.G("CharacterGuildText")
+  local value
+  if native then
+    pcall(native.SetAlpha, native, expanded and 0 or 1)
+    local okShown, shown = pcall(native.IsShown, native)
+    local okText, text = pcall(native.GetText, native)
+    if okShown and shown and okText and type(text) == "string" and
+       text ~= "" then
+      value = text
+    end
+  end
+  if expanded and value then
+    pcall(mirror.SetText, mirror, value)
+    pcall(mirror.Show, mirror)
+  else
+    pcall(mirror.Hide, mirror)
+  end
 end
 
 function mw.CharacterLevelLine(frame)
@@ -4247,6 +5112,22 @@ function mw.CharacterLevelLine(frame)
   if not okText or not text then return end
   U.SetStockFont(text, M.fontSize.normal, M.color.text)
   mw.characterLevelText = text
+
+  -- The guild line's stand-in (mw.PlaceCharacterGuildLine), on the same
+  -- holder so it draws above the housing; only ever shown expanded, so it
+  -- is placed once, under the level line on the paper doll's centre.
+  local okGuild, guild = pcall(holder.CreateFontString, holder, nil, "OVERLAY")
+  if okGuild and guild then
+    local token = M.modernWow.characterLevelLine
+    U.SetStockFont(guild, M.fontSize.small, token.guild.color)
+    pcall(guild.SetPoint, guild, "TOP", frame, "TOPLEFT",
+          mw.CharacterPaperDollCentreX(), -token.guild.top)
+    pcall(guild.Hide, guild)
+    mw.characterGuildText = guild
+    U.RegisterEvent("PLAYER_GUILD_UPDATE", function()
+      mw.PlaceCharacterGuildLine(frame)
+    end)
+  end
 
   mw.PlaceCharacterLevelLine(frame)
   U.PostHookScript(frame, "OnShow", function()
@@ -4403,6 +5284,7 @@ mw.social = {
 function mw.SocialPortrait(frame)
   local state = frame and frame.uuiModernWowWindow
   if not state or not state.chrome then return end
+  if state.socialHousing then return mw.SocialHousedPortrait(state) end
   -- Drawn UNDER the window art (user request 2026-09-20): on its own
   -- mouse-transparent frame one level below the chrome, so the gold ring
   -- overlaps the icon's edge. The art's ring centre is transparent
@@ -4439,6 +5321,50 @@ function mw.SocialPortrait(frame)
   pcall(icon.Show, icon)
 end
 
+-- Under the Retail housing the portrait is a region of the chrome itself, in
+-- ARTWORK: over the rock, under the PortraitMetal ring (OVERLAY), as the
+-- Character window's class icon sits. Same size as on the quadrants.
+function mw.SocialHousedPortrait(state)
+  if not state.socialHousedPortrait then
+    state.socialHousedPortrait = mw.Texture(state.chrome, "ARTWORK",
+                                            M.modernWow.social.portrait)
+  end
+  local icon = state.socialHousedPortrait
+  if not icon then return end
+  local left, top, size =
+    U.ModernWowHousingPortraitRect(nil, nil, M.modernWow.social.portraitRect.size)
+  pcall(function()
+    icon:ClearAllPoints()
+    icon:SetWidth(size)
+    icon:SetHeight(size)
+    icon:SetPoint("TOPLEFT", state.chrome, "TOPLEFT", left, -top)
+  end)
+  pcall(icon.Show, icon)
+end
+
+-- The Character window's Retail housing on every Social tab (user request,
+-- 2026-09-29), lengthened by the same `extend` the quadrants were, since the
+-- Friends content runs lower than Character's rim. The quadrants stay only as
+-- the fallback if it cannot build.
+function mw.SocialHousing(frame)
+  local state = frame.uuiModernWowWindow
+  if state.socialHousing or state.socialHousingFailed then return end
+  local token = M.modernWow.characterWindow
+  local housing = U.ModernWowRetailHousing(state.chrome, {
+    width = token.width,
+    height = token.height + M.modernWow.social.extend,
+  })
+  if not housing then
+    state.socialHousingFailed = true
+    return
+  end
+  state.socialHousing = housing
+  local key, piece
+  for key, piece in pairs(state.quadrants or {}) do
+    pcall(piece.Hide, piece)
+  end
+end
+
 function mw.BuildSocial()
   local frame = U.G(mw.socialWindow.name)
   if not frame then error("modern-wow Social frame is unavailable") end
@@ -4447,6 +5373,7 @@ function mw.BuildSocial()
     error("modern-wow Social texture could not be applied")
   end
   frame.uuiModernWowWindow.social = true
+  mw.SocialHousing(frame)
 
   -- modules/friends.lua keeps this panel as the anchor for its title, close
   -- button and tab row; only its near-black sheet comes off.

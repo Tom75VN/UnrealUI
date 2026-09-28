@@ -715,6 +715,59 @@ function U.TooltipLineText(name, side, index)
 end
 
 -- ---------------------------------------------------------------------------
+-- Private scanner tooltips
+--
+-- Several modules read game text (item durability, action names, reagents,
+-- aura names, recipe stats) through a private GameTooltipTemplate frame armed
+-- with SetOwner(WorldFrame, "ANCHOR_NONE"). Since the client update of
+-- 2026-09-29 the client DRAWS such a frame: a Set* call shows it, and with no
+-- anchor point it sits at the exact centre of the screen with the template's
+-- tooltip backdrop, over the real tooltip (probe tooltipghost.v1: four
+-- scanners shown at alpha 1, rect centred on the screen, same rect in both
+-- walks). The one scanner that already hid itself after reading,
+-- modules/characterstats.lua, was absent from that capture.
+--
+-- So every scanner is created, armed and released here, and is hidden again
+-- on every exit path of a scan. Reads happen between the setter and the Hide,
+-- while the lines are still shown, so the shown/visible guards above and in
+-- modules/spellbook.lua keep working.
+-- ---------------------------------------------------------------------------
+
+function U.CreateScannerTooltip(name, parent)
+  local ok, tip = pcall(CreateFrame, "GameTooltip", name, parent,
+                        "GameTooltipTemplate")
+  if not ok or not tip then return nil end
+  pcall(tip.Hide, tip)
+  return tip
+end
+
+-- core/itemsort.lua's verified order: ClearLines, then SetOwner. A hidden
+-- tooltip has no owner, so this runs before every setter.
+function U.ArmScannerTooltip(tip)
+  if not tip then return end
+  pcall(tip.ClearLines, tip)
+  pcall(tip.SetOwner, tip, U.G("WorldFrame") or UIParent, "ANCHOR_NONE")
+end
+
+function U.ReleaseScannerTooltip(tip)
+  if tip then pcall(tip.Hide, tip) end
+end
+
+-- Arms `tip`, runs read(tip, a1, a2) and hides the tooltip whatever `read`
+-- returned or raised. Returns up to three results of `read`, or nil.
+function U.ScanWithTooltip(tip, read, a1, a2)
+  if not tip or type(read) ~= "function" then return nil end
+  U.ArmScannerTooltip(tip)
+  local ok, r1, r2, r3 = pcall(read, tip, a1, a2)
+  U.ReleaseScannerTooltip(tip)
+  if not ok then
+    U.Debug("tooltip scanner read failed: " .. tostring(r1))
+    return nil
+  end
+  return r1, r2, r3
+end
+
+-- ---------------------------------------------------------------------------
 -- Cursor and mouse input
 --
 -- Two readings that several surfaces need whenever they wrap a stock button's

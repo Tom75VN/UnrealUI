@@ -18,9 +18,10 @@ local GOLD  = { 0.96, 0.68, 0.04, 1.00 }
 local WHITE = { 0.90, 0.90, 0.90, 1.00 }
 local DIM   = { 0.60, 0.60, 0.60, 1.00 }
 
-local frame, panel
+local frame, panel, junkButton
 local useModernWow = false
 local chromeStripped = false
+local RefreshSellAllJunkButton
 
 -- Vanilla's MERCHANT_ITEMS_PER_PAGE is documented as 10, but the number of
 -- MerchantItem<n> buttons the stock template actually instantiates has no
@@ -135,6 +136,18 @@ local function StyleModernMerchantSlot(button, icon, iconTexCoord)
      type(U.ModernWowBuildThinBorder) == "function" then
     U.ModernWowBuildThinBorder(button, borderSize)
     button.uuiModernWowMerchantThinBorder = true
+  end
+  -- ItemButtonTemplate puts Count and Stock on BORDER, the same layer as the
+  -- rim pieces, so the rim could draw over the number (user report,
+  -- 2026-09-26). OVERLAY keeps them above it.
+  local nameOk, name = pcall(button.GetName, button)
+  if nameOk and name then
+    local suffixes = { "Count", "Stock" }
+    local s
+    for s = 1, table.getn(suffixes) do
+      local text = G(name .. suffixes[s])
+      if text then pcall(text.SetDrawLayer, text, "OVERLAY") end
+    end
   end
 end
 
@@ -269,24 +282,17 @@ local function StyleItemRow(i)
     local nameColor = MerchantItemNameColor(i, itemButton)
     SetTextFont(name, M.fontSize.small, nameColor)
     if name then
-      local state = row.uuiModernWowMerchantRow
-      local anchor = state and state.nameAnchor
-      if state and type(anchor) ~= "table" and type(name.GetPoint) == "function" then
-        local anchorOk, point, relativeTo, relativePoint, x, y =
-          pcall(name.GetPoint, name, 1)
-        if anchorOk and point then
-          anchor = {
-            point = point, relativeTo = relativeTo, relativePoint = relativePoint,
-            x = x or 0, y = y or 0,
-          }
-          state.nameAnchor = anchor
-        end
-      end
-      if type(anchor) == "table" then
+      -- The template anchors the name to $parentSlotTexture, a region. This
+      -- client does not carry a region-relative point along when the row
+      -- moves, so compacted buyback rows left their names at the vendor
+      -- grid (user report, 2026-09-26). Anchor to the row frame instead, at
+      -- the template's own offset (layout.name).
+      local anchor = layout.name
+      if anchor then
         pcall(function()
           name:ClearAllPoints()
-          name:SetPoint(anchor.point, anchor.relativeTo, anchor.relativePoint,
-                        anchor.x + (layout.nameOffsetX or 0), anchor.y)
+          name:SetPoint("LEFT", row, "TOPLEFT",
+                        anchor.left + (layout.nameOffsetX or 0), -anchor.top)
         end)
       end
       pcall(name.SetDrawLayer, name, "OVERLAY", 7)
@@ -313,6 +319,18 @@ local function StyleItemRow(i)
     local icon = ResolveItemButtonIcon(
       itemButton, "MerchantItem" .. i .. "ItemButtonIconTexture")
     U.StyleStockButton(itemButton, { icon = icon })
+
+    local name = G("MerchantItem" .. i .. "Name")
+    if name then
+      -- Stripping the row removes the slot texture that owns the template's
+      -- name anchor. Bind the text to the surviving item button so every row
+      -- keeps its label beside its icon after native refreshes.
+      pcall(function()
+        name:ClearAllPoints()
+        name:SetPoint("TOPLEFT", itemButton, "TOPRIGHT", 5, -2)
+        name:SetJustifyH("LEFT")
+      end)
+    end
   end
 
   local money = G("MerchantItem" .. i .. "MoneyFrame")
@@ -760,6 +778,7 @@ local function MerchantShown()
   frame = frame or G("MerchantFrame")
   RememberBagItemQualities()
   BindBuybackRarity()
+  if RefreshSellAllJunkButton then RefreshSellAllJunkButton() end
 end
 
 local function StyleBuyBackSlot()
@@ -878,6 +897,7 @@ end
 local function MerchantInventoryUpdated()
   RememberBagItemQualities()
   ScheduleLastBuybackRefresh()
+  if RefreshSellAllJunkButton then RefreshSellAllJunkButton() end
 end
 
 local function StyleModernRepairButton(button, nativeIcon, cell, layout)
@@ -917,12 +937,91 @@ local function StyleModernRepairButton(button, nativeIcon, cell, layout)
   end)
 end
 
+RefreshSellAllJunkButton = function()
+  if not junkButton then return end
+  if MerchantIsOnBuybackTab() then
+    pcall(junkButton.Hide, junkButton)
+    return
+  end
+
+  local count = 0
+  if type(U.BagJunkItemCount) == "function" then
+    local ok, value = pcall(U.BagJunkItemCount)
+    count = ok and tonumber(value) or 0
+  end
+  local enabled = count > 0
+  pcall(junkButton.Show, junkButton)
+  if enabled then
+    pcall(junkButton.Enable, junkButton)
+  else
+    pcall(junkButton.Disable, junkButton)
+  end
+
+  local state = junkButton.uuiModernWowRepairArt
+  local icon = state and state.icon
+  if icon then pcall(icon.SetDesaturated, icon, not enabled) end
+end
+
+local function EnsureSellAllJunkButton(layout)
+  local position = layout and layout.junk
+  local cell = layout and layout.icon and layout.icon.sellJunk
+  if not frame or not position or not cell then return nil end
+
+  if not junkButton then
+    local ok
+    ok, junkButton = pcall(CreateFrame, "Button",
+                           "UnrealUIMerchantSellAllJunkButton", frame)
+    if not ok then junkButton = nil end
+    if not junkButton then return nil end
+    pcall(junkButton.EnableMouse, junkButton, true)
+    pcall(junkButton.RegisterForClicks, junkButton, "LeftButtonUp")
+    junkButton:SetScript("OnClick", function()
+      local count = type(U.BagJunkItemCount) == "function" and
+                    U.BagJunkItemCount() or 0
+      if count < 1 then return end
+      U.ShowConfirm({
+        owner = "merchant.sell-junk",
+        modernWow = true,
+        text = U.LN("MERCHANT_SELL_JUNK_CONFIRM", count),
+        acceptText = U.L("BAGS_FAVORITE_SELL_ACCEPT"),
+        onAccept = function()
+          if type(U.SellBagJunkAtMerchant) == "function" then
+            U.SellBagJunkAtMerchant()
+          end
+        end,
+      })
+    end)
+  end
+
+  pcall(function()
+    junkButton:ClearAllPoints()
+    junkButton:SetWidth(layout.size)
+    junkButton:SetHeight(layout.size)
+    junkButton:SetPoint("TOPLEFT", frame, "TOPLEFT",
+                        position.left, -position.top)
+  end)
+  StyleModernRepairButton(junkButton, nil, cell, layout)
+  pcall(junkButton.SetPushedTexture, junkButton,
+        "Interface\\Buttons\\UI-Quickslot-Depress")
+  pcall(junkButton.SetHighlightTexture, junkButton,
+        "Interface\\Buttons\\ButtonHilight-Square")
+  local highlightOk, highlight = pcall(junkButton.GetHighlightTexture,
+                                       junkButton)
+  if highlightOk and highlight then
+    pcall(highlight.SetBlendMode, highlight, "ADD")
+  end
+  RaiseAboveModernChrome(junkButton, 4)
+  RefreshSellAllJunkButton()
+  return junkButton
+end
+
 local function StyleRepairButtons()
   local repairAll = G("MerchantRepairAllButton")
   if useModernWow then
     local token = ModernToken()
     local layout = token and token.repairs
     if not layout then return end
+    EnsureSellAllJunkButton(layout)
     local repairItem = G("MerchantRepairItemButton")
     local guildRepair = G("MerchantGuildBankRepairButton")
     local buttons = {
@@ -1507,6 +1606,9 @@ local function BuildFrame()
   U.PostHookScript(frame, "OnShow", Reapply)
   U.PostHookScript(frame, "OnHide", function()
     if panel then panel:Hide() end
+    if type(U.HideConfirm) == "function" then
+      U.HideConfirm("merchant.sell-junk")
+    end
   end)
 
   -- Mainline exposes the buyback icon as ItemButton.Icon rather than the
@@ -1518,7 +1620,10 @@ local function BuildFrame()
     StylePageControls()
     RefreshLastBuybackSlot()
     ScheduleLastBuybackRefresh()
+    RefreshSellAllJunkButton()
   end)
+  U.PostHookGlobal("MerchantFrame_UpdateBuybackInfo",
+                   RefreshSellAllJunkButton)
 
   local shown = false
   if frame.IsShown then
@@ -1558,7 +1663,10 @@ function MER:OnEnable()
   -- NPC/service-window chrome.
   U.RegisterEvent("MERCHANT_SHOW", MerchantShown)
   U.RegisterEvent("MERCHANT_UPDATE", MerchantInventoryUpdated)
-  U.RegisterEvent("BAG_UPDATE", RememberBagItemQualities)
+  U.RegisterEvent("BAG_UPDATE", function()
+    RememberBagItemQualities()
+    if RefreshSellAllJunkButton then RefreshSellAllJunkButton() end
+  end)
 
   useModernWow = type(U.GetActiveThemeStyle) == "function" and
                  U.GetActiveThemeStyle() == "modern-wow"

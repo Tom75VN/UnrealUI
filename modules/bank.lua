@@ -429,7 +429,7 @@ local function RefreshBag(bag)
   if not bagSlots then return end
 
   local slot
-  for slot = 1, table.getn(bagSlots) do
+  for slot in pairs(bagSlots) do
     if bagSlots[slot] and bagSlots[slot]:IsShown() then
       UpdateSlotAppearance(bag, slot)
     end
@@ -444,7 +444,7 @@ local function HighlightBag(bag, on)
   if not bagSlots then return end
 
   local slot
-  for slot = 1, table.getn(bagSlots) do
+  for slot in pairs(bagSlots) do
     local button = bagSlots[slot]
     if button and button:IsShown() then
       if on then
@@ -680,7 +680,7 @@ function modernBank.HideGoneBags(bags)
   for bag, bagSlots in pairs(slots) do
     if not live[bag] then
       local slot
-      for slot = 1, table.getn(bagSlots) do
+      for slot in pairs(bagSlots) do
         if bagSlots[slot] then bagSlots[slot]:Hide() end
       end
     end
@@ -754,8 +754,8 @@ local function LayoutSlots()
     local bagSlots = slots[bag]
     if bagSlots then
       local stale
-      for stale = n + 1, table.getn(bagSlots) do
-        if bagSlots[stale] then bagSlots[stale]:Hide() end
+      for stale in pairs(bagSlots) do
+        if stale > n and bagSlots[stale] then bagSlots[stale]:Hide() end
       end
     end
   end
@@ -765,7 +765,7 @@ local function LayoutSlots()
   for bag, bagSlots in pairs(slots) do
     if not live[bag] then
       local slot
-      for slot = 1, table.getn(bagSlots) do
+      for slot in pairs(bagSlots) do
         if bagSlots[slot] then bagSlots[slot]:Hide() end
       end
     end
@@ -839,7 +839,7 @@ local function ProcessDirty()
       local bagSlots = slots[bagId]
       if bagSlots then
         local slot
-        for slot = 1, table.getn(bagSlots) do
+        for slot in pairs(bagSlots) do
           U.UpdateItemSlotCooldown(bagId, bagSlots[slot])
         end
       end
@@ -1005,26 +1005,16 @@ local function StopBankDrag()
   U.CheckOnScreen(anchor)
 end
 
--- Anchored to frame.bags's live left edge rather than a captured width, so it
--- keeps clear of the bank bag row as slots are bought and stays correct
--- without its own LayoutHeader hook. It starts after the sort and stack
--- buttons for the same reason -- a drag strip drawn over a button would
--- swallow its clicks -- using those buttons' own footprint rather than a second
--- copy of their position.
+-- The whole header is the grab strip, with every header control above it
+-- (U.BuildBagDragStrip, shared with the bag window; user request,
+-- 2026-09-27). The bank-bag row is lifted as one frame: its buttons are its
+-- children and sit above it. The search field is built after this and lifted
+-- there.
 local function BuildDragHandle()
-  local handle = CreateFrame("Button", "UnrealUIBankDrag", frame)
-  if modernBank.Active() then
-    -- Modern WoW right-aligns the bank bags, so the free strip is the span
-    -- between the stack button and the bag row.
-    handle:SetPoint("TOPLEFT", frame.stack, "TOPRIGHT", 4, 0)
-    handle:SetPoint("TOPRIGHT", frame.bags, "TOPLEFT", -4, 0)
-    handle:SetHeight(BAG_BUTTON)
-  else
-    handle:SetPoint("TOPLEFT", frame, "TOPLEFT",
-                    PADDING + 2 * (HEADER_ICON + SLOT_GAP), 0)
-    handle:SetPoint("TOPRIGHT", frame.bags, "TOPLEFT", -4, 0)
-    handle:SetHeight(HEADER_HEIGHT)
-  end
+  local handle = U.BuildBagDragStrip(frame, "UnrealUIBankDrag",
+    modernBank.Header(), {
+      frame.sort, frame.stack, frame.close, frame.bags,
+    })
   handle:RegisterForDrag("LeftButton")
   pcall(handle.EnableMouse, handle, true)
 
@@ -1123,6 +1113,9 @@ local function Build()
   }
   modernBank.search = U.ModernWowBagSearch(searchSpec) or
                       U.FlatBagSearch(searchSpec)
+  if modernBank.search then
+    U.RaiseOverBagDragStrip(frame, { modernBank.search.field })
+  end
 
   grid = CreateFrame("Frame", "UnrealUIBankGrid", frame)
   grid:SetPoint("TOPLEFT", frame, "TOPLEFT", modernBank.SidePad(),

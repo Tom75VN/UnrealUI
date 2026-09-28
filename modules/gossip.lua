@@ -117,22 +117,32 @@ local function LayoutTitleRows(rows)
         end
       end
 
-      local height = button.uuiGossipBaseHeight or 0
+      local baseHeight = button.uuiGossipBaseHeight or 0
+      local height = baseHeight
+      local wrapped = false
       if button.GetTextHeight then
         local textOk, textHeight = pcall(button.GetTextHeight, button)
         textHeight = textOk and tonumber(textHeight) or nil
         if textHeight and textHeight + 2 > height then
           height = textHeight + 2
+          -- Grew past its single-line base height -> the label wrapped to a
+          -- second line, so this row needs the wider gap below it.
+          wrapped = baseHeight > 0 and height > baseHeight
         end
       end
+      button.uuiGossipWrapped = wrapped
       if height > 0 and button.SetHeight then
         pcall(button.SetHeight, button, height)
       end
 
       if previous then
+        -- A 2-line gossip option needs more breathing room below it than the
+        -- default 1px row gap, or the next row reads as crowding its wrapped
+        -- second line.
+        local gap = previous.uuiGossipWrapped and -6 or -1
         pcall(function()
           button:ClearAllPoints()
-          button:SetPoint("TOPLEFT", previous, "BOTTOMLEFT", 0, -1)
+          button:SetPoint("TOPLEFT", previous, "BOTTOMLEFT", 0, gap)
         end)
       end
       previous = button

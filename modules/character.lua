@@ -1742,6 +1742,37 @@ local function BuildFrame()
   return true
 end
 
+-- Expands the existing flat Character panel for the paper-doll workspace.
+-- Native page content keeps its original CharacterFrame anchors; the
+-- addon-owned surface and the close button (anchored to its corner) gain the
+-- right-hand pane. The name stays centred over the paper doll in both states:
+-- centred on the widened panel it sat on the seam between the two panes, and
+-- the level and guild lines below it followed.
+function U.ModernCharacterHousing(host, expanded)
+  if host ~= frame or not panel or not M.characterModern then return false end
+  local w = M.characterModern.window
+  expanded = expanded and true or false
+  local name = G("CharacterNameText")
+  if name then
+    pcall(function()
+      name:ClearAllPoints()
+      name:SetPoint("TOP", frame, "TOPLEFT", w.left + w.width / 2, -(w.top + 10))
+    end)
+  end
+  pcall(function()
+    panel:ClearAllPoints()
+    panel:SetPoint("TOPLEFT", frame, "TOPLEFT", w.left, -w.top)
+    if expanded then
+      panel:SetWidth(w.expandedWidth)
+      panel:SetHeight(w.height)
+    else
+      panel:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT",
+                     -PANEL_INSET_RIGHT, PANEL_BOTTOM)
+    end
+  end)
+  return true
+end
+
 function CH:OnEnable()
   modernWowTabMode = type(U.ModernWowSurfaceEnabled) == "function" and
                      U.ModernWowSurfaceEnabled("character")
@@ -1761,6 +1792,14 @@ function CH:OnEnable()
   end
   if not BuildFrame() then return end
   InstallModernWowCharacterToggle()
+
+  -- Modern shares the complete paper-doll feature set with Modern WoW, but
+  -- the panel builder selects its own flat housing, rows, tabs and controls.
+  if not modernWowTabMode and type(U.GetActiveThemeStyle) == "function" and
+     U.GetActiveThemeStyle() == "modern" and
+     type(U.BuildCharacterStatsPanel) == "function" then
+    U.BuildCharacterStatsPanel(frame)
+  end
 
   -- Every rendered frame, and for every theme. The client's selection pass
   -- writes its own tab widths several frames after the click, past the Lua

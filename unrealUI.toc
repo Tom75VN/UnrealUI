@@ -2,10 +2,10 @@
 ## Title: |cffffffffUnreal |cfff5ae0aUI
 ## Notes: Unreal Azeroth native UI addon.
 ## Author: unrealUI
-## Version: 0.9.2
+## Version: 0.10.0
 ## X-License: MIT
 ## SavedVariables: UnrealUIDB, UnrealUIProfiles, UnrealUIDiagDB, UnrealUIPriceDB
-## SavedVariablesPerCharacter: UnrealUIProfileDB, UnrealUIFavoriteDB, UnrealUIBankCountDB, UnrealUIBankCacheDB
+## SavedVariablesPerCharacter: UnrealUIProfileDB, UnrealUIFavoriteDB, UnrealUIBankCountDB, UnrealUIBankCacheDB, UnrealUIEquipmentSetDB
 
 core\init.lua
 
@@ -22,9 +22,9 @@ locales\frFR.lua
 core\perf.lua
 core\media.lua
 core\theme.lua
+themes\modern-wow.lua
 themes\modern.lua
 themes\classic-wow.lua
-themes\modern-wow.lua
 
 # Unit-frame styles. A theme decides which interface is drawn; a unit-frame
 # style decides how UnrealUI's own frames look once it draws them. Registered
@@ -90,6 +90,7 @@ core\windowdrag.lua
 core\commands.lua
 
 modules\settings.lua
+modules\screenalerts.lua
 modules\autoattack.lua
 modules\swingbar.lua
 modules\gamemenu.lua
@@ -135,6 +136,8 @@ modules\bagdesign.lua
 # The category view shared by the bag and bank windows; loaded before both.
 modules\bagcategoryview.lua
 modules\bags.lua
+# Moves newly arrived items into a matching specialty bag (category view).
+modules\bagroute.lua
 
 # The HUD bag bar. Loaded after modules\bags.lua because it stands in for
 # it: it builds nothing at all unless that module is switched off, and it
@@ -207,6 +210,17 @@ modules\professions.lua
 # feeds. Theme-independent; professions.lua only calls its U.* entry points.
 modules\crafttracker.lua
 modules\character.lua
+# The Character window's stats side panel: the readout (data only), then the
+# shared behavior with complete flat-Modern and Modern-WoW drawing paths.
+modules\characterstats.lua
+modules\characterstatspanel.lua
+modules\charactersidebar.lua
+# The Equipment Manager behind the sidebar's third tab: the set store and
+# swap engine (data only), the gear-slot arrows and their item flyout, then
+# the pane itself. Entry points only; the stats panel activates the pane.
+modules\equipmentsets.lua
+modules\characterflyout.lua
+modules\characterequipment.lua
 modules\inspect.lua
 modules\friends.lua
 modules\merchant.lua

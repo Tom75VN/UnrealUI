@@ -6,7 +6,8 @@
 -- The map surface and its behavior stay native. Under the full Modern WoW
 -- theme or Classic's explicit Minimap selection, the stock decorative ring,
 -- zone bed and zoom-button faces are replaced with that theme's authored
--- textures, and the close button and clock are removed. The pending-mail
+-- textures, and the close button and clock are removed. `modern` takes the
+-- same path without the round border (user request, 2026-09-28). The pending-mail
 -- letter is not part of that: it is unrealUI's animated flipbook under every
 -- theme (see "The pending-mail letter" below). knowledge.json /
 -- minimap.render_pass_under_ordinary_frames says the map surface is drawn in a
@@ -37,6 +38,13 @@ local modernWowMinimap = { dressed = false }
 local function ModernWow()
   return type(U.ModernWowModuleEnabled) == "function" and
          U.ModernWowModuleEnabled("minimap")
+end
+
+-- `modern` draws the same minimap as Modern WoW minus its round border (user
+-- request, 2026-09-28): stock ring stripped, shadow, zone panel, zoom buttons
+-- and mail placement kept. A sanctioned exception to the `modern` freeze.
+local function ModernFlat()
+  return U.GetActiveThemeStyle() == "modern"
 end
 
 -- The stock minimap ring on this client is not one dependable region:
@@ -114,7 +122,9 @@ end
 -- capability-checked because only MinimapZoomIn is named in official client
 -- documentation and the other exact globals are not runtime-verified here.
 local function DressModernWowMinimap()
-  if modernWowMinimap.dressed or not ModernWow() then return false end
+  if modernWowMinimap.dressed then return false end
+  local withBorder = ModernWow()
+  if not withBorder and not ModernFlat() then return false end
 
   local minimap = U.G("Minimap")
   local art = M.modernWow and M.modernWow.texture
@@ -123,12 +133,15 @@ local function DressModernWowMinimap()
 
   HideStockChrome()
 
-  local border = minimap:CreateTexture(nil, "OVERLAY")
-  border:SetTexture(art.minimapBorder)
-  border:SetPoint("TOPLEFT", minimap, "TOPLEFT",
-    -layout.borderOffset, layout.borderOffset)
-  border:SetPoint("BOTTOMRIGHT", minimap, "BOTTOMRIGHT",
-    layout.borderOffset, -layout.borderOffset)
+  local border
+  if withBorder then
+    border = minimap:CreateTexture(nil, "OVERLAY")
+    border:SetTexture(art.minimapBorder)
+    border:SetPoint("TOPLEFT", minimap, "TOPLEFT",
+      -layout.borderOffset, layout.borderOffset)
+    border:SetPoint("BOTTOMRIGHT", minimap, "BOTTOMRIGHT",
+      layout.borderOffset, -layout.borderOffset)
+  end
 
   local shadow = minimap:CreateTexture(nil, "BORDER")
   shadow:SetTexture(art.minimapShadow)
@@ -221,7 +234,7 @@ local function DressModernWowMinimap()
       pcall(zoomOut.SetPoint, zoomOut, "TOPRIGHT", zoomIn, "BOTTOMLEFT", 0, 0)
     else
       pcall(zoomOut.SetPoint, zoomOut, "TOPLEFT", minimap, "BOTTOMRIGHT",
-        layout.zoomX, layout.zoomY - 29)
+        layout.zoomX, layout.zoomY - 42.6)
     end
     pcall(zoomOut.SetScale, zoomOut, layout.zoomScale)
     DressZoomButton(zoomOut, art.minimapZoomOut, art.minimapZoomOutOver,
@@ -403,7 +416,7 @@ local function AnchorButton(button)
   local minimap = U.G("Minimap")
   if minimap then
     local gap = 6
-    if modernWowMinimap.dressed then
+    if modernWowMinimap.border then
       gap = gap + M.modernWow.minimap.borderOffset
     end
     button:SetPoint("TOPRIGHT", minimap, "TOPLEFT", -gap, 0)

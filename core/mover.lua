@@ -52,7 +52,7 @@ local advanced = {
     { key = "petunit", labelKey = "MOVER_LABEL_PET_UNIT_FRAME",
       movers = { "unitframes.pet", "castbar.pet" } },
     { key = "buffs", labelKey = "MOVER_LABEL_BUFFS",
-      nativeAuras = true, movers = { "buffs" } },
+      nativeAuras = true, movers = { "buffs", "debuffs" } },
     { key = "swingbar", labelKey = "MOVER_LABEL_SWING_BAR",
       setting = { module = "swingbar", key = "enabled", default = true,
                   apply = "ApplySwingBar" }, movers = { "swingbar" } },
@@ -98,6 +98,7 @@ local advanced = {
     ["unitframes.pet"] = "petunit",
     ["castbar.pet"] = "petunit",
     buffs = "buffs",
+    debuffs = "buffs",
     swingbar = "swingbar",
     ["unitframes.targettarget"] = "targettarget",
     ["castbar.target"] = "targetcast",
@@ -1593,6 +1594,14 @@ local handleCount = 0
 -- room above its complete child hierarchy for one continuous drag surface.
 local HANDLE_LEVEL_OFFSET = 100
 
+-- Lowest strata a drag input may take (see RaiseHandle). MEDIUM clears the
+-- top-right HUD; HIGH would cover the edit panels, which sit there.
+local INPUT_STRATA_FLOOR = "MEDIUM"
+local INPUT_STRATA_RANK = {
+  BACKGROUND = 1, LOW = 2, MEDIUM = 3, HIGH = 4, DIALOG = 5,
+  FULLSCREEN = 6, FULLSCREEN_DIALOG = 7, TOOLTIP = 8,
+}
+
 -- The anchor draws the client's own Edit Mode selection nine-slice
 -- (M.modernWow.moveUI) rather than a flat panel inside a stack of stepped
 -- glow strips. The art is Blizzard's, carries its own falloff, and already
@@ -1770,11 +1779,92 @@ local function CreateClickCatcher(onOutsideClick)
   return catcher
 end
 
+-- ---------------------------------------------------------------------------
+-- Arrow keys held off the client while an anchor is selected
+--
+-- The edit-mode key catcher hears the arrows, but it does not stop the binding
+-- layer: this client resolves a bound key before an addon frame hears it
+-- (core/searchbox.lua, modules/quickbind.lua), so a nudge also turned or moved
+-- the character (user report, 2026-09-29). While an anchor is selected, each
+-- bound arrow is taken off the client with SetBinding and put back when the
+-- selection ends -- core/searchbox.lua's typing-mode mechanism. The catcher
+-- receives unbound keys too, so nudging is unaffected.
+--
+-- Nothing is saved: the change is to the live set only and SaveBindings is
+-- never called. The held list is still written to SavedVariables, so keys left
+-- off by a disconnect or crash mid-edit are put back on the next load, and
+-- leaving the world releases them first.
+-- ---------------------------------------------------------------------------
+local nudgeKeys = {
+  KEYS = { "LEFT", "RIGHT", "UP", "DOWN" },
+  held = {},   -- { { key = , command = }, ... }
+}
+
+function nudgeKeys.Call(name, a1, a2)
+  local fn = U.G(name)
+  if type(fn) ~= "function" then return nil end
+  local ok, result = pcall(fn, a1, a2)
+  if not ok then return nil end
+  return result
+end
+
+function nudgeKeys.Store(held)
+  local config = MoverConfig()
+  if held then config.heldKeys = held end
+  if type(config.heldKeys) ~= "table" then config.heldKeys = {} end
+  return config.heldKeys
+end
+
+function nudgeKeys.Hold()
+  if table.getn(nudgeKeys.held) > 0 then return end
+  local held = {}
+  local i
+  for i = 1, table.getn(nudgeKeys.KEYS) do
+    local key = nudgeKeys.KEYS[i]
+    local command = nudgeKeys.Call("GetBindingAction", key)
+    if type(command) == "string" and command ~= "" then
+      nudgeKeys.Call("SetBinding", key)
+      table.insert(held, { key = key, command = command })
+    end
+  end
+  nudgeKeys.held = held
+  nudgeKeys.Store(held)
+end
+
+-- Puts back every held key the client has not been given to something else.
+function nudgeKeys.Release(list)
+  list = list or nudgeKeys.held
+  local i
+  for i = 1, table.getn(list) do
+    local entry = list[i]
+    if type(entry) == "table" and type(entry.key) == "string" and
+       type(entry.command) == "string" then
+      local current = nudgeKeys.Call("GetBindingAction", entry.key)
+      if type(current) ~= "string" or current == "" then
+        nudgeKeys.Call("SetBinding", entry.key, entry.command)
+      end
+    end
+  end
+  nudgeKeys.held = {}
+  nudgeKeys.Store({})
+end
+
+if type(U.RegisterEvent) == "function" then
+  U.RegisterEvent("PLAYER_ENTERING_WORLD", function()
+    if table.getn(nudgeKeys.held) > 0 then return end
+    local leftovers = nudgeKeys.Store()
+    if table.getn(leftovers) > 0 then nudgeKeys.Release(leftovers) end
+  end)
+  U.RegisterEvent("PLAYER_LEAVING_WORLD", function() nudgeKeys.Release() end)
+end
+
 local function SetActiveMover(entry)
   local previous = activeMover
   activeMover = entry
   ApplyHandleState(previous)
   if entry ~= previous then ApplyHandleState(entry) end
+
+  if entry and unlocked then nudgeKeys.Hold() else nudgeKeys.Release() end
 
   -- A local function is in scope inside its own body, so the catcher can call
   -- straight back here to clear the selection it was created for.
@@ -1848,9 +1938,17 @@ local function RaiseHandle(entry)
         end
       end
     end
-    if strata then
-      pcall(entry.dragInput.SetFrameStrata, entry.dragInput, strata)
+    -- Floor it at INPUT_STRATA_FLOOR. An anchor under a BACKGROUND or LOW frame
+    -- (minimap, quest and craft trackers) otherwise lost its input wherever
+    -- MEDIUM HUD overlapped it -- the native buff and debuff buttons in the
+    -- top-right corner -- and could not be picked up there (user report,
+    -- 2026-09-29). Only the temporary input is raised; the frame keeps its
+    -- strata, and the edit panels stay above it at HIGH.
+    if not strata or (INPUT_STRATA_RANK[strata] or 0) <
+                     INPUT_STRATA_RANK[INPUT_STRATA_FLOOR] then
+      strata = INPUT_STRATA_FLOOR
     end
+    pcall(entry.dragInput.SetFrameStrata, entry.dragInput, strata)
     pcall(entry.dragInput.SetFrameLevel, entry.dragInput, handleLevel + 1)
   end
   return raised

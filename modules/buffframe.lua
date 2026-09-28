@@ -83,6 +83,10 @@ local defaults = {
   -- page switching the whole display off, arrow and all, while this one is the
   -- player folding the icons away and leaving the arrow behind to unfold them.
   collapsed = false,
+  -- Icon sizes in UI units, one per row; 0 is the client's own 30
+  -- (auraLayout.IconSize). `iconSize` is the buff row's.
+  iconSize = 0,
+  debuffIconSize = 0,
 }
 
 local function Config()
@@ -93,11 +97,6 @@ end
 local BUFF_NAME = "BuffFrame"
 local ENCHANT_NAME = "TemporaryEnchantFrame"
 
--- Used only until the native frame reports its own size, and as the handle's
--- footprint if it never does. Roughly the area two rows of stock buff icons
--- plus the debuff row occupy; it is a grab target, not a claim about layout.
-local FALLBACK_WIDTH  = 300
-local FALLBACK_HEIGHT = 100
 
 -- Anchor offsets below this are treated as "unchanged" rather than drift.
 local DRIFT_EPSILON = 0.5
@@ -111,6 +110,75 @@ local DRIFT_EPSILON = 0.5
 local NATIVE_ICON_SIZE = 30
 -- Requested gap between the first icon and the arrow.
 local TOGGLE_GAP = 5
+
+-- The stock aura layout both handles are sized to, and the edit-mode
+-- placeholders are drawn in: eight icons to a row with the 5-unit gap the
+-- aurarow probe measured between two icons (30 + 5 + 30 = 65), and room under
+-- each row for the native duration text. Vanilla 1.12 shows 16 buffs in two
+-- rows and 8 debuffs in one. The handles are grab targets built from these
+-- numbers, not measurements of the client's rows (knowledge.json /
+-- frames.native_aura_row_rect_narrower_than_icons: BuffFrame's own rect does
+-- not bound its icons, so the buff handle no longer mirrors it).
+--
+-- `kind` is "buffs" or "debuffs" throughout: each row has its own size (user
+-- request, 2026-09-29).
+local auraLayout = {
+  PER_ROW = 8,
+  GAP = 5,
+  ROW_GAP = 15,
+  ROWS = { buffs = 2, debuffs = 1 },
+  CONFIG_KEY = { buffs = "iconSize", debuffs = "debuffIconSize" },
+  SIZE = { min = 16, max = 48, step = 1 },
+  -- The native buttons each row's size is written to, resolved by exact stock
+  -- name on every write and never kept. Vanilla 1.12's FrameXML names them
+  -- (WORKING_SOURCE): BuffButton0-15 are buffs, BuffButton16-23 debuffs, and
+  -- the weapon-enchant buttons sit with the buffs.
+  BUTTONS = { buffs = {}, debuffs = {} },
+  written = {},    -- kind -> the size last written to its buttons
+  border = {},     -- button name -> its border's stock { w, h }, read once
+}
+
+do
+  local i
+  for i = 0, 15 do table.insert(auraLayout.BUTTONS.buffs, "BuffButton" .. i) end
+  table.insert(auraLayout.BUTTONS.buffs, "TempEnchant1")
+  table.insert(auraLayout.BUTTONS.buffs, "TempEnchant2")
+  for i = 16, 23 do table.insert(auraLayout.BUTTONS.debuffs, "BuffButton" .. i) end
+end
+
+-- The chosen icon size (user request, 2026-09-29), from the size slider on
+-- that row's handle panel. `value` previews a size without storing it.
+function auraLayout.IconSize(kind, value)
+  value = tonumber(value) or
+          tonumber(Config()[auraLayout.CONFIG_KEY[kind] or "iconSize"]) or 0
+  if value <= 0 then return NATIVE_ICON_SIZE end
+  local limit = auraLayout.SIZE
+  if value < limit.min then value = limit.min end
+  if value > limit.max then value = limit.max end
+  return math.floor(value / limit.step + 0.5) * limit.step
+end
+
+-- The icons grow; the client's gaps between them stay the stock 5 and 15,
+-- since only the buttons are resized (auraLayout.Apply).
+function auraLayout.Width(kind, value)
+  return auraLayout.PER_ROW * auraLayout.IconSize(kind, value) +
+         (auraLayout.PER_ROW - 1) * auraLayout.GAP
+end
+
+function auraLayout.Height(kind, value)
+  local rows = auraLayout.ROWS[kind] or 1
+  return rows * auraLayout.IconSize(kind, value) +
+         (rows - 1) * auraLayout.ROW_GAP
+end
+
+-- The corner a row grows from, as a full two-part point name. Both rows use
+-- the buff row's (user request, 2026-09-29).
+function auraLayout.Corner(point)
+  point = point or "TOPRIGHT"
+  local vertical = string.find(point, "BOTTOM") and "BOTTOM" or "TOP"
+  local horizontal = string.find(point, "LEFT") and "LEFT" or "RIGHT"
+  return vertical .. horizontal
+end
 
 local anchor = nil
 local root = nil          -- the native frame the handle actually drives
@@ -428,25 +496,31 @@ local function StoredPosition()
   return position
 end
 
-local function MirrorNativeSize()
-  if not anchor or not root then return end
+-- Both handles are the same kind of footprint (user request, 2026-09-29): the
+-- row's stock icon block at its own size, laid corner-on-corner with the row.
+local function SizeAnchor(frame, kind, value)
+  if not frame then return end
 
-  local okW, w = pcall(root.GetWidth, root)
-  local okH, h = pcall(root.GetHeight, root)
-  local width = (okW and Number(w)) or FALLBACK_WIDTH
-  local height = (okH and Number(h)) or FALLBACK_HEIGHT
+  local width = auraLayout.Width(kind, value)
+  local height = auraLayout.Height(kind, value)
 
-  -- Only written when it actually changes: this runs on the shared tick, and
-  -- the handle is SetAllPoints to this frame, so a size write is a handle
-  -- relayout every second for nothing.
-  if anchor.uuiWidth ~= width then
-    anchor:SetWidth(width)
-    anchor.uuiWidth = width
+  -- Only written when it actually changes: the handle is SetAllPoints to this
+  -- frame, so a size write is a handle relayout.
+  if frame.uuiWidth ~= width then
+    frame:SetWidth(width)
+    frame.uuiWidth = width
   end
-  if anchor.uuiHeight ~= height then
-    anchor:SetHeight(height)
-    anchor.uuiHeight = height
+  if frame.uuiHeight ~= height then
+    frame:SetHeight(height)
+    frame.uuiHeight = height
   end
+end
+
+-- The client's gap between the two containers is room for the enchant icons,
+-- so it grows with the buff size.
+local function SecondOffset()
+  local ratio = auraLayout.IconSize("buffs") / NATIVE_ICON_SIZE
+  return secondOffsetX * ratio, secondOffsetY * ratio
 end
 
 local function AnchorDrifted(frame, position)
@@ -483,21 +557,402 @@ local function DriveNative()
   end)
 
   if second then
+    local x, y = SecondOffset()
     pcall(function()
       second:ClearAllPoints()
-      second:SetPoint(secondPoint, anchor, rootPoint,
-                      secondOffsetX, secondOffsetY)
+      second:SetPoint(secondPoint, anchor, rootPoint, x, y)
     end)
   end
 
   driving = true
+  -- The handle is on its stored position now; ShadowCorner must write again
+  -- once the row is handed back.
+  anchor.uuiFollowX, anchor.uuiFollowY = nil, nil
+end
+
+-- ---------------------------------------------------------------------------
+-- The handles' origin corner (user request, 2026-09-29)
+--
+-- Both handles are held by their row's origin corner -- TOPRIGHT on the stock
+-- layout, auraLayout.Corner -- as a single UIParent point, so a bigger icon
+-- size grows the handle left and down, away from that corner. The mover stores
+-- a dropped handle by the point it is held by (core/screenguard.lua,
+-- sg.PointNames), but only when that is its one UIParent point: the buff handle
+-- used to be anchored to BuffFrame itself, which the mover stored as TOPLEFT,
+-- so the handle grew right instead.
+-- ---------------------------------------------------------------------------
+
+-- Holds `frame` on `native`'s origin corner, copied as a UIParent coordinate
+-- off its rect rather than anchored to it (.claude/rules/unreal-ui.md, native
+-- widget ownership). Written only when the corner has moved.
+local function ShadowCorner(frame, native, point)
+  local left, bottom, width, height = FrameRect(native)
+  if not frame or not left then return end
+
+  local x, y = left + width / 2, bottom + height / 2
+  if string.find(point, "LEFT") then x = left
+  elseif string.find(point, "RIGHT") then x = left + width end
+  if string.find(point, "BOTTOM") then y = bottom
+  elseif string.find(point, "TOP") then y = bottom + height end
+
+  if frame.uuiFollowX and math.abs(x - frame.uuiFollowX) <= DRIFT_EPSILON and
+     math.abs(y - frame.uuiFollowY) <= DRIFT_EPSILON then
+    return
+  end
+  frame.uuiFollowX, frame.uuiFollowY = x, y
+  pcall(function()
+    frame:ClearAllPoints()
+    frame:SetPoint(point, UIParent, "BOTTOMLEFT", x, y)
+  end)
+end
+
+-- A stored position held by another point (every buff placement made before
+-- this change) is re-expressed once by the origin corner at the same place, and
+-- written back so the drift check and the next drag both see the corner.
+local function HoldStoredCorner(frame, id, position, point)
+  if not frame or position.point == point then return position end
+  if not U.ApplyFramePoint(frame, position) then return position end
+
+  local left, bottom, width, height = FrameRect(frame)
+  if not left then return position end
+  local originLeft, originBottom = FrameRect(UIParent)
+  left, bottom = left - (originLeft or 0), bottom - (originBottom or 0)
+
+  local x = string.find(point, "LEFT") and left or left + width
+  local y = string.find(point, "BOTTOM") and bottom or bottom + height
+  if not U.SavePosition(id, point, "BOTTOMLEFT", x, y) then return position end
+  frame.uuiFollowX, frame.uuiFollowY = nil, nil
+  return U.GetPosition(id) or position
 end
 
 local function FollowNative()
-  pcall(function()
-    anchor:ClearAllPoints()
-    anchor:SetPoint(rootPoint, root, rootPoint, 0, 0)
+  ShadowCorner(anchor, root, auraLayout.Corner(rootPoint))
+end
+
+-- ---------------------------------------------------------------------------
+-- The debuff row, on its own handle (user request, 2026-09-29)
+--
+-- WORKING_SOURCE, not runtime evidence: query_compat.py has no record of this
+-- client's debuff buttons. Vanilla 1.12's FrameXML makes BuffButton16 the
+-- first debuff button, each later one anchored to the one before it, and
+-- DragonflightUI-Reforged moves the whole row on a 1.12-era client by
+-- re-anchoring exactly that button. So it is the row's root here. If the name
+-- does not resolve, no debuff handle is registered and the row stays with the
+-- buffs, as before.
+--
+-- The same two modes as the buff row. Until the player drops this handle the
+-- button stays where the client put it and the anchor shadows it -- by copying
+-- the button's corner as a UIParent coordinate, never by anchoring to it
+-- (.claude/rules/unreal-ui.md, native widget ownership). Once dropped, the
+-- button is pointed at the anchor corner-on-corner. The button is resolved by
+-- name on every pass rather than kept.
+-- ---------------------------------------------------------------------------
+local debuffs = {
+  MOVER_ID = "debuffs",
+  ROOT_NAME = "BuffButton16",
+  anchor = nil,
+  point = "TOPRIGHT",
+  capture = nil,    -- the button's own anchor as the client had it
+  driving = false,
+}
+
+function debuffs.Root()
+  return U.G(debuffs.ROOT_NAME)
+end
+
+function debuffs.StoredPosition()
+  local ok, position = pcall(U.GetPosition, debuffs.MOVER_ID)
+  if not ok or type(position) ~= "table" then return nil end
+  if type(position.point) ~= "string" then return nil end
+  return position
+end
+
+-- Replayed on /uui reset, and when the stored position goes away.
+function debuffs.Restore()
+  local saved, button = debuffs.capture, debuffs.Root()
+  if not saved or not button then return false end
+  local ok = pcall(function()
+    button:ClearAllPoints()
+    button:SetPoint(saved.point, saved.relative, saved.relativePoint,
+                    saved.x, saved.y)
   end)
+  if ok then
+    debuffs.driving = false
+    debuffs.anchor.uuiFollowX, debuffs.anchor.uuiFollowY = nil, nil
+  end
+  return ok
+end
+
+-- The button's origin corner, read as a bounded number off its rect.
+function debuffs.Follow()
+  ShadowCorner(debuffs.anchor, debuffs.Root(), debuffs.point)
+end
+
+function debuffs.Drive()
+  local button = debuffs.Root()
+  if not button then return end
+
+  local point = debuffs.point
+  local at, relative, relativePoint, x, y = U.GetFramePoint(button, 1)
+  if at == point and relative == debuffs.anchor and
+     relativePoint == point and math.abs((x or 0)) <= DRIFT_EPSILON and
+     math.abs((y or 0)) <= DRIFT_EPSILON then
+    return
+  end
+
+  pcall(function()
+    button:ClearAllPoints()
+    button:SetPoint(point, debuffs.anchor, point, 0, 0)
+  end)
+  debuffs.driving = true
+  debuffs.anchor.uuiFollowX, debuffs.anchor.uuiFollowY = nil, nil
+end
+
+function debuffs.Apply(unlocked)
+  if not debuffs.anchor then return end
+
+  local position = debuffs.StoredPosition()
+  if not position then
+    if debuffs.driving then debuffs.Restore() end
+    if not unlocked and not debuffs.driving then debuffs.Follow() end
+    return
+  end
+
+  if not unlocked then
+    position = HoldStoredCorner(debuffs.anchor, debuffs.MOVER_ID, position,
+                                debuffs.point)
+  end
+  if not unlocked and AnchorDrifted(debuffs.anchor, position) then
+    U.ApplyFramePoint(debuffs.anchor, position)
+  end
+  debuffs.Drive()
+end
+
+function debuffs.Setup()
+  local button = debuffs.Root()
+  if not button then
+    U.Debug("buffframe: no " .. debuffs.ROOT_NAME ..
+            "; debuffs stay on the buff handle")
+    return
+  end
+
+  -- Before RegisterMover, which is what may apply a stored position.
+  debuffs.capture = CaptureNativeAnchor(button, debuffs.ROOT_NAME)
+  -- The buff row's origin corner, not the button's own anchor point (user
+  -- request, 2026-09-29): both handles hold their row by the same corner, so
+  -- both rows grow the same way from them. DragonflightUI-Reforged pins this
+  -- button by TOPRIGHT too (WORKING_SOURCE).
+  debuffs.point = auraLayout.Corner(rootPoint)
+
+  local frame = CreateFrame("Frame", "UnrealUIDebuffAnchor", UIParent)
+  -- A grab target, not a layout claim: one row of eight icons.
+  SizeAnchor(frame, "debuffs")
+  -- Only until the button's corner can be read: below the buff anchor, an
+  -- addon frame, rather than off the native button.
+  frame:SetPoint("TOPRIGHT", anchor, "BOTTOMRIGHT", 0, -TOGGLE_GAP)
+  frame:Show()
+  debuffs.anchor = frame
+  debuffs.Follow()
+
+  U.RegisterMover(debuffs.MOVER_ID, frame, {
+    label = U.L("MOVER_LABEL_DEBUFFS"),
+    visible = function() return U.GetNativeAuraFrameShown() end,
+    setEditShown = SetEditShown,
+  })
+  U.OnPositionReset(function() return debuffs.Restore() end)
+end
+
+-- ---------------------------------------------------------------------------
+-- Edit-mode placeholders (user requests, 2026-09-29)
+--
+-- While a handle is shown in Move UI it carries a placeholder for every icon
+-- its row can hold -- 16 buffs, 8 debuffs -- laid out from the corner the
+-- native row grows from, so the player sees where the row will land without
+-- being buffed. They are the unit frames' aura placeholders: the shared
+-- U.CreateMoverSampleCell square, shown through core/moversample.lua's
+-- lifecycle as an `apply` sample, since the row's geometry is this file's.
+-- ---------------------------------------------------------------------------
+local preview = { sets = {} }
+
+function preview.Layout(set, value)
+  local size = auraLayout.IconSize(set.kind, value)
+  local gap, rowGap = auraLayout.GAP, auraLayout.ROW_GAP
+  local corner = auraLayout.Corner(rootPoint)
+  local stepX = string.find(corner, "LEFT") and 1 or -1
+  local stepY = string.find(corner, "TOP") and -1 or 1
+  local count = auraLayout.PER_ROW * (auraLayout.ROWS[set.kind] or 1)
+  local i
+  for i = 1, count do
+    local cell = set.cells[i]
+    if not cell then
+      cell = U.CreateMoverSampleCell(set.host)
+      if not cell then return end
+      set.cells[i] = cell
+    end
+    -- No math.mod: core/moversample.lua records it as version-specific here.
+    local row = math.floor((i - 1) / auraLayout.PER_ROW)
+    local column = (i - 1) - row * auraLayout.PER_ROW
+    cell:SetWidth(size)
+    cell:SetHeight(size)
+    cell:ClearAllPoints()
+    cell:SetPoint(corner, set.host, corner,
+                  stepX * column * (size + gap), stepY * row * (size + rowGap))
+  end
+end
+
+function preview.Show(set, value)
+  local shown = set.live and editShown ~= false
+  local i
+  if shown then preview.Layout(set, value) end
+  for i = 1, table.getn(set.cells) do
+    if shown then set.cells[i]:Show() else set.cells[i]:Hide() end
+  end
+end
+
+function preview.Register(kind, host)
+  if not host or type(U.RegisterMoverSample) ~= "function" or
+     type(U.CreateMoverSampleCell) ~= "function" then
+    return
+  end
+  local set = { kind = kind, host = host, cells = {}, live = false }
+  preview.sets[kind] = set
+  U.RegisterMoverSample(kind, {
+    apply = function(shown)
+      set.live = shown and true or false
+      preview.Show(set)
+    end,
+  })
+end
+
+-- Re-lays one row's set, for a size change while Move UI is open.
+function preview.Refresh(kind, value)
+  local set = preview.sets[kind]
+  if set and set.live then preview.Show(set, value) end
+end
+
+-- ---------------------------------------------------------------------------
+-- Icon size (user requests, 2026-09-29)
+--
+-- One size per row, written to the row's native buttons as dimensions:
+-- SetWidth/SetHeight on the button and its icon, and its border resized in
+-- proportion from the size it had before anything was written. Not SetScale,
+-- which would tie the rows together -- the debuff buttons are children of
+-- BuffFrame in Vanilla's FrameXML (WORKING_SOURCE) -- and which a Button does
+-- not honour on this client anyway (knowledge.json /
+-- frames.microbar_button_own_setscale_not_applied; the micro bar is sized the
+-- same way). The client's own gaps and anchors between the buttons are left
+-- alone, so the rows keep their stock 5-unit spacing. At the stock size nothing
+-- is written until a size has been, so an untouched interface keeps the
+-- client's own buttons.
+-- ---------------------------------------------------------------------------
+function auraLayout.SizeButton(name, size)
+  local button = U.G(name)
+  if not button then return end
+
+  local border = U.G(name .. "Border")
+  if border and not auraLayout.border[name] then
+    local okW, w = pcall(border.GetWidth, border)
+    local okH, h = pcall(border.GetHeight, border)
+    w, h = okW and Number(w), okH and Number(h)
+    if w and h then auraLayout.border[name] = { w = w, h = h } end
+  end
+
+  pcall(button.SetWidth, button, size)
+  pcall(button.SetHeight, button, size)
+  local icon = U.G(name .. "Icon")
+  if icon then
+    pcall(icon.SetWidth, icon, size)
+    pcall(icon.SetHeight, icon, size)
+  end
+  local base = auraLayout.border[name]
+  if border and base then
+    pcall(border.SetWidth, border, base.w * size / NATIVE_ICON_SIZE)
+    pcall(border.SetHeight, border, base.h * size / NATIVE_ICON_SIZE)
+  end
+end
+
+function auraLayout.Apply(kind, value)
+  local size = auraLayout.IconSize(kind, value)
+  local written = auraLayout.written[kind]
+  if size ~= written and (written or size ~= NATIVE_ICON_SIZE) then
+    local names, i = auraLayout.BUTTONS[kind]
+    for i = 1, table.getn(names) do auraLayout.SizeButton(names[i], size) end
+    auraLayout.written[kind] = size
+  end
+
+  if kind == "buffs" then
+    SizeAnchor(anchor, kind, value)
+    -- The enchant gap grows with the buffs: re-drive a placed row now.
+    if driving and root then DriveNative() end
+    -- The arrow stays one buff icon tall, centred on the first row.
+    if toggle then pcall(toggle.SetHeight, toggle, size) end
+  else
+    SizeAnchor(debuffs.anchor, kind, value)
+  end
+  preview.Refresh(kind, value)
+end
+
+function U.GetNativeAuraIconSize(kind)
+  return auraLayout.IconSize(kind)
+end
+
+-- Live while the slider thumb is held; nothing is stored until it is released.
+function U.PreviewNativeAuraIconSize(kind, value)
+  auraLayout.Apply(kind, value)
+end
+
+function U.SetNativeAuraIconSize(kind, value)
+  if not auraLayout.CONFIG_KEY[kind] then return nil end
+  if not tonumber(value) then return auraLayout.IconSize(kind) end
+  local size = auraLayout.IconSize(kind, value)
+  -- The stock size is stored as 0, so it keeps meaning "the client's own".
+  Config()[auraLayout.CONFIG_KEY[kind]] = (size == NATIVE_ICON_SIZE) and 0 or size
+  auraLayout.Apply(kind)
+  return size
+end
+
+-- The contextual panel beside each handle, one per row since each row has its
+-- own size (core/moverpanel.lua builds each spec once).
+local sizePanel = { CONTENT_WIDTH = 200, SLIDER_WIDTH = 150 }
+
+function sizePanel.Spec(kind, sliderName, panelName)
+  local spec = {
+    name = panelName,
+    width = sizePanel.CONTENT_WIDTH + U.MoverPanelPad() * 2,
+    height = 104,
+    preferVertical = true,
+  }
+  function spec.build(frame, contentTop)
+    local limit = auraLayout.SIZE
+    local slider = U.CreateSlider(frame, {
+      name = sliderName,
+      text = U.L("AURA_ICON_SIZE"),
+      width = sizePanel.SLIDER_WIDTH,
+      boxWidth = 60,
+      min = limit.min,
+      max = limit.max,
+      step = limit.step,
+      value = auraLayout.IconSize(kind),
+      onInputStart = function()
+        if type(U.FreezeMoverPanel) == "function" then U.FreezeMoverPanel() end
+      end,
+      onInput = function(v) U.PreviewNativeAuraIconSize(kind, v) end,
+      onChange = function(v) U.SetNativeAuraIconSize(kind, v) end,
+    })
+    slider.SetPoint("TOPLEFT", frame, "TOPLEFT", U.MoverPanelPad(), contentTop)
+    return { slider }, function() slider.SetValue(auraLayout.IconSize(kind)) end
+  end
+  return spec
+end
+
+function sizePanel.Register()
+  if type(U.RegisterMoverPanel) ~= "function" then return end
+  U.RegisterMoverPanel("buffs", sizePanel.Spec("buffs",
+    "UnrealUIBuffIconSize", "UnrealUIBuffMoverSettings"))
+  if debuffs.anchor then
+    U.RegisterMoverPanel(debuffs.MOVER_ID, sizePanel.Spec("debuffs",
+      "UnrealUIDebuffIconSize", "UnrealUIDebuffMoverSettings"))
+  end
 end
 
 local function Apply()
@@ -511,13 +966,12 @@ local function Apply()
   -- is switched back on re-drives from the stored position.
   if not U.GetNativeAuraFrameShown() then return end
 
-  -- Collapsed leaves the anchor exactly the size the expanded row last gave
-  -- it. The arrow hangs off its right edge, so re-mirroring a hidden frame
-  -- would move the control out from under the cursor that just clicked it.
-  if not U.GetNativeAuraCollapsed() then MirrorNativeSize() end
 
   local position = StoredPosition()
   local unlocked = U.IsUnlocked()
+
+  -- Before the buff row's early return below: the two handles are independent.
+  debuffs.Apply(unlocked)
 
   if not position then
     -- Never placed, or /uui reset: give the display back to the client once,
@@ -537,15 +991,19 @@ local function Apply()
   -- StopMovingOrSizing, so it is only re-applied while locked. The native
   -- frames are anchored *to* the anchor rather than positioned alongside it, so
   -- they track the handle live during the drag with no second write.
+  if not unlocked then
+    position = HoldStoredCorner(anchor, "buffs", position,
+                                auraLayout.Corner(rootPoint))
+  end
   if not unlocked and AnchorDrifted(anchor, position) then
     U.ApplyFramePoint(anchor, position)
   end
 
   if NativeDrifted(root, rootPoint, 0, 0) then
     DriveNative()
-  elseif second and NativeDrifted(second, secondPoint,
-                                  secondOffsetX, secondOffsetY) then
-    DriveNative()
+  elseif second then
+    local x, y = SecondOffset()
+    if NativeDrifted(second, secondPoint, x, y) then DriveNative() end
   end
 end
 
@@ -681,13 +1139,18 @@ end
 -- ---------------------------------------------------------------------------
 local function CreateAnchor()
   anchor = CreateFrame("Frame", "UnrealUIBuffAnchor", UIParent)
-  anchor:SetWidth(FALLBACK_WIDTH)
-  anchor:SetHeight(FALLBACK_HEIGHT)
 
-  -- Carries a mover handle and nothing else: no backdrop, no mouse, no strata
-  -- of its own. It must never sit in front of the icons it is placing.
-  MirrorNativeSize()
+  -- Carries a mover handle and the edit-mode placeholders, nothing else: no
+  -- backdrop, no mouse, no strata of its own. It must never sit in front of
+  -- the icons it is placing.
+  SizeAnchor(anchor, "buffs")
   FollowNative()
+  -- The row has no readable rect yet: hold the corner on the screen's until the
+  -- next Apply can read it, rather than leave the handle unanchored.
+  if not anchor.uuiFollowX then
+    local corner = auraLayout.Corner(rootPoint)
+    anchor:SetPoint(corner, UIParent, corner, 0, 0)
+  end
   anchor:Show()
 end
 
@@ -741,14 +1204,25 @@ function BF:OnEnable()
   -- No `default`: the client's own anchor is not UIParent-relative and cannot
   -- be written as one. U.OnPositionReset replays it instead.
   -- A display that is switched off must not offer a handle to drag.
+  -- Named for the buffs alone once the debuff row has a handle of its own.
   U.RegisterMover("buffs", anchor, {
-    label = U.L("MOVER_LABEL_BUFFS"),
+    label = debuffs.Root() and U.L("MOVER_LABEL_BUFF_ROW") or
+            U.L("MOVER_LABEL_BUFFS"),
     visible = function() return U.GetNativeAuraFrameShown() end,
     setEditShown = SetEditShown,
   })
   U.OnPositionReset(function() return RestoreNativeAnchors() end)
 
+  debuffs.Setup()
   CreateToggle()
+
+  -- Each kind is also its row's mover id.
+  preview.Register("buffs", anchor)
+  if debuffs.anchor then preview.Register(debuffs.MOVER_ID, debuffs.anchor) end
+  -- After debuffs.Setup, which reads the debuff button's stock anchor.
+  auraLayout.Apply("buffs")
+  auraLayout.Apply("debuffs")
+  sizePanel.Register()
 
   Apply()
   RegisterEvents()
@@ -789,5 +1263,12 @@ function U.BuffFrameReport()
     toggleOffsetX = toggleOffsetX,
     rowOverhang = anchor and RowOverhang() or nil,
     nativeAnchorCaptured = (root and captured[root]) and true or false,
+    -- Whether BuffButton16 resolved, and what the debuff handle is doing.
+    debuffAnchor = debuffs.anchor and true or false,
+    debuffPoint = debuffs.capture and debuffs.point or nil,
+    debuffPlaced = debuffs.StoredPosition() and true or false,
+    debuffDriving = debuffs.driving,
+    buffIconSize = auraLayout.IconSize("buffs"),
+    debuffIconSize = auraLayout.IconSize("debuffs"),
   }
 end

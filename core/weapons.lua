@@ -82,17 +82,20 @@ W.autoShotNames = {
 local function ActionName(slot)
   if W.actionNames[slot] then return W.actionNames[slot] end
   if not W.scanner then
-    local ok, tip = pcall(CreateFrame, "GameTooltip", "UnrealUIRangedActionScan",
-                          nil, "GameTooltipTemplate")
-    if not ok or not tip then return nil end
-    W.scanner = tip
+    W.scanner = U.CreateScannerTooltip("UnrealUIRangedActionScan")
+    if not W.scanner then return nil end
   end
 
-  -- Same private, never-shown SetAction sequence already verified by the
-  -- spellbook scanner. Never borrow or change the player's GameTooltip.
-  local tip = W.scanner
-  pcall(tip.ClearLines, tip)
-  pcall(tip.SetOwner, tip, U.G("WorldFrame") or UIParent, "ANCHOR_NONE")
+  -- Same private SetAction sequence already verified by the spellbook
+  -- scanner, hidden again after the read (U.ScanWithTooltip). Never borrow or
+  -- change the player's GameTooltip.
+  local name = U.ScanWithTooltip(W.scanner, W.ReadActionName, slot)
+  if not name then return nil end
+  W.actionNames[slot] = name
+  return name
+end
+
+function W.ReadActionName(tip, slot)
   local line = U.G("UnrealUIRangedActionScanTextLeft1")
   if line and type(line.SetText) == "function" then pcall(line.SetText, line, "") end
   if not pcall(tip.SetAction, tip, slot) then return nil end
@@ -100,7 +103,6 @@ local function ActionName(slot)
   if not line or type(line.GetText) ~= "function" then return nil end
   local ok, name = pcall(line.GetText, line)
   if not ok or type(name) ~= "string" or name == "" then return nil end
-  W.actionNames[slot] = name
   return name
 end
 

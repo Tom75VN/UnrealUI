@@ -1,7 +1,7 @@
 -- unrealUI :: modules/tooltip.lua
 --
 -- Flat pfUI-modern GameTooltip. The stock beveled frame is replaced with the
--- addon's flat panel look (WHITE8X8 fill, one thin dark outline), and the
+-- addon's borderless flat panel look (WHITE8X8 fill), and the
 -- native status bar is pulled flush against the body with a centered health
 -- readout drawn on it.
 --
@@ -21,7 +21,7 @@
 -- heading, the stat tint and the change summary -- and running that on the
 -- stock tooltip left those features off in that theme entirely. Both themes
 -- therefore draw the same flat tooltip. The Classic palette leaves
--- M.color.background/border/text/textDim at their shared values
+-- M.color.background/text/textDim at their shared values
 -- (themes/classic-wow.lua), so nothing here needs a per-theme colour.
 --
 -- behavior.json / tooltip.native_read/regions/hide/backdrop/statusbar/child.v1
@@ -237,6 +237,21 @@ local function ClearNativeTextures(name)
   end
 end
 
+local function ClearAddonEdges(frame)
+  if not frame then return end
+
+  local i
+  for i = 1, table.getn(frame.uuiEdges or {}) do
+    U.HideRegion(frame.uuiEdges[i])
+  end
+end
+
+local function ClearAllEdges(frame, name)
+  ClearNativeEdge(frame)
+  ClearAddonEdges(frame)
+  if name then ClearNativeTextures(name) end
+end
+
 local function StyleStatusBar()
   local bar = U.G("GameTooltipStatusBar")
   if not bar then return nil end
@@ -254,18 +269,18 @@ local function StyleStatusBar()
   pcall(bar.SetStatusBarTexture, bar, M.texture.statusBar)
 
   -- Flat fill behind the bar so a partially depleted pool reads as dark rather
-  -- than transparent, plus the same thin outline the body carries. The bar
-  -- carries its own stock edge, and two adjacent tan edges are most of what
-  -- read as a gap between the body and the bar.
-  U.CreateBackdrop(bar, { background = M.color.healthBg, border = M.color.border })
-  ClearNativeEdge(bar)
+  -- than transparent. The bar is deliberately borderless: it sits below the
+  -- tooltip body, so an outline here becomes the detached bottom line seen on
+  -- world tooltips.
+  U.CreateBackdrop(bar, { background = M.color.healthBg, border = false })
+  ClearAllEdges(bar)
 
   -- The native StatusBar fill cannot be faded: knowledge.json /
   -- rendering.statusbar_alpha_does_not_fade_fill (RUNTIME_FAILURE_CONFIRMED)
   -- has the fill staying fully opaque through widget alpha and through every
   -- accessible descendant's alpha. An unrealUI-owned texture is used as the
   -- health fill instead, so the fadeout can drive it with the same explicit
-  -- vertex-colour alpha the body backdrop and the outline already use, and the
+  -- vertex-colour alpha the body and status-bar backgrounds already use, and the
   -- bar fades in step with the tooltip instead of hanging or being collapsed.
   if not healthFill and bar.CreateTexture then
     local fillOk, fillHolder = pcall(CreateFrame, "Frame", nil, bar)
@@ -469,7 +484,7 @@ function UpdateHealthFill(r, g, b)
   -- client's own one-second tooltip fade (1 - elapsed) and ignoring the vertex
   -- alpha entirely, so the bar stayed two-thirds opaque with its colour intact
   -- while everything around it vanished. That is the colour change. The bar's
-  -- outline and the health readout already fade through SetAlpha and were
+  -- background and the health readout already fade through SetAlpha and were
   -- always in step, which is the pattern followed here; the vertex colour is
   -- left at full alpha and carries the colour only.
   --
@@ -511,19 +526,17 @@ local function StyleFrame()
     pcall(tooltip.SetBackdrop, tooltip, nil)
   end
 
-  -- Fill only, no edgeFile: the stock bevel lives on the backdrop's edge, and
-  -- rendering.backdrop_edge_fractional_not_rasterized means unrealUI draws its
-  -- own outline from plain textures instead (core/style.lua).
+  -- Fill only. The tooltip is intentionally borderless, and both native edge
+  -- sources are suppressed below.
   U.CreateBackdrop(tooltip, {
     background = M.color.background,
-    border = M.color.border,
+    border = false,
   })
-  ClearNativeEdge(tooltip)
 
   -- GameTooltipTexture1-3 are the only Texture regions on this client's
   -- tooltip (the other 60 regions are the Left/Right fontstrings); they carry
   -- the remaining stock corner and item-divider art.
-  ClearNativeTextures("GameTooltip")
+  ClearAllEdges(tooltip, "GameTooltip")
 
   -- Tooltip text is populated into native FontStrings instead of passing
   -- through U.CreateLabel/U.SetStockFont. Bring every populated line onto the
@@ -556,11 +569,9 @@ function U.StyleCompareTooltip(tooltip, name)
 
   U.CreateBackdrop(tooltip, {
     background = M.color.background,
-    border = M.color.border,
+    border = false,
   })
-  ClearNativeEdge(tooltip)
-
-  ClearNativeTextures(name)
+  ClearAllEdges(tooltip, name)
 
   local lineCount = 0
   local countOk, count = pcall(tooltip.NumLines, tooltip)
@@ -830,8 +841,7 @@ local function RefreshCompareTooltip(index, force)
   else
     -- Native population can restore edge/corner art without changing the
     -- visible subject. Keep the cheap suppression active between full passes.
-    ClearNativeEdge(tooltip)
-    ClearNativeTextures(name)
+    ClearAllEdges(tooltip, name)
   end
 end
 
@@ -1981,8 +1991,8 @@ function placement.SetCursorFadeAlpha(tooltip, alpha)
     -- The bar's geometry is never touched by the fade: its height stays at
     -- BAR_HEIGHT and its anchors stay flush against the body, because
     -- collapsing it read as the health bar moving instead of fading. Only
-    -- opacity changes here, and the fill, the bar background, the outline and
-    -- the body all take the same alpha in the same step, so nothing lags.
+    -- opacity changes here, and the fill, the bar background and the body all
+    -- take the same alpha in the same step, so nothing lags.
     pcall(bar.SetAlpha, bar, alpha)
     U.SetBackgroundColor(bar, M.color.healthBg[1], M.color.healthBg[2],
       M.color.healthBg[3], (M.color.healthBg[4] or 1) * alpha)
@@ -2055,6 +2065,19 @@ end
 function placement.Tick()
   if U.PerfDisabled and U.PerfDisabled("tooltip") then return end
   local tooltip = U.G("GameTooltip")
+
+  -- Native population can restore its bevel/divider after the show and resize
+  -- hooks have run. Suppress every native and legacy addon edge on the
+  -- per-frame placement pass so no intermediate item or world-tooltip layout
+  -- can render the unwanted line.
+  ClearAllEdges(tooltip, "GameTooltip")
+  ClearAllEdges(U.G("GameTooltipStatusBar"))
+  local edgeIndex
+  for edgeIndex = 1, 2 do
+    local name = "ShoppingTooltip" .. edgeIndex
+    ClearAllEdges(U.G(name), name)
+  end
+
   if CompareVisible(tooltip) then
     placement.Apply(tooltip)
     placement.NoteOverflow(tooltip)
@@ -2120,12 +2143,11 @@ local function RefreshTooltip(force)
     -- tooltip refreshing in place). Re-suppressing it every tick is cheap
     -- and idempotent; skipping it here is what caused the native border to
     -- flash back in between subject changes.
-    ClearNativeEdge(tooltip)
-    ClearNativeEdge(U.G("GameTooltipStatusBar"))
-    -- Item builders can restore their grey divider without changing the
-    -- tooltip's first line. Keep the native texture pool suppressed between
-    -- full style passes so that late refresh cannot leave the divider visible.
-    ClearNativeTextures("GameTooltip")
+    -- Item builders can restore their bevel or grey divider without changing
+    -- the tooltip's first line. Keep every edge source suppressed between full
+    -- style passes so that late refresh cannot leave one visible.
+    ClearAllEdges(tooltip, "GameTooltip")
+    ClearAllEdges(U.G("GameTooltipStatusBar"))
   end
 
   -- Ahead of the player-only gate below: the bar is shown for any hovered

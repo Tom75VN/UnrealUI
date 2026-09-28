@@ -4,8 +4,9 @@
 -- (character, spellbook, talent, quest log, social, world map, main menu,
 -- help) into one compact, movable row. The `classic-wow` theme keeps the
 -- complete stock MainMenuBar assembly intact, including its original micro
--- menu. Under `modern` the buttons' native art is left untouched and only
--- reparented/scaled, which is deliberate; see the reskin note below. The enable
+-- menu. `modern` draws the `modern-wow` glyph row (user request, 2026-09-28);
+-- only classic-wow's "action only" bar keeps the native art, reparented and
+-- scaled, which is deliberate; see the reskin note below. The enable
 -- option lives on the settings window's General page (modules/settings.lua)
 -- rather than a dedicated tab, since it is the bar's only setting.
 --
@@ -31,14 +32,24 @@
 -- alone until there is a confirmed technique, not another guess.
 --
 -- Under the `modern-wow` theme the buttons are skinned after all, but by a
--- different technique than the two that failed: each button's own
--- Normal/Pushed/Highlight/Disabled slots are pointed at a complete imported
--- Dragonflight glyph (icon plus its own button plate), so nothing is drawn
--- behind or cropped out of the native art -- it is replaced outright. That is
--- what DragonflightUI-Reforged itself does (modules/micro/micro.lua), so it is
--- WORKING_SOURCE for a 1.12-era client, not runtime verification here. See
--- U.BuildModernWowMicroBar below; modern still leaves the native art completely
--- alone, while classic-wow leaves the whole stock bar in place.
+-- different technique than the two that failed: the native face art is
+-- replaced outright rather than cropped or boxed. Each button is rebuilt as
+-- Retail's MainMenuBarMicroButton from Retail's own micro-menu atlas (user
+-- request, 2026-09-28): the icon cells in the button's own state slots and
+-- the ButtonBG plate behind them -- see the modern-wow drawing path below and
+-- U.BuildModernWowMicroBar. `modern` takes the same path (user request,
+-- 2026-09-28; modernWow.Active), while classic-wow leaves the whole stock bar
+-- in place.
+--
+-- One button is the addon's own rather than the client's: Professions,
+-- between Spellbook and Talents (user request, 2026-09-28). This client has no
+-- professions micro button and no professions book, so it opens the
+-- Spellbook's Professions page (modules/spellbookprofessions.lua), which every
+-- theme builds. See the `profession` table below.
+--
+-- A second one, Group Finder, sits after Social under the Retail row only
+-- (user request, 2026-09-28). This client has no group finder: see the
+-- `finder` table below for what it does instead.
 --
 -- `/uui check` reports how many candidates resolved.
 --
@@ -52,79 +63,129 @@ local M = U.media
 
 local MB = U.RegisterModule("microbar")
 
+local PROFESSION = "UnrealUIProfessionMicroButton"
+local FINDER = "UnrealUIGroupFinderMicroButton"
+
 local BUTTON_NAMES = {
-  "CharacterMicroButton", "SpellbookMicroButton", "TalentMicroButton",
-  "QuestLogMicroButton", "SocialsMicroButton", "WorldMapMicroButton",
-  "MainMenuMicroButton", "HelpMicroButton",
+  "CharacterMicroButton", "SpellbookMicroButton", PROFESSION,
+  "TalentMicroButton", "QuestLogMicroButton", "SocialsMicroButton", FINDER,
+  "WorldMapMicroButton", "MainMenuMicroButton", "HelpMicroButton",
 }
 
 local BUTTON_SCALE = 0.6
 local BUTTON_GAP = 0
 local HEIGHT = 23
--- pfUI's own microbutton panel is a hard-coded 145 wide for these same 8
--- candidates at the same 0.6 scale (UnrealPfUI modules/panel.lua); reused
--- here as a WORKING_SOURCE width rather than a measured one, scaled down when
--- fewer candidates resolve on this client.
-local FULL_WIDTH = 145
+-- The bar's width is measured from the buttons it holds (size.FitAnchor); it
+-- replaced pfUI's hard-coded 145-per-8 panel width, which left the edit-mode
+-- handle wider than the row.
 local MIN_WIDTH = 20
 
+-- The player's size for the whole bar (user request, 2026-09-28), a percent of
+-- each style's own default, set from the micro bar's edit-mode panel. One
+-- uniform factor on every button's scale, on the gaps and on the bar's box,
+-- so the row keeps its ratio in every style.
+--
+-- 100% is the size the bar is drawn at today (user request, 2026-09-28: the
+-- percent is rebased so the size in use reads 100%). Until the Retail row was
+-- sized by dimensions its buttons ignored every scale, so what was on screen
+-- was the style's full size; that is 100% now.
+local size = { MIN = 50, MAX = 100, STEP = 5, DEFAULT = 100 }
+
 -- ---------------------------------------------------------------------------
--- modern-wow drawing path
+-- modern-wow drawing path (also drawn under `modern`)
 --
 -- Kept on one table rather than as a dozen top-level locals: this file stays
 -- well inside the 200-local chunk limit that way, per rules/unreal-ui.md.
 --
--- `glyph` maps each native button to a core/media.lua micro-glyph id. Seven of
--- the eight are the obvious counterpart. WorldMapMicroButton is the exception:
--- the Dragonflight micro menu has no map button at all, so neither the
--- imported colour set nor the source's grey atlas contains one, and the
--- closest glyph that still reads as an atlas -- the tome (`log`, the source's
--- Adventure Guide icon) -- is used for it. DragonflightUI's own file maps its
--- world-map button to the shield, which is its character glyph here.
+-- Retail's micro menu (Blizzard_MicroMenu/Mainline, MainMenuBarMicroButton),
+-- drawn only from Retail's micro-menu atlas (M.modernWow.microMenu):
 --
--- Sizes, spacing and the texture-coordinate window are the source's own
--- numbers for these exact files (20x30 buttons, 2 apart, sampling
--- 36..86 x 29..98 out of each 128x128 glyph), so the art is drawn at the
--- proportions it was authored for.
+--  * each button is 32x40 with `ButtonBG-Up` behind it at atlas size, swapped
+--    for `ButtonBG-Down` while pushed (the template's Background /
+--    PushedBackground), on addon textures created on the button;
+--  * the icon's Up / Down / Disabled cells go in the button's own state slots
+--    (LoadMicroButtonTextures), and the highlight slot takes Mouseover BLEND
+--    at full alpha -- or, while pushed, the Down cell ADD at half alpha
+--    (SetPushed / SetNormal);
+--  * the normal face goes transparent while hovered, because Retail bakes the
+--    shadow into the highlight (OnEnter / OnLeave);
+--  * CharacterMicroButton is an icon button like the rest, with the atlas's
+--    shield (`Achievements` cells) instead of Retail's live portrait, whose
+--    2D snapshot is too low-resolution at this size (user request,
+--    2026-09-28).
+--
+-- A native button's pushed state is the client's own: vanilla
+-- UpdateMicroButtons() locks a button PUSHED while its window is open. That
+-- state is read back (GetButtonState) and the Retail look follows it, from
+-- the UpdateMicroButtons post-hook, the row guard's tick and each mouse-up.
+-- Nothing is replaced: every script is post-hooked (U.PostHookScript).
+--
+-- The Dragonflight glyph row this replaces (20x30 at 85%) is gone with its
+-- files (user request, 2026-09-28).
 -- ---------------------------------------------------------------------------
 local modernWow = {
-  glyph = {
-    CharacterMicroButton = "character",
-    SpellbookMicroButton = "spellbook",
-    TalentMicroButton    = "talents",
-    QuestLogMicroButton  = "quest",
-    SocialsMicroButton   = "social",
-    WorldMapMicroButton  = "log",
-    MainMenuMicroButton  = "menu",
-    HelpMicroButton      = "help",
-  },
-
   -- Native regions that sit on top of a micro button's own face art and would
-  -- otherwise cover the imported glyph: the character portrait overlay and the
-  -- performance/latency bar the client parents to the main-menu button. Both
-  -- are looked up as plain globals and skipped when absent, the same existence
-  -- discipline BUTTON_NAMES uses.
+  -- otherwise cover the Retail art: the character portrait overlay (the
+  -- button draws the shield instead) and the performance/latency bar the
+  -- client parents to the main-menu button. Both are looked up as plain
+  -- globals and skipped when absent, the same existence discipline
+  -- BUTTON_NAMES uses.
   overlays = { "MicroButtonPortrait", "MainMenuBarPerformanceBarFrame" },
 
-  -- The source's 20x30 / 2 geometry drawn at 85%, keeping its proportions.
-  width = 20 * 0.85,
-  height = 30 * 0.85,
-  gap = 2 * 0.85,
-
-  left = 36 / 128,
-  right = 86 / 128,
-  top = 29 / 128,
-  bottom = 98 / 128,
+  -- name -> the addon regions drawn on that button and its painted state.
+  skins = {},
+  -- True while the bar is installed in this style; every hook checks it, so
+  -- a bar switched off or to the native path is left alone.
+  enabled = false,
 }
+
+function modernWow.Token()
+  return M.modernWow.microMenu
+end
+
+-- The addon's own micro buttons (Professions, Group Finder) show the same
+-- tooltip as the client's micro buttons (user request, 2026-09-28): vanilla
+-- GameTooltip_AddNewbieTip's shape -- the default tooltip anchor, a white
+-- title, then a wrapped description in NORMAL_FONT_COLOR gold -- on the
+-- client's GameTooltip, so UnrealUI's tooltip skin and placement
+-- (modules/tooltip.lua) apply to it exactly as to Social's. Populated fresh
+-- (SetText first) and shown once, the sequence modules/xpbar.lua uses; lines
+-- are never appended to a tooltip already shown, which this client does not
+-- relayout for (core/widgets.lua, info tooltip note).
+modernWow.TOOLTIP_GOLD = { 1, 0.82, 0 }
+
+function modernWow.ShowTooltip(owner, title, description, extra)
+  local tip = GameTooltip
+  if not tip or not owner then return end
+  local anchor = U.G("GameTooltip_SetDefaultAnchor")
+  local placed = type(anchor) == "function" and pcall(anchor, tip, owner)
+  if not placed then pcall(tip.SetOwner, tip, owner, "ANCHOR_RIGHT") end
+  pcall(tip.SetText, tip, title, 1, 1, 1)
+  local gold = modernWow.TOOLTIP_GOLD
+  if description then
+    pcall(tip.AddLine, tip, description, gold[1], gold[2], gold[3], 1)
+  end
+  if extra then pcall(tip.AddLine, tip, extra, 1, 1, 1, 1) end
+  pcall(tip.Show, tip)
+end
+
+function modernWow.HideTooltip()
+  if GameTooltip then pcall(GameTooltip.Hide, GameTooltip) end
+end
 
 -- Evaluated on every Apply rather than latched at login, so flipping the micro
 -- bar off and back on from the settings page redraws in the right style. Both
 -- helpers are defined by files the TOC loads before this module's OnEnable
 -- runs, but they are still type-checked: this module must not stop working if
 -- either is absent.
+--
+-- `modern` draws the same row (user request, 2026-09-28): it has no surface
+-- registry, so it needs no surface check.
 function modernWow.Active()
-  if type(U.GetActiveThemeStyle) ~= "function" or
-     U.GetActiveThemeStyle() ~= "modern-wow" then return false end
+  if type(U.GetActiveThemeStyle) ~= "function" then return false end
+  local style = U.GetActiveThemeStyle()
+  if style == "modern" then return true end
+  if style ~= "modern-wow" then return false end
   if type(U.ModernWowSurfaceEnabled) == "function" and
      not U.ModernWowSurfaceEnabled("microbar") then return false end
   return true
@@ -138,8 +199,53 @@ local buttons = {}   -- name -> captured original state + button reference
 -- Config
 -- ---------------------------------------------------------------------------
 local function EnsureConfig()
-  if not config then config = U.ModuleConfig("microbar", { enabled = true }) end
+  if not config then
+    config = U.ModuleConfig("microbar", {
+      enabled = true, size = size.DEFAULT, sizeVersion = 3,
+    })
+    -- Sizes stored before version 3 were percents of a scale the buttons
+    -- never applied, so none of them matches what the player saw: every one
+    -- becomes 100%, the size that was actually on screen. Once.
+    if (tonumber(config.sizeVersion) or 0) < 3 then
+      config.size = size.DEFAULT
+      config.sizeVersion = 3
+    end
+  end
   return config
+end
+
+function size.Percent()
+  local value = tonumber(config and config.size) or size.DEFAULT
+  if value < size.MIN then value = size.MIN end
+  if value > size.MAX then value = size.MAX end
+  return value
+end
+
+function size.Factor()
+  return size.Percent() / 100
+end
+
+-- The size multiplier for the current style. Under the Retail row it is
+-- applied to dimensions, never as a frame scale: MEASURED (group
+-- `microbarvis`, span.v2, 2026-09-28) the buttons reported scale 0.4 yet
+-- were drawn and measured at their full 32x40, so SetScale does not shrink
+-- them here (see also knowledge.json /
+-- widgets.reparented_native_widget_ignores_ancestor_scale: keep scale 1 and
+-- size the layout instead). The native-art path still uses it as a scale.
+function size.ButtonScale()
+  if modernWow.Active() then
+    return modernWow.Token().scale * size.Factor()
+  end
+  return BUTTON_SCALE * size.Factor()
+end
+
+-- The offset between two neighbours, in the bar's units: Retail's -5
+-- overlap at the row's size.
+function size.Gap()
+  if modernWow.Active() then
+    return modernWow.Token().padding * size.ButtonScale()
+  end
+  return BUTTON_GAP
 end
 
 -- ---------------------------------------------------------------------------
@@ -186,45 +292,187 @@ local function CaptureOriginal(name, button)
   return entry
 end
 
--- Points one of the button's own texture slots at an imported glyph and
--- windows it down to the glyph's drawn area. Each slot is set from a path,
--- which creates the texture object when the button has none, so no region is
--- hunted for or retained -- the returned texture is used immediately and
--- dropped, never cached across refreshes (rules/unreal-ui.md, native widget
--- ownership).
-function modernWow.SetSlot(button, setter, getter, path)
-  if not path then return end
+-- Points one of the button's own texture slots at `path`, cropped to `coords`
+-- ({ left, right, top, bottom }; the whole file when nil). Each slot is set
+-- from a path, which creates the texture object when the button has none, so
+-- no region is hunted for or retained -- the returned texture is used
+-- immediately by the caller and dropped, never cached across refreshes
+-- (rules/unreal-ui.md, native widget ownership).
+function modernWow.SetSlot(button, setter, getter, path, coords)
+  if not path then return nil end
   pcall(setter, button, path)
   local ok, texture = pcall(getter, button)
-  if ok and texture then
-    pcall(texture.SetTexCoord, texture, modernWow.left, modernWow.right,
-          modernWow.top, modernWow.bottom)
+  if not ok or not texture then return nil end
+  local c = coords or { 0, 1, 0, 1 }
+  pcall(texture.SetTexCoord, texture, c[1], c[2], c[3], c[4])
+  return texture
+end
+
+-- One icon cell in one of the button's own state slots, placed exactly as the
+-- plate is: at its atlas size, centred on the button. The slot's own box
+-- cannot be trusted -- MEASURED (group `microbarvis`, 2026-09-28): every
+-- native micro button keeps its face texture at a client-set 29x40, inset 1.5
+-- each side of the 32x40 button, which squeezed the 64x82 cells ~10%
+-- horizontally. Sized from the atlas instead, icon and plate share one
+-- canvas, as Retail authored them.
+function modernWow.SetCell(button, setter, getter, coords)
+  local t = modernWow.Token()
+  local texture = modernWow.SetSlot(button, setter, getter, t.texture, coords)
+  if texture then
+    local s = size.ButtonScale()
+    pcall(function()
+      texture:ClearAllPoints()
+      texture:SetWidth(t.atlasWidth * s)
+      texture:SetHeight(t.atlasHeight * s)
+      texture:SetPoint("CENTER", button, "CENTER", 0, 0)
+    end)
+  end
+  return texture
+end
+
+-- One atlas member at its atlas size, centred on the button (useAtlasSize +
+-- CENTER, as the template's Background textures are).
+function modernWow.Region(button, layer, coords)
+  local t = modernWow.Token()
+  local ok, texture = pcall(button.CreateTexture, button, nil, layer)
+  if not ok or not texture then return nil end
+  pcall(function()
+    texture:SetTexture(t.texture)
+    texture:SetTexCoord(coords[1], coords[2], coords[3], coords[4])
+    texture:SetPoint("CENTER", button, "CENTER", 0, 0)
+  end)
+  modernWow.SizeRegion(texture)
+  return texture
+end
+
+-- An atlas-size region at the row's size (see size.ButtonScale).
+function modernWow.SizeRegion(texture)
+  if not texture then return end
+  local t = modernWow.Token()
+  local s = size.ButtonScale()
+  pcall(texture.SetWidth, texture, t.atlasWidth * s)
+  pcall(texture.SetHeight, texture, t.atlasHeight * s)
+end
+
+function modernWow.SetShown(region, shown)
+  if not region then return end
+  if shown then pcall(region.Show, region) else pcall(region.Hide, region) end
+end
+
+function modernWow.IsPushed(button)
+  local ok, state = pcall(button.GetButtonState, button)
+  return ok and state == "PUSHED" or false
+end
+
+function modernWow.IsEnabled(button)
+  local ok, enabled = pcall(button.IsEnabled, button)
+  if not ok then return true end
+  return enabled and true or false
+end
+
+-- MainMenuBarMicroButtonMixin:SetPushed / :SetNormal.
+function modernWow.Paint(name, pushed)
+  local skin = modernWow.skins[name]
+  if not skin then return end
+  local t = modernWow.Token()
+  local button = skin.button
+  skin.pushed = pushed
+
+  modernWow.SetShown(skin.plate, not pushed)
+  modernWow.SetShown(skin.pushedPlate, pushed)
+
+  local icon = t.icons[t.map[name]]
+  if not icon then return end
+  local highlight = modernWow.SetCell(button, button.SetHighlightTexture,
+                                      button.GetHighlightTexture,
+                                      pushed and icon.pushed or icon.highlight)
+  if highlight then
+    pcall(highlight.SetBlendMode, highlight, pushed and "ADD" or "BLEND")
+    pcall(highlight.SetAlpha, highlight,
+          pushed and t.pushedHighlightAlpha or 1)
   end
 end
 
--- Replaces a button's four state faces with the Dragonflight glyph set. The
--- pushed/hover/disabled art comes from the same glyph, so every state the
--- button already had keeps working and none of them can reveal native art.
--- Only `talents` ships a real disabled face; the rest reuse the faded one,
--- which is the source's own pushed art and reads as the dimmed state.
-function modernWow.SkinButton(name, button)
-  local id = modernWow.glyph[name]
-  local art = id and M.modernWow and M.modernWow.micro
-                and M.modernWow.micro[id]
-  if not art then return false end
+-- Brings every drawn button in line with its real button state; writes
+-- nothing for a button that already matches.
+function modernWow.SyncAll()
+  if not modernWow.enabled then return end
+  local name, skin
+  for name, skin in pairs(modernWow.skins) do
+    local pushed = modernWow.IsPushed(skin.button)
+    if pushed ~= skin.pushed then modernWow.Paint(name, pushed) end
+  end
+end
 
-  modernWow.SetSlot(button, button.SetNormalTexture,
-                    button.GetNormalTexture, art.normal)
-  modernWow.SetSlot(button, button.SetPushedTexture,
-                    button.GetPushedTexture, art.faded)
-  modernWow.SetSlot(button, button.SetHighlightTexture,
-                    button.GetHighlightTexture, art.highlight)
-  modernWow.SetSlot(button, button.SetDisabledTexture,
-                    button.GetDisabledTexture, art.disabled or art.faded)
+function modernWow.SetNormalAlpha(button, alpha)
+  local ok, normal = pcall(button.GetNormalTexture, button)
+  if ok and normal then pcall(normal.SetAlpha, normal, alpha) end
+end
+
+-- OnMouseDown / OnMouseUp / OnEnter / OnLeave, post-hooked once per button.
+function modernWow.HookButton(name, button)
+  U.PostHookScript(button, "OnMouseDown", function()
+    if modernWow.enabled and modernWow.IsEnabled(button) then
+      modernWow.Paint(name, true)
+    end
+  end)
+  -- The click's own window toggle (and the client's UpdateMicroButtons) run
+  -- around mouse-up, so the settled state is read a frame later.
+  U.PostHookScript(button, "OnMouseUp", function()
+    if modernWow.enabled then U.DeferOnce("microbar.sync", modernWow.SyncAll) end
+  end)
+  U.PostHookScript(button, "OnEnter", function()
+    if modernWow.enabled then modernWow.SetNormalAlpha(button, 0) end
+  end)
+  U.PostHookScript(button, "OnLeave", function()
+    if modernWow.enabled then modernWow.SetNormalAlpha(button, 1) end
+  end)
+end
+
+-- Draws one button in the Retail style. Its regions are created the first
+-- time and reused, never recreated.
+function modernWow.SkinButton(name, button)
+  local t = modernWow.Token()
+  local icon = t.icons[t.map[name] or ""]
+  if not icon then return false end
+
+  local skin = modernWow.skins[name]
+  if not skin then
+    skin = { button = button }
+    skin.plate = modernWow.Region(button, "BACKGROUND", t.plateUp)
+    skin.pushedPlate = modernWow.Region(button, "BACKGROUND", t.plateDown)
+    modernWow.skins[name] = skin
+    modernWow.HookButton(name, button)
+  end
+  modernWow.SizeRegion(skin.plate)
+  modernWow.SizeRegion(skin.pushedPlate)
+
+  modernWow.SetCell(button, button.SetNormalTexture, button.GetNormalTexture,
+                    icon.normal)
+  modernWow.SetCell(button, button.SetPushedTexture, button.GetPushedTexture,
+                    icon.pushed)
+  modernWow.SetCell(button, button.SetDisabledTexture,
+                    button.GetDisabledTexture, icon.disabled)
+  modernWow.SetNormalAlpha(button, 1)
+
+  modernWow.Paint(name, modernWow.IsPushed(button))
   return true
 end
 
--- Hides the native regions that would otherwise draw over the imported glyph.
+-- Takes every addon region off the buttons when the bar is switched off, so
+-- a button handed back to its stock place carries no Retail plate. The state
+-- faces are not put back (see RestoreButtons).
+function modernWow.HideSkins()
+  modernWow.enabled = false
+  local name, skin
+  for name, skin in pairs(modernWow.skins) do
+    modernWow.SetShown(skin.plate, false)
+    modernWow.SetShown(skin.pushedPlate, false)
+    modernWow.SetNormalAlpha(skin.button, 1)
+  end
+end
+
+-- Hides the native regions that would otherwise draw over the Retail art.
 -- Hide only: nothing is unregistered, reparented or replaced, so the client
 -- keeps full ownership of both frames.
 function modernWow.HideOverlays()
@@ -232,6 +480,308 @@ function modernWow.HideOverlays()
   for i = 1, table.getn(modernWow.overlays) do
     local frame = U.G(modernWow.overlays[i])
     if frame then pcall(frame.Hide, frame) end
+  end
+end
+
+-- ---------------------------------------------------------------------------
+-- Professions button
+--
+-- Addon-owned. Under modern-wow / modern it is one more Retail button
+-- (`Professions` cells, through modernWow.SkinButton like its neighbours).
+-- On classic-wow's native "action only" bar it takes the client's own
+-- micro-button art (M.microProfession), built like its Character button: the
+-- blank portrait plate in the state slots and a profession icon in the
+-- portrait window, dimmed and shifted while pressed.
+--
+-- It is held pressed while the Spellbook shows its Professions page, as a
+-- native micro button is while its window is open.
+--
+-- Its hover tooltip is the client micro buttons' own (modernWow.ShowTooltip),
+-- titled with the Spellbook tab's localized "Professions".
+-- ---------------------------------------------------------------------------
+local profession = { pressed = false, locked = false, skinned = nil }
+
+-- The client's Character button faces, read once as plain path strings and
+-- then dropped (rules/unreal-ui.md, native widget ownership). Falls back to
+-- the recorded Vanilla paths when a face cannot be read.
+function profession.CharacterFace(getter, fallback)
+  local character = U.G("CharacterMicroButton")
+  if not character or not character[getter] then return fallback end
+  local ok, texture = pcall(character[getter], character)
+  if not ok or not texture or not texture.GetTexture then return fallback end
+  local pathOk, path = pcall(texture.GetTexture, texture)
+  if pathOk and type(path) == "string" and path ~= "" then return path end
+  return fallback
+end
+
+function profession.Create()
+  if profession.button then return profession.button end
+  if not anchor then return nil end
+
+  local ok, button = pcall(CreateFrame, "Button", PROFESSION, anchor)
+  if not ok or not button then return nil end
+  pcall(button.RegisterForClicks, button, "LeftButtonUp")
+
+  profession.icon = button:CreateTexture(nil, "OVERLAY")
+
+  button:SetScript("OnClick", function()
+    if type(U.ToggleSpellBookProfessions) == "function" then
+      U.ToggleSpellBookProfessions()
+    end
+    profession.Sync()
+  end)
+  button:SetScript("OnMouseDown", function()
+    profession.pressed = true
+    profession.Paint()
+  end)
+  button:SetScript("OnMouseUp", function()
+    profession.pressed = false
+    profession.Paint()
+  end)
+  button:SetScript("OnEnter", function()
+    modernWow.ShowTooltip(button, U.L("SPELLBOOK_PROFESSIONS"),
+                          U.L("MICROBAR_PROFESSIONS_TIP"))
+  end)
+  button:SetScript("OnLeave", modernWow.HideTooltip)
+
+  pcall(button.Hide, button)
+  profession.button = button
+  return button
+end
+
+-- The native path's portrait icon, which follows the press but not the
+-- button's own state machine. The Retail path is painted by modernWow.
+function profession.Paint()
+  if not profession.button or profession.skinned then return end
+  local pressed = profession.pressed or profession.locked
+  local n = M.microProfession
+  local c = pressed and n.iconPushed or n.iconNormal
+  pcall(profession.icon.SetTexCoord, profession.icon, c[1], c[2], c[3], c[4])
+  pcall(profession.icon.SetAlpha, profession.icon,
+        pressed and n.iconPushedAlpha or 1)
+end
+
+-- Holds the button pressed while the Professions page is open, and splits the
+-- Spellbook window between the two buttons by its active tab.
+function profession.Sync()
+  if not profession.button then return end
+  local shown = type(U.SpellBookProfessionsShown) == "function" and
+                U.SpellBookProfessionsShown() and true or false
+  if shown ~= profession.locked then
+    profession.locked = shown
+    if shown then
+      pcall(profession.button.SetButtonState, profession.button, "PUSHED", 1)
+    else
+      pcall(profession.button.SetButtonState, profession.button, "NORMAL")
+    end
+    profession.Paint()
+  end
+  profession.SyncSpellbook(shown)
+  modernWow.SyncAll()
+end
+
+-- The client's UpdateMicroButtons holds SpellbookMicroButton pressed whenever
+-- SpellBookFrame is shown, whichever page it shows, and does not run again on
+-- a tab switch. While the Professions page is up the Spellbook button is
+-- released here; when the book goes back to its spell tab it is pressed again
+-- -- but only if this function released it, so the client's own pressed state
+-- (and a press in progress) is otherwise left alone. Same SetButtonState the
+-- client uses; nothing is hooked or replaced.
+function profession.SyncSpellbook(professionsShown)
+  local button = U.G("SpellbookMicroButton")
+  if not button then return end
+  local stateOk, state = pcall(button.GetButtonState, button)
+  local pushed = stateOk and state == "PUSHED"
+
+  if professionsShown then
+    if pushed then
+      pcall(button.SetButtonState, button, "NORMAL")
+      profession.releasedSpellbook = true
+    end
+    return
+  end
+
+  if not profession.releasedSpellbook then return end
+  profession.releasedSpellbook = false
+  local book = U.G("SpellBookFrame")
+  local openOk, open = false, false
+  if book then openOk, open = pcall(book.IsShown, book) end
+  if openOk and open and not pushed then
+    pcall(button.SetButtonState, button, "PUSHED", 1)
+  end
+end
+
+-- Retail's Spellbook button, while the Professions page is open, switches the
+-- window to its Spellbook tab rather than closing it. The client's own OnClick
+-- would toggle the window shut, and a post-hook runs too late to stop that, so
+-- this one script is wrapped instead: in that single case the owned tab is
+-- clicked (U.SpellBookShowSpellsTab) and the client's handler is skipped; in
+-- every other case, and whenever the bar is off, the client's handler runs
+-- untouched with the same arguments (its `this` / `arg1` globals are still the
+-- ones the click set). Installed once.
+function profession.HookSpellbookClick()
+  if profession.spellbookHooked then return end
+  local button = U.G("SpellbookMicroButton")
+  if not button then return end
+  local ok, previous = pcall(button.GetScript, button, "OnClick")
+  if not ok then return end
+  profession.spellbookHooked = pcall(button.SetScript, button, "OnClick",
+    function(a1, a2, a3, a4, a5, a6, a7, a8, a9)
+      if config and config.enabled and
+         type(U.SpellBookShowSpellsTab) == "function" and
+         U.SpellBookShowSpellsTab() then
+        profession.Sync()
+        return
+      end
+      if previous then previous(a1, a2, a3, a4, a5, a6, a7, a8, a9) end
+    end) and true or false
+end
+
+-- Called by modules/spellbookprofessions.lua whenever its page opens or
+-- closes, so a tab switch inside the Spellbook repaints both buttons at once
+-- instead of on the row guard's next tick.
+function U.MicroBarSync()
+  if not config or not config.enabled or not anchor then return end
+  profession.Sync()
+end
+
+-- Draws the button in the chosen style and sizes it for the native path; the
+-- Retail path is sized by ArrangeButtons with every other button.
+function profession.Skin(button, skinned)
+  profession.skinned = skinned
+  if skinned then
+    pcall(profession.icon.Hide, profession.icon)
+    modernWow.SkinButton(PROFESSION, button)
+  else
+    local n = M.microProfession
+    modernWow.SetSlot(button, button.SetNormalTexture, button.GetNormalTexture,
+                      profession.CharacterFace("GetNormalTexture", n.plateUp))
+    modernWow.SetSlot(button, button.SetPushedTexture, button.GetPushedTexture,
+                      profession.CharacterFace("GetPushedTexture", n.plateDown))
+    local highlight = modernWow.SetSlot(button, button.SetHighlightTexture,
+                        button.GetHighlightTexture,
+                        profession.CharacterFace("GetHighlightTexture",
+                                                 n.highlight))
+    if highlight then pcall(highlight.SetBlendMode, highlight, "ADD") end
+
+    -- Sized and hit-inset like the Spellbook button beside it, so the row
+    -- stays even; the recorded Vanilla size when that was not captured.
+    local ref = buttons.SpellbookMicroButton
+    pcall(button.SetWidth, button, (ref and ref.width) or n.width)
+    pcall(button.SetHeight, button, (ref and ref.height) or n.height)
+    if ref and ref.insetL then
+      pcall(button.SetHitRectInsets, button, ref.insetL, ref.insetR or 0,
+            ref.insetT or 0, ref.insetB or 0)
+    end
+
+    pcall(profession.icon.SetTexture, profession.icon, n.icon)
+    pcall(profession.icon.SetWidth, profession.icon, n.iconWidth)
+    pcall(profession.icon.SetHeight, profession.icon, n.iconHeight)
+    pcall(profession.icon.ClearAllPoints, profession.icon)
+    pcall(profession.icon.SetPoint, profession.icon, "TOP", button, "TOP", 0,
+          -n.iconTop)
+    pcall(profession.icon.Show, profession.icon)
+  end
+  profession.Sync()
+  profession.Paint()
+end
+
+-- ---------------------------------------------------------------------------
+-- Group Finder button (user request, 2026-09-28)
+--
+-- Retail's LFD button, `Groupfinder` cells, after Social as in Retail's row.
+-- The client's group finder has no documented Lua entry point (the
+-- documented GetLookingForGroup / SetLookingForGroup are no-ops); it is opened
+-- from its minimap button, and so is this one (finder.Open):
+--
+--  * always enabled on the atlas's Up eye (user request, 2026-09-28: the
+--    greyed Disabled cell at half alpha hid the eye);
+--  * a click opens the same finder the minimap button opens;
+--  * held pressed while a battleground queue reports `queued`;
+--  * its tooltip is the client micro buttons' own (modernWow.ShowTooltip),
+--    with a white line while queued.
+--
+-- The three queues (GetBattlefieldStatus 1-3) are read on the row guard's
+-- tick; no queue-status event has compatibility evidence on this client, so
+-- none is registered. Retail row only: classic-wow's native-art bar has no
+-- art for it, so it is left out of that row.
+-- ---------------------------------------------------------------------------
+local finder = { queue = nil, locked = false }
+
+function finder.Create()
+  if finder.button then return finder.button end
+  if not anchor then return nil end
+
+  local ok, button = pcall(CreateFrame, "Button", FINDER, anchor)
+  if not ok or not button then return nil end
+  pcall(button.RegisterForClicks, button, "LeftButtonUp")
+  button:SetScript("OnClick", finder.Open)
+  button:SetScript("OnEnter", function()
+    modernWow.ShowTooltip(button, U.L("MICROBAR_GROUP_FINDER"),
+                          U.L("MICROBAR_GROUP_FINDER_TIP"),
+                          finder.Queued() and
+                            U.L("MICROBAR_GROUP_FINDER_QUEUED") or nil)
+  end)
+  button:SetScript("OnLeave", modernWow.HideTooltip)
+  pcall(button.Hide, button)
+  finder.button = button
+  return button
+end
+
+-- The first battleground queue whose status is `queued`, or nil.
+function finder.Queued()
+  local status = U.G("GetBattlefieldStatus")
+  if type(status) ~= "function" then return nil end
+  local i
+  for i = 1, 3 do
+    local ok, value = pcall(status, i)
+    if ok and value == "queued" then return i end
+  end
+  return nil
+end
+
+-- Opens the client's own group finder, exactly as its minimap button does
+-- (user request, 2026-09-28). MEASURED (group `microbarfinder`, 2026-09-28):
+-- that button is LFTMinimapButton, a 33x33 Button on the Minimap whose only
+-- click script is OnMouseUp -- no OnClick. Its handler is run as a left
+-- mouse-up on it: the legacy `this` / `arg1` globals this client's handlers
+-- read (knowledge.json / scripts.onupdate_elapsed_only_via_arg1) are set for
+-- the call and restored, and the same values are passed as arguments for a
+-- handler that takes them. Nothing is hooked, replaced or moved. Without the
+-- button, a battleground queue's join dialog is reopened instead.
+function finder.Open()
+  local target = U.G("LFTMinimapButton")
+  local ok, handler = false, nil
+  if target and target.GetScript then
+    ok, handler = pcall(target.GetScript, target, "OnMouseUp")
+  end
+  if ok and type(handler) == "function" then
+    local oldThis, oldArg1 = this, arg1
+    this, arg1 = target, "LeftButton"
+    pcall(handler, target, "LeftButton")
+    this, arg1 = oldThis, oldArg1
+  else
+    local index = finder.Queued()
+    local show = U.G("ShowBattlefieldList")
+    if index and type(show) == "function" then pcall(show, index) end
+  end
+  finder.Sync()
+end
+
+-- Held pressed while queued. Writes only on a change.
+function finder.Sync()
+  local button = finder.button
+  if not button or not modernWow.enabled then return end
+  finder.queue = finder.Queued()
+  local queued = finder.queue ~= nil
+
+  if queued ~= finder.locked then
+    finder.locked = queued
+    if queued then
+      pcall(button.SetButtonState, button, "PUSHED", 1)
+    else
+      pcall(button.SetButtonState, button, "NORMAL")
+    end
   end
 end
 
@@ -246,11 +796,11 @@ local function AnchorRow()
 
   local prev = nil
   local i
-  local gap = (modernWow.Active() and modernWow.gap) or BUTTON_GAP
+  local gap = size.Gap()
 
   for i = 1, table.getn(BUTTON_NAMES) do
     local entry = buttons[BUTTON_NAMES[i]]
-    if entry and entry.button then
+    if entry and entry.button and not entry.excluded then
       local button = entry.button
       pcall(button.ClearAllPoints, button)
       if prev then
@@ -314,7 +864,7 @@ local function RowDrifted()
   local i
   for i = 1, table.getn(BUTTON_NAMES) do
     local entry = buttons[BUTTON_NAMES[i]]
-    if entry and entry.button then
+    if entry and entry.button and not entry.excluded then
       local ok, count = pcall(entry.button.GetNumPoints, entry.button)
       count = ok and tonumber(count) or nil
       if count and count ~= 1 then return true end
@@ -326,6 +876,12 @@ end
 local function WatchRow()
   if not anchor or not config or not config.enabled then return end
   if RowDrifted() then AnchorRow() end
+  -- The Professions page opens and closes by tab clicks that never reach
+  -- UpdateMicroButtons, so the button's held state is checked here too, and
+  -- the Retail look follows every button's real state.
+  profession.Sync()
+  finder.Sync()
+  modernWow.SyncAll()
 end
 
 -- Non-destructive: the native function runs first and untouched
@@ -340,7 +896,12 @@ local function InstallNativeUpdateHook()
   -- uninstalled and retries on the next Apply; the driver guard covers the row
   -- either way.
   hooked = U.PostHookGlobal("UpdateMicroButtons", function()
-    if config and config.enabled then AnchorRow() end
+    if config and config.enabled then
+      AnchorRow()
+      profession.Sync()
+      finder.Sync()
+      modernWow.SyncAll()
+    end
   end) and true or false
 end
 
@@ -350,27 +911,41 @@ local function ArrangeButtons()
   local count = 0
   local i
   local skinned = modernWow.Active()
+  local t = modernWow.Token()
+  if skinned then modernWow.enabled = true else modernWow.HideSkins() end
 
   for i = 1, table.getn(BUTTON_NAMES) do
     local name = BUTTON_NAMES[i]
     local entry = buttons[name]
     if entry and entry.button then
+      -- Group Finder is part of the Retail row only.
+      entry.excluded = name == FINDER and not skinned
+    end
+    if entry and entry.button and entry.excluded then
+      pcall(entry.button.Hide, entry.button)
+    elseif entry and entry.button then
       local button = entry.button
 
       pcall(button.SetParent, button, anchor)
 
       if skinned then
-        -- The imported glyph is a full-bleed face, so the button is sized to
-        -- it at scale 1 and its hit rect matches the art exactly. The native
-        -- art's own bottom inset would otherwise leave most of the glyph
-        -- unclickable.
+        -- MainMenuBarMicroButton's 32x40 at the row's size, as dimensions at
+        -- scale 1 (size.ButtonScale), its hit rect the whole button. The
+        -- native art's own bottom inset would otherwise leave most of the
+        -- Retail face unclickable.
+        local s = size.ButtonScale()
         pcall(button.SetScale, button, 1)
-        pcall(button.SetWidth, button, modernWow.width)
-        pcall(button.SetHeight, button, modernWow.height)
+        pcall(button.SetWidth, button, t.width * s)
+        pcall(button.SetHeight, button, t.height * s)
         pcall(button.SetHitRectInsets, button, 0, 0, 0, 0)
-        modernWow.SkinButton(name, button)
+        if name == PROFESSION then
+          profession.Skin(button, true)
+        else
+          modernWow.SkinButton(name, button)
+        end
       else
-        pcall(button.SetScale, button, BUTTON_SCALE)
+        pcall(button.SetScale, button, size.ButtonScale())
+        if name == PROFESSION then profession.Skin(button, false) end
       end
 
       pcall(button.Show, button)
@@ -383,7 +958,16 @@ local function ArrangeButtons()
   -- against final widths.
   AnchorRow()
 
-  if skinned then modernWow.HideOverlays() end
+  if skinned then
+    modernWow.HideOverlays()
+    -- A button a previous build disabled and dimmed is restored first.
+    if finder.button then
+      pcall(finder.button.Enable, finder.button)
+      pcall(finder.button.SetAlpha, finder.button, 1)
+    end
+    finder.Sync()
+    modernWow.SyncAll()
+  end
 
   return count
 end
@@ -393,9 +977,13 @@ end
 -- not against the previous button in the bar.
 local function RestoreButtons()
   local i
+  modernWow.HideSkins()
   for i = 1, table.getn(BUTTON_NAMES) do
     local entry = buttons[BUTTON_NAMES[i]]
-    if entry and entry.button then
+    if BUTTON_NAMES[i] == PROFESSION or BUTTON_NAMES[i] == FINDER then
+      -- The addon's own buttons have no stock place to return to.
+      if entry and entry.button then pcall(entry.button.Hide, entry.button) end
+    elseif entry and entry.button then
       local button = entry.button
       pcall(function()
         button:SetParent(entry.parent or UIParent)
@@ -406,7 +994,7 @@ local function RestoreButtons()
                           entry.x or 0, entry.y or 0)
         end
         if entry.scale then button:SetScale(entry.scale) end
-        -- Geometry the modern-wow path overwrites. The imported faces are not
+        -- Geometry the modern-wow path overwrites. The Retail faces are not
         -- put back: a texture swap has no captured counterpart to restore to
         -- (the native faces carry texture coordinates set in the client's own
         -- layout, which Lua cannot read back), and the theme is a reload-time
@@ -440,6 +1028,120 @@ local function Build()
   })
 end
 
+-- Sizes the bar's box to the row exactly: every installed button's width as
+-- the client reports it, plus one gap per neighbour pair, so the edit-mode
+-- handle -- which covers this box -- spans the whole bar and nothing more.
+-- MEASURED (group `microbarvis`, span.v2, 2026-09-28): reported widths match
+-- the drawn buttons, so no scale model is applied to them. Sized from the
+-- buttons actually installed, so a client missing a candidate gets no dead
+-- space.
+function size.FitAnchor()
+  if not anchor then return end
+  local gap = size.Gap()
+  local skinned = modernWow.Active()
+  local t = modernWow.Token()
+  local width, count, i = 0, 0, nil
+  for i = 1, table.getn(BUTTON_NAMES) do
+    local entry = buttons[BUTTON_NAMES[i]]
+    if entry and entry.button and not entry.excluded then
+      local ok, value = pcall(entry.button.GetWidth, entry.button)
+      width = width + ((ok and tonumber(value)) or entry.width or 28)
+      count = count + 1
+    end
+  end
+  if count > 1 then width = width + gap * (count - 1) end
+
+  if skinned then
+    anchor:SetHeight(t.height * size.ButtonScale())
+  else
+    -- Height as well as width, because a modern-wow session that switched the
+    -- surface off mid-session would otherwise leave the taller bar behind.
+    anchor:SetHeight(HEIGHT * size.Factor())
+  end
+  if width < MIN_WIDTH then width = MIN_WIDTH end
+  anchor:SetWidth(width)
+end
+
+-- The slider's live preview: each installed button's size (the Retail row
+-- re-sizes its button, plate and icon cells; the native-art row rescales),
+-- the gaps and the bar's box. No hook or anchor chain is rebuilt.
+function size.Resize()
+  if not anchor or not config or not config.enabled then return end
+  local s = size.ButtonScale()
+  local skinned = modernWow.Active()
+  local t = modernWow.Token()
+  local i
+  for i = 1, table.getn(BUTTON_NAMES) do
+    local name = BUTTON_NAMES[i]
+    local entry = buttons[name]
+    if entry and entry.button and not entry.excluded then
+      local button = entry.button
+      if skinned then
+        pcall(button.SetWidth, button, t.width * s)
+        pcall(button.SetHeight, button, t.height * s)
+        modernWow.SkinButton(name, button)
+      else
+        pcall(button.SetScale, button, s)
+      end
+    end
+  end
+  AnchorRow()
+  size.FitAnchor()
+end
+
+function size.Set(value)
+  EnsureConfig()
+  value = tonumber(value) or size.DEFAULT
+  if value < size.MIN then value = size.MIN end
+  if value > size.MAX then value = size.MAX end
+  config.size = value
+  size.Resize()
+end
+
+-- The micro bar's edit-mode panel (core/moverpanel.lua): one size slider,
+-- shown when the bar's handle is selected, under every style that has the
+-- bar. Built the way modules/xpbar.lua builds its mover panels.
+size.PANEL_SLIDER_WIDTH = 150
+
+function size.BuildPanel(frame, contentTop)
+  local pad = U.MoverPanelPad()
+  local slider = U.CreateSlider(frame, {
+    name = "UnrealUIMicroBarMoverSize",
+    text = U.L("MICROBAR_SIZE"),
+    width = size.PANEL_SLIDER_WIDTH,
+    boxWidth = 60,
+    min = size.MIN,
+    max = size.MAX,
+    step = size.STEP,
+    value = size.Percent(),
+    onInputStart = function()
+      if type(U.FreezeMoverPanel) == "function" then U.FreezeMoverPanel() end
+    end,
+    onInput = size.Set,
+    onChange = size.Set,
+  })
+  slider.SetPoint("TOPLEFT", frame, "TOPLEFT", pad, contentTop)
+
+  local function Refresh()
+    slider.SetValue(size.Percent())
+  end
+  return { slider }, Refresh
+end
+
+function size.RegisterPanel()
+  if type(U.RegisterMoverPanel) ~= "function" then return end
+  U.RegisterMoverPanel("microbar", {
+    name = "UnrealUIMicroBarMoverSettings",
+    width = size.PANEL_SLIDER_WIDTH + U.MoverPanelPad() * 2 + 30,
+    height = 112,
+    build = size.BuildPanel,
+    title = function() return U.L("MOVER_LABEL_MICRO_BAR") end,
+    -- Resizing a bar must not move the slider being dragged.
+    preferVertical = true,
+    available = function() return config and config.enabled and true or false end,
+  })
+end
+
 -- Applies the current enabled state: installs (and sizes the bar around)
 -- every resolved candidate, or restores everything to its stock location.
 local function Apply()
@@ -454,6 +1156,10 @@ local function Apply()
     return
   end
 
+  -- Created before the capture pass so they resolve by name like the rest.
+  profession.Create()
+  finder.Create()
+
   local i
   for i = 1, table.getn(BUTTON_NAMES) do
     local name = BUTTON_NAMES[i]
@@ -463,30 +1169,14 @@ local function Apply()
 
   local count = ArrangeButtons()
   InstallNativeUpdateHook()
+  profession.HookSpellbookClick()
   if count > 0 then
     U.RegisterUpdate(DRIFT_ID, DRIFT_INTERVAL, WatchRow)
   else
     U.UnregisterUpdate(DRIFT_ID)
   end
 
-  local width = MIN_WIDTH
-  if modernWow.Active() then
-    -- Sized from the buttons actually installed rather than from a fixed
-    -- total, so a client missing a candidate gets a bar with no dead space.
-    anchor:SetHeight(modernWow.height)
-    if count > 0 then
-      width = count * (modernWow.width + modernWow.gap) - modernWow.gap
-    end
-  else
-    -- Height as well as width, because a modern-wow session that switched the
-    -- surface off mid-session would otherwise leave the taller bar behind.
-    anchor:SetHeight(HEIGHT)
-    if count > 0 then
-      width = U.Round(FULL_WIDTH * count / table.getn(BUTTON_NAMES))
-    end
-  end
-  if width < MIN_WIDTH then width = MIN_WIDTH end
-  anchor:SetWidth(width)
+  size.FitAnchor()
   anchor:Show()
 
   if count == 0 then
@@ -531,7 +1221,7 @@ end
 -- `geom` is what turns "the gap between two icons looks wrong" into a number.
 -- Every button in the row shares one parent and one scale, so their edges are
 -- directly comparable: `gap` is the next button's left edge minus this one's
--- right edge, which must be modernWow.gap for every pair under the skinned
+-- right edge, which must be the Retail padding for every pair under the skinned
 -- path. A uniform list means the layout is correct and the perceived gap is
 -- the glyph art's own transparent margin; a single odd entry means something
 -- re-anchored or resized that one button after ArrangeButtons ran.
@@ -539,9 +1229,25 @@ function U.MicroBarReport()
   local report = {
     enabled = config and config.enabled,
     skin = (modernWow.Active() and "modern-wow") or "native",
-    gap = (modernWow.Active() and modernWow.gap) or BUTTON_GAP,
+    gap = size.Gap(),
     found = {}, missing = {}, geom = {},
   }
+  -- Where the bar itself is, so "the bar is not visible" can be told apart
+  -- as hidden, off screen, or drawn with no art.
+  if anchor then
+    local okS, shown = pcall(anchor.IsShown, anchor)
+    local okV, visible = pcall(anchor.IsVisible, anchor)
+    local okL, left = pcall(anchor.GetLeft, anchor)
+    local okT, top = pcall(anchor.GetTop, anchor)
+    local okW, width = pcall(anchor.GetWidth, anchor)
+    report.anchor = {
+      shown = okS and shown and true or false,
+      visible = okV and visible and true or false,
+      left = okL and tonumber(left) or nil,
+      top = okT and tonumber(top) or nil,
+      width = okW and tonumber(width) or nil,
+    }
+  end
   local i
   for i = 1, table.getn(BUTTON_NAMES) do
     local name = BUTTON_NAMES[i]
@@ -562,8 +1268,16 @@ function U.MicroBarReport()
         relName = (nameOk and resolved) or "unnamed"
       end
       local pointsOk, points = pcall(button.GetNumPoints, button)
+      local visibleOk, visible = pcall(button.IsVisible, button)
+      local skin = modernWow.skins[name]
+      local plateOk, plateShown = false, nil
+      if skin and skin.plate then
+        plateOk, plateShown = pcall(skin.plate.IsVisible, skin.plate)
+      end
 
       table.insert(report.geom, {
+        visible = visibleOk and visible and true or false,
+        plate = (plateOk and (plateShown and "shown" or "hidden")) or "none",
         name = name,
         left = (leftOk and tonumber(left)) or nil,
         right = (rightOk and tonumber(right)) or nil,
@@ -594,6 +1308,7 @@ end
 -- ---------------------------------------------------------------------------
 function MB:OnInit()
   EnsureConfig()
+  size.RegisterPanel()
 end
 
 function MB:OnEnable()

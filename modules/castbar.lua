@@ -740,9 +740,11 @@ local function ApplyPushback(seconds)
     end
   end
 
+  -- uuiNameWidth follows the bar's size setting and its skin (castSize below).
   if bar.name then
     pcall(bar.name.SetWidth, bar.name,
-          BAR_WIDTH - 34 - (shown and PUSHBACK_WIDTH or 0))
+          (bar.uuiNameWidth or (BAR_WIDTH - 34)) -
+          (shown and PUSHBACK_WIDTH or 0))
   end
 end
 
@@ -1356,7 +1358,8 @@ local function BuildBarWidget(frameName, width, height, parent)
   })
   if widget.name then
     widget.name:SetPoint("LEFT", widget.bar, "LEFT", 3, 0)
-    pcall(widget.name.SetWidth, widget.name, barWidth - 34)
+    widget.uuiNameWidth = barWidth - 34
+    pcall(widget.name.SetWidth, widget.name, widget.uuiNameWidth)
   end
 
   -- The timer. A FontString's OVERLAY draw layer sits above the fill
@@ -1462,6 +1465,200 @@ local function BuildTargetBar()
   })
 end
 
+-- ---------------------------------------------------------------------------
+-- Player bar size
+--
+-- Width and height come from the bar's contextual panel in edit mode
+-- (core/moverpanel.lua), the same two sliders the swing bar carries. They are
+-- stored per theme style, because each style draws a different bar at its own
+-- authored size -- the flat and Modern WoW bar 230x24 in bar units (Modern WoW
+-- then scales it), the Classic one 195x13 -- and 0 means that style's own size.
+-- Only the addon-owned player bar is sized: the target and pet bars follow
+-- their unit frames, and the client-drawn fallback bar is never resized.
+-- ---------------------------------------------------------------------------
+local castSize = {
+  MOVER_ID = "castbar.player",
+  CONTENT_WIDTH = 200,
+  SLIDER_WIDTH = 150,
+  WIDTH = { min = 100, max = 500, step = 1 },
+  HEIGHT = { min = 8, max = 48, step = 1 },
+  -- The size the active style built the bar at, captured before any stored
+  -- size is applied. Nil when no addon bar exists, which also withholds the
+  -- panel from the native fallback mover.
+  default = nil,
+}
+
+function castSize.Stored()
+  if not castSize.config then
+    castSize.config = U.ModuleConfig("castbar", { sizes = {} })
+  end
+  local style = type(U.GetActiveThemeStyle) == "function" and
+                U.GetActiveThemeStyle() or nil
+  style = style or "modern"
+  local sizes = castSize.config.sizes
+  if type(sizes[style]) ~= "table" then sizes[style] = {} end
+  return sizes[style]
+end
+
+-- 0 or anything unreadable is the style's own size.
+function castSize.Clamp(value, limit, fallback)
+  value = tonumber(value) or 0
+  if value <= 0 then return fallback end
+  if value < limit.min then value = limit.min end
+  if value > limit.max then value = limit.max end
+  return math.floor(value / limit.step + 0.5) * limit.step
+end
+
+function castSize.Current()
+  local stored = castSize.Stored()
+  local default = castSize.default or { width = WIDTH, height = HEIGHT }
+  return castSize.Clamp(stored.width, castSize.WIDTH, default.width),
+         castSize.Clamp(stored.height, castSize.HEIGHT, default.height)
+end
+
+-- Records the bar's built size as the style default, then applies any stored
+-- size. Called once, right after the player widget is built.
+function castSize.Capture(widget)
+  local okW, width = pcall(widget.GetWidth, widget)
+  local okH, height = pcall(widget.GetHeight, widget)
+  width = okW and tonumber(width) or nil
+  height = okH and tonumber(height) or nil
+  if not width or width <= 0 or not height or height <= 0 then return end
+  castSize.default = { width = width, height = height }
+  castSize.Apply()
+end
+
+-- Re-lays the player bar at width x height in its own units. The flat cells
+-- are sized here; a skin re-lays its own art through widget.uuiResize
+-- (modules/castbarclassic.lua, modules/modernwow.lua). The mover handle is
+-- SetAllPoints on the bar, so it follows without being told.
+function castSize.Layout(width, height)
+  local widget = bar
+  if not widget or not width or not height then return end
+
+  if widget.iconCell then
+    local border = U.BorderSize()
+    local barWidth = width - height
+    widget:SetWidth(width)
+    widget:SetHeight(height)
+    widget.iconCell:SetWidth(height)
+    widget.iconCell:SetHeight(height)
+    local barCell = widget.uuiCells and widget.uuiCells[2]
+    if barCell then
+      barCell:SetWidth(barWidth)
+      barCell:SetHeight(height)
+    end
+    widget.bar:SetWidth(barWidth - 2 * border)
+    widget.bar:SetHeight(height - 2 * border)
+    widget.uuiNameWidth = barWidth - 34
+  end
+
+  if type(widget.uuiResize) == "function" then
+    pcall(widget.uuiResize, widget, width, height)
+  end
+
+  if widget.name and widget.uuiNameWidth then
+    pcall(widget.name.SetWidth, widget.name, widget.uuiNameWidth -
+          (widget.pushbackShown and PUSHBACK_WIDTH or 0))
+  end
+
+  -- core/style.lua lays the fill out from the bar's width only when the value
+  -- changes, so the current value is written again to refit it.
+  local statusBar = widget.bar
+  if statusBar then
+    local value = tonumber(statusBar.uuiValue) or 0
+    statusBar.uuiValue = nil
+    if not (type(U.ResetStatusBarFX) == "function" and
+            U.ResetStatusBarFX(statusBar, value)) then
+      pcall(statusBar.SetValue, statusBar, value)
+    end
+    if widget.uuiUpdateSpark then widget.uuiUpdateSpark(widget) end
+  end
+end
+
+function castSize.Apply()
+  if not castSize.default then return end
+  castSize.Layout(castSize.Current())
+end
+
+-- Live while a slider thumb is held; nothing is stored until it is released.
+function castSize.Preview(key, value)
+  if not castSize.default then return end
+  local width, height = castSize.Current()
+  if key == "width" then
+    width = castSize.Clamp(value, castSize.WIDTH, width)
+  else
+    height = castSize.Clamp(value, castSize.HEIGHT, height)
+  end
+  castSize.Layout(width, height)
+end
+
+function castSize.Set(key, value)
+  if not tonumber(value) then return end
+  local stored = castSize.Stored()
+  local width, height = castSize.Current()
+  if key == "width" then
+    stored.width = castSize.Clamp(value, castSize.WIDTH, width)
+  else
+    stored.height = castSize.Clamp(value, castSize.HEIGHT, height)
+  end
+  castSize.Apply()
+end
+
+function castSize.BuildPanel(frame, contentTop)
+  local pad = U.MoverPanelPad()
+  local width, height = castSize.Current()
+  local sliders = {}
+
+  local function Slider(key, labelKey, limit, value, y)
+    local slider = U.CreateSlider(frame, {
+      name = "UnrealUICastBarMover" .. (key == "width" and "Width" or "Height"),
+      text = U.L(labelKey),
+      width = castSize.SLIDER_WIDTH,
+      boxWidth = 60,
+      min = limit.min,
+      max = limit.max,
+      step = limit.step,
+      value = value,
+      onInputStart = function()
+        if type(U.FreezeMoverPanel) == "function" then U.FreezeMoverPanel() end
+      end,
+      onInput = function(v) castSize.Preview(key, v) end,
+      onChange = function(v) castSize.Set(key, v) end,
+    })
+    slider.SetPoint("TOPLEFT", frame, "TOPLEFT", pad, y)
+    sliders[key] = slider
+    return slider
+  end
+
+  local widgets = {
+    Slider("width", "CASTBAR_WIDTH", castSize.WIDTH, width, contentTop),
+    Slider("height", "CASTBAR_HEIGHT", castSize.HEIGHT, height,
+           contentTop - 58),
+  }
+
+  local function Refresh()
+    local w, h = castSize.Current()
+    sliders.width.SetValue(w)
+    sliders.height.SetValue(h)
+  end
+
+  return widgets, Refresh
+end
+
+function castSize.RegisterPanel()
+  if type(U.RegisterMoverPanel) ~= "function" then return end
+  U.RegisterMoverPanel(castSize.MOVER_ID, {
+    name = "UnrealUICastBarMoverSettings",
+    width = castSize.CONTENT_WIDTH + U.MoverPanelPad() * 2,
+    height = 162,
+    build = castSize.BuildPanel,
+    title = function() return U.L("MOVER_LABEL_CASTBAR") end,
+    available = function() return castSize.default ~= nil end,
+    preferVertical = true,
+  })
+end
+
 -- Classic player castbar.
 --
 -- The client's own CastingBarFrame advanced its fill in visible steps, so under
@@ -1482,6 +1679,7 @@ local function BuildClassicPlayerBar()
   RaiseCastbarStrata(widget)
 
   bar = widget
+  castSize.Capture(bar)
   bar:Hide()
   SetCellsShown(false)
 
@@ -1539,6 +1737,7 @@ local function Build()
      type(U.AttachStatusBarFX) == "function" then
     U.AttachStatusBarFX(bar.bar)
   end
+  castSize.Capture(bar)
   bar:Hide()
   SetCellsShown(false)
 
@@ -2418,6 +2617,7 @@ function CB:OnEnable()
     BuildTargetBar()
     BuildTargetPatterns()
     RegisterUnitCastEvents()
+    castSize.RegisterPanel()
     UpdateTickRate()
     return
   end
@@ -2427,6 +2627,7 @@ function CB:OnEnable()
   BuildTargetPatterns()
   RegisterPlayerCastEvents()
   RegisterUnitCastEvents()
+  castSize.RegisterPanel()
 
   -- modules/actionbar.lua announces every press just before it hands the slot
   -- to UseAction; that is what lets a nameless channel still be identified.

@@ -444,14 +444,7 @@ function U.OpenSettingsPage(id)
     U.SelectIntegratedSettingsPage(id, scope)
     if U.gameSettings then
       local gs = U.gameSettings
-      local frame = U.G("UnrealUIGameSettingsUI")
-      local level
-      if gs.host and type(gs.Number) == "function" then
-        level = gs.Number(gs.host, "GetFrameLevel")
-      end
-      if frame and level and type(gs.Relevel) == "function" then
-        gs.Relevel(frame, level + 1, 0)
-      end
+      if type(gs.LiftIntegrated) == "function" then gs.LiftIntegrated() end
       if type(gs.RenderList) == "function" then gs.RenderList() end
     end
     return true
@@ -1437,11 +1430,26 @@ local function BuildGeneralPage(parent)
   table.insert(widgets, header)
 
   if parent == integrated.canvas then
-    local languages = BuildLanguageSelector(parent, 32,
-                                            "UnrealUIGameSettingsLanguage")
+    -- In the game settings window the flags sit in the page header band, on
+    -- the Unreal UI title's line and flush with the page's right edge (user
+    -- request, 2026-09-29). They are children of the canvas root rather than
+    -- of the scrolling canvas, so they neither scroll nor get clipped by it.
+    local gs = U.gameSettings
+    local band = gs and gs.content
+    local languages = BuildLanguageSelector(band and integrated.root or parent,
+                                            32, "UnrealUIGameSettingsLanguage")
+    local count = table.getn(languages)
     local languageIndex
-    for languageIndex = 1, table.getn(languages) do
-      table.insert(widgets, languages[languageIndex])
+    for languageIndex = 1, count do
+      local button = languages[languageIndex]
+      if band then
+        pcall(button.ClearAllPoints, button)
+        pcall(button.SetPoint, button, "RIGHT", band, "TOPRIGHT",
+              -(count - languageIndex) *
+                (LANGUAGE_BUTTON_WIDTH + LANGUAGE_BUTTON_GAP),
+              -gs.CONTENT_HEADER / 2 + 4)   -- 4 up (user request, 2026-09-29)
+      end
+      table.insert(widgets, button)
     end
   end
 
@@ -1508,37 +1516,20 @@ local function BuildGeneralPage(parent)
     table.insert(widgets, themeHint)
   end
 
-  -- Quick binding (modules/quickbind.lua) is a mode, like edit mode above, so
-  -- it lives beside it rather than only on the ActionBars page. Registered
-  -- lazily, same as everything else this window links out to: if the module
-  -- failed to load, the button still shows and says so instead of vanishing.
-  local quickbind = U.CreateButton(parent, {
-    name = "UnrealUISettingsQuickBind",
-    text = U.L("SETTINGS_QUICKBIND"),
-    width = 220,
-    height = 26,
-    onClick = function()
-      U.CloseSettings()
-      if type(U.OpenQuickBind) == "function" then
-        U.OpenQuickBind()
-      else
-        U.Error(U.L("QUICKBIND_UNAVAILABLE"))
-      end
-    end,
-  })
-  quickbind:SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -102)
-  table.insert(widgets, quickbind)
-
-  local quickbindHint = U.CreateSettingsLabel(parent, {
-    size = M.fontSize.small,
-    color = M.color.textDim,
-    inherits = "GameFontNormalSmall",
-    justify = "LEFT",
-  })
-  if quickbindHint then
-    U.AnchorSettingsDescription(quickbindHint, quickbind)
-    quickbindHint:SetText(U.L("SETTINGS_QUICKBIND_HINT"))
-    table.insert(widgets, quickbindHint)
+  -- In the game settings window, the page header's own rule separates the
+  -- theme choice from the toggles below it (user request, 2026-09-29); the
+  -- rows under it drop by `shift` to make room.
+  local shift = 0
+  local gs = U.gameSettings
+  if parent == integrated.canvas and themeHint and gs and
+     type(gs.CreateDivider) == "function" then
+    local divider = gs.CreateDivider(parent)
+    if divider then
+      divider:SetPoint("TOPLEFT", themeHint, "BOTTOMLEFT", 0, -8)
+      divider:SetWidth(integrated.width)
+      table.insert(widgets, divider)
+      shift = 12
+    end
   end
 
   local autoAttack = U.CreateCheckbox(parent, {
@@ -1549,7 +1540,7 @@ local function BuildGeneralPage(parent)
       U.ModuleConfig("autoattack", { enabled = false }).enabled = value
     end,
   })
-  autoAttack.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -164)
+  autoAttack.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -102 - shift)
   table.insert(widgets, autoAttack)
 
   local autoAttackHint = U.CreateSettingsLabel(parent, {
@@ -1573,7 +1564,7 @@ local function BuildGeneralPage(parent)
       if type(U.ApplySwingBar) == "function" then U.ApplySwingBar() end
     end,
   })
-  swingBar.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -220)
+  swingBar.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -158 - shift)
   table.insert(widgets, swingBar)
 
   local swingBarHint = U.CreateSettingsLabel(parent, {
@@ -1599,7 +1590,7 @@ local function BuildGeneralPage(parent)
       if type(U.ApplyMicroBar) == "function" then U.ApplyMicroBar() end
     end,
   })
-  microbar.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -276)
+  microbar.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -214 - shift)
   table.insert(widgets, microbar)
 
   local microbarHint = U.CreateSettingsLabel(parent, {
@@ -1625,7 +1616,7 @@ local function BuildGeneralPage(parent)
       if type(U.ApplyXPBar) == "function" then U.ApplyXPBar() end
     end,
   })
-  reputation.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -332)
+  reputation.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -270 - shift)
   table.insert(widgets, reputation)
 
   -- The minimap settings button (modules/minimap.lua) is the normal way to
@@ -1640,7 +1631,7 @@ local function BuildGeneralPage(parent)
       if type(U.ApplyMinimapButton) == "function" then U.ApplyMinimapButton() end
     end,
   })
-  minimapButton.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -364)
+  minimapButton.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -302 - shift)
   table.insert(widgets, minimapButton)
 
   -- The world map zone level ranges (modules/worldmap.lua) are a single
@@ -1657,7 +1648,7 @@ local function BuildGeneralPage(parent)
       end
     end,
   })
-  zoneLevels.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -396)
+  zoneLevels.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -334 - shift)
   table.insert(widgets, zoneLevels)
 
   local zoneLevelsHint = U.CreateSettingsLabel(parent, {
@@ -1695,7 +1686,7 @@ local function BuildGeneralPage(parent)
       end
     end,
   })
-  chatShadow.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -452)
+  chatShadow.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -390 - shift)
   table.insert(widgets, chatShadow)
 
   local chatShadowHint = U.CreateSettingsLabel(parent, {
@@ -1725,7 +1716,7 @@ local function BuildGeneralPage(parent)
       if type(U.ApplyTooltipPosition) == "function" then U.ApplyTooltipPosition() end
     end,
   })
-  tooltipCursor.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -508)
+  tooltipCursor.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -446 - shift)
   table.insert(widgets, tooltipCursor)
 
   local tooltipCursorHint = U.CreateSettingsLabel(parent, {
@@ -1752,7 +1743,7 @@ local function BuildGeneralPage(parent)
       tooltipConfig.fadeHold = value
     end,
   })
-  tooltipFadeHold.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -572)
+  tooltipFadeHold.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -510 - shift)
   table.insert(widgets, tooltipFadeHold)
   SetShown(tooltipFadeHold, tooltipConfig.followCursor)
 

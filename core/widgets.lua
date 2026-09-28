@@ -2529,6 +2529,261 @@ function U.HideTooltipNote()
   end
 end
 
+-- ---------------------------------------------------------------------------
+-- Info tooltip
+--
+-- A hover explanation for an addon-owned control, drawn entirely by UnrealUI:
+-- a flat panel (M.color.background fill, one M.color.border outline) with a
+-- title and single-line rows, never GameTooltip. First user: the Character
+-- stats panel's rows and "?" marks (user request, 2026-09-28), which went
+-- through GameTooltip and came out with the client's own tooltip rather than
+-- UnrealUI's.
+--
+-- Why a panel and not GameTooltip: this client accepts lines appended to a
+-- populated GameTooltip and then declines to relayout for them
+-- (USER_CONFIRMED_INGAME, see the tooltip note above), and the design rules
+-- forbid a second CreateFrame("GameTooltip") without a probe.
+--
+-- No label is ever given a width: a FontString given one wraps here on its
+-- own terms, and its measured width is clamped by that width and lags a frame
+-- (widgets.fontstring_stringwidth_clamped_by_setwidth). Wrapping is done here
+-- instead: a line without a right column is split on "\n" and then word by
+-- word wherever it would pass `WRAP` units, measured on an unconstrained
+-- label with GetStringWidth. A CJK character (a 3- or 4-byte UTF-8 sequence)
+-- is its own breakable word. Row height is fixed, never read back.
+--
+-- lines: { { text, color?, right = text?, rightColor? }, ... }; the first
+-- entry is the title. Colours are { r, g, b[, a] }.
+-- ---------------------------------------------------------------------------
+local infoTip = {
+  INSET = 6,      -- panel edge to text
+  ROW = 14,       -- one row, title included
+  GAP = 1,        -- between rows
+  COLUMN = 12,    -- between a row's left and right text
+  OFFSET = 4,     -- between the owner and the panel
+  WRAP = 260,     -- widest a wrapped line may run
+  CHARS = 48,     -- the same limit in characters, if measuring reads 0
+  panel = nil,
+  measure = nil,
+  left = {},
+  right = {},
+}
+
+-- `text` as words: { text, spaced } where `spaced` means a space came
+-- before it. A colour escape stays inside the word it touches.
+function infoTip.Words(text)
+  local words, word, spaced, pending = {}, "", false, false
+  local i, n = 1, string.len(text)
+  local function Flush()
+    if word ~= "" then table.insert(words, { word, spaced }) end
+    word = ""
+  end
+  while i <= n do
+    local b = string.byte(text, i)
+    local size = 1
+    if b >= 240 then size = 4 elseif b >= 224 then size = 3
+    elseif b >= 192 then size = 2 end
+    local ch = string.sub(text, i, i + size - 1)
+    if ch == " " then
+      Flush()
+      pending = true
+    elseif size >= 3 then
+      Flush()
+      table.insert(words, { ch, pending })
+      pending = false
+    else
+      if word == "" then spaced, pending = pending, false end
+      word = word .. ch
+    end
+    i = i + size
+  end
+  Flush()
+  return words
+end
+
+function infoTip.Width(text)
+  local label = infoTip.measure
+  if label then
+    pcall(label.SetText, label, text)
+    local width = LabelWidth(label)
+    if width > 0 then return width end
+  end
+  -- Characters, not bytes: UTF-8 continuation bytes are not counted, and a
+  -- CJK character (3- or 4-byte lead) counts twice, being about twice as wide.
+  local chars = string.len((string.gsub(text, "[\128-\191]", ""))) +
+                string.len((string.gsub(text, "[^\224-\247]", "")))
+  return chars * infoTip.WRAP / infoTip.CHARS
+end
+
+function infoTip.Wrap(out, text, line)
+  local rest = text or ""
+  local parts = {}
+  while true do
+    local cut = string.find(rest, "\n", 1, true)
+    if not cut then break end
+    table.insert(parts, string.sub(rest, 1, cut - 1))
+    rest = string.sub(rest, cut + 1)
+  end
+  table.insert(parts, rest)
+  local p, w
+  for p = 1, table.getn(parts) do
+    local words = infoTip.Words(parts[p])
+    local current = ""
+    for w = 1, table.getn(words) do
+      local word = words[w]
+      local candidate = word[1]
+      if current ~= "" then
+        candidate = current .. (word[2] and " " or "") .. word[1]
+      end
+      if current ~= "" and infoTip.Width(candidate) > infoTip.WRAP then
+        table.insert(out, { current, line[2] })
+        current = word[1]
+      else
+        current = candidate
+      end
+    end
+    table.insert(out, { current, line[2] })
+  end
+end
+
+-- The caller's lines as display rows.
+function infoTip.Rows(lines)
+  local rows = {}
+  local i
+  for i = 1, table.getn(lines) do
+    local line = lines[i]
+    if line.right then
+      table.insert(rows, line)
+    else
+      infoTip.Wrap(rows, line[1], line)
+    end
+  end
+  if infoTip.measure then pcall(infoTip.measure.SetText, infoTip.measure, "") end
+  return rows
+end
+
+function infoTip.Label(index, side)
+  local pool = infoTip[side]
+  if pool[index] then return pool[index] end
+  local label = U.CreateLabel(infoTip.panel, {
+    size = M.fontSize.normal,
+    inherits = "GameFontNormal",
+    justify = (side == "right") and "RIGHT" or "LEFT",
+  })
+  pool[index] = label
+  return label
+end
+
+function infoTip.Build()
+  if infoTip.panel then return infoTip.panel end
+  local panel = U.CreatePanel(UIParent, {
+    name = "UnrealUIInfoTooltip",
+    width = 10,
+    height = 10,
+  })
+  pcall(panel.SetFrameStrata, panel, "TOOLTIP")
+  -- Never the input surface: a tooltip under the pointer must not take the
+  -- hover from the control that opened it.
+  pcall(panel.EnableMouse, panel, false)
+  infoTip.panel = panel
+  -- Never shows text: it is emptied once the rows are measured.
+  infoTip.measure = U.CreateLabel(panel, {
+    size = M.fontSize.normal,
+    inherits = "GameFontNormal",
+    justify = "LEFT",
+  })
+  if infoTip.measure then
+    infoTip.measure:SetPoint("TOPLEFT", panel, "TOPLEFT", 0, 0)
+  end
+  panel:Hide()
+  return panel
+end
+
+-- To the owner's right, or its left when the right would leave the screen.
+function infoTip.Place(owner, width)
+  local panel = infoTip.panel
+  local rightEdge
+  pcall(function()
+    local ratio = owner:GetEffectiveScale() / UIParent:GetEffectiveScale()
+    rightEdge = owner:GetRight() * ratio
+  end)
+  panel:ClearAllPoints()
+  if rightEdge and rightEdge + infoTip.OFFSET + width > U.UIWidth() then
+    panel:SetPoint("TOPRIGHT", owner, "TOPLEFT", -infoTip.OFFSET, 0)
+  else
+    panel:SetPoint("TOPLEFT", owner, "TOPRIGHT", infoTip.OFFSET, 0)
+  end
+end
+
+function U.ShowInfoTooltip(owner, lines)
+  if not owner or type(lines) ~= "table" or table.getn(lines) == 0 then
+    U.HideInfoTooltip()
+    return nil
+  end
+  local panel = infoTip.Build()
+  -- Shown before measuring, so the measuring label is on a visible frame;
+  -- everything below runs before the next draw.
+  panel:Show()
+  if infoTip.measure then infoTip.measure:Show() end
+  lines = infoTip.Rows(lines)
+  local count = table.getn(lines)
+  local width = 0
+  local i
+  for i = 1, count do
+    local line = lines[i]
+    local left = infoTip.Label(i, "left")
+    local rowWidth = 0
+    if left then
+      pcall(left.SetText, left, line[1] or "")
+      pcall(left.SetTextColor, left, M.Unpack(line[2] or M.color.text))
+      left:ClearAllPoints()
+      left:SetPoint("TOPLEFT", panel, "TOPLEFT", infoTip.INSET,
+                    -(infoTip.INSET + (i - 1) * (infoTip.ROW + infoTip.GAP)))
+      left:Show()
+      rowWidth = LabelWidth(left)
+    end
+    local right = infoTip.Label(i, "right")
+    if right then
+      if line.right then
+        pcall(right.SetText, right, line.right)
+        pcall(right.SetTextColor, right, M.Unpack(line.rightColor or M.color.text))
+        right:ClearAllPoints()
+        right:SetPoint("TOPRIGHT", panel, "TOPRIGHT", -infoTip.INSET,
+                       -(infoTip.INSET + (i - 1) * (infoTip.ROW + infoTip.GAP)))
+        right:Show()
+        rowWidth = rowWidth + infoTip.COLUMN + LabelWidth(right)
+      else
+        right:Hide()
+      end
+    end
+    if rowWidth > width then width = rowWidth end
+  end
+  -- Rows a longer earlier tooltip left behind.
+  i = count + 1
+  while infoTip.left[i] or infoTip.right[i] do
+    if infoTip.left[i] then infoTip.left[i]:Hide() end
+    if infoTip.right[i] then infoTip.right[i]:Hide() end
+    i = i + 1
+  end
+
+  width = width + infoTip.INSET * 2
+  panel:SetWidth(width)
+  panel:SetHeight(count * infoTip.ROW + (count - 1) * infoTip.GAP +
+                  infoTip.INSET * 2)
+  infoTip.Place(owner, width)
+  panel:Show()
+  -- rendering.parent_alpha_not_propagated: the text is shown explicitly.
+  for i = 1, count do
+    if infoTip.left[i] then infoTip.left[i]:Show() end
+    if infoTip.right[i] and lines[i].right then infoTip.right[i]:Show() end
+  end
+  return panel
+end
+
+function U.HideInfoTooltip()
+  if infoTip.panel then infoTip.panel:Hide() end
+end
+
 -- The bank purchase hover is one row of the same panel. It keeps its own
 -- centred anchor so the confirmed placement under that button does not move.
 local function ShowPricePanel(anchorFrame, copper)
