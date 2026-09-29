@@ -74,8 +74,11 @@ function mw.Defaults()
   -- drawing path reads them.
   -- castScale remains configurable because it affects cast bars, not unit
   -- frames. See mw.cast.scale for the shipped value this takes.
+  -- targetRingColor: the target's level colour on its portrait ring rather
+  -- than its name and level (U.ModernWowSetTargetRingColor). Off by default.
   local defaults, i = { powerTextSize = 0,
                         castScale = mw.cast.scale,
+                        targetRingColor = false,
                         actionbarVisualVersion = 1,
                          playerFXVersion = 1,
                          microbarVersion = 1,
@@ -1079,7 +1082,7 @@ mw.units = {
   -- classification dragon (M.modernWow.targetTier). Its bars fill the Retail
   -- openings exactly, so the old housing's rim insets are gone.
   { id = "target",       art = "targetHousing", ring = "targetRing",
-    layout = "retailTarget",
+    ringTint = "targetRingTint", layout = "retailTarget",
     power = "powerFillTarget2x", classification = true, mirror = false,
     healthFill = "targetHealthFill2x", healthFillTint = "targetHealthFillTint2x",
     shiftLabels = true,
@@ -1492,6 +1495,13 @@ function mw.FitPortraitModel(portrait)
   pcall(model.SetWidth, model, size)
   pcall(model.SetHeight, model, size)
   pcall(model.SetPoint, model, "CENTER", portrait, "CENTER", 0, 0)
+  -- Keep the model one level above its portrait box. A model made before
+  -- BuildHousing lifted the portrait (the Retail target goes to level + 5)
+  -- keeps its old level and sinks under the box's own stone background.
+  local ok, level = pcall(portrait.GetFrameLevel, portrait)
+  if ok and tonumber(level) then
+    pcall(model.SetFrameLevel, model, level + 1)
+  end
 end
 
 function U.ModernWowFitPortraitModel(portrait)
@@ -1705,7 +1715,7 @@ function mw.BuildHousing(frame, entry)
   -- under them instead, on the housing, and the entry's ring-only copy of the
   -- same canvas is drawn on the overlay, so the rim still covers the portrait
   -- edge and the bar ends.
-  local frameArt, ringArt
+  local frameArt, ringArt, ringTint
   if L.artUnderBars then
     frameArt = mw.Texture(housing, "ARTWORK", art, u1, u2, 0, 1)
     PlaceArt(frameArt)
@@ -1713,6 +1723,24 @@ function mw.BuildHousing(frame, entry)
     if ring then
       ringArt = mw.Texture(overlay, "ARTWORK", ring, u1, u2, 0, 1)
       PlaceArt(ringArt)
+    end
+    -- The level-difficulty ring (user request, 2026-09-29), shown only while
+    -- the targetRingColor setting is on: the ring's metal as a white mask on
+    -- the same canvas, vertex coloured by U.ModernWowRefreshHeader and drawn
+    -- BLEND over the gold (or silver) ring,
+    -- as the player's status halo is laid over its housing. OVERLAY puts it
+    -- above the ring's ARTWORK; it is created before the dragon, which shares
+    -- OVERLAY, so the dragon still draws over it (same-layer creation order,
+    -- not runtime-verified here -- check the dragon's claws in game). Hidden
+    -- until the first refresh colours it.
+    local tint = ringArt and entry.ringTint and
+                 M.modernWow.texture[entry.ringTint]
+    if tint then
+      ringTint = mw.Texture(overlay, "OVERLAY", tint, u1, u2, 0, 1)
+      if ringTint then
+        PlaceArt(ringTint)
+        pcall(ringTint.Hide, ringTint)
+      end
     end
   else
     frameArt = mw.Texture(overlay, "ARTWORK", art, u1, u2, 0, 1)
@@ -1987,10 +2015,14 @@ function mw.BuildHousing(frame, entry)
                        - (tonumber(L.levelReserve) or
                           tonumber(M.modernWow.text.levelReserve) or 0)
 
+    -- ringTint rides on the header so mw.ApplyHeaderInk can switch the row
+    -- between its two colour modes before frame.uuiModernWow exists.
     frame.uuiModernWowHeaderText = { name = name, level = levelText,
                                      reaction = reaction,
                                      nameColor = nameColor,
+                                     ringTint = ringTint, size = headerSize,
                                      nameBudget = nameBudget }
+    mw.ApplyHeaderInk(frame.uuiModernWowHeaderText)
   end
 
   mw.ApplyFrameScale(frame, entry)
@@ -2001,7 +2033,8 @@ function mw.BuildHousing(frame, entry)
   -- next member.
   frame.uuiModernWow = { housing = housing, overlay = overlay,
                          frameArt = frameArt, art = art, scale = s,
-                         ringArt = ringArt, dragon = dragon,
+                         ringArt = ringArt, ringTint = ringTint,
+                         dragon = dragon,
                          placeDragon = placeDragon,
                          -- The entry's own fills, when its housing has them;
                          -- modules/unitframes.lua HealthTexture prefers these
@@ -2191,12 +2224,16 @@ function U.ModernWowRefreshHeader(frame)
     if frame.spec and frame.spec.targetReactionName and
        type(U.UnitFrameNameColor) == "function" then
       reactionR, reactionG, reactionB = U.UnitFrameNameColor(data, true)
+      -- A row in ink stays in ink; its difficulty colour is on the ring.
+      if text.ink then
+        pcall(text.name.SetTextColor, text.name, M.Unpack(text.ink))
       -- A non-player target's name takes its level's difficulty colour, the
       -- same as the level number beside it (user request, 2026-09-21), so a
       -- trivial mob reads grey across the whole row. Its reaction is already
       -- carried by the reaction bar under the row, so nothing is lost. Players
       -- keep the colour that identifies them, as on the flat modern frames.
-      if not data.isPlayer and type(U.UnitDifficultyColor) == "function" then
+      elseif not data.isPlayer and
+             type(U.UnitDifficultyColor) == "function" then
         local dr, dg, db = U.UnitDifficultyColor(data.level)
         pcall(text.name.SetTextColor, text.name, dr, dg, db, 1)
       -- A row with its own name colour keeps it: the reaction is carried by
@@ -2232,12 +2269,86 @@ function U.ModernWowRefreshHeader(frame)
     -- Same difficulty bands as the flat frames (U.UnitDifficultyColor in
     -- modules/unitframes.lua): red at +5, orange at +3, yellow within two
     -- levels, green down to the grey threshold, grey at or below it. An
-    -- unknown level keeps the helper's lighter grey.
+    -- unknown level keeps the helper's lighter grey. A row in ink
+    -- (targetRingColor) carries the colour on its ring instead, and the
+    -- number stays in ink.
+    local tint = text.ink and text.ringTint
     if type(U.UnitDifficultyColor) == "function" then
       local dr, dg, db = U.UnitDifficultyColor(value)
-      pcall(text.level.SetTextColor, text.level, dr, dg, db, 1)
+      if tint then
+        pcall(tint.SetVertexColor, tint, dr, dg, db, 1)
+        pcall(tint.Show, tint)
+      elseif not text.ink then
+        pcall(text.level.SetTextColor, text.level, dr, dg, db, 1)
+      end
     end
   end
+end
+
+-- Switches a header row with a ring tint between its two colour modes
+-- (user request, 2026-09-29). Off, the default: the name and level carry the
+-- difficulty colour as they always have. On: both are written in
+-- M.modernWow.text.targetInk with no shadow and the colour moves to the ring.
+-- The shadow follows through U.SetFont's shadowFree flag, which the font
+-- record keeps, so a later font-choice re-apply cannot bring it back.
+-- A row already in the wanted mode costs one comparison.
+function mw.ApplyHeaderInk(text)
+  if not text or not text.ringTint then return end
+  local on = mw.Config().targetRingColor == true
+  if on == (text.ink ~= nil) then return end
+  text.ink = on and M.modernWow.text.targetInk or nil
+
+  local labels = { text.name, text.level }
+  local i
+  for i = 1, 2 do
+    local label = labels[i]
+    if label then
+      pcall(U.SetFont, label, text.size, nil, "unitframe", on)
+      if on then U.ClearTextShadow(label) end
+    end
+  end
+
+  if on then
+    if text.name then
+      pcall(text.name.SetTextColor, text.name, M.Unpack(text.ink))
+    end
+    if text.level then
+      pcall(text.level.SetTextColor, text.level, M.Unpack(text.ink))
+    end
+  else
+    -- The next header refresh recolours both; these are its starting points.
+    if text.name then
+      pcall(text.name.SetTextColor, text.name,
+            M.Unpack(text.nameColor or M.color.text))
+    end
+    if text.level then
+      pcall(text.level.SetTextColor, text.level, M.Unpack(M.color.textAccent))
+    end
+    pcall(text.ringTint.Hide, text.ringTint)
+  end
+end
+
+function U.ModernWowTargetRingColor()
+  return mw.Config().targetRingColor == true
+end
+
+-- True while the dressed target carries a ring tint, which is the only time
+-- the setting has anything to switch. The settings page shows its checkbox
+-- only then.
+function U.ModernWowTargetRingAvailable()
+  local frame = type(U.GetUnitFrame) == "function" and U.GetUnitFrame("target")
+  local text = frame and frame.uuiModernWowHeaderText
+  return text and text.ringTint and true or false
+end
+
+function U.ModernWowSetTargetRingColor(value)
+  mw.Config().targetRingColor = value and true or false
+  local frame = type(U.GetUnitFrame) == "function" and U.GetUnitFrame("target")
+  local text = frame and frame.uuiModernWowHeaderText
+  if not text then return false end
+  mw.ApplyHeaderInk(text)
+  U.ModernWowRefreshHeader(frame)
+  return true
 end
 
 -- Retargets one frame's power fill to the Dragonflight mana/rage art. Goes
@@ -3602,23 +3713,18 @@ function mw.BuildCharacterScene(housing)
     return mw.HousingPiece(housing, layer, path, coords)
   end
 
-  -- The four background pieces tile from the first, as the XML anchors them.
+  -- The four pieces Retail draws are one stitched texture here: drawn apart
+  -- their seams showed a dark line, and overlapping them distorted the art
+  -- (user reports, 2026-09-29).
   local race, alpha = mw.CharacterSceneRace()
   if race then
     local shade = (1 - alpha) ^ (1 / token.shadeGamma)
-    local i
-    for i = 1, 4 do
-      local piece = Piece("ARTWORK", tex.dressup .. race .. i, bg.coords[i])
-      piece:SetWidth(bg.width[i])
-      piece:SetHeight(bg.height[i])
-      pcall(piece.SetDesaturated, piece, true)
-      U.SetColor(piece, shade, shade, shade, 1)
-      s.background[i] = piece
-    end
-    local p = s.background
-    p[2]:SetPoint("TOPLEFT", p[1], "TOPRIGHT", 0, 0)
-    p[3]:SetPoint("TOPLEFT", p[1], "BOTTOMLEFT", 0, 0)
-    p[4]:SetPoint("TOPLEFT", p[1], "BOTTOMRIGHT", 0, 0)
+    local piece = Piece("ARTWORK", tex.dressup .. race, bg.coords)
+    piece:SetWidth(bg.width)
+    piece:SetHeight(bg.height)
+    pcall(piece.SetDesaturated, piece, true)
+    U.SetColor(piece, shade, shade, shade, 1)
+    s.background[1] = piece
   end
 
   local function Corner(coords)
@@ -4766,25 +4872,32 @@ function mw.PlaceGearSlot(slot)
   mw.HideFlatSurface(slot)
 
   -- Each corner spans `outer` px past the bar centreline and reaches inward to
-  -- the slot's midpoint, so the four pieces meet and close the square.
+  -- the slot's midpoint, so the four pieces meet and close the square. With
+  -- measured gaps the stud, not the centreline, is placed: half the gap out,
+  -- so it lands on the neighbouring slot's stud (M.modernWow.gearSlot).
   local s = token.artScale * k
   local line = token.lineOffset * k
+  local gaps = state.gaps
   local e = token.outer
-  local n = math.min((size / 2 + line) / s, token.arm)
-  local shift = line + e * s
   local aw, ah = token.atlasWidth, token.atlasHeight
   local i
   for i = 1, table.getn(token.corners) do
     local c = token.corners[i]
     local piece = state.corners[i]
+    local lineX, lineY = line, line
+    if gaps and gaps.x then lineX = gaps.x / 2 - c.studX * s end
+    if gaps and gaps.y then lineY = gaps.y / 2 - c.studY * s end
+    local nx = math.min((size / 2 + lineX) / s, token.arm)
+    local ny = math.min((size / 2 + lineY) / s, token.arm)
     local u1, u2, v1, v2
-    if c.h < 0 then u1, u2 = c.x - e, c.x + n else u1, u2 = c.x - n, c.x + e end
-    if c.v > 0 then v1, v2 = c.y - e, c.y + n else v1, v2 = c.y - n, c.y + e end
+    if c.h < 0 then u1, u2 = c.x - e, c.x + nx else u1, u2 = c.x - nx, c.x + e end
+    if c.v > 0 then v1, v2 = c.y - e, c.y + ny else v1, v2 = c.y - ny, c.y + e end
     pcall(function()
       piece:ClearAllPoints()
-      piece:SetWidth((e + n) * s)
-      piece:SetHeight((e + n) * s)
-      piece:SetPoint(c.point, slot, c.point, c.h * shift, c.v * shift)
+      piece:SetWidth((e + nx) * s)
+      piece:SetHeight((e + ny) * s)
+      piece:SetPoint(c.point, slot, c.point, c.h * (lineX + e * s),
+                     c.v * (lineY + e * s))
       piece:SetTexCoord(u1 / aw, u2 / aw, v1 / ah, v2 / ah)
     end)
   end
@@ -4872,10 +4985,37 @@ function U.ModernWowItemSlot(slot, icon, iconTexCoord)
   return mw.DressItemSlot(slot, icon, iconTexCoord)
 end
 
+-- The column and row gaps between this window's slots, read from the slots'
+-- own edges (bounded numbers, as mw.CharacterSceneInset does). One table per
+-- prefix, filled in place once a read succeeds; the window must be laid out,
+-- so an unshown window keeps retrying on the next refresh.
+mw.character.gearGaps = {}
+function mw.MeasureGearGaps(prefix)
+  local gaps = mw.character.gearGaps[prefix]
+  if not gaps then
+    gaps = {}
+    mw.character.gearGaps[prefix] = gaps
+  end
+  local token = M.modernWow.gearSlot
+  local function Gap(pair, near, far)
+    local a = mw.Dimension(U.G(prefix .. pair[1]), near)
+    local b = mw.Dimension(U.G(prefix .. pair[2]), far)
+    if a == 0 or b == 0 then return nil end
+    local gap = math.abs(a - b)
+    if gap > 0 and gap < 20 then return gap end
+  end
+  gaps.y = gaps.y or Gap(token.gapColumn, "GetBottom", "GetTop")
+  gaps.x = gaps.x or Gap(token.gapRow, "GetRight", "GetLeft")
+  return gaps
+end
+
 function mw.RefreshGearSlots(prefix, slots)
+  local gaps = mw.MeasureGearGaps(prefix)
   local i
   for i = 1, table.getn(slots) do
-    mw.PlaceGearSlot(U.G(prefix .. slots[i]))
+    local slot = U.G(prefix .. slots[i])
+    if slot and slot.uuiModernWowGear then slot.uuiModernWowGear.gaps = gaps end
+    mw.PlaceGearSlot(slot)
   end
 end
 
@@ -4889,6 +5029,7 @@ function mw.DressGearSlots(frame, prefix, slots, updateName, deferId)
   for i = 1, table.getn(slots) do
     mw.DressGearSlot(prefix, slots[i])
   end
+  mw.RefreshGearSlots(prefix, slots)
   if frame.uuiModernWowGearHooks then return end
   frame.uuiModernWowGearHooks = true
 
@@ -5993,6 +6134,14 @@ mw.RegisterSurface("actionbar", "Action bars", true, mw.BuildActionBars)
 mw.RegisterSurface("bagbar", "Bag bar", true, mw.BuildBagBar)
 mw.RegisterSurface("microbar", "Micro bar", true, mw.BuildMicroBar)
 mw.RegisterSurface("xpbar", "XP and reputation bars", true, mw.BuildXPBars)
+
+function mw.BuildTrackedBars()
+  if type(U.TrackedBarsModernWowActive) ~= "function" or
+     not U.TrackedBarsModernWowActive() then
+    error("modern-wow tracked-bars drawing path did not activate")
+  end
+end
+mw.RegisterSurface("trackedbars", "Tracked bars", true, mw.BuildTrackedBars)
 
 -- modules/spellbook.lua draws this itself, from its own OnEnable, before its
 -- toggles are built; the surface only gates that path and confirms it ran.

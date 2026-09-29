@@ -15,7 +15,7 @@
 
 local U = UnrealUI
 
-local CONFIG_VERSION = 7
+local CONFIG_VERSION = 9
 local PROFILE_STORE_VERSION = 1
 local MAX_PROFILE_NAME = 64
 
@@ -56,8 +56,7 @@ local defaults = {
   -- A number, not a string: knowledge.json / config.savedvariables_backslash
   -- _corruption means only numbers and booleans are safe to persist here.
   suppressLevel = 4,
-  -- Diagnostic coverage ceiling for 3D unit-frame portraits under modern and
-  -- modern-wow;
+  -- Diagnostic coverage ceiling for 3D unit-frame portraits under every theme;
   -- /uui portrait3d keeps the in-between steps for a crash bisect
   -- (knowledge.json / unitframes.portrait_model_crash):
   --   0  off, 2D only
@@ -69,10 +68,14 @@ local defaults = {
   -- Each mover-facing switch owns only its unit-frame family. Pet follows the
   -- player frame and party pets follow the party frames; target and
   -- target-of-target remain independently configurable.
-  portrait3dPlayer = true,
-  portrait3dTarget = true,
-  portrait3dTargetTarget = true,
-  portrait3dParty = true,
+  portraitPlayer = false,
+  portraitTarget = false,
+  portraitTargetTarget = false,
+  portraitParty = false,
+  portrait3dPlayer = false,
+  portrait3dTarget = false,
+  portrait3dTargetTarget = false,
+  portrait3dParty = false,
   locked    = true,     -- mover mode state; see core/mover.lua
   positions = {},       -- mover id -> { point, relativePoint, x, y }
   modules   = {},       -- module name -> { enabled = true }
@@ -248,6 +251,7 @@ local function SanitizeModules(modules)
 end
 
 local function PrepareConfig(stored)
+  local hasStoredValues = type(stored) == "table" and next(stored) ~= nil
   local storedVersion = type(stored) == "table" and
                         tonumber(stored.version) or 0
   local db = ApplyDefaults(stored, defaults)
@@ -274,7 +278,7 @@ local function PrepareConfig(stored)
   -- player, target and party frame families. Preserve the old choice for all
   -- three on the one-time migration instead of silently turning portraits
   -- back on for a profile that had disabled them.
-  if storedVersion < 6 then
+  if hasStoredValues and storedVersion < 6 then
     local enabled = type(db.portrait3d) == "number" and db.portrait3d > 0
     db.portrait3dPlayer = enabled
     db.portrait3dTarget = enabled
@@ -285,6 +289,24 @@ local function PrepareConfig(stored)
   -- existing profile draws.
   if storedVersion < 7 then
     db.portrait3dTargetTarget = db.portrait3dTarget and true or false
+  end
+  -- Version 8 made portrait visibility independent from the 2D/3D choice in
+  -- Modern. Existing profiles start with every family visible, matching what
+  -- their old 3D switch displayed; fresh and reset Modern profiles start with
+  -- every portrait hidden.
+  if hasStoredValues and storedVersion < 8 then
+    db.portraitPlayer = true
+    db.portraitTarget = true
+    db.portraitTargetTarget = true
+    db.portraitParty = true
+  end
+  -- Version 9 makes the visible family switches authoritative. Older profiles
+  -- could keep a family checked while the diagnostic coverage ceiling was 0,
+  -- making the setting appear broken under every theme.
+  if hasStoredValues and storedVersion < 9 and
+     (db.portrait3dPlayer or db.portrait3dTarget or
+      db.portrait3dTargetTarget or db.portrait3dParty) then
+    db.portrait3d = 3
   end
 
   if db.version ~= CONFIG_VERSION then
@@ -490,7 +512,12 @@ end
 function U.CreateProfile(name)
   if not IsSafeProfileName(name) then return false, "invalid" end
   if type(profiles[name]) == "table" then return false, "exists" end
-  profiles[name] = PrepareConfig(CopyTable(U.db or {}))
+  local profile = PrepareConfig(CopyTable(U.db or {}))
+  profile.portraitPlayer = false
+  profile.portraitTarget = false
+  profile.portraitTargetTarget = false
+  profile.portraitParty = false
+  profiles[name] = profile
   SetActiveProfile(name)
   return true
 end

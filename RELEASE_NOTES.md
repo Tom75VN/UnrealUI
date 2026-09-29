@@ -1,22 +1,14 @@
-## UnrealUI 0.10.0
+## UnrealUI 0.10.1
 
-- New character interface with a side panel showing all stats
-- Added the Equipment Manager
-- Added HUD effects for low health and loss of control
-- Added a gold coin icon to junk items in bags when talking to a merchant
-- Improved the microbar
-- Added profession icons to the microbar
-- New minimap for the modern-WoW theme
-- Special bags in unified bags are now split
-- Items related to special bags now appear in those bags with a category-based side view
-- Added reagent search to the crafting interface
-- New HD rare/elite unit frame textures for the modern-WoW theme
-- Removed slot backgrounds from the extra action bar and added a border to Bar 1
-- New HD party frame textures for the modern-WoW theme
-- Fixed class-colored health bars on the player frame
-- Improved interface textures for the modern-WoW theme
-- Buffs and debuffs are now split in Edit Mode
-- Improved the bag bar for modern-WoW with some fixes
-- Improved Edit Mode with size options for more anchors
-- Fixed item name alignment on the merchant interface in the modern theme
-- Trainer entries now use colored names for available, unavailable, and already known
+- Optimised crafting interface size
+- Reworked reputation interface for Modern WoW
+- Added tracked bars for player auras
+- Added a new HD minimap arrow
+- Fixed Micro Bar background
+- Fixed portrait after the last client update
+- Added a 3D portrait option for the Classic WoW theme
+- Improved 3D preview offset with the Modern WoW theme
+- Bag windows now stay above all HUD elements after the last client update
+- Modern theme can now disable the portrait or choose between 2D and 3D
+- Fixed the social interface close button with Modern WoW and Classic WoW themes after the last client update
+- Fixed addon game settings flickering when moving windows

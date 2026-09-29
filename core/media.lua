@@ -326,6 +326,11 @@ M.modernWow.texture = {
   targetHousingRare  = M.modernWow.path .. "unitframes\\target-rare-under-2x",
   targetRing         = M.modernWow.path .. "unitframes\\target-over-2x",
   targetRingRare     = M.modernWow.path .. "unitframes\\target-rare-over-2x",
+  -- The ring's metal alone, white (derived from target-over-2x by
+  -- tools/import_modern_wow_media.py --target-ring-tint). Vertex coloured with
+  -- the target's level difficulty and drawn over the gold ring, the way the
+  -- player's status halo is drawn over its housing (user request, 2026-09-29).
+  targetRingTint     = M.modernWow.path .. "unitframes\\target-ring-tint-2x",
   targetDragons      = M.modernWow.path .. "unitframes\\target-dragons-2x",
   targetDragonSilverWinged = M.modernWow.path ..
                        "unitframes\\target-dragon-silver-winged-2x",
@@ -461,6 +466,10 @@ M.modernWow.texture = {
   minimapBorder      = M.modernWow.path .. "minimap\\uiminimapborder",
   minimapShadow      = M.modernWow.path .. "minimap\\uiminimapshadow",
   minimapTopPanel    = M.modernWow.path .. "minimap\\uiminimap_toppanel",
+  minimapCorpseArrow = M.modernWow.path ..
+                       "minimap\\uiminimap-corpse-arrow-frames",
+  minimapPlayerArrow = M.modernWow.path ..
+                       "minimap\\uiminimap-player-arrow-frames",
   -- Superseded by the shared animated letter (M.minimapMail), which every
   -- theme draws. Kept shipped and attributed for a revert, as `health-fill`
   -- is; no surface reads this token now.
@@ -732,6 +741,30 @@ M.modernWow.minimap = {
   -- No mail size here any more: the letter is the shared flipbook
   -- (M.minimapMail), which every theme draws at one size. This theme only
   -- still decides where the native mail frame sits.
+}
+
+-- Retail's UI-HUD-Minimap-Arrow-Player, shared by both maps under every theme
+-- by user request. Rotation is baked because this client breaks rotated UVs.
+M.playerArrow = {
+  texture = M.modernWow.texture.minimapPlayerArrow,
+  frames = 64,
+  columns = 8,
+  minimapTextureSize = 27 * 0.8 * 64 / 45,
+  worldMapTextureSize = 27 * 64 / 45,
+  updateInterval = 0.05,
+  parkOffset = -5000,
+}
+
+M.corpseArrow = {
+  texture = M.modernWow.texture.minimapCorpseArrow,
+  frames = 64,
+  columns = 8,
+  -- Retail's gold UI-HUD-Minimap-Arrow-Guard (45x37, user request), drawn at
+  -- the minimap player arrow's scale: its 45-texel width becomes 27 * 0.8.
+  visibleSize = 27 * 0.8,
+  textureSize = 27 * 0.8 * 64 / 45,
+  -- Zone-map width over height, used only when WorldMapButton is unreadable.
+  mapAspect = 1.5,
 }
 
 -- Bottom window tabs from ui/frame-tabs.tga (64x256). Cells are measured off
@@ -2437,7 +2470,9 @@ M.modernWow.professions = {
   },
   slotOpening = { left = 288, top = 436, right = 356, bottom = 503 },
 
-  design = { width = 778, height = 525 },
+  -- 655, not DF-main's 778: the schematic (right) panel 25% narrower, 492 to
+  -- 369 (user request, 2026-09-29). The list column is unchanged.
+  design = { width = 655, height = 525 },
   frame = M.modernWow.talents.frame,
   -- Profession icon in DF-main's 62x62 portrait slot. This client has no
   -- circular mask, so a square icon sits inside the ring's opening over the
@@ -2520,37 +2555,39 @@ M.modernWow.professions = {
                 -- icon (pw.ReagentGeometry): `reagentLabelGap` from the
                 -- "Reagents" heading to the first frame, `reagentSpacing`
                 -- between frames, and the text `reagentTextGap` right of the
-                -- icon, taking the rest of `reagentWidth`.
-                reagentWidth = 180, reagentIcon = 24,
+                -- icon, taking the rest of `reagentWidth`. 155, not 180:
+                -- two columns side by side fit the narrowed form (user
+                -- request, 2026-09-29).
+                reagentWidth = 155, reagentIcon = 24,
                 reagentLabelGap = 4, reagentSpacing = 3, reagentTextGap = 9,
                 -- Extra drop of the "Reagents" heading, and so of every
                 -- reagent under it (user request, 2026-09-17: 8, then 10
                 -- more).
                 reagentHeadingShift = 18,
-                reagentColumn = 6, maxReagents = 8 },
+                -- Reagents run in `reagentColumns` columns, left to right then
+                -- down (user request, 2026-09-29).
+                reagentColumns = 2, maxReagents = 8 },
   -- "Track this recipe" above the recipe icon: the client's own 20-unit
   -- CheckButton, as the modern-wow Spellbook's toggles use, lifted above the
   -- form's children. Right-aligned (user request, 2026-09-16): `right` is
-  -- the box's inset from the schematic's top-right corner, matching the stat
-  -- panel's right edge, with the label to its left.
+  -- the box's inset from the schematic's top-right corner, with the label to
+  -- its left.
   -- labelGap 6, not 2: the label overlapped the box (user report,
   -- 2026-09-17).
-  -- y -9, not -5: lowered 4 (user request, 2026-09-17). The stat panel
-  -- hangs from the box (stats.trackGap).
+  -- y -9, not -5: lowered 4 (user request, 2026-09-17).
   track = { right = 16, y = -9, size = 20, levelLift = 4, labelGap = 6 },
   -- The ThinBorder rim DF-main's InsetFrameTemplate draws round both panels.
   border = { size = 16 },
 
-  -- Item-stat panel in the schematic's top-right corner for an equippable
-  -- product (user request, 2026-09-16): the product tooltip's lines after its
-  -- name, in the tooltip's own colours. Offsets are the panel's outer edge
-  -- from the schematic's top-right corner; the name label stops `nameGap`
-  -- short of it.
-  -- `top` clears the right-aligned Track checkbox above the panel.
-  -- trackGap: space from the track box's bottom to the panel's top edge
-  -- (user request, 2026-09-17).
-  stats = { width = 210, right = 16, trackGap = 10, padding = 13, lineGap = 2,
-            columnGap = 8, nameGap = 8, maxLines = 30, fillInset = 4,
+  -- Item-stat panel for an equippable product (user request, 2026-09-16):
+  -- the product tooltip's lines after its name, in the tooltip's own colours.
+  -- It sits under the reagents, below the game settings window's fading
+  -- divider (user request, 2026-09-29). It is right-aligned on the divider
+  -- and sized to its longest line, up to the form's text width (pw.StatsWidth). dividerGap:
+  -- from the last reagent row to the divider, and from the divider to the
+  -- panel; 14, not 8: 6 more on each side (user request, 2026-09-29).
+  stats = { dividerGap = 14, padding = 13, lineGap = 2,
+            columnGap = 8, maxLines = 30, fillInset = 4,
             fillColor = { 0.00, 0.00, 0.00, 0.55 },
             -- Measured from the achievement border art. The joint is a 32px
             -- bottom-right corner whose 7-texel bars end at texel 25; the edge
@@ -3172,7 +3209,7 @@ M.modernWow.characterScene = {
     parts = M.modernWow.path .. "ui\\character\\paperdoll-parts",
     horizontal = M.modernWow.path .. "ui\\character\\paperdoll-horizontal",
     vertical = M.modernWow.path .. "ui\\character\\paperdoll-vertical",
-    -- .. race key .. piece (1-4).
+    -- .. race key (one stitched texture per race).
     dressup = M.modernWow.path .. "ui\\character\\dressup\\",
   },
   -- The races this client plays, by UnitRace's numeric third return
@@ -3203,19 +3240,17 @@ M.modernWow.characterScene = {
   slot = { left = 4, top = 2, right = 4, weaponMiddle = 30.5 },
   -- CharacterModelScene's TOPLEFT (CharacterFrame 52,-66 = Inset 48,-6) and
   -- its four CharacterModelFrameBackground pieces, 212/19 wide and 245/128
-  -- high. Retail's overlay stops `overlayBottom` above the pieces' bottom,
-  -- where the lower pair's art turns transparent; here it is the pieces'
-  -- vertex colour (mw.BuildCharacterScene), so that number is reference only.
+  -- high, which tools/import_modern_wow_media.py --character-scene stitches
+  -- into one 256x512 texture per race (drawn area 231x374 at the top-left).
+  -- `width` x `height` are Retail's summed piece sizes; the 374 texel rows
+  -- fit its 373 units as in Retail's own 245/246 pieces. Retail's overlay
+  -- stops `overlayBottom` above the art's bottom, where the lower pair turns
+  -- transparent; here it is the piece's vertex colour
+  -- (mw.BuildCharacterScene), so that number is reference only.
   background = {
     x = 48, y = 6,
-    width = { 212, 19, 212, 19 },
-    height = { 245, 245, 128, 128 },
-    coords = {
-      { 0.171875, 1, 0.0392156862745098, 1 },
-      { 0, 0.296875, 0.0392156862745098, 1 },
-      { 0.171875, 1, 0, 1 },
-      { 0, 0.296875, 0, 1 },
-    },
+    width = 231, height = 373,
+    coords = { 0, 231 / 256, 0, 374 / 512 },
     overlayBottom = 52,
   },
   -- PaperDollInnerBorder*: 7x7 corners at `left`/`right` in and `top` down
@@ -3316,8 +3351,8 @@ M.modernWow.characterStats = {
   markHoverColor = { 1.00, 0.82, 0.00, 1 },
   -- Refresh period while the panel is on screen, seconds.
   refresh = 0.5,
-  model = { gap = 6, fallbackHeight = 300, scale = 1.45, y = 31, shift = 35,
-            grow = 20 },
+  model = { gap = 6, fallbackHeight = 300, scale = 1.45, y = 43, shift = 35,
+            grow = 30 },
 }
 
 -- The paper doll's three sidebar tabs over the stats pane (user request,
@@ -3516,6 +3551,139 @@ M.modernWow.equipmentManager = {
   },
 }
 
+-- The Reputation page (user request, 2026-09-29): Retail's ReputationFrame
+-- (Blizzard_UIPanels_Game/Mainline/ReputationFrame.xml/.lua, RetailFrameXML
+-- 12.1.0.69933) inside the Character housing at its collapsed width. Drawn by
+-- modules/characterreputation.lua. Sizes, offsets and texture coordinates are
+-- the XML's own and each atlas member's UiTextureAtlasMember rectangle
+-- (`query.py atlasmap <name> --exact`); offsets are y-down.
+--   * `scroll`: the ScrollBox inside ButtonFrameTemplate's Inset (4 in,
+--     22 short of its right for the MinimalScrollBar), the linear view's
+--     `padding` and `spacing`, and the bar's column `x` past the box.
+--     `column` / `arrowPad` are the shared scrollbar's, as the stats pane's.
+--   * `header`: ReputationHeaderTemplate, 26 high, full width, the
+--     Options_ListExpand bar and its GameFontNormal name 10 in. Its ADD
+--     highlight is an opaque box on this client
+--     (rendering.setblendmode_add_inert), so hover lights the name instead.
+--   * `entry`: ReputationEntryTemplate, 22 high, indented `indent`; the name
+--     starts past the 23-unit AccountWideIcon slot at 2 and stops `nameGap`
+--     short of the bar. `highlight` is BackgroundHighlight's alpha per state
+--     (RefreshBackgroundHighlightOpacity); an at-war row is always lit, in
+--     `warColor` -- Retail's FACTION_AT_WAR_COLOR lives in its colour DB, not
+--     the source, so the hostile bar colour stands in.
+--   * `bar`: ReputationBarTemplate, 99x13, its frame 99x15 over the fill --
+--     the 60 + 39 LeftTexture / RightTexture crops assembled into one
+--     texture at import, with the near-black texels outside its rounded
+--     outline cleared and a transparent gutter round it (user request,
+--     2026-09-29: they showed as dark corners past the rim; ATTRIBUTION.md,
+--     `ui/character/reputation-bar-frame`). `rightInset` 0, not Retail's 3 (user request,
+--     2026-09-29): the frame's last texel column is opaque, as is the header
+--     cap's, so the bar ends exactly under the header bars. `colors` is Vanilla's
+--     FACTION_BAR_COLORS, the fallback when the client's table is missing.
+--   * `detail`: ReputationDetailFrame, 212 wide at the housing's TOPRIGHT
+--     28 down, in DialogBorderTemplate (`dialog`: 64-unit diamond-metal
+--     corners and edges, the Bg 7 in; the metal's line runs 12..20.5 in from
+--     each edge, measured by alpha). The checkbox is the game settings
+--     checkbox at the profession window's 20 (rules/unreal-ui-design.md),
+--     centred where Retail's 26-unit CheckButton sits; the close button is
+--     the shared 17-unit red X centred where UIPanelCloseButton's 24 sits.
+--     UnrealUI's one departure: `height` is 211, not Retail's 203, so the
+--     second checkbox row (bottom at 189) clears the bottom metal line.
+--   * `scroll.barWidth`: MinimalScrollBar's 8-unit track; the shared bar's
+--     wider `column` is centred on it.
+M.modernWow.reputation = {
+  texture = {
+    listExpand = M.modernWow.path .. "ui\\character\\reputation-list-expand",
+    highlight = M.modernWow.path .. "ui\\character\\reputation-line-highlight",
+    barFrame = M.modernWow.path .. "ui\\character\\reputation-bar-frame",
+    fill = M.modernWow.path .. "ui\\character\\reputation-bar-fill",
+    parchment = M.modernWow.path .. "ui\\character\\reputation-detail-background",
+    dialog = M.modernWow.path .. "ui\\frame\\dialog-diamond-metal",
+    dialogVertical = M.modernWow.path .. "ui\\frame\\dialog-diamond-metal-vertical",
+    dialogBackground = M.modernWow.path .. "ui\\frame\\dialog-background",
+    divider = M.modernWow.path .. "ui\\borders\\ui-dialogbox-divider",
+  },
+  scroll = { left = 4, top = 4, right = 22, bottom = 2, padding = 10,
+             spacing = 3, x = 5, barTop = 2, barBottom = 4, barWidth = 8,
+             column = 16, arrowPad = 19 },
+  header = {
+    height = 26, textX = 10, font = 12, leftWidth = 12, rightWidth = 28,
+    color = { 1.00, 0.82, 0.00, 1 },
+    hoverColor = { 1.00, 1.00, 1.00, 1 },
+    left = { 1 / 128, 13 / 128, 84 / 128, 110 / 128 },
+    middle = { 0, 1 / 128, 28 / 128, 54 / 128 },
+    collapsed = { 1 / 128, 29 / 128, 56 / 128, 82 / 128 },
+    expanded = { 31 / 128, 59 / 128, 56 / 128, 82 / 128 },
+  },
+  entry = {
+    height = 22, indent = 2, nameX = 25, nameGap = 10, font = 12,
+    color = { 1.00, 1.00, 1.00, 1 },
+    sideWidth = 6,
+    side = { 0, 12 / 16, 0, 40 / 64 },
+    sideFlipped = { 12 / 16, 0, 0, 40 / 64 },
+    middle = { 14 / 16, 15 / 16, 0, 40 / 64 },
+    highlight = { hover = 0.10, selected = 0.20,
+                  war = 0.50, warHover = 0.65, warSelected = 0.85 },
+    highlightColor = { 1.00, 1.00, 1.00 },
+    warColor = { 0.80, 0.30, 0.22 },
+    press = 1,
+  },
+  bar = {
+    width = 99, height = 13, rightInset = 0, font = 10,
+    -- UnrealUI's (user request, 2026-09-29): the black bed and the fill stop
+    -- inside the frame's rim -- 2 texels thick at each end, 1 over the bar's
+    -- top and bottom edges (the 15-high frame overhangs the 13-high bar by 1)
+    -- -- so neither shows past its rounded corners. Retail spans all 99x13.
+    inset = { x = 2, y = 1 },
+    -- The black bed, centred on the bar: back to the fill's `inset`, 95x11
+    -- (user request, 2026-09-29: 93x9 left a gap inside the frame once its
+    -- corners were cleaned).
+    bedInset = { x = 2, y = 1 },
+    background = { 0, 0, 0, 1 },
+    textColor = { 1.00, 1.00, 1.00, 1 },
+    frame = { width = 99, height = 15,
+              texCoord = { 1 / 128, 100 / 128, 1 / 32, 16 / 32 } },
+    colors = {
+      { 0.80, 0.30, 0.22 }, { 0.80, 0.30, 0.22 }, { 0.75, 0.27, 0.00 },
+      { 0.90, 0.70, 0.00 }, { 0.00, 0.60, 0.10 }, { 0.00, 0.60, 0.10 },
+      { 0.00, 0.60, 0.10 }, { 0.00, 0.60, 0.10 },
+    },
+    maxStanding = 8,
+  },
+  detail = {
+    width = 212, height = 211, y = 28,
+    title = { x = 20, y = 21, width = 160, font = 12,
+              color = { 1.00, 0.82, 0.00, 1 } },
+    description = { gap = 2, width = 160, font = 10,
+                    color = { 1.00, 1.00, 1.00, 1 } },
+    parchment = { x = 11, y = 11, width = 260, height = 128 },
+    divider = { x = 9, y = 131, width = 256, height = 32 },
+    close = { size = 17, right = 14, top = 14 },
+    check = { size = 20, cell = 26, x = 14, atWarY = 143, rowGap = 3,
+              labelGap = -2, inactiveGap = 3, font = 10,
+              atWarWidth = 60, inactiveWidth = 70, watchWidth = 150 },
+    warColor = { 1.00, 0.10, 0.10, 1 },
+    labelColor = { 1.00, 0.82, 0.00, 1 },
+    disabledColor = { 0.50, 0.50, 0.50, 1 },
+  },
+  -- Each 128-texel piece puts its solid metal line at texels 23-42 from the
+  -- outer edge (0-12 transparent, a soft shadow between), measured by alpha on
+  -- every edge. `size` is half Retail's 64 (user request, 2026-09-29), so the
+  -- line lands 5.75-10.5 units in; `inset` stops the Bg inside it so the dark
+  -- fill never shows past the metal through that shadow.
+  dialog = {
+    size = 32, inset = 8,
+    topLeft     = { 1 / 256, 129 / 256, 521 / 1024, 649 / 1024 },
+    topRight    = { 1 / 256, 129 / 256, 651 / 1024, 779 / 1024 },
+    bottomLeft  = { 1 / 256, 129 / 256, 261 / 1024, 389 / 1024 },
+    bottomRight = { 1 / 256, 129 / 256, 391 / 1024, 519 / 1024 },
+    top    = { 0, 128 / 256, 131 / 1024, 259 / 1024 },
+    bottom = { 0, 128 / 256, 1 / 1024, 129 / 1024 },
+    left   = { 1 / 512, 129 / 512, 0, 1 },
+    right  = { 131 / 512, 259 / 512, 0, 1 },
+  },
+}
+
 -- Character gear slots: the four diamond-stud corners of the user-supplied
 -- ui/character-create-diamond-metal atlas (512x2048, 8x art), one per slot
 -- corner. `corners` is each piece's bar-centreline intersection in atlas
@@ -3525,7 +3693,14 @@ M.modernWow.equipmentManager = {
 -- inward to the slot's midpoint, capped at `arm` px (the drawn arm length).
 -- `artScale` is units per atlas px on a `designSlot` button, and the
 -- centreline sits `lineOffset` units outside the slot edge; both scale with
--- the slot. `hover` is the stock ItemButtonTemplate highlight. The metal is
+-- the slot. The stud is not on that intersection: `studX` / `studY` are how
+-- far its centre sits further out, in atlas px, measured from the diamond's
+-- outer tips (TL tips x 26 / y 1059 at y 1090-1095 / x 57-63, and alike).
+-- Adjacent slots share a corner, so when the owning module measures the gap
+-- between them (mw.MeasureGearGaps) each stud is placed at half that gap
+-- outside the edge instead, and neighbours' studs land on one point; the two
+-- bars then sit side by side as one post (user request, 2026-09-29). Without
+-- a measurement, `lineOffset` applies. `hover` is the stock ItemButtonTemplate highlight. The metal is
 -- never tinted: rarity draws `glowTexture` (the action-button glow) in the
 -- item's quality colour at `glowAlpha`, `glowGrow` units larger than the slot
 -- and centred on it, above the metal; hidden for common and empty slots.
@@ -3563,11 +3738,18 @@ M.modernWow.gearSlot = {
   outer = 52,
   arm = 184,
   corners = {
-    { point = "TOPLEFT",     x = 68,  y = 1104, h = -1, v = 1 },
-    { point = "TOPRIGHT",    x = 189, y = 1362, h = 1,  v = 1 },
-    { point = "BOTTOMLEFT",  x = 68,  y = 701,  h = -1, v = -1 },
-    { point = "BOTTOMRIGHT", x = 189, y = 959,  h = 1,  v = -1 },
+    { point = "TOPLEFT",     x = 68,  y = 1104, h = -1, v = 1,
+      studX = 8,   studY = 11.5 },
+    { point = "TOPRIGHT",    x = 189, y = 1362, h = 1,  v = 1,
+      studX = 8.5, studY = 11.5 },
+    { point = "BOTTOMLEFT",  x = 68,  y = 701,  h = -1, v = -1,
+      studX = 8,   studY = 11.5 },
+    { point = "BOTTOMRIGHT", x = 189, y = 959,  h = 1,  v = -1,
+      studX = 8.5, studY = 12 },
   },
+  -- Slot pairs whose facing edges give the column and row gaps.
+  gapColumn = { "HeadSlot", "NeckSlot" },
+  gapRow = { "MainHandSlot", "SecondaryHandSlot" },
   shade = 1,
 }
 
@@ -3722,6 +3904,79 @@ M.modernWow.xpbar = {
     [7] = { 0.00, 0.80, 0.10, 1.00 },
     [8] = { 0.00, 0.80, 0.50, 1.00 },
   },
+}
+
+-- The Tracked Bars (user request, 2026-09-29): Retail's Cooldown Manager
+-- BuffBarCooldownViewer (RetailFrameXML 12.1.0.69933,
+-- Blizzard_CooldownViewer/CooldownViewer.xml:209-287). Item geometry is
+-- CooldownViewerBuffBarItemTemplate's and every theme shares it; `flat` is the
+-- modern drawing and M.modernWow.trackedBars the Retail art, drawn under both
+-- modern-wow and classic-wow (user request, 2026-09-30).
+-- `limit` is EditModeSettingDisplayInfo.lua's CooldownViewer entries, each
+-- default the Mainline BuffBar preset (EditModePresetLayouts.lua:731-745).
+M.trackedBars = {
+  -- The icon is a square iconExtra taller than the bar (user requests,
+  -- 2026-09-30), not the template's 30: tb.Metrics sizes it from bar.height.
+  -- The gap is the template's 2 plus 2 by the same request.
+  width = 220, height = 30, iconExtra = 2,
+  bar = { height = 19, gap = 4 },
+  -- The Name fontstring's TOPLEFT x and BOTTOMRIGHT x inset, and Duration's
+  -- RIGHT inset, all on the Bar.
+  -- Name sits `down` below the bar's centre (user request, 2026-09-30).
+  name = { left = 5, right = 25, down = 1 },
+  -- Duration sits `down` below the bar's centre (user request, 2026-09-30).
+  duration = { right = 8, down = 4 },
+  -- Applications: BOTTOMRIGHT (-5, 5) on the icon.
+  count = { right = 5, bottom = 5 },
+  -- BuffBarCooldownViewerMixin:GetAdditionalPaddingOffset (-2), less 6 more
+  -- (user request, 2026-09-30).
+  paddingOffset = -8,
+  -- The BarTexture's vertex colour.
+  fill = { 1.00, 0.50, 0.25, 1.00 },
+  fontSize = 11,
+  iconCrop = 0.08,
+  sampleIcon = "Interface\\Icons\\INV_Misc_QuestionMark",
+  -- CooldownViewerMixin:GetItemCount's minimum, as edit-mode placeholders,
+  -- each drawn paused at this fraction of its bar.
+  sample = { 0.65, 0.35 },
+  sampleDuration = 20,
+  -- EditModeCooldownViewerSetting.IconLimit's maximum.
+  maxBars = 20,
+  limit = {
+    size    = { min = 50, max = 200, step = 10, default = 100 },
+    padding = { min = 0,  max = 10,  step = 1,  default = 5 },
+    width   = { min = 50, max = 200, step = 1,  default = 100 },
+    opacity = { min = 50, max = 100, step = 1,  default = 100 },
+  },
+  flat = {
+    barBackground = { 0.10, 0.10, 0.10, 0.90 },
+    pip = { 1.00, 1.00, 1.00, 0.85 },
+    pipWidth = 1,
+  },
+}
+
+-- The Tracked Bars' Retail art: ui/cooldown-manager, the whole 512x256
+-- Cooldown Manager sheet (FileDataID 6739577, the HD member of every
+-- UI-HUD-CoolDownManager-* atlas; ATTRIBUTION.md). Cells are the build's
+-- UiTextureAtlasMember rectangles in pixels as L, T, R, B; each is drawn at
+-- half its pixel size, the atlas's own 1x size. Insets are the XML's anchors.
+M.modernWow.trackedBars = {
+  texture = M.modernWow.path .. "ui\\cooldown-manager",
+  sheet = { 512, 256 },
+  bar     = { 175, 41, 423, 61 },
+  barBG   = { 175, 1, 439, 39 },
+  pip     = { 175, 63, 195, 155 },
+  overlay = { 1, 1, 173, 173 },
+  -- BarBG: TOPLEFT (-2, 2) and BOTTOMRIGHT (4, -7) on the Bar.
+  barBGInset = { left = -2, top = 2, right = 4, bottom = -7 },
+  -- The Bar fill drawn 40% more transparent over BarBG (user request,
+  -- 2026-09-30); BarBG itself stays opaque.
+  fillAlpha = 0.6,
+  -- IconOverlay: TOPLEFT (-6, 5) and BOTTOMRIGHT (6, -5) on the icon.
+  overlayInset = { left = -6, top = 5, right = 6, bottom = -5 },
+  -- Pip: useAtlasSize, CENTER on the fill's RIGHT at y -1 (OnLoad).
+  pipSize = { 10, 46 },
+  pipY = -1,
 }
 
 -- The micro bar under `modern-wow` and `modern` (user requests, 2026-09-28):
@@ -4291,6 +4546,11 @@ M.modernWow.text = {
   -- and gold on every one of them carries no hierarchy. The target's reaction
   -- is still shown by the reaction bar's vertex colour, which is unchanged.
   nameColor = { 0.93, 0.73, 0.00, 1.00 },
+  -- The target's name and level, black with no shadow over the reaction wash
+  -- (user request, 2026-09-29). The level's difficulty colour moves to the
+  -- portrait ring (M.modernWow.texture.targetRingTint), overriding nameColor
+  -- on that frame.
+  targetInk = { 0.00, 0.00, 0.00, 1.00 },
   -- The power bar's percentage, relative to the value at the other end of that
   -- same row. Nominally they share a Y, but a LEFT/RIGHT anchor pins a
   -- FontString's vertical centre rather than its baseline, so two readouts of
@@ -4328,8 +4588,9 @@ M.modernWow.ring = {
   -- the player rim's bottom edge; backgroundY then raises it that many pixels
   -- so the bottom clears the rim without cropping the top.
   playerFrame    = { size = 68, x = 74, y = 43.0, model = 43,
-                     backgroundTrim = 2, backgroundY = 1 },
-  targetFrame    = { size = 65, x = 71, y = 43.5, model = 43 },
+                     backgroundTrim = 5, backgroundY = 1 },
+  targetFrame    = { size = 65, x = 71, y = 43.5, model = 43,
+                     backgroundTrim = 4 },
   -- The Retail target housing, in M.modernWow.retailTarget's units. Size 63,
   -- not TargetFrame.xml's 58x58 Portrait (user request, 2026-09-27): at 58
   -- the 2D portrait's circle stopped short of the ring. 63 keeps the old
@@ -4346,8 +4607,13 @@ M.modernWow.ring = {
   -- the 3D model and its stone background keep the measured centre.
   -- iconGrow: pixels added to (negative: taken from) the 2D portrait's side,
   -- centred on that nudge.
+  -- backgroundTrim 4 (user requests, 2026-09-29): the 3D portrait's stone
+  -- background is drawn 59 across, inside the rim's
+  -- 61.5 outer diameter,
+  -- instead of the full 63 portrait.
   targetHousing  = { size = 63, x = 100, y = 31.25, model = 42,
-                     iconX = 1, iconY = 0, iconGrow = -1 },
+                     iconX = 1, iconY = 0, iconGrow = -1,
+                     backgroundTrim = 4 },
 
   -- The small canvas, in ITS 128x64 units rather than the large layout's.
   -- Measured on the 2x file (alpha > 128, halved): rim x 5..44.5 and
@@ -4358,8 +4624,10 @@ M.modernWow.ring = {
   -- `model`: sqrt(2) x the rim's outer radius, 19.75, kept at the old 27.
   -- `modelScale` overrides M.modernWow.portraitModelScale for this ring only:
   -- the thin party rim showed the 3D portrait's corners at 1.1.
+  -- backgroundTrim 1 (user request, 2026-09-29): the 3D portrait's stone
+  -- background is drawn 37 across, one unit larger than the former 36.
   partyFrame     = { size = 38, x = 24.5, y = 22.75, model = 27,
-                     modelScale = 1.05 },
+                     modelScale = 1.05, backgroundTrim = 1 },
 }
 
 -- Multiplier on every ring's measured `model` side. The measured square is
@@ -4898,7 +5166,10 @@ M.loot.flat = {
 -- and interaction model matches the modern-wow profession window, while every
 -- surface uses UnrealUI's flat design primitives and shared colour tokens.
 M.professions = {
-  design = { width = 720, height = 500 },
+  -- 588, not 720: the detail (right) pane 25% narrower, 418 to 314, as the
+  -- modern-wow window, and the list column 10% narrower, 276 to 248 (user
+  -- requests, 2026-09-29).
+  design = { width = 588, height = 500 },
   title = { y = 9 },
   close = { x = -6, y = -6 },
   drag = { headerHeight = 44, inset = 28 },
@@ -4915,14 +5186,16 @@ M.professions = {
 
   filter = {
     -- Difficulty and reagents share the first row; recipe search is beneath.
-    x = 10, y = 50, width = 276, height = 54, gap = 4,
+    -- 248 wide with the list (user request, 2026-09-29): the dropdown gives
+    -- up 20 and the reagent filter 8, so its label keeps most of its room.
+    x = 10, y = 50, width = 248, height = 54, gap = 4,
     size = 20, rowHeight = 20, reagentTop = 4,
-    dropdown = { x = 6, y = 4, width = 120, height = 20, textY = -2 },
-    reagents = { x = 138, width = 138 },
+    dropdown = { x = 6, y = 4, width = 100, height = 20, textY = -2 },
+    reagents = { x = 118, width = 130 },
     search = { x = 8, y = 25, right = 4 },
   },
   list = {
-    x = 10, y = 108, width = 276, bottom = 42,
+    x = 10, y = 108, width = 248, bottom = 42,
     inset = 6, rowHeight = 22, headerHeight = 24,
     headerGap = 3, groupGap = 3,
     scrollWidth = 16, scrollArrow = 16, scrollPad = 3, scrollRight = 4,
@@ -4944,10 +5217,11 @@ M.professions = {
   },
   tracked = { width = 3, inset = 4, right = 4 },
   detail = {
-    x = 292, y = 50, right = 10, bottom = 42, inset = 12,
+    x = 264, y = 50, right = 10, bottom = 42, inset = 12,
     icon = 46, nameGap = 10, lineGap = 4, sectionGap = 10,
     reagentIcon = 26, reagentRow = 32, reagentTextGap = 7,
-    reagentColumn = 4, reagentGap = 8, maxReagents = 8,
+    -- Two columns, left to right then down (user request, 2026-09-29).
+    reagentColumns = 2, reagentGap = 8, maxReagents = 8,
     -- Top of the reagent block inside the detail pane: its heading, then the
     -- first row of reagent buttons. Both were inline literals (108 / 126) and
     -- moved up together (user requests, 2026-09-20: 10, then a further 14), so
@@ -4955,9 +5229,14 @@ M.professions = {
     reagentLabelY = 84, reagentTop = 102,
   },
   track = { right = 10, top = 10, width = 128, height = 18 },
+  -- Under the reagents, below the game settings window's fading divider,
+  -- right-aligned and sized to its longest line up to the pane's text width
+  -- (user request, 2026-09-29, matching the modern-wow window). dividerGap:
+  -- from the last reagent row to the divider, and from the divider to the
+  -- panel.
   stats = {
-    width = 190, right = 10, top = 36, padding = 8,
-    lineGap = 2, columnGap = 8, nameGap = 8,
+    dividerGap = 14, minWidth = 40, padding = 8,
+    lineGap = 2, columnGap = 8,
     maxLines = 28, maxHeight = 362, level = 12,
   },
   statsSkipEquipLoc = { INVTYPE_BAG = true, INVTYPE_QUIVER = true,
@@ -4968,9 +5247,11 @@ M.professions = {
     castBarGap = 6, castBarShiftX = 0, castBarShiftY = 0,
   },
 
-  panelColor = { 0.025, 0.025, 0.025, 0.94 },
-  insetColor = { 0.04, 0.04, 0.04, 0.86 },
-  headerColor = { 0.08, 0.08, 0.08, 0.96 },
+  -- Each background's opacity lowered 10% twice (user requests,
+  -- 2026-09-29): 0.94, 0.86 and 0.96, times 0.9 times 0.9.
+  panelColor = { 0.025, 0.025, 0.025, 0.761 },
+  insetColor = { 0.04, 0.04, 0.04, 0.697 },
+  headerColor = { 0.08, 0.08, 0.08, 0.778 },
   rowState = {
     hoverFillAlpha = 0.10, hoverBorderAlpha = 0.55,
     focusFillAlpha = 0.22, focusBorderAlpha = 1.00,

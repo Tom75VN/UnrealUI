@@ -30,6 +30,7 @@ Run from the unrealUI addon folder:
 
 import math
 import os
+import re
 import struct
 import sys
 
@@ -184,6 +185,11 @@ IMPORTS = [
 #
 # (destination name, the filename it was supplied as, note[, on-disk input])
 USER_SUPPLIED = [
+    ("minimap/uiminimap2x", "uiminimap2x.tga",
+     "Blizzard Retail HD minimap atlas, FileDataID 4618666 / atlas 1995, "
+     "512x1024. UnrealUI uses `UI-HUD-Minimap-Arrow-Guard` at L=441 R=486 "
+     "T=363 B=400 and `UI-HUD-Minimap-Arrow-Player` at L=441 R=486 T=238 "
+     "B=283 as the sources for its shared map arrows."),
     ("ui/class-portraits", "ui-classes-circles.png",
      "Blizzard UI-Classes-Circles class-icon atlas at 256x256: 64px "
      "cells, four per row, in CLASS_ICON_TCOORDS order (WARRIOR, MAGE, "
@@ -999,6 +1005,92 @@ def retail_split(image):
     return under, over
 
 
+# The target ring's difficulty tint (user request, 2026-09-29): the metal band
+# of target-over-2x lies between radius 51 and 61 about RETAIL_RING_CENTRE
+# (measured by mean colour per whole radius; inside and outside it the canvas
+# is the black inner shadow and drop shadow). A metal pixel's warmth (red
+# less blue) is at least RING_TINT_METAL_WARMTH; below that it is part shadow.
+# Warmth rather than brightness, so the neutral grey bar rim lines that run
+# into the band are left out.
+RING_TINT_BAND = (49.0, 63.0)
+RING_TINT_METAL_WARMTH = 80.0
+
+
+def retail_ring_tint(over):
+    """Derive the white ring mask the target's level colour is drawn with.
+
+    Vertex coloured and drawn BLEND over the gold ring, it recolours the metal
+    as the player's status halo recolours the housing, keeping the ring's own
+    shading: each metal pixel's luminance, normalised so the brightest metal
+    (99th percentile) is white, over its own alpha scaled by how much of it is
+    metal. The black shadows are dropped rather than copied, so they are not
+    drawn twice.
+    """
+    over = over.convert("RGBA")
+    src = over.load()
+    cx, cy = RETAIL_RING_CENTRE
+    inner, outer = RING_TINT_BAND
+    samples = []
+    for y in range(over.height):
+        for x in range(over.width):
+            r, g, b, a = src[x, y]
+            if not a:
+                continue
+            d = ((x - cx) ** 2 + (y - cy) ** 2) ** 0.5
+            if inner <= d <= outer and r - b >= RING_TINT_METAL_WARMTH:
+                samples.append(0.299 * r + 0.587 * g + 0.114 * b)
+    samples.sort()
+    peak = samples[int(len(samples) * 0.99)] if samples else 255.0
+
+    tint = Image.new("RGBA", over.size, (0, 0, 0, 0))
+    out = tint.load()
+    for y in range(over.height):
+        for x in range(over.width):
+            r, g, b, a = src[x, y]
+            if not a:
+                continue
+            d = ((x - cx) ** 2 + (y - cy) ** 2) ** 0.5
+            if d < inner or d > outer:
+                continue
+            metal = min(1.0, (r - b) / RING_TINT_METAL_WARMTH)
+            if metal <= 0:
+                continue
+            luma = (0.299 * r + 0.587 * g + 0.114 * b) / metal
+            grey = int(round(min(255.0, luma * 255.0 / peak)))
+            out[x, y] = (grey, grey, grey, int(round(a * metal)))
+    return tint
+
+
+def import_target_ring_tint(dest_root):
+    """Write unitframes/target-ring-tint-2x from the shipped target-over-2x."""
+    source = os.path.join(dest_root, "unitframes", "target-over-2x.tga")
+    if not os.path.isfile(source):
+        raise IOError("target ring source missing: %s" % source)
+    over, _ = open_source(source)
+    tint = retail_ring_tint(over)
+    over.close()
+    dest_name = "unitframes/target-ring-tint-2x"
+    dst = os.path.join(dest_root, dest_name.replace("/", os.sep) + ".tga")
+    width, height = write_rle_tga(tint, dst)
+    row = {
+        "dest": dest_name + ".tga",
+        "size": "%dx%d" % (width, height),
+        "supplied": "unitframes/target-over-2x.tga",
+        "note": "**Derived from `target-over-2x`** (user request, 2026-09-29): "
+                "the portrait ring's metal only -- radius %g to %g about "
+                "(%g, %g), a pixel's metal share its (red - blue) / %g -- as white "
+                "luminance normalised to the brightest metal (99th "
+                "percentile), alpha scaled by that share; both black shadows "
+                "dropped. Vertex coloured with the target's level difficulty "
+                "and drawn BLEND over the gold (or silver) ring, at the same "
+                "canvas placement."
+                % (RING_TINT_BAND[0], RING_TINT_BAND[1], RETAIL_RING_CENTRE[0],
+                   RETAIL_RING_CENTRE[1], RING_TINT_METAL_WARMTH),
+    }
+    print("%-34s %-9s ring tint" % (dest_name, row["size"]))
+    return row
+
+
 def retail_silver_winged(sheet):
     """Derive the silver-winged dragon Retail does not ship.
 
@@ -1475,6 +1567,160 @@ def import_equipment_manager(dest_root):
     return rows
 
 
+# The Character window's Reputation page (user request, 2026-09-29): Retail's
+# ReputationFrame (Blizzard_UIPanels_Game/Mainline/ReputationFrame.xml/.lua,
+# RetailFrameXML 12.1.0.69933) -- ReputationHeaderTemplate's Options_ListExpand
+# bar, ReputationEntryTemplate's line highlight and ReputationBarTemplate, and
+# ReputationDetailFrame's parchment and DialogBorderTemplate (NineSliceLayouts
+# `Dialog`: UI-Frame-DiamondMetal around UI-DialogBox-Background). Atlas
+# geometry is RetailFrameXML's `query.py atlasmap <name> --exact`; each atlas
+# sheet's physical file was matched by its size and member layout. Whole files
+# pixel-unchanged, except the line highlight, whose two atlas members are cut
+# 1:1 from the 2048x2048 CharacterCreate sheet into a 16x64 canvas (pixels
+# L=2029..2045 T=1..41 at its top-left). The Dialog Box divider is not
+# re-imported: ui/borders/ui-dialogbox-divider.tga matches Retail's within
+# compression noise (max channel difference 5).
+# (destination, source under RETAIL_ART_ROOT, crop or None, note)
+CHARACTER_REPUTATION_ART = [
+    ("ui/character/reputation-list-expand",
+     "Options/OptionsExpandListButton.BLP", None,
+     "FileDataID 4571485 (atlas 1974): `Options_ListExpand_Left`, "
+     "`_Options_ListExpand_Middle`, `Options_ListExpand_Right` and "
+     "`Options_ListExpand_Right_Expanded`, ReputationHeaderTemplate's bar"),
+    ("ui/character/reputation-line-highlight",
+     "GLUES/CHARACTERCREATE/CharacterCreate.BLP", (2029, 1, 2045, 41),
+     "FileDataID 1253496 (atlas 708): "
+     "`charactercreate-customize-dropdown-linemouseover-side` (L=2029 R=2041) "
+     "and `-middle` (L=2043 R=2044), T=1 B=41, cut 1:1 into a 16x64 canvas; "
+     "ReputationEntryTemplate's BackgroundHighlight"),
+    ("ui/character/reputation-bar-fill",
+     "PaperDollInfoFrame/UI-Character-Skills-Bar.blp", None,
+     "ReputationBarTemplate's BarTexture"),
+    ("ui/character/reputation-detail-background",
+     "PaperDollInfoFrame/UI-Character-Reputation-DetailBackground.blp", None,
+     "ReputationDetailFrame's parchment"),
+    ("ui/frame/dialog-diamond-metal",
+     "FrameGeneral/UIFrameDiamondMetal2x.BLP", None,
+     "FileDataID 3056750 (atlas 1502): `UI-Frame-DiamondMetal-Corner*` and "
+     "`_UI-Frame-DiamondMetal-EdgeTop/Bottom`, NineSliceLayouts.Dialog"),
+    ("ui/frame/dialog-diamond-metal-vertical",
+     "FrameGeneral/UIFrameDiamondMetalVertical2x.BLP", None,
+     "FileDataID 3056755 (atlas 1503): `!UI-Frame-DiamondMetal-EdgeLeft/"
+     "Right`, NineSliceLayouts.Dialog"),
+    ("ui/frame/dialog-background",
+     "DialogFrame/UI-DialogBox-Background.blp", None,
+     "DialogBorderTemplate's Bg"),
+]
+CHARACTER_REPUTATION_CANVAS = {"ui/character/reputation-line-highlight": (16, 64)}
+
+# ReputationBarTemplate's frame, assembled (user request, 2026-09-29): the
+# LeftTexture crop (texture coordinates 0.765625-1 x 0.046875-0.28125, pixels
+# L=196 R=256 T=3 B=18) and the RightTexture crop (0-0.15234375 x
+# 0.390625-0.625, pixels L=0 R=39 T=25 B=40) side by side, 99x15, at (1, 1) of
+# a transparent 128x32 canvas. Two edits, both to texels outside the frame's
+# drawn outline: the near-black corner texels past its rounded corners are
+# cleared (flood fill from the canvas edge through texels darker than the
+# outline, luminance < 30, which the closed outline stops), and the 1-texel
+# transparent gutter replaces the neighbouring atlas rows the crop's filtering
+# smeared into a dark fringe round the rim. The outline and the inside are
+# unchanged.
+REPUTATION_BAR_FRAME = "ui/character/reputation-bar-frame"
+REPUTATION_BAR_FRAME_PIECES = [((196, 3, 256, 18), (1, 1)),
+                               ((0, 25, 39, 40), (61, 1))]
+REPUTATION_BAR_FRAME_CANVAS = (128, 32)
+REPUTATION_BAR_FRAME_OUTLINE = 30
+
+
+def build_reputation_bar_frame(dest_root):
+    """Assemble ReputationBarTemplate's frame; returns its attribution row."""
+    source = "PaperDollInfoFrame/UI-CHARACTER-REPUTATIONBAR.BLP"
+    src = os.path.join(RETAIL_ART_ROOT, source.replace("/", os.sep))
+    sheet, _ = open_source(src)
+    sheet = sheet.convert("RGBA")
+    canvas = Image.new("RGBA", REPUTATION_BAR_FRAME_CANVAS, (0, 0, 0, 0))
+    for crop, at in REPUTATION_BAR_FRAME_PIECES:
+        canvas.paste(sheet.crop(crop), at)
+    sheet.close()
+
+    width, height = canvas.size
+    pixels = canvas.load()
+
+    def outside(x, y):
+        r, g, b, a = pixels[x, y]
+        return a == 0 or (r + g + b) // 3 < REPUTATION_BAR_FRAME_OUTLINE
+
+    seen = set()
+    stack = [(x, y) for x in range(width) for y in (0, height - 1)]
+    stack += [(x, y) for y in range(height) for x in (0, width - 1)]
+    cleared = 0
+    while stack:
+        x, y = stack.pop()
+        if (x, y) in seen or not (0 <= x < width and 0 <= y < height):
+            continue
+        seen.add((x, y))
+        if not outside(x, y):
+            continue
+        if pixels[x, y][3] != 0:
+            pixels[x, y] = (0, 0, 0, 0)
+            cleared += 1
+        stack.extend(((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)))
+
+    dst = os.path.join(dest_root, REPUTATION_BAR_FRAME.replace("/", os.sep) + ".tga")
+    size = write_rle_tga(canvas, dst)
+    canvas.close()
+    print("%-34s %-9s Retail reputation (%d corner texels cleared)"
+          % (REPUTATION_BAR_FRAME, "%dx%d" % size, cleared))
+    return {
+        "dest": REPUTATION_BAR_FRAME + ".tga",
+        "size": "%dx%d" % size,
+        "supplied": source.split("/")[-1],
+        "note": "Blizzard Retail (The War Within) BlizzardInterfaceArt "
+                "`Interface/%s`: ReputationBarTemplate's LeftTexture (pixels "
+                "L=196 R=256 T=3 B=18) and RightTexture (L=0 R=39 T=25 B=40) "
+                "assembled side by side, 99x15 at (1, 1) of a transparent "
+                "128x32 canvas; the %d near-black texels outside the frame's "
+                "rounded outline cleared (flood fill from the canvas edge, "
+                "luminance < %d), so neither they nor the neighbouring atlas "
+                "rows show round the rim (user request, 2026-09-29). Outline "
+                "and inside unchanged. Drawn by the Character window's "
+                "Reputation page." % (source, cleared,
+                                      REPUTATION_BAR_FRAME_OUTLINE),
+    }
+
+
+def import_character_reputation(dest_root):
+    """Copy the Reputation page's Retail art; returns attribution rows."""
+    rows = []
+    for dest_name, source, crop, note in CHARACTER_REPUTATION_ART:
+        src = os.path.join(RETAIL_ART_ROOT, source.replace("/", os.sep))
+        if not os.path.isfile(src):
+            raise IOError("Reputation source missing: %s" % src)
+        dst = os.path.join(dest_root, dest_name.replace("/", os.sep) + ".tga")
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        image, _ = open_source(src)
+        image = image.convert("RGBA")
+        if crop:
+            cut = image.crop(crop)
+            image.close()
+            image = Image.new("RGBA", CHARACTER_REPUTATION_CANVAS[dest_name],
+                              (0, 0, 0, 0))
+            image.paste(cut, (0, 0))
+        width, height = write_rle_tga(image, dst)
+        image.close()
+        form = "cut as noted" if crop else "whole file, pixels unchanged"
+        rows.append({
+            "dest": dest_name + ".tga",
+            "size": "%dx%d" % (width, height),
+            "supplied": source.split("/")[-1],
+            "note": "Blizzard Retail (The War Within) BlizzardInterfaceArt "
+                    "`Interface/%s`, %s; %s. Drawn by the Character window's "
+                    "Reputation page." % (source, form, note),
+        })
+        print("%-34s %-9s Retail reputation" % (dest_name, rows[-1]["size"]))
+    rows.append(build_reputation_bar_frame(dest_root))
+    return rows
+
+
 # The Character window's 3D preview (user request, 2026-09-28): Retail's
 # CharacterModelScene art (Blizzard_UIPanels_Game/Mainline/PaperDollFrame.xml
 # and CharacterFrame.xml, RetailFrameXML 12.1.0.69933) -- the Char-Inner /
@@ -1501,16 +1747,6 @@ CHARACTER_SCENE_RACES = [
     ("Scourge", "scourge", 131105), ("Tauren", "tauren", 131109),
     ("Gnome", "gnome", 455998), ("Troll", "troll", 456006),
 ]
-for _race, _dest, _fdid in CHARACTER_SCENE_RACES:
-    for _piece in range(4):
-        CHARACTER_SCENE_ART.append((
-            "ui/character/dressup/%s%d" % (_dest, _piece + 1),
-            "DRESSUPFRAME/DressUpBackground-%s%d.blp" % (_race, _piece + 1),
-            str(_fdid + _piece),
-            "piece %d of the %s background (CharacterModelFrameBackground%s)"
-            % (_piece + 1, _race,
-               ("TopLeft", "TopRight", "BotLeft", "BotRight")[_piece])))
-
 # Race backgrounds are toned so every race reads as bright as Human on screen
 # (user request, 2026-09-28: Human in game is right, Scourge near-black, Tauren
 # a little dark). Retail darkens each race by its own BackgroundOverlay alpha,
@@ -1528,6 +1764,14 @@ CHARACTER_SCENE_REFERENCE = "human"
 CHARACTER_SCENE_CROP = [(0.171875, 0.0392156862745098, 1),
                         (0, 0.0392156862745098, 0.296875),
                         (0.171875, 0, 1), (0, 0, 0.296875)]
+
+
+# The four pieces are stitched into ONE power-of-two texture per race (user
+# report, 2026-09-29: drawn as four pieces the seams showed a dark line, and
+# overlapping them distorted the art). The drawn 231x374 area of the pieces
+# sits at the canvas's top-left; core/media.lua's `background` names the
+# canvas and the crop.
+CHARACTER_SCENE_CANVAS = (256, 512)
 
 
 def character_scene_source(race, piece):
@@ -1584,10 +1828,57 @@ def tone_character_scene(image, gamma):
                                 b.point(table), a))
 
 
+def stitch_character_scene(race):
+    """The drawn part of a race's four pieces as one canvas-sized image."""
+    canvas = Image.new("RGBA", CHARACTER_SCENE_CANVAS, (0, 0, 0, 0))
+    parts = []
+    for piece in range(4):
+        image, _ = open_source(character_scene_source(race, piece))
+        image = image.convert("RGBA")
+        width, height = image.size
+        left, top, right = CHARACTER_SCENE_CROP[piece]
+        parts.append(image.crop((int(round(left * width)),
+                                 int(round(top * height)),
+                                 int(round(right * width)), height)))
+        image.close()
+    # Pieces 1/3 are the left column, 2/4 the right; 1/2 the top row.
+    canvas.paste(parts[0], (0, 0))
+    canvas.paste(parts[1], (parts[0].size[0], 0))
+    canvas.paste(parts[2], (0, parts[0].size[1]))
+    canvas.paste(parts[3], (parts[0].size[0], parts[0].size[1]))
+    return canvas
+
+
 def import_character_scene(dest_root):
     """Copy the 3D preview's Retail border and race art; returns rows."""
     rows = []
     gammas, medians = character_scene_gammas()
+    for race, dest, fdid in CHARACTER_SCENE_RACES:
+        dst = os.path.join(dest_root, "ui", "character", "dressup",
+                           dest + ".tga")
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        image = tone_character_scene(stitch_character_scene(race),
+                                     gammas[dest])
+        width, height = write_rle_tga(image, dst)
+        tone = ("pixels unchanged" if gammas[dest] == 1.0 else
+                "RGB toned by gamma %.3f (race median luminance %d brought "
+                "to Human's on-screen brightness), alpha unchanged"
+                % (gammas[dest], medians[dest]))
+        rows.append({
+            "dest": "ui/character/dressup/%s.tga" % dest,
+            "size": "%dx%d" % (width, height),
+            "supplied": "DressUpBackground-%s1..4.blp" % race,
+            "note": "Blizzard Retail (The War Within) BlizzardInterfaceArt "
+                    "`Interface/DRESSUPFRAME/DressUpBackground-%s1..4.blp`: "
+                    "FileDataIDs %d-%d, the four CharacterModelFrameBackground "
+                    "pieces cropped to the texture coordinates "
+                    "PaperDollFrame.xml draws and stitched into one image at "
+                    "the canvas's top-left (231x374 drawn), %s. Drawn by the "
+                    "Character window's 3D preview (CharacterModelScene)."
+                    % (race, fdid, fdid + 3, tone),
+        })
+        print("%-34s %-9s Retail character scene (stitched)"
+              % ("ui/character/dressup/" + dest, rows[-1]["size"]))
     for dest_name, source, fdid, members in CHARACTER_SCENE_ART:
         src = os.path.join(RETAIL_ART_ROOT, source.replace("/", os.sep))
         if not os.path.isfile(src):
@@ -1597,15 +1888,6 @@ def import_character_scene(dest_root):
         image, _ = open_source(src)
         image = image.convert("RGBA")
         conversion = "whole file, pixels unchanged"
-        if dest_name.startswith("ui/character/dressup/"):
-            race = dest_name.split("/")[-1].rstrip("1234")
-            gamma = gammas[race]
-            image = tone_character_scene(image, gamma)
-            if gamma != 1.0:
-                conversion = ("whole file, RGB toned by gamma %.3f (race "
-                              "median luminance %d brought to Human's "
-                              "on-screen brightness), alpha unchanged"
-                              % (gamma, medians[race]))
         width, height = write_rle_tga(image, dst)
         image.close()
         rows.append({
@@ -1711,6 +1993,113 @@ def write_rle_tga(image, path):
         raise ValueError(
             "RLE TGA writer did not produce the proven type-10 header: " + path)
     return image.size
+
+
+PLAYER_ARROW_SOURCE = "minimap/uiminimap2x.tga"
+PLAYER_ARROW_DEST = "minimap/uiminimap-player-arrow-frames"
+PLAYER_ARROW_BOX = (441, 238, 486, 283)
+PLAYER_ARROW_FRAMES = 64
+PLAYER_ARROW_COLUMNS = 8
+PLAYER_ARROW_CELL = 64
+
+CORPSE_ARROW_DEST = "minimap/uiminimap-corpse-arrow-frames"
+# UI-HUD-Minimap-Arrow-Guard, the gold arrow with the blue gem (user request,
+# 2026-09-30): the corpse pointer this client showed, in Retail's HD art.
+CORPSE_ARROW_BOX = (441, 363, 486, 400)
+
+
+def import_minimap_player_arrow(dest_root):
+    """Bake Retail's player-arrow cell into the client's proven atlas form."""
+    source_path = os.path.join(dest_root,
+                               PLAYER_ARROW_SOURCE.replace("/", os.sep))
+    source, _ = open_source(source_path)
+    if source.size != (512, 1024):
+        raise ValueError("unexpected uiminimap2x size %dx%d" % source.size)
+    arrow = source.convert("RGBA").crop(PLAYER_ARROW_BOX)
+    source.close()
+
+    base = Image.new("RGBA", (PLAYER_ARROW_CELL, PLAYER_ARROW_CELL),
+                     (0, 0, 0, 0))
+    offset = (PLAYER_ARROW_CELL - arrow.size[0] + 1) // 2
+    base.paste(arrow, (offset, offset))
+    arrow.close()
+
+    rows = PLAYER_ARROW_FRAMES // PLAYER_ARROW_COLUMNS
+    atlas = Image.new("RGBA",
+                      (PLAYER_ARROW_COLUMNS * PLAYER_ARROW_CELL,
+                       rows * PLAYER_ARROW_CELL), (0, 0, 0, 0))
+    for frame in range(PLAYER_ARROW_FRAMES):
+        angle = 360.0 * frame / PLAYER_ARROW_FRAMES
+        rotated = base.rotate(angle, resample=Image.BICUBIC, expand=False)
+        column = frame % PLAYER_ARROW_COLUMNS
+        row = frame // PLAYER_ARROW_COLUMNS
+        atlas.paste(rotated,
+                    (column * PLAYER_ARROW_CELL, row * PLAYER_ARROW_CELL))
+        rotated.close()
+    base.close()
+
+    destination = os.path.join(
+        dest_root, PLAYER_ARROW_DEST.replace("/", os.sep) + ".tga")
+    width, height = write_rle_tga(atlas, destination)
+    atlas.close()
+    return {
+        "dest": PLAYER_ARROW_DEST + ".tga",
+        "size": "%dx%d" % (width, height),
+        "supplied": "minimap/uiminimap2x.tga",
+        "note": "64 counter-clockwise directions baked from Blizzard "
+                "Retail's exact 45x45 `UI-HUD-Minimap-Arrow-Player` member. "
+                "The source is centred unchanged in each 64x64 cell; rotation "
+                "is pre-rendered because this client breaks rotated Texture "
+                "UVs. Drawn on both maps under every theme.",
+    }
+
+
+def import_minimap_corpse_arrow(dest_root):
+    """Bake Retail's gold guide-arrow cell into the client's atlas form."""
+    source_path = os.path.join(dest_root,
+                               PLAYER_ARROW_SOURCE.replace("/", os.sep))
+    source, _ = open_source(source_path)
+    if source.size != (512, 1024):
+        raise ValueError("unexpected uiminimap2x size %dx%d" % source.size)
+    arrow = source.convert("RGBA").crop(CORPSE_ARROW_BOX)
+    source.close()
+
+    # The member is 45x37, so centre each axis on its own.
+    base = Image.new("RGBA", (PLAYER_ARROW_CELL, PLAYER_ARROW_CELL),
+                     (0, 0, 0, 0))
+    base.paste(arrow, ((PLAYER_ARROW_CELL - arrow.size[0] + 1) // 2,
+                       (PLAYER_ARROW_CELL - arrow.size[1] + 1) // 2))
+    arrow.close()
+
+    rows = PLAYER_ARROW_FRAMES // PLAYER_ARROW_COLUMNS
+    atlas = Image.new("RGBA",
+                      (PLAYER_ARROW_COLUMNS * PLAYER_ARROW_CELL,
+                       rows * PLAYER_ARROW_CELL), (0, 0, 0, 0))
+    for frame in range(PLAYER_ARROW_FRAMES):
+        angle = 360.0 * frame / PLAYER_ARROW_FRAMES
+        rotated = base.rotate(angle, resample=Image.BICUBIC, expand=False)
+        column = frame % PLAYER_ARROW_COLUMNS
+        row = frame // PLAYER_ARROW_COLUMNS
+        atlas.paste(rotated,
+                    (column * PLAYER_ARROW_CELL, row * PLAYER_ARROW_CELL))
+        rotated.close()
+    base.close()
+
+    destination = os.path.join(
+        dest_root, CORPSE_ARROW_DEST.replace("/", os.sep) + ".tga")
+    width, height = write_rle_tga(atlas, destination)
+    atlas.close()
+    return {
+        "dest": CORPSE_ARROW_DEST + ".tga",
+        "size": "%dx%d" % (width, height),
+        "supplied": "minimap/uiminimap2x.tga",
+        "note": "64 counter-clockwise directions baked from Blizzard "
+                "Retail's exact 45x37 `UI-HUD-Minimap-Arrow-Guard` member "
+                "(the gold arrow with the blue gem, by user request). "
+                "The source is centred unchanged in each 64x64 cell; rotation "
+                "is pre-rendered because this client breaks rotated Texture "
+                "UVs. Drawn on the minimap under every theme.",
+    }
 
 
 def write_attribution(dest_root, rows, user_rows):
@@ -2043,6 +2432,8 @@ def main():
         print("%-34s %-9s user-supplied, sheet crop"
               % (dest_name, user_rows[-1]["size"]))
 
+    user_rows.append(import_minimap_player_arrow(dest_root))
+    user_rows.append(import_minimap_corpse_arrow(dest_root))
     user_rows.append(import_retail_bag_indicator(dest_root))
     user_rows.append(import_retail_junk_coin(dest_root))
     user_rows.extend(import_retail_target(addons, dest_root))
@@ -2072,6 +2463,44 @@ def main_retail_target():
     return 0
 
 
+def main_minimap_player_arrow():
+    """Rebuild the Retail-derived map arrows and their attribution."""
+    dest_root = os.path.join(os.getcwd(), DEST_SUBPATH)
+    player = import_minimap_player_arrow(dest_root)
+    corpse = import_minimap_corpse_arrow(dest_root)
+    rows = [
+        {
+            "dest": "minimap/uiminimap2x.tga",
+            "size": "512x1024",
+            "supplied": "uiminimap2x.tga",
+            "note": "Blizzard Retail HD minimap atlas, FileDataID 4618666 / "
+                    "atlas 1995. Members `UI-HUD-Minimap-Arrow-Guard`: "
+                    "L=441 R=486 T=363 B=400 (45x37), and "
+                    "`UI-HUD-Minimap-Arrow-Player`: L=441 R=486 T=238 "
+                    "B=283 (45x45).",
+        },
+        player,
+        corpse,
+    ]
+    attribution = os.path.join(dest_root, "ATTRIBUTION.md")
+    with open(attribution, "r", encoding="utf-8") as handle:
+        lines = handle.read().splitlines()
+    for row in rows:
+        rendered = "| `%s` | %s | `%s` | %s |" % (
+            row["dest"], row["size"], row["supplied"], row["note"])
+        prefix = "| `%s` |" % row["dest"]
+        for index, line in enumerate(lines):
+            if line.startswith(prefix):
+                lines[index] = rendered
+                break
+        else:
+            lines.append(rendered)
+        print(rendered)
+    with open(attribution, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write("\n".join(lines) + "\n")
+    return 0
+
+
 def main_bag_indicator():
     """Re-copy only Combined Bags' Retail item-slot highlight."""
     dest_root = os.path.join(os.getcwd(), DEST_SUBPATH)
@@ -2096,10 +2525,96 @@ def main_bag_indicator():
     return 0
 
 
+# The Tracked Bars (user request, 2026-09-29): Retail's Cooldown Manager
+# sheet `interface/hud/uicooldownmanager2x`, FileDataID 6739577 (atlas 3186),
+# the HD member of CooldownViewer.xml's UI-HUD-CoolDownManager-* atlases.
+# Blizzard's file, supplied as the copy BigWigs ships in its media folder;
+# copied whole and addressed by the atlas rectangles in core/media.lua.
+COOLDOWN_MANAGER_SOURCE = os.environ.get(
+    "UNREALUI_COOLDOWN_MANAGER_BLP",
+    r"D:\Development\unrealUI_data\AishUI_Classic_FREE_v2.7.1\Interface"
+    r"\AddOns\BigWigs\Media\Textures\UICooldownManager2x.blp")
+COOLDOWN_MANAGER_DEST = "ui/cooldown-manager"
+
+
+def import_cooldown_manager(dest_root):
+    if not os.path.isfile(COOLDOWN_MANAGER_SOURCE):
+        raise IOError("Cooldown Manager source missing: %s"
+                      % COOLDOWN_MANAGER_SOURCE)
+    image, _ = open_source(COOLDOWN_MANAGER_SOURCE)
+    image = image.convert("RGBA")
+    if image.size != (512, 256):
+        raise ValueError("unexpected Cooldown Manager sheet size %dx%d"
+                         % image.size)
+    dst = os.path.join(dest_root,
+                       COOLDOWN_MANAGER_DEST.replace("/", os.sep) + ".tga")
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    width, height = write_rle_tga(image, dst)
+    image.close()
+    return {
+        "dest": COOLDOWN_MANAGER_DEST + ".tga",
+        "size": "%dx%d" % (width, height),
+        "supplied": "UICooldownManager2x.blp",
+        "note": "Blizzard Retail 12.1.0.69933 FileDataID 6739577 "
+                "(`interface/hud/uicooldownmanager2x`, atlas 3186), the whole "
+                "sheet, pixels unchanged (BLP2 raw BGRA to RLE TGA); supplied "
+                "as the copy BigWigs ships in its media folder. Members "
+                "`UI-HUD-CoolDownManager-Bar` L=175 R=423 T=41 B=61, `-Bar-BG` "
+                "L=175 R=439 T=1 B=39, `-Bar-Pip` L=175 R=195 T=63 B=155 and "
+                "`-IconOverlay` L=1 R=173 T=1 B=173 (RetailFrameXML "
+                "`query.py filedata 6739577`). Drawn by the Tracked Bars "
+                "(M.modernWow.trackedBars).",
+    }
+
+
+def main_cooldown_manager():
+    """Import only the Cooldown Manager sheet and upsert its attribution row."""
+    dest_root = os.path.join(os.getcwd(), DEST_SUBPATH)
+    row = import_cooldown_manager(dest_root)
+    attribution = os.path.join(dest_root, "ATTRIBUTION.md")
+    rendered = "| `%s` | %s | `%s` | %s |" % (
+        row["dest"], row["size"], row["supplied"], row["note"])
+    with open(attribution, "r", encoding="utf-8") as handle:
+        lines = handle.read().splitlines()
+    prefix = "| `%s` |" % row["dest"]
+    for index, line in enumerate(lines):
+        if line.startswith(prefix):
+            lines[index] = rendered
+            break
+    else:
+        lines.append(rendered)
+    with open(attribution, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write("\n".join(lines) + "\n")
+    print(rendered)
+    return 0
+
+
 def main_junk_coin():
     """Re-cut only Retail's bags-junkcoin and upsert its attribution row."""
     dest_root = os.path.join(os.getcwd(), DEST_SUBPATH)
     row = import_retail_junk_coin(dest_root)
+    attribution = os.path.join(dest_root, "ATTRIBUTION.md")
+    rendered = "| `%s` | %s | `%s` | %s |" % (
+        row["dest"], row["size"], row["supplied"], row["note"])
+    with open(attribution, "r", encoding="utf-8") as handle:
+        lines = handle.read().splitlines()
+    prefix = "| `%s` |" % row["dest"]
+    for index, line in enumerate(lines):
+        if line.startswith(prefix):
+            lines[index] = rendered
+            break
+    else:
+        lines.append(rendered)
+    with open(attribution, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write("\n".join(lines) + "\n")
+    print(rendered)
+    return 0
+
+
+def main_target_ring_tint():
+    """Re-derive only the target ring tint and upsert its attribution row."""
+    dest_root = os.path.join(os.getcwd(), DEST_SUBPATH)
+    row = import_target_ring_tint(dest_root)
     attribution = os.path.join(dest_root, "ATTRIBUTION.md")
     rendered = "| `%s` | %s | `%s` | %s |" % (
         row["dest"], row["size"], row["supplied"], row["note"])
@@ -2148,9 +2663,25 @@ def main_character_sidebar():
 def main_character_scene():
     """Re-copy only the 3D preview textures, as main_retail_target does."""
     dest_root = os.path.join(os.getcwd(), DEST_SUBPATH)
+    attribution = os.path.join(dest_root, "ATTRIBUTION.md")
+    with open(attribution, "r", encoding="utf-8") as handle:
+        lines = handle.read().splitlines()
+    # The pre-stitch per-piece rows no longer describe any file.
+    lines = [line for line in lines
+             if not re.match(r"\| `ui/character/dressup/[a-z]+[1-4]\.tga` \|",
+                             line)]
     for row in import_character_scene(dest_root):
-        print("| `%s` | %s | `%s` | %s |"
-              % (row["dest"], row["size"], row["supplied"], row["note"]))
+        rendered = "| `%s` | %s | `%s` | %s |" % (
+            row["dest"], row["size"], row["supplied"], row["note"])
+        prefix = "| `%s` |" % row["dest"]
+        for index, line in enumerate(lines):
+            if line.startswith(prefix):
+                lines[index] = rendered
+                break
+        else:
+            lines.append(rendered)
+    with open(attribution, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write("\n".join(lines) + "\n")
     return 0
 
 
@@ -2176,13 +2707,41 @@ def main_equipment_manager():
     return 0
 
 
+def main_character_reputation():
+    """Re-copy only the Reputation page's art and upsert its attribution rows,
+    as main_equipment_manager does."""
+    dest_root = os.path.join(os.getcwd(), DEST_SUBPATH)
+    attribution = os.path.join(dest_root, "ATTRIBUTION.md")
+    with open(attribution, "r", encoding="utf-8") as handle:
+        lines = handle.read().splitlines()
+    for row in import_character_reputation(dest_root):
+        rendered = "| `%s` | %s | `%s` | %s |" % (
+            row["dest"], row["size"], row["supplied"], row["note"])
+        prefix = "| `%s` |" % row["dest"]
+        for index, line in enumerate(lines):
+            if line.startswith(prefix):
+                lines[index] = rendered
+                break
+        else:
+            lines.append(rendered)
+    with open(attribution, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write("\n".join(lines) + "\n")
+    return 0
+
+
 if __name__ == "__main__":
+    if "--minimap-player-arrow" in sys.argv[1:]:
+        sys.exit(main_minimap_player_arrow())
+    if "--cooldown-manager" in sys.argv[1:]:
+        sys.exit(main_cooldown_manager())
     if "--junk-coin" in sys.argv[1:]:
         sys.exit(main_junk_coin())
     if "--bag-indicator" in sys.argv[1:]:
         sys.exit(main_bag_indicator())
     if "--retail-target" in sys.argv[1:]:
         sys.exit(main_retail_target())
+    if "--target-ring-tint" in sys.argv[1:]:
+        sys.exit(main_target_ring_tint())
     if "--character-stats" in sys.argv[1:]:
         sys.exit(main_character_stats())
     if "--character-housing" in sys.argv[1:]:
@@ -2193,4 +2752,6 @@ if __name__ == "__main__":
         sys.exit(main_character_sidebar())
     if "--equipment-manager" in sys.argv[1:]:
         sys.exit(main_equipment_manager())
+    if "--character-reputation" in sys.argv[1:]:
+        sys.exit(main_character_reputation())
     sys.exit(main())

@@ -337,6 +337,9 @@ local function BuildBar(name, fillColor, width, height)
   width = tonumber(width) or WIDTH
   height = tonumber(height) or HEIGHT
   local anchor = CreateFrame("Frame", name, UIParent)
+  -- HUD strata: under the bag windows, which draw at LOW with a high level
+  -- (U.LowerWindowBelowInterface). Set before any child is created.
+  pcall(anchor.SetFrameStrata, anchor, "LOW")
   anchor:SetWidth(width)
   anchor:SetHeight(height)
   U.CreateBackdrop(anchor, { background = M.color.healthBg })

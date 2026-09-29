@@ -29,6 +29,21 @@ pm.KINDS = {
     tipRecipe = "SetTradeSkillItem", tipReagent = "SetTradeSkillItem",
     create = "DoTradeSkill", repeatable = true,
     wheelFrames = { "TradeSkillListScrollFrame", "TradeSkillDetailScrollFrame" },
+    -- pm.HideNative. TradeSkillInputBox is not parked: hiding a native
+    -- EditBox crashed this client (knowledge.json /
+    -- frames.whoframe_editbox_touch_crashes_login). pm.MoveInputBox moves it
+    -- off-screen instead.
+    inputBox = "TradeSkillInputBox",
+    nativeFrames = {
+      "TradeSkillRankFrame", "TradeSkillExpandButtonFrame",
+      "TradeSkillHighlightFrame", "TradeSkillListScrollFrame",
+      "TradeSkillDetailScrollFrame", "TradeSkillCreateButton",
+      "TradeSkillCreateAllButton", "TradeSkillCancelButton",
+      "TradeSkillDecrementButton", "TradeSkillIncrementButton",
+      "TradeSkillSubClassDropDown", "TradeSkillInvSlotDropDown",
+      "TradeSkillFrameAvailableFilterCheckButton",
+    },
+    nativeRows = "TradeSkillSkill", nativeRowCount = "TRADE_SKILLS_DISPLAYED",
   },
   {
     id = "craft", host = "CraftFrame", close = "CraftFrameCloseButton",
@@ -41,6 +56,14 @@ pm.KINDS = {
     reagentLink = "GetCraftReagentItemLink", tipRecipe = "SetCraftSpell",
     tipReagent = "SetCraftItem", create = "DoCraft", repeatable = false,
     wheelFrames = { "CraftListScrollFrame", "CraftDetailScrollFrame" },
+    nativeFrames = {
+      "CraftRankFrame", "CraftExpandButtonFrame", "CraftHighlightFrame",
+      "CraftListScrollFrame", "CraftDetailScrollFrame", "CraftCreateButton",
+      "CraftCancelButton", "CraftFrameFilterDropDown",
+    },
+    -- FontStrings on the host itself: regions, so hidden rather than parked.
+    nativeRegions = { "CraftFramePointsLabel", "CraftFramePointsText" },
+    nativeRows = "Craft", nativeRowCount = "CRAFTS_DISPLAYED",
   },
 }
 
@@ -70,6 +93,52 @@ function pm.MuteNativeWheel(kind)
   for i = 1, table.getn(names) do
     local frame = U.G(names[i])
     if frame then pcall(frame.EnableMouseWheel, frame, false) end
+  end
+end
+
+-- The window's backgrounds are translucent (M.professions panelColor and
+-- insetColor), so the native window's own children showed through them (user
+-- report, 2026-09-29). SetAlpha(0) on them did not work: an interface
+-- snapshot read every child back at alpha 0 while it still drew, because a
+-- parent's alpha does not reach its regions here (knowledge.json /
+-- rendering.parent_alpha_not_propagated). They are parked instead, by global
+-- name, in a hidden addon frame -- the mechanism the Reputation page uses
+-- (modules/characterreputation.lua). Nothing is unregistered, script-replaced
+-- or walked, so the native update keeps running and the addon's calls into
+-- it still work. The names were read back from TradeSkillFrame by
+-- `/urp interface` (2026-09-29); the Craft ones are WORKING_SOURCE from
+-- UnrealPfUI's professions skin, and a name that does not resolve is skipped.
+function pm.HideNative(win)
+  local kind = win.kind
+  if not win.nativeParked then
+    local ok, vault = pcall(CreateFrame, "Frame", nil, UIParent)
+    if not ok or not vault then return end
+    pcall(vault.Hide, vault)
+    local names = {}
+    local i
+    for i = 1, table.getn(kind.nativeFrames or {}) do
+      table.insert(names, kind.nativeFrames[i])
+    end
+    if kind.nativeRows then
+      local count = tonumber(U.G(kind.nativeRowCount)) or 8
+      for i = 1, count do table.insert(names, kind.nativeRows .. i) end
+    end
+    for i = 1, table.getn(names) do
+      local object = U.G(names[i])
+      if object and type(object.SetParent) == "function" then
+        pcall(object.SetParent, object, vault)
+      end
+    end
+    win.nativeVault = vault
+    win.nativeParked = true
+  end
+  -- Host regions cannot be parked; a native update may show them again, so
+  -- they are hidden on every refresh.
+  local regions = kind.nativeRegions or {}
+  local i
+  for i = 1, table.getn(regions) do
+    local region = U.G(regions[i])
+    if region then pcall(region.Hide, region) end
   end
 end
 
@@ -246,7 +315,28 @@ function pm.LinkClick(win, reagentIndex)
 end
 
 function pm.Queue(win)
-  U.DeferOnce(win.key, function() pm.Refresh(win) end)
+  U.DeferOnce(win.key, function()
+    pm.Refresh(win)
+    pm.MoveInputBox(win)
+  end)
+end
+
+-- The native count EditBox still drew through the translucent window (user
+-- screenshot, 2026-09-29). It is only re-anchored off-screen: ClearAllPoints
+-- and SetPoint, from this deferred pass after the window is shown, is the one
+-- EditBox operation this client has survived (knowledge.json /
+-- frames.whoframe_editbox_touch_crashes_login, USER_CONFIRMED_INGAME for
+-- WhoFrameEditBox). It is never hidden, reparented, focused, hooked or
+-- restyled. Once per session: nothing native re-anchors it.
+function pm.MoveInputBox(win)
+  if win.inputMoved or not win.kind.inputBox or not pm.Shown(win.frame) then return end
+  local box = U.G(win.kind.inputBox)
+  if not box then return end
+  win.inputMoved = true
+  pcall(function()
+    box:ClearAllPoints()
+    box:SetPoint("TOPRIGHT", UIParent, "BOTTOMLEFT", -200, -200)
+  end)
 end
 
 -- Recipe filters, stored per profile. Read on every refresh rather than
@@ -972,18 +1062,74 @@ end
 function pm.BuildStats(win)
   local t, st = pm.Token(), pm.Token().stats
   local panel = U.CreatePanel(win.detail, {
-    width = st.width, height = 40, background = t.panelColor,
+    width = st.minWidth, height = 40, background = t.panelColor,
   })
   if not panel then return end
+  -- Placed under the reagents on every fill (pm.PlaceStats), below the game
+  -- settings window's fading Options_HorizontalDivider -- the same layout as
+  -- the modern-wow window (user request, 2026-09-29) -- drawn through that
+  -- window's export so this module never reads M.foreverWow.
   pcall(function()
     panel:SetFrameLevel(pm.Level(win.detail) + st.level)
     panel:EnableMouse(false)
-    panel:SetPoint("TOPRIGHT", win.detail, "TOPRIGHT", -st.right, -st.top)
     panel:Hide()
   end)
   U.SetBorderColor(panel, M.Unpack(M.color.border))
   win.stats = panel
   win.statsLines = {}
+  local gs = U.gameSettings
+  if gs and type(gs.CreateDivider) == "function" then
+    local ok, divider = pcall(gs.CreateDivider, win.detail)
+    if ok and divider then
+      pcall(divider.SetWidth, divider, pm.StatsWidth(win))
+      pcall(divider.Hide, divider)
+      win.statsDivider = divider
+    end
+  end
+end
+
+-- The detail pane's text width, inset to inset: the divider's width and the
+-- stat panel's widest.
+function pm.StatsWidth(win)
+  return win.detailWidth - pm.Token().detail.inset * 2
+end
+
+-- Divider `dividerGap` under the last reagent row, on the pane's text inset;
+-- the panel `dividerGap` under it, right-aligned on the divider's right end.
+-- Reagent rows sit at fixed offsets (pm.BuildDetail), so the depth is summed.
+function pm.PlaceStats(win, numReagents)
+  local d, st = pm.Token().detail, pm.Token().stats
+  local shown = math.min(tonumber(numReagents) or 0, d.maxReagents)
+  local rows = math.ceil(shown / d.reagentColumns)
+  local y = d.reagentTop + rows * d.reagentRow + st.dividerGap
+  pcall(function()
+    if win.statsDivider then
+      win.statsDivider:ClearAllPoints()
+      win.statsDivider:SetPoint("TOPLEFT", win.detail, "TOPLEFT", d.inset, -y)
+      if win.stats then
+        win.stats:ClearAllPoints()
+        win.stats:SetPoint("TOPRIGHT", win.statsDivider, "BOTTOMRIGHT", 0, -st.dividerGap)
+      end
+    elseif win.stats then
+      win.stats:ClearAllPoints()
+      win.stats:SetPoint("TOPRIGHT", win.detail, "TOPRIGHT", -d.inset, -y)
+    end
+  end)
+end
+
+-- A never-widthed copy of the stat line font, used only to measure text
+-- (knowledge.json / widgets.fontstring_stringwidth_clamped_by_setwidth).
+-- Transparent rather than hidden, so it measures as a drawn string does.
+function pm.StatsMeasure(win)
+  if win.statsMeasure then return win.statsMeasure end
+  local label = pm.Label(win.stats, M.fontSize.normal, M.color.text, "LEFT",
+                         "GameFontHighlight")
+  if label then
+    pcall(label.SetPoint, label, "TOPLEFT", win.stats, "TOPLEFT", 0, 0)
+    pcall(label.SetTextColor, label, 1, 1, 1, 0)
+  end
+  win.statsMeasure = label
+  return label
 end
 
 function pm.StatsLine(win, index)
@@ -999,9 +1145,11 @@ function pm.StatsLine(win, index)
   return line
 end
 
-function pm.SetHeaderSpace(win, statsShown)
-  local d, st = pm.Token().detail, pm.Token().stats
-  local right = statsShown and (st.right + st.width + st.nameGap) or d.inset
+-- The stat panel sits under the reagents, so the header always runs to the
+-- pane's right inset.
+function pm.SetHeaderSpace(win)
+  local d = pm.Token().detail
+  local right = d.inset
   local left = d.inset + d.icon + d.nameGap
   local width = math.max(1, win.detailWidth - left - right)
   if win.name then
@@ -1027,7 +1175,8 @@ function pm.FillStats(win, entry)
     pm.SetShown(win.statsLines[i].right, false)
   end
   pm.SetShown(panel, count > 0)
-  pm.SetHeaderSpace(win, count > 0)
+  pm.SetShown(win.statsDivider, count > 0)
+  pm.SetHeaderSpace(win)
   if count == 0 then return end
 
   -- Native refreshes can reorder child levels. Reassert the explicit overlay
@@ -1035,8 +1184,12 @@ function pm.FillStats(win, entry)
   pcall(panel.SetFrameLevel, panel, pm.Level(win.detail) + st.level)
   U.SetBorderColor(panel, M.Unpack(M.color.border))
 
-  local inner = st.width - st.padding * 2
-  local total, previous = 0, nil
+  -- As wide as its longest line needs, up to the pane's text width, where
+  -- longer lines wrap. The recycled lines carry a width and would measure
+  -- clamped to it, so each left text is measured on `win.statsMeasure`; the
+  -- right column is never given a width and measures true.
+  local measure = pm.StatsMeasure(win)
+  local rightWidths, need = {}, 0
   for i = 1, count do
     local data = lines[i]
     local line = pm.StatsLine(win, i)
@@ -1047,6 +1200,21 @@ function pm.FillStats(win, entry)
       pm.SetColor(line.right, data.rightColor)
       rightWidth = pm.TextWidth(line.right) + st.columnGap
     end
+    rightWidths[i] = rightWidth
+    pm.SetText(measure, data.left or "")
+    need = math.max(need, math.ceil(pm.TextWidth(measure)) + 1 + rightWidth)
+  end
+  pm.SetText(measure, "")
+  local inner = math.min(need, pm.StatsWidth(win) - st.padding * 2)
+  local width = math.max(st.minWidth, inner + st.padding * 2)
+  inner = width - st.padding * 2
+  pcall(panel.SetWidth, panel, width)
+
+  local total, previous = 0, nil
+  for i = 1, count do
+    local data = lines[i]
+    local line = pm.StatsLine(win, i)
+    local rightWidth = rightWidths[i]
     pm.SetShown(line.left, true)
     pm.SetText(line.left, data.left or "")
     pm.SetColor(line.left, data.leftColor or M.color.text)
@@ -1150,14 +1318,17 @@ function pm.BuildDetail(win)
     pm.SetText(win.empty, U.L("PROFESSIONS_NO_RECIPES"))
   end
 
-  local columnWidth = math.floor((width - d.inset * 2 - d.reagentGap) / 2)
+  -- `reagentColumns` columns, left to right then down (user request,
+  -- 2026-09-29), as the modern-wow window lays them out.
+  local columns = d.reagentColumns
+  local columnWidth = math.floor((width - d.inset * 2 - d.reagentGap * (columns - 1)) / columns)
   local i
   for i = 1, d.maxReagents do
     local button = pm.BuildReagent(win, i)
     if button then
       pcall(button.SetWidth, button, columnWidth)
-      local column = i > d.reagentColumn and 2 or 1
-      local row = column == 1 and i or (i - d.reagentColumn)
+      local column = math.mod(i - 1, columns) + 1
+      local row = math.floor((i - 1) / columns) + 1
       local x = d.inset + (column - 1) * (columnWidth + d.reagentGap)
       local y = d.reagentTop + (row - 1) * d.reagentRow
       pcall(button.SetPoint, button, "TOPLEFT", win.detail, "TOPLEFT", x, -y)
@@ -1293,6 +1464,7 @@ function pm.FillDetail(win, entry)
     end
   end
   if entry.raw == "used" then creatable = false end
+  pm.PlaceStats(win, numReagents)
   pm.FillStats(win, entry)
   return creatable
 end
@@ -1424,6 +1596,7 @@ end
 function pm.Refresh(win)
   if not win.built or not pm.Shown(win.frame) then return end
   pm.ApplySize(win)
+  pm.HideNative(win)
   local name, rank, maxRank = pm.Line(win)
   pm.SetText(win.title, name)
   pm.SetRank(win, rank, maxRank)
@@ -1530,6 +1703,7 @@ function pm.Build(kind)
   pcall(frame.SetHitRectInsets, frame, 0, 0, 0, 0)
 
   pm.MuteNativeWheel(kind)
+  pm.HideNative(win)
   pm.BuildChrome(win)
   pm.BuildFilters(win)
   pm.BuildList(win)

@@ -178,35 +178,35 @@ function U.CreatePanel(parent, options)
   return U.CreateBackdrop(frame, options)
 end
 
--- Keep a bag-family window under the rest of the interface (user request,
--- 2026-09-21).
+-- Keep a bag-family window above the HUD and under the interface windows
+-- (user request, 2026-09-29, every theme).
 --
--- These windows used to be raised to the TOOLTIP strata so a world object's
--- tooltip could not draw over them (probe worldhover.suppression.v1: HIGH left
--- 56 of 58 samples showing the object's name, DIALOG 58 of 58, a mouse-enabled
--- cover frame 58 of 58, WorldFrame:EnableMouse(false) 58 of 58 -- only TOOLTIP
--- put the window on top, because GameTooltip lives there). The cost was that
--- the bag also covered every window, dropdown and dialog, which is the reverse
--- of what is wanted: interface windows must be on top of the bags.
+-- History: the windows were first raised to TOOLTIP so a world object's tooltip
+-- could not draw over them (probe worldhover.suppression.v1: only TOOLTIP put
+-- the window on top, because GameTooltip lives there), which covered every
+-- window and dialog. 2026-09-21 they were dropped to BACKGROUND so nothing could
+-- sit below them -- but that also put them under the HUD (unit frames, action
+-- bars, bag bar, trackers), which are all LOW.
 --
--- BACKGROUND, not LOW and not MEDIUM. Within one strata the frame level
--- decides, so only a strictly lower strata guarantees the window is under
--- everything. LOW was tried first and was not enough -- the Social window
--- still came out underneath the bag in game on 2026-09-21 -- because this
--- client's own panels are not all MEDIUM. BACKGROUND is the bottom rung, so
--- nothing on screen can end up below these windows.
+-- LOW, lifted high inside it. The HUD is LOW at low levels, so a high level
+-- draws the bag over it; the stock interface panels (character, spellbook,
+-- ...) are MEDIUM, one strata up, so they draw over the bag whatever level
+-- either has. Caveat from 2026-09-21: a LOW attempt once left the Social window
+-- under the bag "because this client's own panels are not all MEDIUM". That
+-- window is now drawn by UnrealUI's housing; if any window still comes out
+-- underneath, measure its GetFrameStrata rather than lowering this again.
 --
--- The level argument only orders the bag family against itself (the bank has
--- to stay above the carried bag's nested slot layers); it never crosses a
--- strata.
+-- The level argument orders the bag family against itself (the bank has to stay
+-- above the carried bag's nested slot layers) and above the HUD's levels; it
+-- never crosses a strata.
 --
 -- Consequences, accepted with the request: a world object's tooltip can draw
--- over these windows again, and so can any LOW element they overlap -- chat,
--- the main bar, unit frames -- which then takes the clicks over that area.
+-- over these windows again, and MEDIUM HUD (micro bar, native aura buttons)
+-- draws over them.
 function U.LowerWindowBelowInterface(frame, level)
   if not frame then return false end
 
-  local ok = pcall(frame.SetFrameStrata, frame, "BACKGROUND")
+  local ok = pcall(frame.SetFrameStrata, frame, "LOW")
   pcall(frame.SetFrameLevel, frame, level or 100)
   return ok and true or false
 end

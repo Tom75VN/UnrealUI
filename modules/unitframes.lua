@@ -923,21 +923,29 @@ local classicNative = {
   partyActive = false,
   roots = {
     { id = "player",       names = { "PlayerFrame" },
+      portraitName = "PlayerPortrait",
       auraAnchorName = "PlayerFrameHealthBar",
       auraBelowAnchorName = "PlayerFrameManaBar", auraIconScale = 0.9 },
     { id = "target",       names = { "TargetFrame" },
+      portraitName = "TargetPortrait",
       auraAnchorName = "TargetFrameHealthBar",
       auraBelowAnchorName = "TargetFrameManaBar", auraIconScale = 0.9 },
     -- The stock target-of-target is optional client UI. Keep its native art
     -- when the client actually shows it, but fall back to UnrealUI's existing
     -- compact bar when that option is off so the theme never loses the unit.
     { id = "targettarget", names = { "TargetofTargetFrame", "TargetofTarget" },
+      portraitName = "TargetofTargetPortrait",
       customFallback = true },
-    { id = "pet",          names = { "PetFrame" } },
-    { id = "party1",       names = { "PartyMemberFrame1" } },
-    { id = "party2",       names = { "PartyMemberFrame2" } },
-    { id = "party3",       names = { "PartyMemberFrame3" } },
-    { id = "party4",       names = { "PartyMemberFrame4" } },
+    { id = "pet",          names = { "PetFrame" },
+      portraitName = "PetPortrait" },
+    { id = "party1",       names = { "PartyMemberFrame1" },
+      portraitName = "PartyMemberFrame1Portrait" },
+    { id = "party2",       names = { "PartyMemberFrame2" },
+      portraitName = "PartyMemberFrame2Portrait" },
+    { id = "party3",       names = { "PartyMemberFrame3" },
+      portraitName = "PartyMemberFrame3Portrait" },
+    { id = "party4",       names = { "PartyMemberFrame4" },
+      portraitName = "PartyMemberFrame4Portrait" },
   },
 }
 
@@ -1052,6 +1060,52 @@ function classicNative.Anchor(anchor, native)
   end
 end
 
+-- User requests: the native player and target names, the target's health
+-- text and its level sit lower, each by its own number of units. One bounded
+-- read of each region's own anchor (GetPoint keeps SetPoint's Y sign,
+-- knowledge.json / frames.getpoint_y_same_sign_as_setpoint), re-applied once
+-- with the offset changed; nothing is retained and nothing polls it. A region
+-- the client cannot read is left where it is.
+classicNative.textDrops = {
+  player = { { "PlayerName", 2 }, { "PlayerLevelText", 2 } },
+  target = { { "TargetName", 2 }, { "TargetFrameHealthBarText", 2 },
+             { "TargetLevelText", 2 } },
+}
+
+function classicNative.LowerText(name, drop)
+  local region = U.G(name)
+  if not region or type(region.GetPoint) ~= "function" then return false end
+  local ok, point, relative, relativePoint, x, y = pcall(region.GetPoint, region, 1)
+  if not ok or type(point) ~= "string" then return false end
+  if type(relativePoint) ~= "string" then relativePoint = point end
+  return (pcall(region.SetPoint, region, point, relative, relativePoint,
+                tonumber(x) or 0, (tonumber(y) or 0) - drop))
+end
+
+-- A region the client has not created yet (the target's health text is absent
+-- from the 2026-08-16 global enumeration, which the stock UI builds on demand)
+-- is skipped and retried on the next call; each region is moved exactly once.
+function classicNative.LowerName(anchor, entry)
+  if anchor.uuiClassicNameLowered then return end
+  local drops = entry and classicNative.textDrops[entry.id]
+  if not drops then return end
+  local done = anchor.uuiClassicLoweredText
+  if not done then
+    done = {}
+    anchor.uuiClassicLoweredText = done
+  end
+  local pending = false
+  local i
+  for i = 1, table.getn(drops) do
+    local name = drops[i][1]
+    if not done[name] then
+      if classicNative.LowerText(name, drops[i][2]) then done[name] = true
+      else pending = true end
+    end
+  end
+  if not pending then anchor.uuiClassicNameLowered = true end
+end
+
 function classicNative.SetCustomVisuals(frame, shown)
   shown = shown and true or false
   if frame.uuiClassicCustomVisible == shown then return end
@@ -1072,8 +1126,11 @@ function classicNative.SetCustomVisuals(frame, shown)
 
   -- Hide the flat portrait fill and outline explicitly; its backdrop can remain
   -- visible behind the native Classic pet portrait after the box is hidden.
+  -- The Classic target-of-target atlas draws its own round portrait opening,
+  -- so its box never regains that square (BuildTargetTargetAtlas hid it).
   if frame.portrait and type(U.SetBackdropShown) == "function" then
-    U.SetBackdropShown(frame.portrait, shown)
+    U.SetBackdropShown(frame.portrait,
+                       shown and not frame.uuiClassicTargetTargetArt)
   end
 
   -- These state icons have their own refresh functions, all of which defer to
@@ -1234,6 +1291,7 @@ function classicNative.Bind(entry, order)
   end
 
   anchor.classicNativeFrame = native
+  classicNative.LowerName(anchor, entry)
   -- Publish only the global name. The aura module resolves the native child
   -- solely when it must write a changed point; it does not retain or poll the
   -- health-bar object for width or other geometry.
@@ -1585,8 +1643,8 @@ end
 -- 3D option is off or outside modern-wow. The call is guarded on existing at
 -- all; a client without it drops that 2D path rather than guessing.
 -- ---------------------------------------------------------------------------
-local function BuildPortraitBox(parent, size, border)
-  local box = CreateFrame("Frame", nil, parent)
+local function BuildPortraitBox(parent, size, border, clickable)
+  local box = CreateFrame(clickable and "Button" or "Frame", nil, parent)
   box:SetWidth(size)
   box:SetHeight(size)
   U.CreateBackdrop(box, { border = M.color.unitFrameBorder })
@@ -1615,7 +1673,7 @@ local function UsesClassPortrait(id)
 end
 
 -- ---------------------------------------------------------------------------
--- Optional 3D portrait (modern and modern-wow, enabled by default)
+-- Optional 3D portrait (modern and modern-wow)
 --
 -- The crash record above never isolated the failing call. UnrealPfUI
 -- (api/unitframes.lua, WORKING_SOURCE) forces 2D with the note that
@@ -1646,6 +1704,13 @@ model3d.settingKeys = {
   party = "portrait3dParty",
 }
 
+model3d.portraitKeys = {
+  player = "portraitPlayer",
+  target = "portraitTarget",
+  targettarget = "portraitTargetTarget",
+  party = "portraitParty",
+}
+
 -- Pet belongs to the player frame family, while target and target-of-target
 -- are independent. Both party members and party pets share the party family.
 function model3d.Family(frame)
@@ -1657,12 +1722,17 @@ function model3d.Family(frame)
   return nil
 end
 
--- `modern` draws the 3D portrait in a flat square; modern-wow fits it inside
--- its gold ring (modules/modernwow.lua). classic-wow hands the frames to the
--- client and has no 3D portrait.
+-- `modern` draws the portrait in a flat square; modern-wow fits it inside its
+-- gold ring, while classic-wow overlays 3D inside the native portrait opening.
 function model3d.SquareTheme()
   return type(U.GetActiveThemeStyle) == "function" and
          U.GetActiveThemeStyle() == "modern"
+end
+
+function model3d.PortraitEnabled(frame)
+  if not model3d.SquareTheme() then return true end
+  local key = model3d.portraitKeys[model3d.Family(frame)]
+  return key and U.db and U.db[key] and true or false
 end
 
 function model3d.Level(frame)
@@ -1673,12 +1743,8 @@ function model3d.Level(frame)
   if not key or not U.db or not U.db[key] then return 0 end
   if type(U.GetActiveThemeStyle) ~= "function" then return 0 end
   local style = U.GetActiveThemeStyle()
-  if style ~= "modern-wow" and style ~= "modern" then
-    local moduleId = model3d.Family(frame) == "party" and
-                     "partyframes" or "unitframes"
-    if type(U.ModernWowModuleEnabled) ~= "function" or
-       not U.ModernWowModuleEnabled(moduleId) then return 0 end
-  end
+  if style ~= "modern-wow" and style ~= "modern" and
+     style ~= "classic-wow" then return 0 end
   return level
 end
 
@@ -1694,9 +1760,129 @@ function model3d.FitSquare(box)
   pcall(model.SetPoint, model, "CENTER", box, "CENTER", 0, 0)
 end
 
+function model3d.FitClassic(box)
+  local model = box and box.uuiModel
+  local size = box and box.uuiInnerSize
+  if not model or not size then return end
+  pcall(model.ClearAllPoints, model)
+  pcall(model.SetWidth, model, size)
+  pcall(model.SetHeight, model, size)
+  pcall(model.SetPoint, model, "CENTER", box, "CENTER", 0, 0)
+end
+
+-- Classic keeps the client-owned 2D portrait. For 3D, copy the portrait's
+-- numeric offset inside its native root into an addon-owned box; never retain
+-- or anchor to the native region. The local offset remains correct while the
+-- native root is still reporting its pre-move screen position.
+function model3d.ClassicBox(frame)
+  if frame.uuiClassicPortraitModelBox then
+    return frame.uuiClassicPortraitModelBox
+  end
+  local entry = frame.uuiClassicEntry
+  local portrait = entry and entry.portraitName and U.G(entry.portraitName)
+  local native = frame.classicNativeFrame
+  if not portrait or not native then return nil end
+
+  local leftOk, left = pcall(portrait.GetLeft, portrait)
+  local topOk, top = pcall(portrait.GetTop, portrait)
+  local widthOk, width = pcall(portrait.GetWidth, portrait)
+  local heightOk, height = pcall(portrait.GetHeight, portrait)
+  local nativeLeftOk, nativeLeft = pcall(native.GetLeft, native)
+  local nativeTopOk, nativeTop = pcall(native.GetTop, native)
+  local nativeWidthOk, nativeWidth = pcall(native.GetWidth, native)
+  local nativeHeightOk, nativeHeight = pcall(native.GetHeight, native)
+  if not leftOk or not topOk or not widthOk or not heightOk or
+     not nativeLeftOk or not nativeTopOk or
+     not nativeWidthOk or not nativeHeightOk or
+     not tonumber(left) or not tonumber(top) or
+     not tonumber(width) or not tonumber(height) or
+     not tonumber(nativeLeft) or not tonumber(nativeTop) or
+     not tonumber(nativeWidth) or not tonumber(nativeHeight) or
+     width <= 0 or height <= 0 or
+     nativeWidth <= 0 or nativeHeight <= 0 then return nil end
+
+  local size = math.min(width, height) * 0.7
+  -- User request: the player and target models are 3 units larger than the
+  -- inscribed square; the other Classic frames keep it.
+  local id = frame.spec and frame.spec.id
+  if id == "player" or id == "target" then size = size + 3 end
+  local x = left + width / 2 - (nativeLeft + nativeWidth / 2)
+  local y = top - height / 2 - (nativeTop - nativeHeight / 2)
+  -- A native portrait exposes a stable TOPLEFT anchor inside its root even
+  -- while its screen coordinates still point at the stock location. Convert
+  -- that local anchor directly to a centre offset for the addon mover. First
+  -- seen on PlayerPortrait; PartyMemberFrame1Portrait then read 688 units from
+  -- its root's real position (user in-game read, 2026-09-29), which left the
+  -- party 3D model at the stock party location, so every root takes it.
+  local point, relative, relativePoint, pointX, pointY =
+    U.GetFramePoint(portrait, 1)
+  if point == "TOPLEFT" and relative == native and
+     relativePoint == "TOPLEFT" and tonumber(pointX) and tonumber(pointY) then
+    x = pointX + width / 2 - nativeWidth / 2
+    y = nativeHeight / 2 - pointY - height / 2
+  end
+
+  local box = CreateFrame("Frame", nil, frame)
+  box:SetWidth(size)
+  box:SetHeight(size)
+  box:SetPoint("CENTER", frame, "CENTER", x, y)
+  -- The model is the square inscribed in the ring's opening (size above); the
+  -- circular stone background beneath is the whole opening, so it takes the
+  -- native portrait's full diameter and fills the crescents around the model.
+  local backgroundSize = math.min(width, height)
+  local background = box:CreateTexture(nil, "BACKGROUND")
+  background:SetWidth(backgroundSize)
+  background:SetHeight(backgroundSize)
+  background:SetPoint("CENTER", box, "CENTER", 0, 0)
+  pcall(background.SetTexture, background,
+        M.modernWow.texture.portraitBackground)
+  pcall(background.SetTexCoord, background, 0, 1, 0, 1)
+  pcall(background.Hide, background)
+  box.uuiClassicPortraitBackground = background
+  box.uuiClassicPortrait = true
+  box.uuiInnerSize = size
+  local levelOk, nativeLevel = pcall(native.GetFrameLevel, native)
+  nativeLevel = levelOk and tonumber(nativeLevel) or 1
+  box.uuiClassicModelLevel = math.max(0, nativeLevel - 1)
+  pcall(box.SetFrameLevel, box, box.uuiClassicModelLevel)
+  local strataOk, nativeStrata = pcall(native.GetFrameStrata, native)
+  if strataOk and type(nativeStrata) == "string" then
+    pcall(box.SetFrameStrata, box, nativeStrata)
+    box.uuiClassicModelStrata = nativeStrata
+  end
+  frame.uuiClassicPortraitModelBox = box
+  return box
+end
+
+function model3d.MirrorClassicTarget2D(frame)
+  if not frame or not frame.spec or frame.spec.id ~= "target" then return end
+  local entry = frame.uuiClassicEntry
+  local portrait = entry and entry.portraitName and U.G(entry.portraitName)
+  if portrait then pcall(portrait.SetTexCoord, portrait, 1, 0, 0, 1) end
+end
+
+function model3d.SetClassic2DShown(frame, shown)
+  local entry = frame and frame.uuiClassicEntry
+  local portrait = entry and entry.portraitName and U.G(entry.portraitName)
+  if not portrait then return end
+  if frame.uuiClassicPortraitAlpha == nil then
+    local ok, alpha = pcall(portrait.GetAlpha, portrait)
+    frame.uuiClassicPortraitAlpha = ok and tonumber(alpha) or 1
+  end
+  pcall(portrait.SetAlpha, portrait,
+        shown and frame.uuiClassicPortraitAlpha or 0)
+end
+
+function model3d.SetClassicBackgroundShown(box, shown)
+  local background = box and box.uuiClassicPortraitBackground
+  if not background then return end
+  if shown then pcall(background.Show, background)
+  else pcall(background.Hide, background) end
+end
+
 -- Only the real party-member rows carry rangeCheck. When one leaves object
--- range, its configured 3D portrait deliberately falls back to the 2D unit
--- portrait instead of leaving the static stone bed behind.
+-- range, its configured 3D portrait is not shown; RefreshPortrait then falls
+-- back to the 2D unit portrait, as for any party member without a model.
 function model3d.Use2DOutOfRange(frame)
   return frame and frame.spec and frame.spec.rangeCheck and frame.data and
          frame.data.outOfRange and true or false
@@ -1734,14 +1920,22 @@ function model3d.Refresh(frame, box)
   end
 
   if not model then
-    local fit = model3d.SquareTheme() and model3d.FitSquare or
-                U.ModernWowFitPortraitModel
+    local fit = (box.uuiClassicPortrait or box.uuiClassicFallbackPortrait) and
+                model3d.FitClassic or
+                (model3d.SquareTheme() and model3d.FitSquare or
+                 U.ModernWowFitPortraitModel)
     if type(fit) ~= "function" then return end
     local ok, created = pcall(CreateFrame, "PlayerModel", nil, box)
     if not ok or not created then return end
     model = created
     box.uuiModel = model
     fit(box)
+    if box.uuiClassicPortrait then
+      pcall(model.SetFrameLevel, model, box.uuiClassicModelLevel or 0)
+      if box.uuiClassicModelStrata then
+        pcall(model.SetFrameStrata, model, box.uuiClassicModelStrata)
+      end
+    end
   end
 
   pcall(model.Show, model)
@@ -1795,30 +1989,45 @@ end
 -- Empty mover shells and disabled frames do not reach RefreshPortrait. Hide
 -- their model explicitly so a unit that left the slot cannot remain visible
 -- when edit mode deliberately keeps the otherwise-empty frame on screen.
-function model3d.Hide(frame)
-  local box = frame and frame.portrait
+function model3d.HideBox(box)
   local model = box and box.uuiModel
+  model3d.SetClassicBackgroundShown(box, false)
   if not model then return end
   pcall(model.Hide, model)
   model.uuiKey = nil
   model.uuiCalls = nil
 end
 
--- The `modern` path. A box built only for the 3D portrait (uuiSquare3D) sits
--- outside the frame's left edge and is shown only while its family's option is
--- on, so toggling it never moves the bars, auras, combo strip or mover rect.
+function model3d.Hide(frame)
+  if not frame then return end
+  model3d.HideBox(frame.portrait)
+  if frame.uuiClassicPortraitModelBox ~= frame.portrait then
+    model3d.HideBox(frame.uuiClassicPortraitModelBox)
+  end
+  if frame.classicNative then model3d.SetClassic2DShown(frame, true) end
+end
+
+-- The `modern` path. Its optional portrait box sits outside the frame and can
+-- show either the 2D snapshot or the 3D model, so toggling visibility never
+-- moves the bars, auras, combo strip or mover rect.
 -- The pet's own 2D portrait box hosts the model in place. While the model is
 -- shown the flat backdrop is the bed beneath it -- no stone art under this
 -- theme. A unit the model cannot show (coverage level, not visible, distant
 -- party member) falls through to the 2D snapshot in the same square.
 -- Returns true when this refresh is finished.
 function model3d.RefreshSquare(frame, box)
-  local enabled = model3d.Level(frame) > 0
+  local visible = model3d.PortraitEnabled(frame)
   if box.uuiSquare3D then
-    if enabled then pcall(box.Show, box) else pcall(box.Hide, box) end
+    if visible then pcall(box.Show, box) else pcall(box.Hide, box) end
+  end
+
+  if not visible then
+    model3d.Hide(frame)
+    return true
   end
 
   if model3d.Refresh(frame, box) then
+    pcall(box.icon.Hide, box.icon)
     if not box.uuiPortraitCleared then
       pcall(box.icon.SetTexture, box.icon, "")
       box.uuiPortraitCleared = true
@@ -1828,36 +2037,53 @@ function model3d.RefreshSquare(frame, box)
     return true
   end
 
+  pcall(box.icon.Show, box.icon)
   if box.uuiPortraitCleared then
     box.uuiPortraitCleared = nil
     frame.uuiPortraitKey = nil
     frame.uuiPortraitPaints = nil
   end
-  return box.uuiSquare3D and not enabled
+  return false
 end
 
 local function RefreshPortrait(frame)
-  -- Native Classic frames own their own portraits. The target-of-target atlas
-  -- is the exception: its PlayerFrame art is addon-owned and only provides the
-  -- portrait opening, so UnrealUI must still paint the target-of-target unit
-  -- into the texture beneath that art.
-  if frame.classicNative and not frame.uuiClassicTargetTargetArt then return end
+  -- Classic keeps the native 2D portrait and overlays an addon-owned 3D model
+  -- only when selected. The target-of-target fallback continues through the
+  -- addon portrait path when the optional native child is not shown.
+  if frame.classicNative then
+    classicNative.LowerName(frame, frame.uuiClassicEntry)
+    if classicNative.NativeShown(frame) then
+      model3d.MirrorClassicTarget2D(frame)
+      local classicBox = model3d.ClassicBox(frame)
+      local shown3d = classicBox and model3d.Refresh(frame, classicBox)
+      model3d.SetClassicBackgroundShown(classicBox, shown3d)
+      model3d.SetClassic2DShown(frame, not shown3d)
+      return
+    end
+    model3d.SetClassic2DShown(frame, true)
+    model3d.HideBox(frame.uuiClassicPortraitModelBox)
+    if not frame.uuiClassicTargetTargetArt then return end
+  end
   local box = frame.portrait
   if not box or not box.icon then return end
   -- `modern` owns its square path; the ring/stone block below is modern-wow's.
   local square = model3d.SquareTheme()
   if square and model3d.RefreshSquare(frame, box) then return end
   local portrait3d = not square and model3d.Level(frame) > 0
-  local party2d = portrait3d and model3d.Use2DOutOfRange(frame)
-  if not square then model3d.Refresh(frame, box) end
+  local shown3d = not square and model3d.Refresh(frame, box)
+  -- A party member the model cannot show -- offline, out of sight, out of
+  -- range, or excluded by the coverage level -- takes the 2D portrait rather
+  -- than an empty stone bed (user request, 2026-09-29).
+  local party2d = portrait3d and not shown3d and
+                  model3d.Family(frame) == "party"
 
   -- A configured 3D portrait normally owns the whole portrait bed. The
   -- supplied stone circle replaces the unit snapshot beneath the model;
   -- returning here guarantees SetPortraitTexture cannot put the 2D unit
-  -- portrait under it. A distant party member is the deliberate exception and
-  -- continues into the 2D path below. Reset the snapshot cache so either that
-  -- range transition or switching the family back to 2D repaints immediately
-  -- even when the unit identity has not changed.
+  -- portrait under it. A party member without a model is the deliberate
+  -- exception and continues into the 2D path below. Reset the snapshot cache
+  -- so that transition or switching the family back to 2D repaints
+  -- immediately even when the unit identity has not changed.
   if portrait3d and not party2d then
     if not box.uuiPortraitBackground then
       pcall(box.icon.SetTexture, box.icon,
@@ -1912,6 +2138,25 @@ local function RefreshPortrait(frame)
 
     frame.uuiPortraitPaints = paints + 1
     pcall(setPortrait, box.icon, frame.unit)
+    -- SetPortraitTexture paints a circular portrait into its square canvas.
+    -- Modern crops to the largest safe centre square so that circular edge is
+    -- outside the visible box; the other themes keep the native round crop.
+    if square then
+      local crop = box.uuiSquareCrop or 0.21
+      if box.uuiSquareRight then
+        pcall(box.icon.SetTexCoord, box.icon,
+              1 - crop, crop, crop, 1 - crop)
+      else
+        pcall(box.icon.SetTexCoord, box.icon,
+              crop, 1 - crop, crop, 1 - crop)
+      end
+    elseif frame.spec and frame.spec.id == "target" then
+      -- The target portrait sits on the right and is flipped to face inward,
+      -- under modern-wow too, whose Retail target carries its ring on the
+      -- right: every unit, the player and other players included (user
+      -- request, 2026-09-29).
+      pcall(box.icon.SetTexCoord, box.icon, 1, 0, 0, 1)
+    end
     return
   end
 
@@ -1934,7 +2179,13 @@ local function RefreshPortrait(frame)
     return
   end
   pcall(box.icon.SetTexture, box.icon, M.modernWow.texture.classPortraits)
-  pcall(box.icon.SetTexCoord, box.icon, cell[1], cell[2], cell[3], cell[4])
+  if frame.spec and frame.spec.id == "target" then
+    pcall(box.icon.SetTexCoord, box.icon,
+          cell[2], cell[1], cell[3], cell[4])
+  else
+    pcall(box.icon.SetTexCoord, box.icon,
+          cell[1], cell[2], cell[3], cell[4])
+  end
 end
 
 -- ---------------------------------------------------------------------------
@@ -2403,7 +2654,7 @@ end
 -- RefreshPortrait in the same refresh.
 function classSkin.PortraitShown(frame)
   local box = frame.portrait
-  return box and box.uuiSquare3D and model3d.Level(frame) > 0 and true or false
+  return box and box.uuiSquare3D and model3d.PortraitEnabled(frame) and true or false
 end
 
 -- Builds the eight slices once. Nothing here is rebuilt on a classification
@@ -2656,6 +2907,9 @@ local function BuildFrame(spec, parent)
   -- _handle records Button as the widget type this client reliably routes mouse
   -- input to, and the frame needs clicks anyway.
   local frame = CreateFrame("Button", "UnrealUIUnit" .. spec.name, parent or UIParent)
+  frame.unit = spec.unit
+  frame.spec = spec
+  frame.data = {}
   -- Unit frames are HUD elements, never modal/interface chrome.  Explicitly
   -- keep them below native windows such as the help and GM-assistance panels;
   -- SetFrameStrata also carries this layer to the frame's bar children.
@@ -2691,17 +2945,14 @@ local function BuildFrame(spec, parent)
     wantsPortrait = U.ModernWowWantsPortrait(spec.id)
   end
 
+  local squarePortrait = model3d.SquareTheme() and model3d.Family(frame)
   local classPortrait = UsesClassPortrait(spec.id)
-  local hasPortrait = wantsPortrait and
+  local hasPortrait = not squarePortrait and wantsPortrait and
                       (ResolveApiFn("SetPortraitTexture") ~= nil or classPortrait)
   local barOffsetX = hasPortrait and (portraitSize - border) or 0
 
   frame:SetWidth(FrameWidth(spec) + barOffsetX)
   frame:SetHeight(FrameHeight(spec))
-  frame.unit = spec.unit
-  frame.spec = spec
-  frame.data = {}
-
   if hasPortrait then
     frame.portrait = BuildPortraitBox(frame, portraitSize, border)
     frame.portrait:SetPoint("TOPLEFT", frame, "TOPLEFT", 0, 0)
@@ -2709,14 +2960,17 @@ local function BuildFrame(spec, parent)
     -- this to know the square chrome has to come off: the class art is a
     -- circle, so the box's outline and fill would draw a square behind it.
     frame.portrait.uuiClassPortrait = classPortrait or nil
+    frame.portrait.uuiClassicFallbackPortrait = classicTargetTarget or nil
     if spec.happiness then BuildHappinessIndicator(frame, border) end
-  elseif model3d.SquareTheme() and model3d.Family(frame) then
-    -- `modern`'s optional 3D portrait for a frame with no portrait of its own:
-    -- a square of the bar stack's height hung outside the left edge, sharing
+  elseif squarePortrait then
+    -- `modern`'s optional portrait for every frame family: a 2D snapshot or
+    -- live 3D model in a square hung outside the bar stack. Keeping it outside
+    -- lets the visibility switch work live without moving the bars or mover.
+    -- The square matches the bar stack's height and shares
     -- one border unit with it. Outside rather than widening the frame, so the
     -- per-family switch can show or hide it live (model3d.RefreshSquare)
     -- without re-laying out bars, auras, the combo strip or the mover rect.
-    local box = BuildPortraitBox(frame, portraitSize, border)
+    local box = BuildPortraitBox(frame, portraitSize, border, true)
     -- The target faces the player frame, so its portrait mirrors to the
     -- outer (right) side of the bars; every other family keeps the left.
     if spec.id == "target" then
@@ -2726,8 +2980,14 @@ local function BuildFrame(spec, parent)
       box:SetPoint("TOPRIGHT", frame, "TOPLEFT", border, 0)
     end
     box.uuiSquare3D = true
+    -- Keep target-of-target at the bar stack's 20px height. Its tighter crop
+    -- makes the subject appear about 2px larger without extending the box.
+    if spec.id == "targettarget" then
+      box.uuiSquareCrop = 0.13
+    end
     box:Hide()
     frame.portrait = box
+    if spec.happiness then BuildHappinessIndicator(frame, border) end
   end
 
   -- Each bar starts on the colour it will normally carry, so a frame is never
@@ -5297,10 +5557,30 @@ function U.GetPortrait3D(family)
   return key and U.db and U.db[key] and true or false
 end
 
+function U.GetPortraitEnabled(family)
+  local key = model3d.portraitKeys[family]
+  return key and U.db and U.db[key] and true or false
+end
+
+function U.SetPortraitEnabled(family, value)
+  local key = model3d.portraitKeys[family]
+  if not key or not U.db or not model3d.SquareTheme() then return false end
+  U.db[key] = value and true or false
+  RefreshAll()
+  if type(U.RefreshUnitFrameSettingsViews) == "function" then
+    U.RefreshUnitFrameSettingsViews()
+  end
+  return true
+end
+
 function U.SetPortrait3D(family, value)
   local key = model3d.settingKeys[family]
   if not key or not U.db then return false end
   U.db[key] = value and true or false
+  -- The family checkbox is the normal user-facing control. Enabling it must
+  -- not remain silently blocked by a coverage level previously lowered with
+  -- the diagnostic slash command.
+  if value then U.db.portrait3d = 3 end
   RefreshAll()
   if type(U.RefreshUnitFrameSettingsViews) == "function" then
     U.RefreshUnitFrameSettingsViews()
@@ -5329,6 +5609,40 @@ local function BuildUnitFrameGeneralSettings(parent, y, width)
   })
   table.insert(widgets, portraitHeader)
 
+  local modernPortraits = model3d.SquareTheme()
+  local portraitPlayer, portraitTarget, portraitTargetTarget, portraitParty
+  if modernPortraits then
+    local specs = {
+      { "Player", "UF_PORTRAIT_PLAYER", "player", 0 },
+      { "Target", "UF_PORTRAIT_TARGET", "target", 1 },
+      { "TargetTarget", "UF_PORTRAIT_TARGET_TARGET", "targettarget", 2 },
+      { "Party", "UF_PORTRAIT_PARTY", "party", 3 },
+    }
+    local controls = {}
+    local i
+    for i = 1, table.getn(specs) do
+      local entry = specs[i]
+      local family = entry[3]
+      local control = U.CreateCheckbox(parent, {
+        name = "UnrealUISettingsPortrait" .. entry[1],
+        text = U.L(entry[2]),
+        textWidth = 214,
+        value = U.GetPortraitEnabled(family),
+        onChange = function(value)
+          U.SetPortraitEnabled(family, value)
+        end,
+      })
+      control.SetPoint("TOPLEFT", parent, "TOPLEFT", 0,
+                       y - 26 - entry[4] * 24)
+      controls[family] = control
+      table.insert(widgets, control)
+    end
+    portraitPlayer = controls.player
+    portraitTarget = controls.target
+    portraitTargetTarget = controls.targettarget
+    portraitParty = controls.party
+  end
+
   local portrait3dPlayer = U.CreateCheckbox(parent, {
     name = "UnrealUISettingsPortrait3DPlayer",
     text = U.L("UF_PORTRAIT_3D_PLAYER"),
@@ -5338,7 +5652,8 @@ local function BuildUnitFrameGeneralSettings(parent, y, width)
       U.SetPortrait3D("player", value)
     end,
   })
-  portrait3dPlayer.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, y - 26)
+  portrait3dPlayer.SetPoint("TOPLEFT", parent, "TOPLEFT",
+                            modernPortraits and 240 or 0, y - 26)
   table.insert(widgets, portrait3dPlayer)
 
   local portrait3dTarget = U.CreateCheckbox(parent, {
@@ -5350,7 +5665,8 @@ local function BuildUnitFrameGeneralSettings(parent, y, width)
       U.SetPortrait3D("target", value)
     end,
   })
-  portrait3dTarget.SetPoint("TOPLEFT", parent, "TOPLEFT", 240, y - 26)
+  portrait3dTarget.SetPoint("TOPLEFT", parent, "TOPLEFT", 240,
+                            y - (modernPortraits and 50 or 26))
   table.insert(widgets, portrait3dTarget)
 
   local portrait3dTargetTarget = U.CreateCheckbox(parent, {
@@ -5362,7 +5678,8 @@ local function BuildUnitFrameGeneralSettings(parent, y, width)
       U.SetPortrait3D("targettarget", value)
     end,
   })
-  portrait3dTargetTarget.SetPoint("TOPLEFT", parent, "TOPLEFT", 240, y - 50)
+  portrait3dTargetTarget.SetPoint("TOPLEFT", parent, "TOPLEFT", 240,
+                                  y - (modernPortraits and 74 or 50))
   table.insert(widgets, portrait3dTargetTarget)
 
   local portrait3dParty = U.CreateCheckbox(parent, {
@@ -5373,7 +5690,9 @@ local function BuildUnitFrameGeneralSettings(parent, y, width)
       U.SetPortrait3D("party", value)
     end,
   })
-  portrait3dParty.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, y - 50)
+  portrait3dParty.SetPoint("TOPLEFT", parent, "TOPLEFT",
+                           modernPortraits and 240 or 0,
+                           y - (modernPortraits and 98 or 50))
   table.insert(widgets, portrait3dParty)
 
   local portraitHint = U.CreateSettingsLabel(parent, {
@@ -5384,12 +5703,13 @@ local function BuildUnitFrameGeneralSettings(parent, y, width)
     width = width or 496,
   })
   if portraitHint then
-    U.AnchorSettingsDescription(portraitHint, portrait3dParty.box)
+    U.AnchorSettingsDescription(portraitHint,
+      modernPortraits and portraitParty.box or portrait3dParty.box)
     portraitHint:SetText(U.L("UF_PORTRAIT_3D_HINT"))
     table.insert(widgets, portraitHint)
   end
 
-  y = y - EXACT_VITALS_SECTION_HEIGHT - 24
+  y = y - (modernPortraits and 166 or EXACT_VITALS_SECTION_HEIGHT + 24)
 
   local vitalsHeader = U.CreateSectionHeader(parent, {
     text = U.L("UF_EXACT_VITALS_HEADER"),
@@ -5511,6 +5831,16 @@ local function BuildUnitFrameGeneralSettings(parent, y, width)
   end
 
   local function Refresh()
+    if modernPortraits then
+      portraitPlayer.SetValue(U.GetPortraitEnabled("player"))
+      portraitTarget.SetValue(U.GetPortraitEnabled("target"))
+      portraitTargetTarget.SetValue(U.GetPortraitEnabled("targettarget"))
+      portraitParty.SetValue(U.GetPortraitEnabled("party"))
+      portrait3dPlayer.SetEnabled(U.GetPortraitEnabled("player"))
+      portrait3dTarget.SetEnabled(U.GetPortraitEnabled("target"))
+      portrait3dTargetTarget.SetEnabled(U.GetPortraitEnabled("targettarget"))
+      portrait3dParty.SetEnabled(U.GetPortraitEnabled("party"))
+    end
     portrait3dPlayer.SetValue(U.GetPortrait3D("player"))
     portrait3dTarget.SetValue(U.GetPortrait3D("target"))
     portrait3dTargetTarget.SetValue(U.GetPortrait3D("targettarget"))
@@ -5634,11 +5964,44 @@ local function BuildUnitFrameColorSettings(parent, y, width)
     table.insert(powerPickers, picker)
   end
 
+  -- Where the Modern WoW target shows its level colour: its name and level
+  -- (the default) or its portrait ring (modules/modernwow.lua owns the
+  -- setting). Left out while no dressed target carries a ring tint, since the
+  -- switch would then do nothing.
+  local ringToggle
+  if type(U.ModernWowTargetRingAvailable) == "function" and
+     U.ModernWowTargetRingAvailable() then
+    ringToggle = U.CreateCheckbox(parent, {
+      name = "UnrealUISettingsTargetRingLevel",
+      text = U.L("UF_TARGET_RING_LEVEL"),
+      value = U.ModernWowTargetRingColor(),
+      onChange = function(value)
+        U.ModernWowSetTargetRingColor(value)
+      end,
+    })
+    ringToggle.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, y - 140)
+    table.insert(widgets, ringToggle)
+
+    local ringHint = U.CreateSettingsLabel(parent, {
+      size = M.fontSize.small,
+      color = M.color.textDim,
+      inherits = "GameFontNormalSmall",
+      justify = "LEFT",
+      width = width or 496,
+    })
+    if ringHint then
+      U.AnchorSettingsDescription(ringHint, ringToggle.box)
+      ringHint:SetText(U.L("UF_TARGET_RING_LEVEL_HINT"))
+      table.insert(widgets, ringHint)
+    end
+  end
+
   local function Refresh()
     local cfg = ColorConfig()
     healthPicker.SetValue(ColorValue("healthColor"))
     customToggle.SetValue(cfg.customColors)
     classHealthToggle.SetValue(cfg.classHealthColors)
+    if ringToggle then ringToggle.SetValue(U.ModernWowTargetRingColor()) end
 
     local n
     for n = 1, table.getn(POWER_TYPES) do
@@ -5794,6 +6157,9 @@ function UF:OnEnable()
       classicNative.HideCustomVisuals(frame)
     else
       unitMouse.Enable(frame)
+      if frame.portrait and frame.portrait.uuiSquare3D then
+        unitMouse.Enable(frame.portrait, frame.unit)
+      end
     end
   end
 

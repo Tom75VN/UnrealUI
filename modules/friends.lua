@@ -2780,8 +2780,16 @@ local function BuildFrame()
   -- FriendsFrameCloseButton is anchored to panel, whose right edge is 32px
   -- inside FriendsFrame. Reserve its full horizontal bounds so the raised
   -- header drag handle cannot steal hover/clicks from the button's upper
-  -- section (same fix as modules/character.lua's headerInset).
-  U.MakeWindowDraggable("friends", frame, { headerInset = 56 })
+  -- section (same fix as modules/character.lua's headerInset). The button is
+  -- also an interactive frame, kept above the handle and so above the Modern
+  -- WoW chrome: the Retail housing's PortraitMetal corner (OVERLAY) otherwise
+  -- drew over it, leaving an invisible but clickable close button. Same as
+  -- CharacterDragControls.
+  local close = G("FriendsFrameCloseButton")
+  U.MakeWindowDraggable("friends", frame, {
+    headerInset = 56,
+    interactiveFrames = close and { close } or nil,
+  })
 
   PlaceTitle()
   U.StyleStockCloseButton(G("FriendsFrameCloseButton"), panel, -6, -6)

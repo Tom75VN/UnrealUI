@@ -929,13 +929,26 @@ local function IntegratedPaintArrows()
   Set("ScrollDownButton", value < high - 0.5)
 end
 
+-- The scroll frame never scrolls: its child (integrated.holder) stays at
+-- vertical offset 0, and the page is scrolled by re-anchoring the sheet inside
+-- it. With SetVerticalScroll, dragging the window made the addon and Unreal
+-- Quest pages jump up and down (user report, 2026-09-29): every relayout the
+-- move triggers draws a scroll child at its UNSCROLLED position for a frame
+-- (knowledge.json / rendering.scroll_child_regions_flash_unscrolled_on_poll).
+-- The Video/Sound/Interface list never scrolled its scroll frame either, and
+-- did not flicker. The offset is in the sheet's own units, as SetPoint takes.
+function integrated.PlaceSheet(value)
+  if not integrated.sheet or not integrated.holder then return end
+  pcall(integrated.sheet.ClearAllPoints, integrated.sheet)
+  pcall(integrated.sheet.SetPoint, integrated.sheet, "TOPLEFT",
+        integrated.holder, "TOPLEFT", 0, tonumber(value) or 0)
+end
+
 local function SetIntegratedOffset(value)
   local maximum = integrated.maximum or 0
   value = math.max(0, math.min(maximum, tonumber(value) or 0))
   integrated.offset = value
-  if integrated.scroll and type(integrated.scroll.SetVerticalScroll) == "function" then
-    pcall(integrated.scroll.SetVerticalScroll, integrated.scroll, value)
-  end
+  integrated.PlaceSheet(value)
   if integrated.bar then pcall(integrated.bar.SetValue, integrated.bar, value) end
   IntegratedPaintArrows()
 end
@@ -1006,6 +1019,11 @@ local function LayoutIntegratedCanvas()
   pcall(function() height = integrated.root:GetHeight() end)
   width, height = tonumber(width) or 0, tonumber(height) or 0
   if width < 1 or height < 1 then return end
+  if integrated.holder then
+    pcall(integrated.holder.SetWidth, integrated.holder,
+          math.max(1, width - 22 - (integrated.shiftX or 0)))
+    pcall(integrated.holder.SetHeight, integrated.holder, height)
+  end
 
   local barWidth = 18
   local viewportWidth = math.max(1, width - barWidth - 4)
@@ -1066,9 +1084,16 @@ local function BuildIntegratedCanvas(parent)
   integrated.scroll:SetPoint("BOTTOMRIGHT", integrated.root, "BOTTOMRIGHT", -22, 0)
   pcall(integrated.scroll.EnableMouseWheel, integrated.scroll, true)
 
+  -- The scroll child proper: unscaled, never scrolled, sized to the view in
+  -- LayoutIntegratedCanvas. The scaled sheet rides inside it (PlaceSheet).
+  integrated.holder = CreateFrame("Frame", "UnrealUIGameSettingsUIHolder",
+                                  integrated.scroll)
+  integrated.holder:SetWidth(integrated.width)
+  integrated.holder:SetHeight(integrated.height)
+
   integrated.leftPad = IntegratedLeftPad()
   integrated.sheet = CreateFrame("Frame", "UnrealUIGameSettingsUISheet",
-                                 integrated.scroll)
+                                 integrated.holder)
   integrated.sheet:SetWidth(integrated.width + integrated.leftPad)
   integrated.sheet:SetHeight(integrated.height)
 
@@ -1078,7 +1103,8 @@ local function BuildIntegratedCanvas(parent)
   integrated.canvas:SetHeight(integrated.height)
   integrated.canvas:SetPoint("TOPLEFT", integrated.sheet, "TOPLEFT",
                              integrated.leftPad, 0)
-  pcall(integrated.scroll.SetScrollChild, integrated.scroll, integrated.sheet)
+  integrated.PlaceSheet(0)
+  pcall(integrated.scroll.SetScrollChild, integrated.scroll, integrated.holder)
 
   integrated.bar = CreateFrame("Slider", "UnrealUIGameSettingsUIBar",
                                integrated.root)
@@ -1092,9 +1118,7 @@ local function BuildIntegratedCanvas(parent)
     pcall(function() value = integrated.bar:GetValue() end)
     if math.abs((integrated.offset or 0) - value) < 0.5 then return end
     integrated.offset = value
-    if integrated.scroll and type(integrated.scroll.SetVerticalScroll) == "function" then
-      pcall(integrated.scroll.SetVerticalScroll, integrated.scroll, value)
-    end
+    integrated.PlaceSheet(value)
     IntegratedPaintArrows()
   end)
 
@@ -1166,6 +1190,7 @@ function U.ShowIntegratedSettings(parent, id, scope)
   pcall(integrated.root.SetAllPoints, integrated.root, parent)
   pcall(integrated.root.Show, integrated.root)
   pcall(integrated.scroll.Show, integrated.scroll)
+  pcall(integrated.holder.Show, integrated.holder)
   pcall(integrated.sheet.Show, integrated.sheet)
   pcall(integrated.canvas.Show, integrated.canvas)
   pcall(integrated.bar.Show, integrated.bar)
@@ -1182,6 +1207,7 @@ function U.HideIntegratedSettings()
   for i = 1, table.getn(entries) do SetListShown(entries[i].widgets, false) end
   if integrated.scroll then pcall(integrated.scroll.Hide, integrated.scroll) end
   if integrated.sheet then pcall(integrated.sheet.Hide, integrated.sheet) end
+  if integrated.holder then pcall(integrated.holder.Hide, integrated.holder) end
   if integrated.canvas then pcall(integrated.canvas.Hide, integrated.canvas) end
   if integrated.bar then pcall(integrated.bar.Hide, integrated.bar) end
   local up = U.G("UnrealUIGameSettingsUIBarScrollUpButton")

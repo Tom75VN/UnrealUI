@@ -2,7 +2,7 @@
 ## Title: |cffffffffUnreal |cfff5ae0aUI
 ## Notes: Unreal Azeroth native UI addon.
 ## Author: unrealUI
-## Version: 0.10.0
+## Version: 0.10.1
 ## X-License: MIT
 ## SavedVariables: UnrealUIDB, UnrealUIProfiles, UnrealUIDiagDB, UnrealUIPriceDB
 ## SavedVariablesPerCharacter: UnrealUIProfileDB, UnrealUIFavoriteDB, UnrealUIBankCountDB, UnrealUIBankCacheDB, UnrealUIEquipmentSetDB
@@ -107,6 +107,7 @@ modules\logout.lua
 modules\minimap.lua
 modules\durabilityframe.lua
 modules\worldmap.lua
+modules\playerarrow.lua
 modules\microbar.lua
 modules\xpbar.lua
 modules\breathbar.lua
@@ -147,6 +148,9 @@ modules\bankcount.lua
 modules\bank.lua
 modules\bankview.lua
 modules\status.lua
+# Retail-style timed player buff bars. The module owns the flat Modern and
+# Classic paths and selects the Modern WoW atlas through its registered surface.
+modules\trackedbars.lua
 
 # The Quest Log's Dragonflight design, as its own module: the page art's two
 # panes, the action-button beds, the native scroll bars in their channels, the
@@ -221,6 +225,9 @@ modules\charactersidebar.lua
 modules\equipmentsets.lua
 modules\characterflyout.lua
 modules\characterequipment.lua
+# The Reputation page's Retail list and detail window (Modern WoW only; entry
+# point called by character.lua's reputation restyle).
+modules\characterreputation.lua
 modules\inspect.lua
 modules\friends.lua
 modules\merchant.lua

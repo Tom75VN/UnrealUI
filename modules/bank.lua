@@ -1071,7 +1071,7 @@ local function Build()
 
   frame = U.CreatePanel(anchor, { name = "UnrealUIBankFrame" })
   frame:SetAllPoints(anchor)
-  -- Below every interface window (user request, 2026-09-21), and inside that
+  -- Above the HUD, below every interface window (user request, 2026-09-29), and in that
   -- strata above the carried-bag window's nested slot layers when the two
   -- overlap. core/style.lua carries the trade-off this gives up.
   U.LowerWindowBelowInterface(frame, 200)

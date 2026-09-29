@@ -155,6 +155,8 @@ end
 
 local function Build()
   anchor = CreateFrame("Frame", "UnrealUIStatusAnchor", UIParent)
+  -- HUD strata, under the bag windows (U.LowerWindowBelowInterface).
+  pcall(anchor.SetFrameStrata, anchor, "LOW")
   anchor:SetWidth(WIDTH)
   anchor:SetHeight(HEIGHT)
   U.CreateBackdrop(anchor, {
@@ -235,6 +237,8 @@ end
 
 local function BuildPopulation()
   popAnchor = CreateFrame("Frame", "UnrealUIPopulationAnchor", UIParent)
+  -- HUD strata, under the bag windows (U.LowerWindowBelowInterface).
+  pcall(popAnchor.SetFrameStrata, popAnchor, "LOW")
   popAnchor:SetWidth(POP_WIDTH)
   popAnchor:SetHeight(HEIGHT)
   U.CreateBackdrop(popAnchor, {

@@ -4,7 +4,7 @@
 -- WoW-DragonflightUI's DFProfessionFrame (XML/ProfessionFrame.xml,
 -- Mixin/ProfessionFrame.mixin.lua) rebuilt on this client for both the
 -- TradeSkill window and the Craft window (Enchanting, Beast Training). A
--- metal-framed 778x525 window with the profession icon in the portrait ring,
+-- metal-framed 655x525 window with the profession icon in the portrait ring,
 -- the profession rank bar, a recipe list with collapsible category headers on
 -- the left and the selected recipe's schematic -- icon, requirements and
 -- reagents over the profession's background art -- on the right, with Create
@@ -1616,17 +1616,19 @@ function pw.FillSchematic(win, entry)
       pw.SetText(button.label, have .. "/" .. need .. " " .. rName)
       pw.SetColor(button.label, enough and t.bodyColor or t.missingColor)
 
-      -- DF-main's layout: one column of six, the seventh and eighth beside the
-      -- fifth and sixth. The column starts under the heading; the icon keeps
-      -- its 1-unit indent while its frame overhangs to the left.
+      -- `reagentColumns` columns, left to right then down (user request,
+      -- 2026-09-29). Each row starts under the heading; the icon keeps its
+      -- 1-unit indent while its frame overhangs to the left.
       pcall(function()
         button:ClearAllPoints()
-        if i <= s.reagentColumn then
+        local columns = s.reagentColumns
+        if math.mod(i - 1, columns) == 0 then
           local _, frameHeight, overLeft = pw.ReagentGeometry()
+          local row = math.floor((i - 1) / columns)
           button:SetPoint("TOPLEFT", win.reagentLabel, "BOTTOMLEFT", 1 - overLeft,
-                          -s.reagentLabelGap - (i - 1) * (frameHeight + s.reagentSpacing))
+                          -s.reagentLabelGap - row * (frameHeight + s.reagentSpacing))
         else
-          button:SetPoint("TOPLEFT", win.reagents[i - 2], "TOPRIGHT", s.reagentGap, 0)
+          button:SetPoint("TOPLEFT", win.reagents[i - 1], "TOPRIGHT", s.reagentGap, 0)
         end
       end)
       pcall(button.Show, button)
@@ -1635,6 +1637,7 @@ function pw.FillSchematic(win, entry)
     end
   end
   if entry.raw == "used" then creatable = false end
+  pw.PlaceStats(win, numReagents)
   pw.FillStats(win, entry)
   return creatable
 end
@@ -1741,16 +1744,68 @@ function pw.DurabilityPattern()
   return pw.durabilityPattern
 end
 
+-- The form's text width, inset to inset: the divider's width and the
+-- panel's widest.
+function pw.StatsWidth()
+  local s = pw.Token().schematic
+  local width = pw.SchematicSize()
+  return width - s.inset * 2
+end
+
+-- Divider `dividerGap` under the last reagent row, left-aligned on the form's
+-- text inset; the panel `dividerGap` under it, right-aligned on the divider's
+-- right end (user request, 2026-09-29).
+function pw.PlaceStats(win, numReagents)
+  local t = pw.Token()
+  local s, st = t.schematic, t.stats
+  local anchor, x = win.reagentLabel, 1
+  local shown = math.min(tonumber(numReagents) or 0, s.maxReagents)
+  if shown > 0 then
+    local last = win.reagents[shown - math.mod(shown - 1, s.reagentColumns)]
+    if last then
+      local _, _, overLeft = pw.ReagentGeometry()
+      anchor, x = last, overLeft
+    end
+  end
+  if not anchor then return end
+  local top = anchor
+  pcall(function()
+    local point = "BOTTOMLEFT"
+    if win.statsDivider then
+      win.statsDivider:ClearAllPoints()
+      win.statsDivider:SetPoint("TOPLEFT", anchor, "BOTTOMLEFT", x, -st.dividerGap)
+      top, x, point = win.statsDivider, 0, "BOTTOMRIGHT"
+    else
+      x = x + pw.StatsWidth()
+    end
+    if win.stats then
+      win.stats:ClearAllPoints()
+      win.stats:SetPoint("TOPRIGHT", top, point, x, -st.dividerGap)
+    end
+  end)
+end
+
 function pw.BuildStats(win)
   local t = pw.Token()
   local st, tex = t.stats, t.texture
   local panel = pw.Frame("Frame", win.schematic, 2, false)
   if not panel then return end
-  -- Hangs `trackGap` under the "Track this recipe" box, so it follows the box.
-  local tr = t.track
-  pw.Place(panel, win.schematic, "TOPRIGHT", -st.right, tr.y - tr.size - st.trackGap,
-           st.width, 100)
+  -- Placed under the reagents on every fill (pw.PlaceStats), below the game
+  -- settings window's fading Options_HorizontalDivider (user request,
+  -- 2026-09-29), drawn through that window's export so this module never
+  -- reads M.foreverWow. pw.FillStats sizes it to its lines.
+  pcall(panel.SetWidth, panel, pw.StatsWidth())
+  pcall(panel.SetHeight, panel, 100)
   win.stats = panel
+  local gs = U.gameSettings
+  if gs and type(gs.CreateDivider) == "function" then
+    local dOk, divider = pcall(gs.CreateDivider, win.schematic)
+    if dOk and divider then
+      pcall(divider.SetWidth, divider, pw.StatsWidth())
+      pcall(divider.Hide, divider)
+      win.statsDivider = divider
+    end
+  end
   win.statsLines = {}
 
   local fill = pw.Texture(panel, "BACKGROUND", M.texture.plain)
@@ -1846,6 +1901,20 @@ function pw.CropStatsBorder(win, width, height)
   end)
 end
 
+-- A never-widthed copy of the stat line font, used only to measure text.
+-- Transparent rather than hidden, so it measures as a drawn string does.
+function pw.StatsMeasure(win)
+  if win.statsMeasure then return win.statsMeasure end
+  local label = pw.Label(win.stats, M.fontSize.normal, { 1, 1, 1, 0 }, "LEFT",
+                         "GameFontHighlight")
+  if label then
+    pcall(label.SetPoint, label, "TOPLEFT", win.stats, "TOPLEFT", 0, 0)
+    pcall(label.SetTextColor, label, 1, 1, 1, 0)
+  end
+  win.statsMeasure = label
+  return label
+end
+
 function pw.StatsLine(win, i)
   local line = win.statsLines[i]
   if line then return line end
@@ -1858,7 +1927,7 @@ function pw.StatsLine(win, i)
   return line
 end
 
--- Shows the panel for an equippable product and narrows the name beside it.
+-- Shows the panel, and the divider above it, for an equippable product.
 function pw.FillStats(win, entry)
   local panel = win.stats
   if not panel then return end
@@ -1872,20 +1941,19 @@ function pw.FillStats(win, entry)
     pw.SetShown(win.statsLines[i].right, false)
   end
   pw.SetShown(panel, count > 0)
-
-  -- The name runs to the form's right inset; beside the panel it stops
-  -- nameGap short of the panel's left edge instead.
-  local nameWidth = win.nameWidth or 1
-  if count > 0 then
-    nameWidth = nameWidth -
-      (st.width + st.right + st.nameGap - pw.Token().schematic.inset)
-  end
-  if win.name then pcall(win.name.SetWidth, win.name, math.max(1, nameWidth)) end
+  pw.SetShown(win.statsDivider, count > 0)
   if count == 0 then return end
 
-  local inner = st.width - st.padding * 2
-  local total = 0
-  local previous
+  -- The panel is as wide as its longest line needs (user request,
+  -- 2026-09-29), up to the form's text width, where longer lines wrap. The
+  -- recycled lines carry a width, and a FontString with a width set measures
+  -- clamped to it (knowledge.json /
+  -- widgets.fontstring_stringwidth_clamped_by_setwidth), so each left text is
+  -- measured on `win.statsMeasure`, which is never given one. The right
+  -- column is never given a width either, so it measures true.
+  local measure = pw.StatsMeasure(win)
+  local rightWidths = {}
+  local need = 0
   for i = 1, count do
     local data = lines[i]
     local line = pw.StatsLine(win, i)
@@ -1896,6 +1964,24 @@ function pw.FillStats(win, entry)
       pw.SetColor(line.right, data.rightColor)
       rightWidth = pw.TextWidth(line.right) + st.columnGap
     end
+    rightWidths[i] = rightWidth
+    pw.SetText(measure, data.left or "")
+    need = math.max(need, math.ceil(pw.TextWidth(measure)) + 1 + rightWidth)
+  end
+  pw.SetText(measure, "")
+
+  local g = pw.StatsBorderGeometry()
+  local inner = math.min(need, pw.StatsWidth() - st.padding * 2)
+  local width = math.max(g.reach * 2, inner + st.padding * 2)
+  inner = width - st.padding * 2
+  pcall(panel.SetWidth, panel, width)
+
+  local total = 0
+  local previous
+  for i = 1, count do
+    local data = lines[i]
+    local line = pw.StatsLine(win, i)
+    local rightWidth = rightWidths[i]
     pw.SetShown(line.left, true)
     pw.SetText(line.left, data.left or "")
     if data.leftColor then pw.SetColor(line.left, data.leftColor) end
@@ -1921,10 +2007,9 @@ function pw.FillStats(win, entry)
     previous = line.left
   end
 
-  local minimum = pw.StatsBorderGeometry().reach * 2
-  local height = math.max(minimum, total + st.padding * 2)
+  local height = math.max(g.reach * 2, total + st.padding * 2)
   pcall(panel.SetHeight, panel, height)
-  pw.CropStatsBorder(win, st.width, height)
+  pw.CropStatsBorder(win, width, height)
 end
 
 -- ---------------------------------------------------------------------------

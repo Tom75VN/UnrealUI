@@ -429,6 +429,27 @@ function modernWow.HookButton(name, button)
   end)
 end
 
+-- An addon-owned, mouse-less frame on the bar's anchor that holds one native
+-- button's plate. Its level sits under every button of the row, so the icon
+-- (the button's own state textures) always draws over it.
+function modernWow.PlateHost()
+  if not anchor then return nil end
+  local ok, host = pcall(CreateFrame, "Frame", nil, anchor)
+  if not ok or not host then return nil end
+  pcall(host.SetFrameStrata, host, "LOW")
+  pcall(host.SetFrameLevel, host, 1)
+  pcall(host.EnableMouse, host, false)
+  return host
+end
+
+function modernWow.SizeHost(skin)
+  if not skin or not skin.host then return end
+  local t = modernWow.Token()
+  local s = size.ButtonScale()
+  pcall(skin.host.SetWidth, skin.host, t.width * s)
+  pcall(skin.host.SetHeight, skin.host, t.height * s)
+end
+
 -- Draws one button in the Retail style. Its regions are created the first
 -- time and reused, never recreated.
 function modernWow.SkinButton(name, button)
@@ -439,13 +460,25 @@ function modernWow.SkinButton(name, button)
   local skin = modernWow.skins[name]
   if not skin then
     skin = { button = button }
-    skin.plate = modernWow.Region(button, "BACKGROUND", t.plateUp)
-    skin.pushedPlate = modernWow.Region(button, "BACKGROUND", t.plateDown)
+    -- The addon's own buttons carry their plate as regions of their own
+    -- frame. A client-owned button does not show regions added to it (only
+    -- Professions and Group Finder drew a plate, user report 2026-09-29), so
+    -- its plate is drawn on an addon-owned host frame under the button,
+    -- placed by AnchorRow from the bar anchor's own geometry.
+    local plateOwner = button
+    if name ~= PROFESSION and name ~= FINDER then
+      skin.host = modernWow.PlateHost()
+      plateOwner = skin.host or button
+    end
+    skin.plate = modernWow.Region(plateOwner, "BACKGROUND", t.plateUp)
+    skin.pushedPlate = modernWow.Region(plateOwner, "BACKGROUND", t.plateDown)
     modernWow.skins[name] = skin
     modernWow.HookButton(name, button)
   end
   modernWow.SizeRegion(skin.plate)
   modernWow.SizeRegion(skin.pushedPlate)
+  modernWow.SizeHost(skin)
+  if skin.host then modernWow.SetShown(skin.host, true) end
 
   modernWow.SetCell(button, button.SetNormalTexture, button.GetNormalTexture,
                     icon.normal)
@@ -468,6 +501,7 @@ function modernWow.HideSkins()
   for name, skin in pairs(modernWow.skins) do
     modernWow.SetShown(skin.plate, false)
     modernWow.SetShown(skin.pushedPlate, false)
+    modernWow.SetShown(skin.host, false)
     modernWow.SetNormalAlpha(skin.button, 1)
   end
 end
@@ -797,9 +831,13 @@ local function AnchorRow()
   local prev = nil
   local i
   local gap = size.Gap()
+  local skinned = modernWow.Active()
+  local x = 0
+  local buttonWidth = skinned and modernWow.Token().width * size.ButtonScale()
 
   for i = 1, table.getn(BUTTON_NAMES) do
-    local entry = buttons[BUTTON_NAMES[i]]
+    local name = BUTTON_NAMES[i]
+    local entry = buttons[name]
     if entry and entry.button and not entry.excluded then
       local button = entry.button
       pcall(button.ClearAllPoints, button)
@@ -809,6 +847,17 @@ local function AnchorRow()
         pcall(button.SetPoint, button, "LEFT", anchor, "LEFT", 0, 0)
       end
       prev = button
+
+      -- The plate host follows the same row, from the anchor's own edge: the
+      -- row is one uniform width and gap, so its slot is a running sum.
+      local skin = modernWow.skins[name]
+      if skin and skin.host and buttonWidth then
+        pcall(skin.host.ClearAllPoints, skin.host)
+        pcall(skin.host.SetPoint, skin.host, "LEFT", anchor, "LEFT", x, 0)
+        x = x + buttonWidth + gap
+      elseif buttonWidth then
+        x = x + buttonWidth + gap
+      end
     end
   end
 end
@@ -927,6 +976,9 @@ local function ArrangeButtons()
       local button = entry.button
 
       pcall(button.SetParent, button, anchor)
+      -- A reparented native button keeps its own strata (MEDIUM), which would
+      -- draw it over the bag windows.
+      pcall(button.SetFrameStrata, button, "LOW")
 
       if skinned then
         -- MainMenuBarMicroButton's 32x40 at the row's size, as dimensions at
@@ -1017,7 +1069,8 @@ local function Build()
   anchor = CreateFrame("Frame", "UnrealUIMicroBarAnchor", UIParent)
   anchor:SetHeight(HEIGHT)
   anchor:SetWidth(MIN_WIDTH)
-  pcall(anchor.SetFrameStrata, anchor, "MEDIUM")
+  -- HUD strata, under the bag windows (U.LowerWindowBelowInterface).
+  pcall(anchor.SetFrameStrata, anchor, "LOW")
 
   U.RegisterMover("microbar", anchor, {
     label = U.L("MOVER_LABEL_MICRO_BAR"),

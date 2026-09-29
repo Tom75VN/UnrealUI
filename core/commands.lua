@@ -145,6 +145,7 @@ local DIAGNOSTIC_HELP = {
   "  |cffffff00/uui bagcat|r - dump what the client calls each bag item and " ..
     "which category it lands in",
   "  |cffffff00/uui tabs|r - dump what the character-sheet tab strip measured and wrote",
+  "  |cffffff00/uui charwhite|r - dump every visible texture on the character sheet",
   "  |cffffff00/uui tabpad|r - measured left/right inset of every tab, character vs spellbook",
   "  |cffffff00/uui sb|r - dump why a spellbook entry is marked off the action bars",
   "  |cffffff00/uui sb trace|r - record what the mark does as a spell goes on/off a bar",
@@ -172,7 +173,7 @@ local DIAGNOSTIC_HELP = {
   "  |cffffff00/uui perf clear|r - empty the stored run log",
   "  |cffffff00/uui nosuppress|r - skip native frame suppression (needs /reload)",
   "  |cffffff00/uui suppress <0-4>|r - bisect the suppression recipe (needs /reload)",
-  "  |cffffff00/uui portrait3d <0-3>|r - 3D portrait coverage bisect, modern/modern-wow (needs /reload)",
+  "  |cffffff00/uui portrait3d <0-3>|r - 3D portrait coverage bisect, all themes (needs /reload)",
 }
 
 local function ShowHelp(rest)
@@ -1294,6 +1295,92 @@ handlers["bankcount"] = function(rest)
     U.Print("  " .. U.SavedVariablesHint() .. " after |cffffff00/reload|r")
   end
 end
+-- Every visible Texture region under CharacterFrame, for the white patch that
+-- still appears on the Modern WoW Character pages after the OnShow re-strip
+-- (user report, 2026-09-29). Run while the patch is on screen. A focused
+-- diagnostic, never a production path: the walk only reads, is bounded, and
+-- runs on this command alone. Written to UnrealUIDiagDB.characterTextures.
+handlers["charwhite"] = function()
+  local root = U.G("CharacterFrame")
+  if not root then
+    U.Print("charwhite: CharacterFrame unavailable")
+    return
+  end
+  local report = { rows = {}, frames = 0 }
+  local LIMIT, DEPTH = 600, 8
+
+  local function Read(object, method)
+    if not object or type(object[method]) ~= "function" then return nil end
+    local ok, a, b, c, d = pcall(object[method], object)
+    if not ok then return nil end
+    return a, b, c, d
+  end
+  local function Round(value)
+    value = tonumber(value)
+    if not value then return nil end
+    return math.floor(value * 10 + 0.5) / 10
+  end
+
+  local function Walk(frame, path, depth)
+    report.frames = report.frames + 1
+    local okAll, regions = pcall(function() return { frame:GetRegions() } end)
+    if not okAll or type(regions) ~= "table" then regions = {} end
+    local i
+    for i = 1, table.getn(regions) do
+      local region = regions[i]
+      if table.getn(report.rows) >= LIMIT then break end
+      if Read(region, "GetObjectType") == "Texture" and
+         Read(region, "IsVisible") and (tonumber(Read(region, "GetAlpha")) or 1) > 0 then
+        local r, g, b, a = Read(region, "GetVertexColor")
+        table.insert(report.rows, {
+          owner = path,
+          name = Read(region, "GetName"),
+          texture = Read(region, "GetTexture"),
+          alpha = Round(Read(region, "GetAlpha")),
+          layer = Read(region, "GetDrawLayer"),
+          blend = Read(region, "GetBlendMode"),
+          color = { Round(r), Round(g), Round(b), Round(a) },
+          left = Round(Read(region, "GetLeft")),
+          top = Round(Read(region, "GetTop")),
+          width = Round(Read(region, "GetWidth")),
+          height = Round(Read(region, "GetHeight")),
+        })
+      end
+    end
+    if depth >= DEPTH then return end
+    local okKids, kids = pcall(function() return { frame:GetChildren() } end)
+    if not okKids or type(kids) ~= "table" then return end
+    for i = 1, table.getn(kids) do
+      local kid = kids[i]
+      if Read(kid, "IsVisible") then
+        Walk(kid, path .. "/" .. tostring(Read(kid, "GetName") or ("#" .. i)),
+             depth + 1)
+      end
+    end
+  end
+
+  local ok, err = pcall(Walk, root, "CharacterFrame", 0)
+  if not ok then report.error = tostring(err) end
+  local pages = { "PaperDollFrame", "PetPaperDollFrame", "ReputationFrame",
+                  "SkillFrame", "HonorFrame" }
+  local p
+  for p = 1, table.getn(pages) do
+    if Read(U.G(pages[p]), "IsVisible") then report.page = pages[p] end
+  end
+  local okFocus, focus = false, nil
+  if type(GetMouseFocus) == "function" then okFocus, focus = pcall(GetMouseFocus) end
+  report.mouseFocus = okFocus and focus and Read(focus, "GetName") or nil
+  local tooltip = U.G("GameTooltip")
+  report.tooltipShown = tooltip and Read(tooltip, "IsVisible") and true or false
+  report.frameLeft = Round(Read(root, "GetLeft"))
+  report.frameTop = Round(Read(root, "GetTop"))
+  SaveDiagnostic("characterTextures", report)
+  U.Print("charwhite: " .. tostring(table.getn(report.rows)) ..
+          " visible textures in " .. tostring(report.frames) ..
+          " frames saved to UnrealUIDiagDB.characterTextures")
+  U.Print("  |cffffff00/reload|r then read " .. U.SavedVariablesHint())
+end
+
 -- What the character sheet's tab strip measured and wrote on its last layout
 -- pass. `target` is what unrealUI asked for, `after` is the width read back
 -- immediately, `live` is the width one call later: target == after == live
@@ -2172,12 +2259,12 @@ handlers["portrait3d"] = function(rest)
   local level = tonumber(rest)
   if not level then
     U.Print("3D portrait level: |cffffff00" ..
-            tostring(U.db.portrait3d or 0) .. "|r  (Modern and Modern WoW themes)")
+            tostring(U.db.portrait3d or 0) .. "|r  (all themes)")
     local i
     for i = 1, table.getn(PORTRAIT3D_LEVELS) do
       U.Print("  |cffffff00/uui portrait3d " .. PORTRAIT3D_LEVELS[i])
     end
-    U.Print("  player, target and party family switches apply within this ceiling")
+    U.Print("  player, target, target-of-target and party switches apply within this ceiling")
     U.Print("  units the level excludes, or that are out of sight, keep the 2D portrait")
     return
   end

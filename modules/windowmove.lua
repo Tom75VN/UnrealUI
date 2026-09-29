@@ -19,8 +19,12 @@
 local U = UnrealUI
 local WM = U.RegisterModule("windowmove")
 
+-- `close` names a stock close button the header handle overlaps. The stock
+-- FriendsFrameCloseButton sits further in than headerInset reserves, so the
+-- handle covered all of it but its right edge (user report, 2026-09-30); it is
+-- kept above the handle instead, as modules/friends.lua does on its own path.
 local WINDOWS = {
-  { id = "friends", frame = "FriendsFrame" },
+  { id = "friends", frame = "FriendsFrame", close = "FriendsFrameCloseButton" },
   { id = "spellbook", frame = "SpellBookFrame" },
   -- Same-client working source supports the Vanilla TalentFrame name and the
   -- TBC-shaped PlayerTalentFrame variant. Resolve whichever one was loaded.
@@ -83,8 +87,10 @@ local function TryRegister()
     if not entry.registered and (entry.interaction or not interactionOnly) then
       local frame = ResolveFrame(entry)
       if frame then
+        local close = entry.close and U.G(entry.close)
         U.MakeWindowDraggable(entry.dragId or entry.id, frame,
-                              { headerInset = 40, group = entry.group })
+                              { headerInset = 40, group = entry.group,
+                                interactiveFrames = close and { close } or nil })
         entry.registered = true
       else
         pending = true

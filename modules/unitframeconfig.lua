@@ -49,12 +49,22 @@ local LABEL_WIDTH = COLUMN_X - 20
 -- the section's.
 local DROPDOWN_WIDTH = 200
 
+local function ModernPortraits()
+  return type(U.GetActiveThemeStyle) == "function" and
+         U.GetActiveThemeStyle() == "modern"
+end
+
+local function SpecRow(spec)
+  if ModernPortraits() and spec.modernRow then return spec.modernRow end
+  return spec.row
+end
+
 -- The party panel carries the two layout switches and the complete HoT section
 -- from the Party Frames page. Its slider columns reuse the action-bar mover
 -- panel's compact proportions so the window remains narrow enough to sit next
 -- to the party block at its default left-edge position.
--- The third layout row is the shared 3D portrait switch, so everything from the
--- HoT caption down sits one ROW_PITCH (22) lower than the two-switch layout.
+-- Portrait controls occupy one row normally and two under Modern, where
+-- visibility and 2D/3D are independent.
 local PARTY_LAYOUT = {
   hotCaption = 80,
   hotEnabled = 102,
@@ -89,7 +99,8 @@ end
 local function RowCount(specs)
   local rows, i = 0, nil
   for i = 1, table.getn(specs) do
-    if specs[i].row + 1 > rows then rows = specs[i].row + 1 end
+    local row = SpecRow(specs[i])
+    if row + 1 > rows then rows = row + 1 end
   end
   return rows
 end
@@ -169,7 +180,19 @@ local PLAYER_TOGGLES = {
         U.SetHealPredictSetting("enabled", value)
       end
     end },
+  { key = "portrait", textKey = "UF_MOVER_PORTRAIT", column = 0, row = 2,
+    modernOnly = true,
+    get = function()
+      return type(U.GetPortraitEnabled) == "function" and
+             U.GetPortraitEnabled("player")
+    end,
+    set = function(value)
+      if type(U.SetPortraitEnabled) == "function" then
+        U.SetPortraitEnabled("player", value)
+      end
+    end },
   { key = "portrait3d", textKey = "UF_MOVER_PORTRAIT_3D", column = 1, row = 1,
+    modernRow = 2,
     get = function()
       return type(U.GetPortrait3D) == "function" and
              U.GetPortrait3D("player")
@@ -204,7 +227,18 @@ local TARGET_TOGGLES = {
         U.SetHealPredictSetting("enabled", value)
       end
     end },
-  { key = "portrait3d", textKey = "UF_MOVER_PORTRAIT_3D", column = 0, row = 1,
+  { key = "portrait", textKey = "UF_MOVER_PORTRAIT", column = 0, row = 1,
+    modernOnly = true,
+    get = function()
+      return type(U.GetPortraitEnabled) == "function" and
+             U.GetPortraitEnabled("target")
+    end,
+    set = function(value)
+      if type(U.SetPortraitEnabled) == "function" then
+        U.SetPortraitEnabled("target", value)
+      end
+    end },
+  { key = "portrait3d", textKey = "UF_MOVER_PORTRAIT_3D", column = 1, row = 1,
     get = function()
       return type(U.GetPortrait3D) == "function" and
              U.GetPortrait3D("target")
@@ -276,19 +310,22 @@ local function BuildGroup(frame, pad, contentTop, groupY, specs, widgets,
   local i
   for i = 1, table.getn(specs) do
     local spec = specs[i]
-    local key = spec.key
-    local toggle = U.CreateCheckbox(frame, {
-      name = namePrefix .. key,
-      text = U.L(spec.textKey),
-      textWidth = LABEL_WIDTH,
-      value = SpecValue(spec),
-      onChange = function(value)
-        if spec.set then spec.set(value) else SetAuraValue(key, value) end
-      end,
-    })
-    PlaceToggle(toggle, frame, pad, contentTop, groupY, spec.column, spec.row)
-    controls[key] = toggle
-    table.insert(widgets, toggle)
+    if not spec.modernOnly or ModernPortraits() then
+      local key = spec.key
+      local toggle = U.CreateCheckbox(frame, {
+        name = namePrefix .. key,
+        text = U.L(spec.textKey),
+        textWidth = LABEL_WIDTH,
+        value = SpecValue(spec),
+        onChange = function(value)
+          if spec.set then spec.set(value) else SetAuraValue(key, value) end
+        end,
+      })
+      PlaceToggle(toggle, frame, pad, contentTop, groupY, spec.column,
+                  SpecRow(spec))
+      controls[key] = toggle
+      table.insert(widgets, toggle)
+    end
   end
 end
 
@@ -349,6 +386,10 @@ local function BuildPanel(def, frame, contentTop, contentWidth)
   -- writes one of these values while this one is up.
   local function Refresh()
     RefreshGroup(def.toggles, controls)
+    if controls.portrait3d and def.portraitFamily then
+      controls.portrait3d.SetEnabled(not ModernPortraits() or
+        U.GetPortraitEnabled(def.portraitFamily))
+    end
     RefreshGroup(def.auras, controls)
     if controls.comboAnchor then
       controls.comboAnchor.SetValue(U.GetComboPointAnchor())
@@ -367,6 +408,7 @@ local function BuildPartyPanel(frame, contentTop, contentWidth)
   local pad = U.MoverPanelPad()
   local widgets = {}
   local controls = {}
+  local portraitOffset = ModernPortraits() and ROW_PITCH or 0
 
   local function BeginLiveEdit()
     if type(U.FreezeMoverPanel) == "function" then U.FreezeMoverPanel() end
@@ -398,6 +440,22 @@ local function BuildPartyPanel(frame, contentTop, contentWidth)
   controls.partyPets = pets
   table.insert(widgets, pets)
 
+  if ModernPortraits() then
+    local portrait = U.CreateCheckbox(frame, {
+      name = "UnrealUIPartyFrameMoverPortrait",
+      text = U.L("UF_MOVER_PORTRAIT"),
+      textWidth = contentWidth - 20,
+      value = U.GetPortraitEnabled("party"),
+      onChange = function(value)
+        U.SetPortraitEnabled("party", value)
+      end,
+    })
+    portrait.SetPoint("TOPLEFT", frame, "TOPLEFT", pad,
+                      contentTop - 2 * ROW_PITCH)
+    controls.portrait = portrait
+    table.insert(widgets, portrait)
+  end
+
   local portrait3d = U.CreateCheckbox(frame, {
     name = "UnrealUIPartyFrameMoverPortrait3D",
     text = U.L("UF_MOVER_PORTRAIT_3D"),
@@ -410,11 +468,13 @@ local function BuildPartyPanel(frame, contentTop, contentWidth)
       end
     end,
   })
-  portrait3d.SetPoint("TOPLEFT", frame, "TOPLEFT", pad, contentTop - 2 * ROW_PITCH)
+  portrait3d.SetPoint("TOPLEFT", frame, "TOPLEFT", pad,
+                      contentTop - 2 * ROW_PITCH - portraitOffset)
   controls.portrait3d = portrait3d
   table.insert(widgets, portrait3d)
 
-  AddCaption(frame, widgets, pad, contentTop - PARTY_LAYOUT.hotCaption,
+  AddCaption(frame, widgets, pad,
+             contentTop - PARTY_LAYOUT.hotCaption - portraitOffset,
              U.L("HOTS_HEADER"), contentWidth)
 
   local enabled = U.CreateCheckbox(frame, {
@@ -425,7 +485,7 @@ local function BuildPartyPanel(frame, contentTop, contentWidth)
     onChange = function(value) U.SetHotSetting("enabled", value) end,
   })
   enabled.SetPoint("TOPLEFT", frame, "TOPLEFT", pad,
-                   contentTop - PARTY_LAYOUT.hotEnabled)
+                   contentTop - PARTY_LAYOUT.hotEnabled - portraitOffset)
   controls.enabled = enabled
   table.insert(widgets, enabled)
 
@@ -439,7 +499,7 @@ local function BuildPartyPanel(frame, contentTop, contentWidth)
   })
   if cornerLabel then
     cornerLabel:SetPoint("TOPLEFT", frame, "TOPLEFT", pad,
-                         contentTop - PARTY_LAYOUT.cornerLabel)
+                         contentTop - PARTY_LAYOUT.cornerLabel - portraitOffset)
     cornerLabel:SetText(U.L("HOTS_CORNER"))
     table.insert(widgets, cornerLabel)
   end
@@ -464,7 +524,7 @@ local function BuildPartyPanel(frame, contentTop, contentWidth)
     onChange = function(value) U.SetHotSetting("corner", value) end,
   })
   corner.SetPoint("TOPLEFT", frame, "TOPLEFT", pad,
-                  contentTop - PARTY_LAYOUT.corner)
+                  contentTop - PARTY_LAYOUT.corner - portraitOffset)
   controls.corner = corner
   table.insert(widgets, corner)
 
@@ -495,7 +555,7 @@ local function BuildPartyPanel(frame, contentTop, contentWidth)
     })
     slider.SetPoint("TOPLEFT", frame, "TOPLEFT",
                     pad + spec.column * PARTY_LAYOUT.sliderColumn,
-                    contentTop - PARTY_LAYOUT.sliders)
+                    contentTop - PARTY_LAYOUT.sliders - portraitOffset)
     controls[spec.key] = slider
     table.insert(widgets, slider)
   end
@@ -503,6 +563,10 @@ local function BuildPartyPanel(frame, contentTop, contentWidth)
   local function Refresh()
     controls.partyPlayer.SetValue(U.GetUnitFramePartySetting("partyPlayer"))
     controls.partyPets.SetValue(U.GetUnitFramePartySetting("partyPets"))
+    if controls.portrait then
+      controls.portrait.SetValue(U.GetPortraitEnabled("party"))
+      controls.portrait3d.SetEnabled(U.GetPortraitEnabled("party"))
+    end
     controls.portrait3d.SetValue(type(U.GetPortrait3D) == "function" and
                                  U.GetPortrait3D("party") or false)
     controls.enabled.SetValue(U.GetHotSetting("enabled"))
@@ -523,6 +587,21 @@ end
 local function BuildTargetTargetPanel(frame, contentTop, contentWidth)
   local pad = U.MoverPanelPad()
   local widgets = {}
+  local portrait
+
+  if ModernPortraits() then
+    portrait = U.CreateCheckbox(frame, {
+      name = "UnrealUITargetTargetFrameMoverPortrait",
+      text = U.L("UF_MOVER_PORTRAIT"),
+      textWidth = LABEL_WIDTH,
+      value = U.GetPortraitEnabled("targettarget"),
+      onChange = function(value)
+        U.SetPortraitEnabled("targettarget", value)
+      end,
+    })
+    portrait.SetPoint("TOPLEFT", frame, "TOPLEFT", pad, contentTop)
+    table.insert(widgets, portrait)
+  end
 
   local portrait3d = U.CreateCheckbox(frame, {
     name = "UnrealUITargetTargetFrameMoverPortrait3D",
@@ -536,10 +615,15 @@ local function BuildTargetTargetPanel(frame, contentTop, contentWidth)
       end
     end,
   })
-  portrait3d.SetPoint("TOPLEFT", frame, "TOPLEFT", pad, contentTop)
+  portrait3d.SetPoint("TOPLEFT", frame, "TOPLEFT",
+                      pad + (portrait and COLUMN_X or 0), contentTop)
   table.insert(widgets, portrait3d)
 
   local function Refresh()
+    if portrait then
+      portrait.SetValue(U.GetPortraitEnabled("targettarget"))
+      portrait3d.SetEnabled(U.GetPortraitEnabled("targettarget"))
+    end
     portrait3d.SetValue(type(U.GetPortrait3D) == "function" and
                         U.GetPortrait3D("targettarget") or false)
   end
@@ -555,12 +639,14 @@ local PANELS = {
     name = "UnrealUIUnitFrameMoverSettings",
     namePrefix = "UnrealUIUnitFrameMover",
     titleKey = "MOVER_LABEL_PLAYER",
+    portraitFamily = "player",
     toggles = PLAYER_TOGGLES,
     auras = PLAYER_AURA_TOGGLES },
   { moverId = TARGET_MOVER_ID,
     name = "UnrealUITargetFrameMoverSettings",
     namePrefix = "UnrealUITargetFrameMover",
     titleKey = "MOVER_LABEL_TARGET",
+    portraitFamily = "target",
     toggles = TARGET_TOGGLES,
     auras = TARGET_AURA_TOGGLES },
 }
@@ -602,7 +688,9 @@ function UFC:OnInit()
   U.RegisterMoverPanel(PARTY_MOVER_ID, {
     name = "UnrealUIPartyFrameMoverSettings",
     width = CONTENT_WIDTH + U.MoverPanelPad() * 2,
-    height = PARTY_LAYOUT.height,
+    height = function()
+      return PARTY_LAYOUT.height + (ModernPortraits() and ROW_PITCH or 0)
+    end,
     build = BuildPartyPanel,
     title = function() return U.L("MOVER_LABEL_PARTY") end,
     available = function()

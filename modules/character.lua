@@ -53,6 +53,9 @@ local TAB_GAP = SPELLBOOK_TAB.gap
 -- Offset from the panel's bottom edge. Negative lifts the strip into that
 -- edge, which is the placement the sheet uses.
 local TAB_DROP = -1
+-- Modern WoW's frame-tabs strip sits this much higher again (user request,
+-- 2026-09-29). Modern keeps TAB_DROP alone.
+local TAB_MODERN_WOW_LIFT = 1
 -- Use the flat Spellbook strip itself as the geometry source.
 local TAB_PADDING = SPELLBOOK_TAB.padding
 
@@ -649,7 +652,7 @@ local function LayoutTabs()
       point = "TOPLEFT",
       relativePoint = "BOTTOMLEFT",
       x = modernWowTabMode and 5 or 0,
-      y = -TAB_DROP,
+      y = -TAB_DROP + (modernWowTabMode and TAB_MODERN_WOW_LIFT or 0),
     } or nil,
   })
   tabFit = info
@@ -953,33 +956,37 @@ StyleReputationBar = function(bar)
   if not bar then return end
 
   -- SetStatusBarTexture retargets the live fill to unrealUI's plain texture.
-  -- GetStatusBarTexture is absent on this client, so locate that fill among the
-  -- direct Texture regions by its newly assigned path, preserve it, and strip
-  -- every other native texture from the row.
+  -- GetStatusBarTexture is absent on this client, so the fill is told apart
+  -- from the stock art by that path. It is never protected with a keep table:
+  -- a region walk returns fresh wrappers that never match by identity
+  -- (rules/unreal-ui.md), so `U.StripStockTextures(bar, { keep = ... })` hid
+  -- the fill too and every row lost its progress bar. Each Texture region is
+  -- read instead: the plain fill stays, a readable stock path is hidden, and
+  -- one whose path cannot be read is left alone.
   pcall(bar.SetStatusBarTexture, bar, M.texture.plain)
 
-  local keep, foundFill = {}, false
+  local plain = string.lower(M.texture.plain)
   if bar.GetRegions then
     local regionsOk, regions = pcall(function() return { bar:GetRegions() } end)
     if regionsOk and type(regions) == "table" then
       local i
       for i = 1, table.getn(regions) do
         local region = regions[i]
-        if region and type(region.GetTexture) == "function" then
+        local typeOk, objectType = false, nil
+        if region and type(region.GetObjectType) == "function" then
+          typeOk, objectType = pcall(region.GetObjectType, region)
+        end
+        if typeOk and objectType == "Texture" and
+           type(region.GetTexture) == "function" then
           local textureOk, texture = pcall(region.GetTexture, region)
           if textureOk and type(texture) == "string" and
-             string.lower(texture) == string.lower(M.texture.plain) then
-            keep[region] = true
-            foundFill = true
+             string.lower(texture) ~= plain then
+            U.HideRegion(region)
           end
         end
       end
     end
   end
-
-  -- Fail closed if the fill cannot be identified; stripping without it is the
-  -- previously confirmed empty-bar failure.
-  if foundFill then U.StripStockTextures(bar, { keep = keep }) end
 
   U.CreateBackdrop(bar, {
     background = { 0.012, 0.016, 0.024, 0.94 },
@@ -1031,6 +1038,13 @@ local function StyleReputationTab()
   local rep = G("ReputationFrame")
   if not rep then return end
   U.StripStockTextures(rep)
+
+  -- Modern WoW draws Retail's reputation list and detail window instead
+  -- (modules/characterreputation.lua); this restyle is its fallback.
+  if modernWowTabMode and type(U.BuildCharacterReputation) == "function" and
+     U.BuildCharacterReputation(frame) then
+    return
+  end
 
   local count = tonumber(G("NUM_FACTIONS_DISPLAYED")) or REP_ROWS
   local i
@@ -1184,8 +1198,10 @@ local function BuildSkillRows()
     if header then
       header.uuiCollapseClick = ToggleSkillHeader
       U.StyleStockCollapseButton(header)
-      if modernWowTabMode and type(U.ModernWowCollapseFace) == "function" then
-        pcall(U.ModernWowCollapseFace, header)
+      -- Modern WoW: the literal +/- pair (buttons/plus-minus-button, user
+      -- request 2026-09-29) rather than the red-button arrows.
+      if modernWowTabMode and type(U.ModernWowPlusMinusFace) == "function" then
+        pcall(U.ModernWowPlusMinusFace, header)
       end
     end
   end
@@ -1321,8 +1337,8 @@ local function StyleSkillsTab()
     -- above); this strip only removes the button's own leftover art.
     if not modernWowTabMode then U.StripStockTextures(collapseAll) end
     U.StyleStockCollapseButton(collapseAll, true)
-    if modernWowTabMode and type(U.ModernWowCollapseFace) == "function" then
-      pcall(U.ModernWowCollapseFace, collapseAll)
+    if modernWowTabMode and type(U.ModernWowPlusMinusFace) == "function" then
+      pcall(U.ModernWowPlusMinusFace, collapseAll)
     end
     U.SetStockCollapseState(collapseAll, true, false)
 
@@ -1711,6 +1727,22 @@ local function BuildFrame()
   -- skin is re-asserted there rather than only at build. Every call in the
   -- pass is idempotent.
   U.PostHookScript(G("PetPaperDollFrame"), "OnShow", StylePetTab)
+
+  -- The stock parchment behind Reputation, Skills and Honor is native art the
+  -- client redraws when a tab opens, so the one-time strip at build left it
+  -- as a white patch at the top left of each page (user report, 2026-09-29).
+  -- Neither these pages nor CharacterFrame carry addon textures (the chrome
+  -- is a child frame), so a plain re-strip on show is safe, exactly as
+  -- Reapply does for the window.
+  local pages = { "ReputationFrame", "SkillFrame", "HonorFrame" }
+  local p
+  for p = 1, table.getn(pages) do
+    local page = G(pages[p])
+    U.PostHookScript(page, "OnShow", function()
+      U.StripStockTextures(page)
+      U.StripStockTextures(frame)
+    end)
+  end
 
   U.PostHookScript(frame, "OnShow", Reapply)
   U.PostHookScript(frame, "OnHide", function()

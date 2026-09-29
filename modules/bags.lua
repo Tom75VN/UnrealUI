@@ -2140,7 +2140,7 @@ local function Build()
   frame:SetAllPoints(anchor)
   classicBag.StylePanel(frame, true)
   local modernPanel = modernBag.StylePanel(frame)
-  -- Below every interface window (user request, 2026-09-21): LOW strata, and
+  -- Above the HUD, below every interface window (user request, 2026-09-29): LOW strata, and
   -- lifted inside it so the bag still draws over chat and the main bar.
   -- core/style.lua carries the measurement and the trade-off it gives up.
   U.LowerWindowBelowInterface(frame, 100)
