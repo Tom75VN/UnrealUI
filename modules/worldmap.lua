@@ -8,8 +8,8 @@
 -- available name, looks up the zone's level range and draws it beside the
 -- native name, coloured against the player's own level.
 --
--- The native map is otherwise left completely alone -- no chrome suppression,
--- no reskin, no window layout. rules/unreal-ui.md keeps the map out of scope
+-- The native map is otherwise left completely alone -- no reskin, no window
+-- layout; the only chrome removed is the WorldMapBlackout surround. rules/unreal-ui.md keeps the map out of scope
 -- beyond what is explicitly requested, and this is the requested part only.
 --
 -- ---------------------------------------------------------------------------
@@ -669,7 +669,25 @@ function U.WorldMapDebugDump()
           "|cffffff00continent map|r now and hover several zones")
 end
 
+-- The dark band either side of the fullscreen map is WorldMapBlackout, a
+-- full-screen FULLSCREEN-strata Frame parented to WorldFrame -- not the
+-- 1024x768 BlackoutWorld texture behind the map art (knowledge.json /
+-- map.worldmap_blackout_frame_draws_surround). Faded, not hidden, so the
+-- client's own show/hide of it is untouched (user request, 2026-09-30).
+-- The client hides UIParent while the map is open, so the sides show the 3D
+-- world, not the HUD. Re-applied on every map show.
+local function HideBlackout()
+  local blackout = U.G("WorldMapBlackout")
+  if blackout and blackout.SetAlpha then pcall(blackout.SetAlpha, blackout, 0) end
+end
+
 function WMAP:OnEnable()
+  HideBlackout()
+  local mapFrame = U.G("WorldMapFrame")
+  if mapFrame and type(U.PostHookScript) == "function" then
+    U.PostHookScript(mapFrame, "OnShow", HideBlackout)
+  end
+
   -- Run directly after the stock map's own update, matching the supplied
   -- LevelRange addon's ordering: the native handler writes the zone name first
   -- and this callback appends the range before the frame is drawn. Keep the

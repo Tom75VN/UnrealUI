@@ -805,22 +805,24 @@ end
 -- Unified Game Settings canvas
 -- ---------------------------------------------------------------------------
 
--- The Game Settings window lists these entries under two categories (user
--- request, 2026-09-22): UnrealQuest's group -- registered by the sibling
--- addon as "unrealquest" -- and its pages are the "Unreal Quest" category;
--- everything else is "Unreal UI". The group itself is not a row there: its
--- category header already names it, so its pages sit directly beneath.
+-- The Game Settings window lists these entries under one category per addon
+-- (user requests, 2026-09-22 and 2026-10-01): a sibling addon's group --
+-- registered as "unrealquest" or "unrealmap" -- and its pages form that
+-- addon's own category; everything else is "Unreal UI". The group itself is
+-- not a row there: its category header already names it, so its pages sit
+-- directly beneath.
+local SIBLING_SCOPES = { unrealquest = true, unrealmap = true }
+
 function U.SettingsEntryScope(entry)
   if type(entry) == "string" then entry = FindEntry(entry) end
   if not entry then return nil end
-  if entry.id == "unrealquest" or entry.parent == "unrealquest" then
-    return "unrealquest"
-  end
+  if SIBLING_SCOPES[entry.id] then return entry.id end
+  if entry.parent and SIBLING_SCOPES[entry.parent] then return entry.parent end
   return "unrealui"
 end
 
--- Whether any selectable page is registered under a scope; the Unreal Quest
--- category exists only while UnrealQuest is installed and has registered.
+-- Whether any selectable page is registered under a scope; a sibling addon's
+-- category exists only while that addon is installed and has registered.
 function U.HasIntegratedSettingsScope(scope)
   local i
   for i = 1, table.getn(entries) do
@@ -863,7 +865,7 @@ function U.GetIntegratedSettingsTabs(scope)
   local i
   for i = 1, table.getn(entries) do
     local entry = entries[i]
-    if scope == "unrealquest" then
+    if SIBLING_SCOPES[scope] then
       if entry.kind == "page" and U.SettingsEntryScope(entry) == scope then
         table.insert(tabs, {
           name = entry.id,

@@ -9,7 +9,7 @@ UnrealUI = {}
 local U = UnrealUI
 
 U.name      = "unrealUI"
-U.version   = "0.10.1"
+U.version   = "0.10.2"
 U.modules   = {}       -- name -> module table
 U.moduleOrder = {}     -- load/enable order, registration order
 U.ready     = false    -- set once PLAYER_LOGIN work has run
@@ -63,6 +63,10 @@ end
 
 function U.Print(msg)
   Output("|cfff5ae0aunreal|cffffffffUI|r: " .. tostring(msg))
+end
+
+function U.PrintLoaded(msg)
+  Output("|cffffffffUnreal |cfff5ae0aUI|r |cffb3b3b3: " .. tostring(msg) .. "|r")
 end
 
 function U.Error(msg)
@@ -520,6 +524,7 @@ local function Enable()
   if type(U.ShowStartupLoading) == "function" then U.ShowStartupLoading() end
   RunModulePhase("OnEnable")
   U.Debug("modules enabled (handler shape: " .. U.handlerShape .. ")")
+  U.PrintLoaded(U.L("BOOT_LOADED", U.version))
 end
 
 -- Folder-name casing is not worth trusting; compare case-insensitively.

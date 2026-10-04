@@ -1,8 +1,8 @@
 ## Interface: 11200
 ## Title: |cffffffffUnreal |cfff5ae0aUI
 ## Notes: Unreal Azeroth native UI addon.
-## Author: unrealUI
-## Version: 0.10.1
+## Author: Thomas
+## Version: 0.10.2
 ## X-License: MIT
 ## SavedVariables: UnrealUIDB, UnrealUIProfiles, UnrealUIDiagDB, UnrealUIPriceDB
 ## SavedVariablesPerCharacter: UnrealUIProfileDB, UnrealUIFavoriteDB, UnrealUIBankCountDB, UnrealUIBankCacheDB, UnrealUIEquipmentSetDB
@@ -91,6 +91,12 @@ core\commands.lua
 
 modules\settings.lua
 modules\screenalerts.lua
+# Settings > Performance: per-addon Lua CPU share and memory allocation from
+# one debug.sethook count-hook sampler. Only runs while recording.
+modules\performance.lua
+# The page's "Measure memory": estimated Lua memory held per addon, walked a
+# few thousand entries per frame. Needs U.PerfSourceOwner from the line above.
+modules\performancememory.lua
 modules\autoattack.lua
 modules\swingbar.lua
 modules\gamemenu.lua

@@ -7,8 +7,8 @@
 --
 -- The four client panels are followed by an Unreal UI category. That category
 -- renders the pages registered through modules/settings.lua in this same
--- window. When UnrealQuest is installed, the pages it registers there are
--- listed as a separate Unreal Quest category after it.
+-- window. When UnrealQuest or unrealMap is installed, the pages it registers
+-- there are listed as a separate Unreal Quest or Unreal Map category after it.
 --
 -- Structure copied from WoW Forever. In ForeverFrameXML-1.60.1.69913 there is
 -- one SettingsPanel with a category list down the left, and a category is
@@ -329,6 +329,14 @@ gs.PAGES = {
     label = "GAMESETTINGS_UNREALQUEST",
     settings = true,
     settingsScope = "unrealquest",
+    listHeader = true,
+  },
+  -- unrealMap's pages, likewise (user request, 2026-10-01).
+  {
+    id = "unrealmap",
+    label = "GAMESETTINGS_UNREALMAP",
+    settings = true,
+    settingsScope = "unrealmap",
     listHeader = true,
   },
 }
@@ -1081,11 +1089,12 @@ function gs.ListHeaderFrame(name, label, labelY)
   return header
 end
 
--- The Unreal UI and Unreal Quest pages are titled with their addon's wordmark
--- (user requests, 2026-09-23): "Unreal" white, "UI"/"Quest" accent, then the
--- version dimmed, the same split the TOC titles use. Inline escapes because
--- one region carries three colours. UnrealQuest's version is read from its
--- namespace on each open; without one the wordmark stands alone.
+-- The Unreal UI, Unreal Quest and Unreal Map pages are titled with their
+-- addon's wordmark (user requests, 2026-09-23): "Unreal" white,
+-- "UI"/"Quest"/"Map" accent, then the version dimmed, the same split the TOC
+-- titles use. Inline escapes because one region carries three colours. A
+-- sibling's version is read from its namespace on each open; without one the
+-- wordmark stands alone.
 gs.WORDMARK = {
   unrealui = { word = "UI", version = function() return U.version end },
   unrealquest = {
@@ -1093,6 +1102,13 @@ gs.WORDMARK = {
     version = function()
       local uq = U.G("UnrealQuest")
       return uq and uq.version
+    end,
+  },
+  unrealmap = {
+    word = "Map",
+    version = function()
+      local map = U.G("unrealMap")
+      return map and map.version
     end,
   },
 }

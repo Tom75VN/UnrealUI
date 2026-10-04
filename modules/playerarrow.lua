@@ -68,35 +68,16 @@ local function Atan2(y, x)
   return 0
 end
 
-local function ApplyWorldMapStockPosition(point, relativeTo, relativePoint, x, y)
-  local frame = state.worldMap
-  if not frame or type(point) ~= "string" or not relativeTo or
-     type(relativePoint) ~= "string" or type(x) ~= "number" or
-     type(y) ~= "number" then return end
-
-  local getPosition = U.G("GetPlayerMapPosition")
-  local valid, mapX, mapY
-  if type(getPosition) == "function" then
-    valid, mapX, mapY = pcall(getPosition, "player")
-  end
-  if not valid or type(mapX) ~= "number" or type(mapY) ~= "number" or
-     (mapX <= 0 and mapY <= 0) then
-    frame:Hide()
-    return
-  end
-
-  frame:ClearAllPoints()
-  local ok = pcall(frame.SetPoint, frame, point, relativeTo, relativePoint, x, y)
-  if not ok then
-    frame:Hide()
-    return
-  end
-  frame:Show()
-end
-
+-- GetPlayerMapPosition is the only position source: it projects onto the
+-- viewed map and returns 0, 0 on any map the player is not on. The stock
+-- PositionWorldMapArrowFrame calls are not: the client stops making them off
+-- the player's map, and the few made while the view changes still carry the
+-- previous view's coordinates (maparrowzone.v1, 2026-10-04). Placement uses
+-- the stock arrow's own reference, CENTER on WorldMapDetailFrame's TOPLEFT
+-- scaled by its size, as those calls showed.
 local function UpdateWorldMapPosition()
   local frame = state.worldMap
-  local canvas = U.G("WorldMapButton")
+  local canvas = U.G("WorldMapDetailFrame") or U.G("WorldMapButton")
   local getPosition = U.G("GetPlayerMapPosition")
   if not frame or not canvas or type(getPosition) ~= "function" then return end
 
@@ -110,9 +91,38 @@ local function UpdateWorldMapPosition()
     return
   end
 
+  local cell = FacingCell()
+  if cell ~= nil and cell ~= state.worldMapCell then
+    state.worldMapCell = cell
+    SetCell(frame.arrow, cell)
+  end
   frame:ClearAllPoints()
   frame:SetPoint("CENTER", canvas, "TOPLEFT", x * width, -y * height)
   frame:Show()
+end
+
+-- UIParent is hidden while the fullscreen world map is open, so the shared
+-- updater (a UIParent child) gets no OnUpdate then (knowledge.json /
+-- map.worldmap_open_workers_require_worldframe_parent). The world-map arrow
+-- gets its own WorldFrame driver, run every frame while the map is visible so
+-- a view change never shows the previous view's position.
+local function WorldMapDriverOnUpdate()
+  local map = U.G("WorldMapFrame")
+  if not map or not map:IsVisible() then
+    -- Hidden while closed, so reopening never draws the last position first.
+    if state.worldMap and state.worldMap:IsShown() then state.worldMap:Hide() end
+    return
+  end
+  UpdateWorldMapPosition()
+end
+
+local function BuildWorldMapDriver()
+  local world = U.G("WorldFrame")
+  if not world then return nil end
+  local driver = CreateFrame("Frame", "UnrealUIPlayerArrowWorldMapDriver", world)
+  if not driver then return nil end
+  driver:SetScript("OnUpdate", WorldMapDriverOnUpdate)
+  return driver
 end
 
 -- The native corpse pointer cannot be removed on this client: SetArrowModel,
@@ -188,9 +198,7 @@ local function Refresh()
   if cell ~= nil and cell ~= state.cell then
     state.cell = cell
     if state.minimap then SetCell(state.minimap.arrow, cell) end
-    if state.worldMap then SetCell(state.worldMap.arrow, cell) end
   end
-  UpdateWorldMapPosition()
   UpdateCorpseArrow()
 end
 
@@ -200,7 +208,6 @@ local function InstallWorldMapPark()
 
   local park = M.playerArrow.parkOffset
   local function Wrapped(a1, a2, a3, a4, a5, a6)
-    ApplyWorldMapStockPosition(a1, a2, a3, a4, a5)
     if type(a2) == "number" then a2 = park end
     if type(a3) == "number" then a3 = park end
     if type(a4) == "number" then a4 = park end
@@ -262,9 +269,14 @@ function ARROW:OnEnable()
   state.minimap = BuildMinimapArrow()
   state.corpse = BuildMinimapCorpseArrow()
   state.worldMap = BuildWorldMapArrow()
-  if state.worldMap and not InstallWorldMapPark() then
-    state.worldMap:Hide()
-    state.worldMap = nil
+  if state.worldMap then
+    state.worldMapDriver = BuildWorldMapDriver()
+    if not state.worldMapDriver or not InstallWorldMapPark() then
+      if state.worldMapDriver then state.worldMapDriver:SetScript("OnUpdate", nil) end
+      state.worldMapDriver = nil
+      state.worldMap:Hide()
+      state.worldMap = nil
+    end
   end
 
   if not state.minimap and not state.worldMap and not state.corpse then
@@ -277,7 +289,10 @@ function ARROW:OnEnable()
     SetCell(state.minimap.arrow, initialCell)
     state.minimap:Show()
   end
-  if state.worldMap then SetCell(state.worldMap.arrow, initialCell) end
+  if state.worldMap then
+    state.worldMapCell = initialCell
+    SetCell(state.worldMap.arrow, initialCell)
+  end
   state.enabled = true
   Refresh()
   U.RegisterUpdate("playerarrow.refresh", M.playerArrow.updateInterval, Refresh)

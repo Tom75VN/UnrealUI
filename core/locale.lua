@@ -206,6 +206,12 @@ function U.SetLanguage(code)
   return true
 end
 
+-- Client locale -> first-run language. Any token not listed starts in English.
+local CLIENT_LOCALE_DEFAULT = {
+  zhCN = "zhCN",
+  ruRU = "ruRU",
+}
+
 -- Applied from core/init.lua's Initialise, after U.LoadConfig has run and
 -- before any module builds UI. Nothing in the addon may call U.L at file
 -- scope: at file-load time the saved language is not known yet, so every such
@@ -217,14 +223,17 @@ function U.LoadLanguage()
     return active
   end
 
-  -- First run on this installation. English is the documented default; a
-  -- client already running in one of the addon's other languages is a better
-  -- opening guess than English, and the player can still change it.
+  -- First run on this installation. The shared Unreal rule, identical in
+  -- UnrealQuest and unrealMap: a zhCN client opens in Chinese, a ruRU client
+  -- in Russian, every other client in English. French stays selectable by
+  -- hand. The player can still change it.
   local code = DEFAULT_LANGUAGE
   local getLocale = U.G("GetLocale")
   if type(getLocale) == "function" then
     local ok, clientLocale = pcall(getLocale)
-    if ok and languageByCode[clientLocale] then code = clientLocale end
+    if ok and CLIENT_LOCALE_DEFAULT[clientLocale] then
+      code = CLIENT_LOCALE_DEFAULT[clientLocale]
+    end
   end
 
   Activate(code)
