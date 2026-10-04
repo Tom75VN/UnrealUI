@@ -1,3 +1,5 @@
+<p align="center"><img src=".github/logo.png" alt="UnrealUI logo" width="160"></p>
+
 # UnrealUI
 
 **Classic Azeroth, without fighting your interface.**
