@@ -32,11 +32,10 @@
 --     swept and never scaled: several are native frames (MinimapCluster) and
 --     theme code owns their scale.
 --
--- Geometry is in UIParent units. knowledge.json /
--- frames.own_scale_resizes_about_anchor_in_parent_space (BEHAVIOR_VERIFIED):
--- GetWidth/GetHeight/GetLeft/GetBottom of a UIParent child already include its
--- own scale, anchor offsets are not divided by it, and SetScale resizes about
--- the anchor point. So no scale conversion is needed below.
+-- Geometry now crosses three explicit spaces: screen size, UIParent's scaled
+-- layout span, and each frame's own anchor units. uiscale.v2 measured the
+-- conversion as frame effective scale / UIParent effective scale. Stored-point
+-- maths uses that ratio; live edge checks convert through effective scale.
 --
 -- A shown window is measured by its edges, not by its first anchor point:
 -- frames.extra_anchor_point_survives_addon_setpoint and
@@ -104,23 +103,29 @@ local function FrameSize(frame)
   return width, height
 end
 
-local function FrameScale(frame)
-  if not frame or not frame.GetScale then return 1 end
-  local ok, scale = pcall(frame.GetScale, frame)
+local function EffectiveScale(frame)
+  if not frame or not frame.GetEffectiveScale then return 1 end
+  local ok, scale = pcall(frame.GetEffectiveScale, frame)
   scale = ok and tonumber(scale) or nil
   return scale and scale > 0 and scale or 1
 end
 
+local function LayoutRatio(frame)
+  local uiScale = EffectiveScale(UIParent)
+  if uiScale <= 0 then return 1 end
+  return EffectiveScale(frame) / uiScale
+end
+
 -- Restores a window's authored height before any fit or clamp measurement.
--- GetHeight reports the scaled result on this client, while SetHeight takes
--- the frame's own units, so compare against fixedHeight * current scale.
+-- Since client UI scaling moved onto the frame hierarchy, GetHeight and
+-- SetHeight both use the frame's own units; effective scale maps them to screen.
 local function RestoreFixedHeight(frame, options)
   local fixedHeight = options and tonumber(options.fixedHeight)
   if not fixedHeight or fixedHeight <= 0 or not frame.SetHeight then return false end
 
   local ok, height = pcall(frame.GetHeight, frame)
   local current = ok and tonumber(height) or nil
-  if current and math.abs(current - fixedHeight * FrameScale(frame)) <
+  if current and math.abs(current - fixedHeight) <
      sg.OFFSET_EPSILON then
     return false
   end
@@ -137,8 +142,9 @@ end
 -- corner is at (left, bottom), inside the screen. A rectangle still wider or
 -- taller than the screen keeps its left edge and its top edge visible, which
 -- is where every window's title and drag strip are.
-local function Overshoot(left, bottom, width, height)
-  local screenWidth, screenHeight = U.UIWidth(), U.UIHeight()
+local function Overshoot(left, bottom, width, height, screenWidth, screenHeight)
+  screenWidth = screenWidth or U.UIWidth()
+  screenHeight = screenHeight or U.UIHeight()
   local dx, dy = 0, 0
 
   if width >= screenWidth or left < 0 then
@@ -167,20 +173,26 @@ function U.ClampPositionToScreen(frame, position)
   local point = position.point
   local relativePoint = position.relativePoint or point
   local x, y = tonumber(position.x) or 0, tonumber(position.y) or 0
-  local left = U.UIWidth() * PointFactor(relativePoint, "LEFT", "RIGHT") + x -
-               width * PointFactor(point, "LEFT", "RIGHT")
-  local bottom = U.UIHeight() * PointFactor(relativePoint, "BOTTOM", "TOP") + y -
-                 height * PointFactor(point, "BOTTOM", "TOP")
+  local ratio = LayoutRatio(frame)
+  local layoutWidth, layoutHeight = U.UILayoutWidth(), U.UILayoutHeight()
+  local layoutFrameWidth, layoutFrameHeight = width * ratio, height * ratio
+  local left = layoutWidth * PointFactor(relativePoint, "LEFT", "RIGHT") +
+               x * ratio - layoutFrameWidth *
+               PointFactor(point, "LEFT", "RIGHT")
+  local bottom = layoutHeight * PointFactor(relativePoint, "BOTTOM", "TOP") +
+                  y * ratio - layoutFrameHeight *
+                  PointFactor(point, "BOTTOM", "TOP")
 
-  local dx, dy = Overshoot(left, bottom, width, height)
+  local dx, dy = Overshoot(left, bottom, layoutFrameWidth, layoutFrameHeight,
+                           layoutWidth, layoutHeight)
   if math.abs(dx) < sg.OFFSET_EPSILON and math.abs(dy) < sg.OFFSET_EPSILON then
     return position, false
   end
   return {
     point = point,
     relativePoint = relativePoint,
-    x = x + dx,
-    y = y + dy,
+    x = x + dx / ratio,
+    y = y + dy / ratio,
   }, true
 end
 
@@ -203,10 +215,11 @@ function U.FitFrameToScreen(frame)
     base = fit.base
   end
 
-  -- Reported size includes the current scale; divide it back to the size the
-  -- frame has at its owner's scale.
-  local naturalWidth = width * base / current
-  local naturalHeight = height * base / current
+  -- Reported size is in the frame's own units. Hold the inherited part of the
+  -- effective scale constant and evaluate the owner's base scale in pixels.
+  local inheritedScale = EffectiveScale(frame) / current
+  local naturalWidth = width * inheritedScale * base
+  local naturalHeight = height * inheritedScale * base
   local factor = math.min(1, U.UIWidth() / naturalWidth,
                           U.UIHeight() / naturalHeight)
   local target = base * factor
@@ -238,11 +251,15 @@ end
 
 -- The SetPoint offsets that put a width x height rectangle's bottom-left corner
 -- at (left, bottom) through the given point pair.
-local function OffsetsFor(point, relativePoint, left, bottom, width, height)
+local function OffsetsFor(frame, point, relativePoint,
+                          left, bottom, width, height)
+  local ratio = LayoutRatio(frame)
+  local referenceWidth = U.UILayoutWidth() / ratio
+  local referenceHeight = U.UILayoutHeight() / ratio
   return left + width * PointFactor(point, "LEFT", "RIGHT") -
-           U.UIWidth() * PointFactor(relativePoint, "LEFT", "RIGHT"),
+           referenceWidth * PointFactor(relativePoint, "LEFT", "RIGHT"),
          bottom + height * PointFactor(point, "BOTTOM", "TOP") -
-           U.UIHeight() * PointFactor(relativePoint, "BOTTOM", "TOP")
+           referenceHeight * PointFactor(relativePoint, "BOTTOM", "TOP")
 end
 
 -- The point pair a frame is re-anchored through: its own when it has exactly
@@ -275,7 +292,8 @@ function U.GetFramePlacement(frame)
   local left, bottom = Read(frame, "GetLeft"), Read(frame, "GetBottom")
   if not width or not left or not bottom then return nil end
   local point, relativePoint = sg.PointNames(frame)
-  local x, y = OffsetsFor(point, relativePoint, left, bottom, width, height)
+  local x, y = OffsetsFor(frame, point, relativePoint,
+                          left, bottom, width, height)
   return { point = point, relativePoint = relativePoint, x = x, y = y }
 end
 
@@ -305,7 +323,9 @@ local function OnScreen(frame)
   local width, height = FrameSize(frame)
   local left, bottom = Read(frame, "GetLeft"), Read(frame, "GetBottom")
   if not width or not left or not bottom then return false end
-  local dx, dy = Overshoot(left, bottom, width, height)
+  local scale = EffectiveScale(frame)
+  local dx, dy = Overshoot(left * scale, bottom * scale,
+                           width * scale, height * scale)
   return math.abs(dx) < sg.OFFSET_EPSILON and math.abs(dy) < sg.OFFSET_EPSILON
 end
 
@@ -326,34 +346,36 @@ function U.ClampFrameToScreen(frame)
   local left, bottom = Read(frame, "GetLeft"), Read(frame, "GetBottom")
   if not width or not left or not bottom then return false end
 
-  local dx, dy = Overshoot(left, bottom, width, height)
+  local effectiveScale = EffectiveScale(frame)
+  local dx, dy = Overshoot(left * effectiveScale, bottom * effectiveScale,
+                           width * effectiveScale, height * effectiveScale)
   if math.abs(dx) < sg.OFFSET_EPSILON and math.abs(dy) < sg.OFFSET_EPSILON then
     return false
   end
 
   local point, relativePoint = sg.PointNames(frame)
-  local x, y = OffsetsFor(point, relativePoint, left + dx, bottom + dy,
-                          width, height)
+  local x, y = OffsetsFor(frame, point, relativePoint,
+                          left + dx / effectiveScale,
+                          bottom + dy / effectiveScale, width, height)
   local position = { point = point, relativePoint = relativePoint, x = x, y = y }
   if not U.ApplyFramePoint(frame, position) then return false end
 
-  -- A frame that was sized by two anchors keeps the size it had. SetWidth
-  -- takes the frame's own units, GetWidth reports them scaled.
+  -- A frame that was sized by two anchors keeps the size it had. Both getters
+  -- and setters use the frame's own units on the scaled client.
   local newWidth, newHeight = FrameSize(frame)
-  local scale = Read(frame, "GetScale") or 1
-  if scale <= 0 then scale = 1 end
   if not newWidth or math.abs(newWidth - width) > sg.OFFSET_EPSILON then
-    pcall(frame.SetWidth, frame, width / scale)
+    pcall(frame.SetWidth, frame, width)
   end
   if not newHeight or math.abs(newHeight - height) > sg.OFFSET_EPSILON then
-    pcall(frame.SetHeight, frame, height / scale)
+    pcall(frame.SetHeight, frame, height)
   end
 
   -- Edge readback is immediate after SetPoint (same probe). A correction that
   -- did not land on screen is undone rather than saved, so a wrong assumption
   -- can never run away across sweeps again.
   if not OnScreen(frame) then
-    local ox, oy = OffsetsFor(point, relativePoint, left, bottom, width, height)
+    local ox, oy = OffsetsFor(frame, point, relativePoint,
+                              left, bottom, width, height)
     U.ApplyFramePoint(frame, { point = point, relativePoint = relativePoint,
                                x = ox, y = oy })
     local nameOk, name = pcall(frame.GetName, frame)

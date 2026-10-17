@@ -45,12 +45,22 @@ local function PointFactor(point, low, high)
   return 0.5
 end
 
+local function LayoutRatio(frame)
+  local frameOk, frameScale = pcall(frame.GetEffectiveScale, frame)
+  local uiOk, uiScale = pcall(UIParent.GetEffectiveScale, UIParent)
+  frameScale = frameOk and tonumber(frameScale) or nil
+  uiScale = uiOk and tonumber(uiScale) or nil
+  if not frameScale or frameScale <= 0 or not uiScale or uiScale <= 0 then
+    return 1
+  end
+  return frameScale / uiScale
+end
+
 -- Positions come from the window's measured edges (U.GetFramePlacement,
 -- core/screenguard.lua), not from GetPoint's offsets: this client reports Y in
 -- SetPoint's own sign, and U.GetFramePoint negates it, so offsets read through
--- it came back mirrored. The edges of a UIParent child are in UIParent units
--- with its own scale applied (frames.own_scale_resizes_about_anchor_in_parent_space,
--- which also reconciles the older mixed-space record).
+-- it came back mirrored. GetFramePlacement returns offsets in the frame's own
+-- anchor units; LayoutRatio maps them into the shared UIParent layout space.
 local function CurrentPosition(state)
   return U.GetFramePlacement(state.frame)
 end
@@ -67,10 +77,15 @@ local function WindowBounds(state, position)
   local x = tonumber(position.x) or 0
   local y = tonumber(position.y) or 0
   local relativePoint = position.relativePoint or position.point
-  local left = U.UIWidth() * PointFactor(relativePoint, "LEFT", "RIGHT") + x -
-               width * PointFactor(position.point, "LEFT", "RIGHT")
-  local bottom = U.UIHeight() * PointFactor(relativePoint, "BOTTOM", "TOP") + y -
-                 height * PointFactor(position.point, "BOTTOM", "TOP")
+  local ratio = LayoutRatio(state.frame)
+  local layoutWidth, layoutHeight = U.UILayoutWidth(), U.UILayoutHeight()
+  -- Every field is in UIParent's layout space, so the extent is scaled once
+  -- here and the edges are built from it.
+  width, height = width * ratio, height * ratio
+  local left = layoutWidth * PointFactor(relativePoint, "LEFT", "RIGHT") +
+               x * ratio - width * PointFactor(position.point, "LEFT", "RIGHT")
+  local bottom = layoutHeight * PointFactor(relativePoint, "BOTTOM", "TOP") +
+                 y * ratio - height * PointFactor(position.point, "BOTTOM", "TOP")
   return {
     left = left,
     right = left + width,
@@ -88,16 +103,16 @@ end
 
 local function ClampCandidate(left, bottom, width, height)
   local minLeft, minBottom = SCREEN_MARGIN, SCREEN_MARGIN
-  local maxLeft = U.UIWidth() - SCREEN_MARGIN - width
-  local maxBottom = U.UIHeight() - SCREEN_MARGIN - height
+  local maxLeft = U.UILayoutWidth() - SCREEN_MARGIN - width
+  local maxBottom = U.UILayoutHeight() - SCREEN_MARGIN - height
 
   if maxLeft < minLeft then
-    left = (U.UIWidth() - width) / 2
+    left = (U.UILayoutWidth() - width) / 2
   else
     left = math.max(minLeft, math.min(maxLeft, left))
   end
   if maxBottom < minBottom then
-    bottom = (U.UIHeight() - height) / 2
+    bottom = (U.UILayoutHeight() - height) / 2
   else
     bottom = math.max(minBottom, math.min(maxBottom, bottom))
   end
@@ -130,11 +145,12 @@ local function AddCandidate(candidates, original, blockers, left, bottom)
 end
 
 local function ApplyBottomLeft(state, left, bottom)
+  local ratio = LayoutRatio(state.frame)
   return U.ApplyFramePoint(state.frame, {
     point = "BOTTOMLEFT",
     relativePoint = "BOTTOMLEFT",
-    x = left,
-    y = bottom,
+    x = left / ratio,
+    y = bottom / ratio,
   })
 end
 
@@ -149,12 +165,12 @@ local function ReflowPair(state, original, blocker)
   if not other then return false end
 
   local layouts = {}
-  local availableWidth = U.UIWidth() - SCREEN_MARGIN * 2
-  local availableHeight = U.UIHeight() - SCREEN_MARGIN * 2
+  local availableWidth = U.UILayoutWidth() - SCREEN_MARGIN * 2
+  local availableHeight = U.UILayoutHeight() - SCREEN_MARGIN * 2
 
   if original.width + WINDOW_GAP + blocker.width <= availableWidth then
     local totalWidth = original.width + WINDOW_GAP + blocker.width
-    local maxGroupLeft = U.UIWidth() - SCREEN_MARGIN - totalWidth
+    local maxGroupLeft = U.UILayoutWidth() - SCREEN_MARGIN - totalWidth
 
     local groupLeft = (original.left +
       (blocker.left - original.width - WINDOW_GAP)) / 2
@@ -189,7 +205,7 @@ local function ReflowPair(state, original, blocker)
 
   if original.height + WINDOW_GAP + blocker.height <= availableHeight then
     local totalHeight = original.height + WINDOW_GAP + blocker.height
-    local maxGroupBottom = U.UIHeight() - SCREEN_MARGIN - totalHeight
+    local maxGroupBottom = U.UILayoutHeight() - SCREEN_MARGIN - totalHeight
 
     local groupBottom = (original.bottom +
       (blocker.bottom - original.height - WINDOW_GAP)) / 2
@@ -505,13 +521,8 @@ function U.MakeWindowDraggable(id, frame, options)
   local fixedHeight
   if preserveHeight and frame.GetHeight then
     local heightOk, height = pcall(frame.GetHeight, frame)
-    local scaleOk, scale = false, 1
-    if frame.GetScale then scaleOk, scale = pcall(frame.GetScale, frame) end
     height = heightOk and tonumber(height) or nil
-    scale = scaleOk and tonumber(scale) or 1
-    if height and height > 0 and scale and scale > 0 then
-      fixedHeight = height / scale
-    end
+    if height and height > 0 then fixedHeight = height end
   end
 
   local state = {

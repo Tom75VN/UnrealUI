@@ -63,7 +63,7 @@ local advanced = {
     { key = "xpbar", labelKey = "MOVER_LABEL_XP_BAR",
       movers = { "xpbar.xp" } },
     { key = "repbar", labelKey = "MOVER_LABEL_REP_BAR",
-      setting = { module = "xpbar", key = "repEnabled", default = true,
+      setting = { module = "xpbar", key = "repEnabled", default = false,
                   apply = "ApplyXPBar" }, movers = { "xpbar.reputation" } },
     { key = "status", labelKey = "MOVER_LABEL_STATUS",
       movers = { "status.overlay" } },
@@ -209,27 +209,11 @@ local function Edge(frame, method)
   return tonumber(value)
 end
 
--- How much bigger than UIParent's scale a mover's frame is drawn.
---
--- DIAGNOSTIC ONLY. Nothing in the placement maths may use it, because this
--- client does NOT work the way retail does. `/uui movesnap`, on the
--- modern-wow cast bar (own scale 0.75, UIParent at 1), measured:
---
---   * SetWidth(230) then GetWidth() -> 172.5. Reported size is the frame's
---     own size ALREADY multiplied by its own scale.
---   * SetPoint(TOPLEFT, UIParent, TOPLEFT, x, y) then GetLeft() -> exactly x,
---     and GetBottom() + GetHeight() -> exactly UIParent's height + y. The
---     offsets are NOT divided by the frame's scale, and the relative point is
---     not converted into the frame's space either.
---
--- So a frame's own scale resizes it about its anchor point and changes nothing
--- else: stored offsets, GetLeft/GetBottom and GetWidth/GetHeight are all in
--- UIParent's units for every mover, scaled or not, and the placement maths in
--- this file needs no conversion at all. An earlier revision assumed retail's
--- model and multiplied the bounds through this ratio; on a 0.75 cast bar that
--- put its rectangle 192 units (UIHeight * 0.25) above the bar the player sees,
--- which made it collide with the party block it was merely near and threw it
--- several grid cells. Do not reintroduce that without new measurements.
+-- Conversion from a mover's own anchor units to UIParent's grid units.
+-- uiscale.v2 plus /uui movesnap measured three current-client cases: a normal
+-- frame at ratio 1, a scale-immune unit frame above 1, and a cast bar below 1.
+-- Cursor deltas, reference spans, edges and dimensions all require this ratio
+-- once client UI scaling is enabled.
 local function EntryScale(entry)
   local frame = entry and entry.frame
   if not frame then return 1 end
@@ -274,10 +258,11 @@ local function NormaliseAnchorEdge(entry)
 
   -- UIParent's origin is subtracted rather than assumed to be (0, 0), so a
   -- client that does not place it flush with the screen corner still converts
-  -- to the right offsets. Both sides are in UIParent's units whatever the
-  -- frame's own scale is -- see EntryScale for the measurement.
-  local x = left - (Edge(UIParent, "GetLeft") or 0)
-  local y = bottom - (Edge(UIParent, "GetBottom") or 0)
+  -- to the right offsets. The frame's edges and offsets are in its own units,
+  -- so UIParent's origin is brought into them through EntryScale.
+  local ratio = EntryScale(entry)
+  local x = left - (Edge(UIParent, "GetLeft") or 0) / ratio
+  local y = bottom - (Edge(UIParent, "GetBottom") or 0) / ratio
 
   if not U.ApplyFramePoint(entry.frame, {
        point = "BOTTOMLEFT", relativePoint = "BOTTOMLEFT", x = x, y = y }) then
@@ -359,17 +344,18 @@ local function MoverBounds(entry, position)
   if not widthOk or not heightOk or not width or not height or
      width <= 0 or height <= 0 then return nil end
 
-  -- Offsets and dimensions are already in UIParent's units for every mover,
-  -- scaled or not (EntryScale records the measurement), so this rectangle is
-  -- built from them directly.
+  local ratio = EntryScale(entry)
+  local referenceWidth = U.UILayoutWidth() / ratio
+  local referenceHeight = U.UILayoutHeight() / ratio
   local x = tonumber(position.x) or 0
   local y = tonumber(position.y) or 0
   local relativePoint = position.relativePoint or position.point
-  local left = U.UIWidth() * PointFactor(relativePoint, "LEFT", "RIGHT") + x -
+  local left = referenceWidth * PointFactor(relativePoint, "LEFT", "RIGHT") + x -
                width * PointFactor(position.point, "LEFT", "RIGHT")
-  local bottom = U.UIHeight() * PointFactor(relativePoint, "BOTTOM", "TOP") + y -
+  local bottom = referenceHeight * PointFactor(relativePoint, "BOTTOM", "TOP") + y -
                  height * PointFactor(position.point, "BOTTOM", "TOP")
-  return left, left + width, bottom, bottom + height
+  return left * ratio, (left + width) * ratio,
+         bottom * ratio, (bottom + height) * ratio
 end
 
 local function IntervalsNear(aLow, aHigh, bLow, bHigh)
@@ -431,9 +417,9 @@ local function ReadPlacement(frame)
     left = left - (Edge(UIParent, "GetLeft") or 0)
     bottom = bottom - (Edge(UIParent, "GetBottom") or 0)
     x = left + width * PointFactor(point, "LEFT", "RIGHT") -
-        U.UIWidth() * PointFactor(relativePoint, "LEFT", "RIGHT")
+        U.UILayoutWidth() * PointFactor(relativePoint, "LEFT", "RIGHT")
     y = bottom + height * PointFactor(point, "BOTTOM", "TOP") -
-        U.UIHeight() * PointFactor(relativePoint, "BOTTOM", "TOP")
+        U.UILayoutHeight() * PointFactor(relativePoint, "BOTTOM", "TOP")
   end
   return { point = point, relative = relative,
            relativePoint = relativePoint, x = x, y = y }
@@ -492,9 +478,7 @@ local function Rounded(value)
   return math.floor(value * 100 + 0.5) / 100
 end
 
--- The rect the client actually draws, in UIParent units -- which is what
--- GetLeft/GetBottom/GetWidth/GetHeight report for every frame, scaled or not
--- (EntryScale carries the measurement that established this).
+-- The live rect converted from the frame's anchor units into the grid space.
 local function LiveRect(entry)
   local frame = entry and entry.frame
   if not frame then return nil end
@@ -505,8 +489,10 @@ local function LiveRect(entry)
   local height = Edge(frame, "GetHeight")
   if not left or not bottom or not width or not height then return nil end
 
-  left = left - (Edge(UIParent, "GetLeft") or 0)
-  bottom = bottom - (Edge(UIParent, "GetBottom") or 0)
+  local ratio = EntryScale(entry)
+  left = left * ratio - (Edge(UIParent, "GetLeft") or 0)
+  bottom = bottom * ratio - (Edge(UIParent, "GetBottom") or 0)
+  width, height = width * ratio, height * ratio
   return left, left + width, bottom, bottom + height
 end
 
@@ -732,8 +718,8 @@ function trace.Publish(reason)
   report.reason = reason
   report.theme = type(U.GetActiveThemeStyle) == "function"
                  and U.GetActiveThemeStyle() or "?"
-  report.uiWidth = Rounded(U.UIWidth())
-  report.uiHeight = Rounded(U.UIHeight())
+  report.uiWidth = Rounded(U.UILayoutWidth())
+  report.uiHeight = Rounded(U.UILayoutHeight())
   report.uiScale = scaleOk and Rounded(uiScale) or "?"
   report.gridSize = GridSize()
   report.magnetDistance = MAGNET_DISTANCE
@@ -834,9 +820,9 @@ local function SnapToMovers(entry, point, relativePoint, x, y, gridOn,
   local i
   if not gridOn then
     bestX, bestXDistance = ClosestDelta(
-      U.UIWidth() / 2 - (left + right) / 2, bestX, bestXDistance)
+      U.UILayoutWidth() / 2 - (left + right) / 2, bestX, bestXDistance)
     bestY, bestYDistance = ClosestDelta(
-      U.UIHeight() / 2 - (bottom + top) / 2, bestY, bestYDistance)
+      U.UILayoutHeight() / 2 - (bottom + top) / 2, bestY, bestYDistance)
   end
   for i = 1, table.getn(moverOrder) do
     local other = movers[moverOrder[i]]
@@ -872,8 +858,9 @@ local function SnapToMovers(entry, point, relativePoint, x, y, gridOn,
     end
   end
 
-  if bestX then x = fromX + bestX end
-  if bestY then y = fromY + bestY end
+  local ratio = EntryScale(entry)
+  if bestX then x = fromX + bestX / ratio end
+  if bestY then y = fromY + bestY / ratio end
 
   -- A magnet is also a collision barrier. Resolve every overlap after the
   -- proximity snap, backing the anchor out the way it came in. Repeating the
@@ -972,10 +959,10 @@ local function SnapToMovers(entry, point, relativePoint, x, y, gridOn,
                     otherLeft, otherRight, otherBottom, otherTop,
                     left, right, bottom, top)
           if axis == "x" then
-            x = x + correction
+            x = x + correction / ratio
             bestX = correction
           else
-            y = y + correction
+            y = y + correction / ratio
             bestY = correction
           end
           resolved = true
@@ -1023,10 +1010,12 @@ local function SnapPosition(entry, point, relativePoint, x, y)
     return SnapValue(x), SnapValue(y)
   end
 
-  local centerX, centerY = U.UIWidth() / 2, U.UIHeight() / 2
+  local centerX, centerY = U.UILayoutWidth() / 2, U.UILayoutHeight() / 2
   local snappedLeft = centerX + SnapValue(left - centerX)
   local snappedTop = centerY + SnapValue(top - centerY)
-  return x + (snappedLeft - left), y + (snappedTop - top)
+  local ratio = EntryScale(entry)
+  return x + (snappedLeft - left) / ratio,
+         y + (snappedTop - top) / ratio
 end
 
 local function ResolveSnap(entry, point, relative, relativePoint, x, y)
@@ -1201,10 +1190,12 @@ local function PinToUIParent(entry)
     return false
   end
 
+  -- Edges and offsets are both in the frame's own units (EntryScale).
+  local ratio = EntryScale(entry)
   local applied = U.ApplyFramePoint(entry.frame, {
     point = "BOTTOMLEFT", relativePoint = "BOTTOMLEFT",
-    x = left - (Edge(UIParent, "GetLeft") or 0),
-    y = bottom - (Edge(UIParent, "GetBottom") or 0),
+    x = left - (Edge(UIParent, "GetLeft") or 0) / ratio,
+    y = bottom - (Edge(UIParent, "GetBottom") or 0) / ratio,
   })
   if applied then
     trace.Event("pin", entry, nil, { fromRelative = trace.Name(relative) })
@@ -1292,9 +1283,11 @@ local function MoveFollowers(entry, deltaX, deltaY)
   local i
   for i = 1, table.getn(entry.followers or {}) do
     local follower = entry.followers[i]
+    local factor = EntryScale(entry) / EntryScale(follower.entry)
     U.ApplyFramePoint(follower.entry.frame, {
       point = follower.point, relativePoint = follower.relativePoint,
-      x = follower.x + deltaX, y = follower.y + deltaY,
+      x = follower.x + deltaX * factor,
+      y = follower.y + deltaY * factor,
     })
   end
 end
@@ -1327,9 +1320,11 @@ local function FinishFollowers(entry, before)
   local i
   for i = 1, table.getn(entry.followers or {}) do
     local follower = entry.followers[i]
+    local factor = EntryScale(entry) / EntryScale(follower.entry)
     local position = {
       point = follower.point, relativePoint = follower.relativePoint,
-      x = follower.x + deltaX, y = follower.y + deltaY,
+      x = follower.x + deltaX * factor,
+      y = follower.y + deltaY * factor,
     }
     -- Applied as well as stored: an anchor the gesture moved has to keep its
     -- new place across a reload, and a member that was only ever riding a live
@@ -1351,21 +1346,16 @@ local function ReadDragPosition(frame)
   return ReadPlacement(frame)
 end
 
--- knowledge.json / api.getcursorposition_usable_for_hit_testing
--- (USER_CONFIRMED_INGAME): cursor coordinates divided by effective scale are
--- valid in the frame geometry space used by the placement offsets below.
---
--- UIParent's scale, not the dragged frame's. A mover's offsets are in
--- UIParent's units whatever the frame's own scale is (see EntryScale for the
--- measurement), so dividing by the frame's effective scale made a 0.75 cast
--- bar travel a third further than the cursor and land where the player had not
--- put it -- which is what "the cast bar does not save its position" was.
-local function ReadCursorPoint()
+-- GetCursorPosition is in screen space. The active frame's effective scale
+-- converts it into that frame's anchor units; using UIParent's scale made a
+-- scale-immune unit frame travel 1 / 0.843 times farther than the cursor.
+local function ReadCursorPoint(entry)
   local cursor = U.G("GetCursorPosition")
   if type(cursor) ~= "function" then return nil end
 
   local cursorOk, x, y = pcall(cursor)
-  local scaleOk, scale = pcall(UIParent.GetEffectiveScale, UIParent)
+  local frame = entry and entry.frame or UIParent
+  local scaleOk, scale = pcall(frame.GetEffectiveScale, frame)
   x, y, scale = tonumber(x), tonumber(y), tonumber(scale)
   if not cursorOk or not scaleOk or not x or not y or
      not scale or scale <= 0 then return nil end
@@ -1427,13 +1417,14 @@ local function DetachDragInput(entry)
     return false
   end
 
-  -- GetCenter and GetWidth already report in UIParent's units, whatever the
-  -- frame's own scale is (EntryScale), so the rect transfers unchanged to the
-  -- input Button living in that same space.
+  -- The input lives in UIParent's grid space. Convert the target's centre and
+  -- dimensions from its own anchor space before cutting the input loose.
+  local ratio = EntryScale(entry)
   input:ClearAllPoints()
-  input:SetWidth(width)
-  input:SetHeight(height)
-  input:SetPoint("CENTER", UIParent, "BOTTOMLEFT", centreX, centreY)
+  input:SetWidth(width * ratio)
+  input:SetHeight(height * ratio)
+  input:SetPoint("CENTER", UIParent, "BOTTOMLEFT",
+                 centreX * ratio, centreY * ratio)
   return true
 end
 
@@ -1496,7 +1487,7 @@ local function StartDrag(entry)
   -- PinToUIParent above has already reduced the visible anchor to one stable
   -- point. Keep that point independent of the native input Button's movement.
   entry.dragStartPosition = ReadDragPosition(frame)
-  entry.dragCursorX, entry.dragCursorY = ReadCursorPoint()
+  entry.dragCursorX, entry.dragCursorY = ReadCursorPoint(entry)
   -- Where the anchor is now. SnapToMovers reads this to know which way it is
   -- travelling when it has to undo an overlap; it is updated below on every
   -- tick that settles on a position, so it always names the last place the
@@ -1514,7 +1505,7 @@ local function StartDrag(entry)
     end
 
     local origin = entry.dragStartPosition
-    local cursorX, cursorY = ReadCursorPoint()
+    local cursorX, cursorY = ReadCursorPoint(entry)
     if not origin or not cursorX or not entry.dragCursorX then return end
     local deltaX = cursorX - entry.dragCursorX
     local deltaY = cursorY - entry.dragCursorY
@@ -1913,6 +1904,16 @@ local function RaiseHandle(entry)
   if not levelOk or not tonumber(level) then return false end
   local handleLevel = level + HANDLE_LEVEL_OFFSET
   local raised = pcall(entry.handle.SetFrameLevel, entry.handle, handleLevel)
+
+  -- Handles are UIParent children so UI scale is inherited once, not again
+  -- from the target. Match the target's resolved strata explicitly.
+  local strataOk, targetStrata = pcall(entry.frame.GetFrameStrata, entry.frame)
+  if not strataOk or type(targetStrata) ~= "string" or
+     targetStrata == "PARENT" then
+    targetStrata = "MEDIUM"
+  end
+  pcall(entry.handle.SetFrameStrata, entry.handle, targetStrata)
+
   if entry.dragInput then
     -- The input is a UIParent child, so it does not inherit the moved frame's
     -- strata. Without matching it the handle would win hit-testing and the
@@ -1926,18 +1927,7 @@ local function RaiseHandle(entry)
     -- Most anchors inherit their target's strata. A native root may contain
     -- client buttons above that level, so a caller can raise only the temporary
     -- edit-mode input without changing the actual frame's draw order.
-    local strata = entry.inputStrata
-    if not strata then
-      local strataOk, value = pcall(entry.frame.GetFrameStrata, entry.frame)
-      if strataOk and type(value) == "string" and value ~= "PARENT" then
-        strata = value
-      else
-        strataOk, value = pcall(entry.handle.GetFrameStrata, entry.handle)
-        if strataOk and type(value) == "string" and value ~= "PARENT" then
-          strata = value
-        end
-      end
-    end
+    local strata = entry.inputStrata or targetStrata
     -- Floor it at INPUT_STRATA_FLOOR. An anchor under a BACKGROUND or LOW frame
     -- (minimap, quest and craft trackers) otherwise lost its input wherever
     -- MEDIUM HUD overlapped it -- the native buff and debuff buttons in the
@@ -1960,7 +1950,7 @@ local function CreateHandle(entry)
   -- Named because an unnamed Button gives the client nothing to report in an
   -- error, and the mover handles are exactly what a drag failure is about.
   local handle = CreateFrame("Button", "UnrealUIMoverHandle" .. handleCount,
-                             entry.frame)
+                             UIParent)
   handle:SetAllPoints(entry.frame)
   -- Visual only: every script lives on the input below. A mouse-enabled handle
   -- that ends up above its input swallows the hover and the drag.
@@ -2133,7 +2123,7 @@ end
 -- produces are multiples of the selected grid size from that same origin.
 -- ---------------------------------------------------------------------------
 
-local function LayoutGridLine(index, vertical, offset, color, length, thickness)
+local function LayoutGridLine(index, vertical, offset, color, thickness)
   local line = grid.uuiLines[index]
   if not line then
     line = grid:CreateTexture(nil, "BACKGROUND")
@@ -2145,12 +2135,12 @@ local function LayoutGridLine(index, vertical, offset, color, length, thickness)
 
   if vertical then
     line:SetWidth(thickness)
-    line:SetHeight(length)
-    line:SetPoint("CENTER", UIParent, "CENTER", offset, 0)
+    line:SetPoint("TOP", UIParent, "TOP", offset, 0)
+    line:SetPoint("BOTTOM", UIParent, "BOTTOM", offset, 0)
   else
-    line:SetWidth(length)
     line:SetHeight(thickness)
-    line:SetPoint("CENTER", UIParent, "CENTER", 0, offset)
+    line:SetPoint("LEFT", UIParent, "LEFT", 0, offset)
+    line:SetPoint("RIGHT", UIParent, "RIGHT", 0, offset)
   end
 
   line:Show()
@@ -2158,7 +2148,7 @@ local function LayoutGridLine(index, vertical, offset, color, length, thickness)
 end
 
 local function LayoutGrid(previewSize)
-  local width, height = U.UIWidth(), U.UIHeight()
+  local width, height = U.UILayoutWidth(), U.UILayoutHeight()
   local thickness = U.BorderSize()
   local offset, index = nil, 0
   local size = tonumber(previewSize)
@@ -2171,25 +2161,25 @@ local function LayoutGrid(previewSize)
   end
 
   index = index + 1
-  LayoutGridLine(index, true, 0, M.color.gridAxis, height, thickness)
+  LayoutGridLine(index, true, 0, M.color.gridAxis, thickness)
   index = index + 1
-  LayoutGridLine(index, false, 0, M.color.gridAxis, width, thickness)
+  LayoutGridLine(index, false, 0, M.color.gridAxis, thickness)
 
   offset = size
   while offset < width / 2 do
     index = index + 1
-    LayoutGridLine(index, true, offset, M.color.grid, height, thickness)
+    LayoutGridLine(index, true, offset, M.color.grid, thickness)
     index = index + 1
-    LayoutGridLine(index, true, -offset, M.color.grid, height, thickness)
+    LayoutGridLine(index, true, -offset, M.color.grid, thickness)
     offset = offset + size
   end
 
   offset = size
   while offset < height / 2 do
     index = index + 1
-    LayoutGridLine(index, false, offset, M.color.grid, width, thickness)
+    LayoutGridLine(index, false, offset, M.color.grid, thickness)
     index = index + 1
-    LayoutGridLine(index, false, -offset, M.color.grid, width, thickness)
+    LayoutGridLine(index, false, -offset, M.color.grid, thickness)
     offset = offset + size
   end
 
@@ -2255,7 +2245,8 @@ UpdateAlignmentGuides = function(entry, point, relativePoint, x, y)
 
   local centerX, centerY = (left + right) / 2, (bottom + top) / 2
   local guideX, guideY
-  local screenCenterX, screenCenterY = U.UIWidth() / 2, U.UIHeight() / 2
+  local screenCenterX, screenCenterY =
+    U.UILayoutWidth() / 2, U.UILayoutHeight() / 2
   if math.abs(centerX - screenCenterX) <= ALIGNMENT_EPSILON then
     guideX = screenCenterX
   end
@@ -2294,7 +2285,7 @@ UpdateAlignmentGuides = function(entry, point, relativePoint, x, y)
   if guideX then
     alignmentGuides.vertical:ClearAllPoints()
     alignmentGuides.vertical:SetWidth(thickness)
-    alignmentGuides.vertical:SetHeight(U.UIHeight())
+    alignmentGuides.vertical:SetHeight(U.UILayoutHeight())
     alignmentGuides.vertical:SetPoint(
       "CENTER", UIParent, "CENTER", guideX - screenCenterX, 0)
     alignmentGuides.vertical:Show()
@@ -2303,7 +2294,7 @@ UpdateAlignmentGuides = function(entry, point, relativePoint, x, y)
   end
   if guideY then
     alignmentGuides.horizontal:ClearAllPoints()
-    alignmentGuides.horizontal:SetWidth(U.UIWidth())
+    alignmentGuides.horizontal:SetWidth(U.UILayoutWidth())
     alignmentGuides.horizontal:SetHeight(thickness)
     alignmentGuides.horizontal:SetPoint(
       "CENTER", UIParent, "CENTER", 0, guideY - screenCenterY)
@@ -2955,8 +2946,9 @@ local function NudgeActiveMover(x, y)
     entry.followerSet[entry.followers[followerIndex].entry.id] = true
   end
 
-  local nextX = (tonumber(position.x) or 0) + x
-  local nextY = (tonumber(position.y) or 0) + y
+  local ratio = EntryScale(entry)
+  local nextX = (tonumber(position.x) or 0) + x / ratio
+  local nextY = (tonumber(position.y) or 0) + y / ratio
 
   local saved = U.SavePosition(entry.id, position.point, position.relativePoint,
                                nextX, nextY)
@@ -3426,6 +3418,62 @@ function U.ReapplyMoverPosition(frame)
     end
   end
   return false
+end
+
+-- Re-places every mover when the UI scale or resolution changes. Offsets are
+-- in UIParent layout units, whose span shrinks as the scale grows (compat.lua
+-- "Screen metrics"), so a frame placed near an edge at 80% sits past it at
+-- 100%. HUD movers are not swept by core/screenguard.lua.
+--
+-- No scale-change event has client evidence (query_compat: UI_SCALE_CHANGED
+-- has no match; CVAR_UPDATE fires only for a SetCVar given a third argument),
+-- so the check runs when the windows that change the scale close: the game
+-- settings window (modules/gamesettings.lua calls U.RefreshMoverLayout) and the
+-- client's own option panels, hooked by exact name. Deferred one tick so the
+-- new scale has applied. A reload at a new scale is already covered:
+-- ApplyStoredPosition clamps on apply. It clamps without re-saving, so going
+-- back to the old scale restores the original placement.
+local scaleWatch = {
+  EPSILON = 0.5,
+  PANELS = { "OptionsFrame", "UIOptionsFrame" },
+}
+
+function scaleWatch.Check()
+  local width, height = U.UILayoutWidth(), U.UILayoutHeight()
+  if not scaleWatch.width then
+    scaleWatch.width, scaleWatch.height = width, height
+    return
+  end
+  if math.abs(width - scaleWatch.width) < scaleWatch.EPSILON and
+     math.abs(height - scaleWatch.height) < scaleWatch.EPSILON then
+    return
+  end
+  scaleWatch.width, scaleWatch.height = width, height
+
+  -- A drag in progress owns its frame; its drop clamps it.
+  local i
+  for i = 1, table.getn(moverOrder) do
+    local entry = movers[moverOrder[i]]
+    if entry and not entry.dragging then ApplyStoredPosition(entry) end
+  end
+  U.Debug("mover: UI layout changed to " .. U.Round(width) .. " x " ..
+          U.Round(height) .. "; movers re-placed")
+end
+
+function U.RefreshMoverLayout()
+  U.DeferOnce("mover.scaleWatch", scaleWatch.Check)
+end
+
+if type(U.RegisterEvent) == "function" then
+  U.RegisterEvent("PLAYER_ENTERING_WORLD", function()
+    scaleWatch.Check()
+    if scaleWatch.hooked then return end
+    scaleWatch.hooked = true
+    local i
+    for i = 1, table.getn(scaleWatch.PANELS) do
+      U.PostHookScript(U.G(scaleWatch.PANELS[i]), "OnHide", U.RefreshMoverLayout)
+    end
+  end)
 end
 
 function U.MoverCount()

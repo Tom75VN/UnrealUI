@@ -2708,7 +2708,7 @@ function infoTip.Place(owner, width)
     rightEdge = owner:GetRight() * ratio
   end)
   panel:ClearAllPoints()
-  if rightEdge and rightEdge + infoTip.OFFSET + width > U.UIWidth() then
+  if rightEdge and rightEdge + infoTip.OFFSET + width > U.UILayoutWidth() then
     panel:SetPoint("TOPRIGHT", owner, "TOPLEFT", -infoTip.OFFSET, 0)
   else
     panel:SetPoint("TOPLEFT", owner, "TOPRIGHT", infoTip.OFFSET, 0)
@@ -2985,7 +2985,7 @@ end
 --     cursor-to-UI conversion (knowledge.json /
 --     api.getcursorposition_usable_for_hit_testing).
 --   * Width and height are read, never edge differences, and the tooltip's
---     own scale is folded in (frames.scaled_frame_edge_coordinates_mixed_space).
+--     own scale is folded in (frames.ui_scale_frame_anchor_space_ratio).
 --     The windows are unscaled children of UIParent, so their GetTop is in
 --     UIParent units.
 --   * GameTooltip may report its previous size for a frame after being
@@ -3074,7 +3074,7 @@ function windowTip.Place(initial)
   cy = cy / uiScale - (tonumber(uiBottom) or 0)
 
   local margin = windowTip.MARGIN
-  local screenWidth, screenHeight = U.UIWidth(), U.UIHeight()
+  local screenWidth, screenHeight = U.UILayoutWidth(), U.UILayoutHeight()
 
   local x = cx - width / 2
   x = math.min(x, screenWidth - margin - width)

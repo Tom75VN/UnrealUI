@@ -810,11 +810,21 @@ local function RepositionFilterDropdown()
     RaiseAboveChrome(G("ClassTrainerFrameFilterDropDownButton"), 4)
     return
   end
+  -- One point, never two: this client stretches a sized frame between a
+  -- RIGHT(panel) + TOP(greeting) pair instead of keeping its size
+  -- (knowledge.json / frames.two_point_anchor_overrides_size). The greeting
+  -- is centred on the panel (name and greeting both hang from its TOP at x 0),
+  -- so the panel's right edge is the greeting's BOTTOM plus half the panel's
+  -- width. That width is derived from the window and the panel's 8/32 insets
+  -- (set where the panel is built): the panel itself was given a nominal
+  -- 100x100 before being stretched, so its own GetWidth is not trusted.
+  local ok, frameWidth
+  if frame then ok, frameWidth = pcall(frame.GetWidth, frame) end
+  local half = ((tonumber(frameWidth) or 384) - 8 - 32) / 2
   pcall(function()
     filterDropdown:ClearAllPoints()
-    filterDropdown:SetPoint("RIGHT", panel, "RIGHT", -14, FILTER_Y)
-    filterDropdown:SetPoint("TOP", G("ClassTrainerGreetingText"), "BOTTOM", 0,
-                            -14 + FILTER_Y)
+    filterDropdown:SetPoint("TOPRIGHT", G("ClassTrainerGreetingText"), "BOTTOM",
+                            half - 14, -14 + FILTER_Y)
   end)
 end
 

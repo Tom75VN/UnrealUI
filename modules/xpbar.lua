@@ -216,7 +216,7 @@ local MIN_SAMPLE = 60
 local function EnsureConfig()
   if not config then
     config = U.ModuleConfig("xpbar", {
-      repEnabled = true,
+      repEnabled = false,
       width = WIDTH,
       height = HEIGHT,
       repWidth = WIDTH,

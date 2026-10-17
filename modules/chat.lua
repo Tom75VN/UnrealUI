@@ -58,6 +58,16 @@ local function Clamp(value, minimum, maximum)
   return value
 end
 
+local function LayoutSizeFor(target)
+  local ratio = 1
+  local frameScale = ReadNumber(target, "GetEffectiveScale")
+  local uiScale = ReadNumber(UIParent, "GetEffectiveScale")
+  if frameScale and frameScale > 0 and uiScale and uiScale > 0 then
+    ratio = frameScale / uiScale
+  end
+  return U.UILayoutWidth() / ratio, U.UILayoutHeight() / ratio
+end
+
 local function AnchorGrip()
   if not grip or not frame then return end
   grip:ClearAllPoints()
@@ -164,9 +174,10 @@ local function SavedGeometry()
   local bottom = tonumber(config.bottom)
   if not (width and height and left and bottom) then return nil end
 
-  width = Clamp(width, MIN_WIDTH, U.UIWidth() - left)
-  height = Clamp(height, MIN_HEIGHT, U.UIHeight())
-  bottom = Clamp(bottom, 0, U.UIHeight() - height)
+  local layoutWidth, layoutHeight = LayoutSizeFor(frame)
+  width = Clamp(width, MIN_WIDTH, layoutWidth - left)
+  height = Clamp(height, MIN_HEIGHT, layoutHeight)
+  bottom = Clamp(bottom, 0, layoutHeight - height)
   return width, height, left, bottom
 end
 
@@ -284,7 +295,8 @@ local function GeometryAtGrip(gripLeft, gripBottom)
   local deltaY = gripBottom - startGripBottom
   local fixedTop = startFrameBottom + startFrameHeight
 
-  local maxWidth = U.UIWidth() - startFrameLeft
+  local layoutWidth = LayoutSizeFor(frame)
+  local maxWidth = layoutWidth - startFrameLeft
   local maxHeight = fixedTop
   if maxWidth < MIN_WIDTH then maxWidth = MIN_WIDTH end
   if maxHeight < MIN_HEIGHT then maxHeight = MIN_HEIGHT end

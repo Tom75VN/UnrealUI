@@ -1,5 +1,5 @@
-## UnrealUI 0.10.2
+## UnrealUI 0.10.3
 
-- Added performance monitoring page in the settings
-- Removed black background on each side of the worldmap
-- Fixed persistent cursor when changing map zone
+- Fix the UI for the new client update 2432
+- When increasing the UI scale, UI anchor won't get outside the screen
+- Add more Fonts you can change from the addon settings

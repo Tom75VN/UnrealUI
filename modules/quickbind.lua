@@ -1056,7 +1056,6 @@ function U.OpenQuickBind()
 
   shade:Show()
   if shade.tex then shade.tex:Show() end
-  if type(U.ShowAlignmentGrid) == "function" then U.ShowAlignmentGrid() end
   keys:Show()
   ShowPanel(count)
 
@@ -1083,7 +1082,6 @@ function U.CloseQuickBind(save)
   HideTooltip()
   HideCatchers()
   HidePanel()
-  if type(U.HideAlignmentGrid) == "function" then U.HideAlignmentGrid() end
   if keys then keys:Hide() end
   if shade then
     if shade.tex then shade.tex:Hide() end

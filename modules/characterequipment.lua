@@ -802,8 +802,12 @@ function EP.BuildPopup()
     onChange = EP.PopupChanged,
   })
   if not popup.name then error("set name field unavailable") end
+  -- One point and an explicit width, never TOPLEFT(title) + RIGHT(popup): this
+  -- client stretches the sized box between those two points on both axes
+  -- (knowledge.json / frames.two_point_anchor_overrides_size). The title sits
+  -- p.inset in from the popup's left, so the old RIGHT edge is this width.
+  popup.name:SetWidth(width - p.inset * 2)
   popup.name:SetPoint("TOPLEFT", popup.title, "BOTTOMLEFT", 0, -p.gap)
-  popup.name:SetPoint("RIGHT", popup, "RIGHT", -p.inset, 0)
   U.LevelSearchBox(popup.name, EP.Dimension(popup, "GetFrameLevel") + 2)
   U.PaintSearchBox(popup.name)
 

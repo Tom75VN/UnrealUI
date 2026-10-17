@@ -936,8 +936,16 @@ function advisor.PlaceDrawer()
   local needed = advisor.width + advisor.toggleEdge + (toggleWidth / 2) +
                  advisor.toggleGap
 
+  local layoutRight = U.UILayoutWidth()
+  local frameScaleOk, frameScale = pcall(advisor.frame.GetEffectiveScale, advisor.frame)
+  local uiScaleOk, uiScale = pcall(UIParent.GetEffectiveScale, UIParent)
+  if frameScaleOk and uiScaleOk and tonumber(frameScale) and tonumber(uiScale) and
+     frameScale > 0 and uiScale > 0 then
+    layoutRight = layoutRight / (frameScale / uiScale)
+  end
+
   local useLeft = rightOk and tonumber(right) and
-                  right + needed > U.UIWidth() and
+                  right + needed > layoutRight and
                   leftOk and tonumber(left) and left >= needed
 
   advisor.side = useLeft and "LEFT" or "RIGHT"

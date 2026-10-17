@@ -106,7 +106,8 @@ end
 -- A collapsible heading in the category list. Groups hold pages; they have no
 -- content of their own and clicking one expands or collapses it.
 --
--- options  { after = "<entry id>", defaultPage = "<page id>" }.
+-- options  { after = "<entry id>", defaultPage = "<page id>",
+--            icon = "<extensionless texture path>" }.
 --          after places the group like RegisterSettingsTab's option does;
 --          defaultPage is opened whenever a click expands the group.
 function U.RegisterSettingsGroup(id, label, options)
@@ -130,6 +131,7 @@ function U.RegisterSettingsGroup(id, label, options)
 
   options = options or {}
   entry.defaultPage = options.defaultPage
+  entry.icon = options.icon
 
   local afterIndex
   if options.after then
@@ -159,7 +161,7 @@ end
 --          widgets is the array of regions shown with the page; refresh, when
 --          returned, runs every time the page is opened.
 -- options  { parent = "<group id>", after = "<entry id>", muted = true,
---            tooltip = "..." }.
+--            tooltip = "...", icon = "<extensionless texture path>" }.
 --          Muted pages remain selectable so they can explain why their normal
 --          controls are unavailable; only their sidebar presentation changes.
 function U.RegisterSettingsTab(id, label, build, options)
@@ -182,6 +184,7 @@ function U.RegisterSettingsTab(id, label, build, options)
     parent = options.parent,
     muted = options.muted and true or false,
     tooltip = options.tooltip,
+    icon = options.icon,
   }
   local afterIndex
   if options.after then
@@ -832,6 +835,22 @@ function U.HasIntegratedSettingsScope(scope)
     end
   end
   return false
+end
+
+-- Optional branding supplied by a sibling addon through the registration
+-- contract. The host keeps no texture path of its own for that addon, so
+-- uninstalling it leaves no hard dependency behind.
+function U.GetIntegratedSettingsIcon(scope)
+  scope = scope or "unrealui"
+  local i
+  for i = 1, table.getn(entries) do
+    local entry = entries[i]
+    if U.SettingsEntryScope(entry) == scope and type(entry.icon) == "string"
+       and entry.icon ~= "" then
+      return entry.icon
+    end
+  end
+  return nil
 end
 
 local function IntegratedEntry(id, scope)
@@ -1560,6 +1579,57 @@ local function BuildGeneralPage(parent)
     end
   end
 
+  -- One face for all UnrealUI text: the general role and the unit frames'
+  -- role move together. "original" is the client's own font.
+  local fontLabel = U.CreateSettingsLabel(parent, {
+    size = M.fontSize.small,
+    color = M.color.text,
+    inherits = "GameFontNormalSmall",
+    justify = "LEFT",
+  })
+  if fontLabel then
+    fontLabel:SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -102 - shift)
+    fontLabel:SetText(U.L("SETTINGS_FONT"))
+    table.insert(widgets, fontLabel)
+  end
+
+  local fontItems = { { value = "original", text = U.L("SETTINGS_FONT_DEFAULT") } }
+  local fontIndex
+  for fontIndex = 1, table.getn(M.fonts) do
+    local face = M.fonts[fontIndex]
+    if face.selectable ~= false then
+      table.insert(fontItems, { value = face.id, text = face.label })
+    end
+  end
+
+  local font = U.CreateDropdown(parent, {
+    name = "UnrealUISettingsFont",
+    value = U.GetFontChoice("default"),
+    width = 220,
+    height = 24,
+    rowHeight = 20,
+    items = fontItems,
+    onChange = function(value)
+      U.SetFontChoice("default", value)
+      U.SetFontChoice("unitframe", value)
+    end,
+  })
+  font.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -119 - shift)
+  table.insert(widgets, font)
+
+  local fontHint = U.CreateSettingsLabel(parent, {
+    size = M.fontSize.small,
+    color = M.color.textDim,
+    inherits = "GameFontNormalSmall",
+    justify = "LEFT",
+  })
+  if fontHint then
+    U.AnchorSettingsDescription(fontHint, font.button)
+    fontHint:SetText(U.L("SETTINGS_FONT_HINT"))
+    table.insert(widgets, fontHint)
+  end
+  shift = shift + 62
+
   local autoAttack = U.CreateCheckbox(parent, {
     name = "UnrealUISettingsAutoAttack",
     text = U.L("SETTINGS_AUTO_ATTACK"),
@@ -1638,9 +1708,9 @@ local function BuildGeneralPage(parent)
   local reputation = U.CreateCheckbox(parent, {
     name = "UnrealUISettingsReputationBar",
     text = U.L("SETTINGS_REPUTATION_BAR"),
-    value = U.ModuleConfig("xpbar", { repEnabled = true }).repEnabled,
+    value = U.ModuleConfig("xpbar", { repEnabled = false }).repEnabled,
     onChange = function(value)
-      U.ModuleConfig("xpbar", { repEnabled = true }).repEnabled = value
+      U.ModuleConfig("xpbar", { repEnabled = false }).repEnabled = value
       if type(U.ApplyXPBar) == "function" then U.ApplyXPBar() end
     end,
   })
@@ -1777,10 +1847,11 @@ local function BuildGeneralPage(parent)
 
   local function Refresh()
     themes.SetValue(U.GetThemeStyle(), false)
+    font.SetValue(U.GetFontChoice("default"), false)
     autoAttack.SetValue(U.ModuleConfig("autoattack", { enabled = false }).enabled)
     swingBar.SetValue(U.ModuleConfig("swingbar", { enabled = true }).enabled)
     microbar.SetValue(U.ModuleConfig("microbar", { enabled = true }).enabled)
-    reputation.SetValue(U.ModuleConfig("xpbar", { repEnabled = true }).repEnabled)
+    reputation.SetValue(U.ModuleConfig("xpbar", { repEnabled = false }).repEnabled)
     minimapButton.SetValue(U.ModuleConfig("minimap", { enabled = true }).enabled)
     zoneLevels.SetValue(U.ModuleConfig("worldmap", { zoneLevels = true }).zoneLevels)
     chatShadow.SetValue(U.ModuleConfig("chat", { noTextShadow = false }).noTextShadow)

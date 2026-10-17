@@ -5192,20 +5192,18 @@ LayoutParty = function(force)
   if not force and shape == partyLayoutShape then return end
   partyLayoutShape = shape
 
-  -- `lastHeight` is the declared height of the row that ends the block, kept
-  -- so the anchor can be given the block's DRAWN extent below. `lastDrawn` is
-  -- set when that height is already a drawn extent and must not be scaled.
-  local offset, width, lastHeight, lastDrawn = 0, 0, 0, false
+  -- `offset` is in the rows' own units: every row of the block shares one
+  -- scale (modules/modernwow.lua mw.units gives them all the same trim).
+  local offset, width = 0, 0
 
   local playerRow = frames[PARTY_PLAYER_ID]
 
   -- A theme may draw the rows at a scale of their own. `modern-wow` gives each
   -- one a pixel-perfect own-scale times its 1.15 size trim (modules/
-  -- modernwow.lua, mw.units), and a frame's own scale resizes it about its
-  -- anchor point without touching the offsets around it (core/mover.lua,
-  -- EntryScale, records the measurement). So each row is drawn `ratio` times
-  -- its declared size while the stacking offsets below are not, and the block
-  -- ends `ratio` times the last row's height below where that row starts.
+  -- modernwow.lua, mw.units). A row's SetPoint offsets are in its OWN units
+  -- (knowledge.json / frames.ui_scale_frame_anchor_space_ratio), so the
+  -- stacking offsets below scale with the rows and the block simply ends
+  -- `ratio` times `offset` below the anchor's top, in the anchor's units.
   --
   -- The ratio is 1 in every theme that draws the rows at the anchor's own
   -- scale, which leaves this arithmetic exactly as it was.
@@ -5230,7 +5228,6 @@ LayoutParty = function(force)
       playerRow:ClearAllPoints()
       playerRow:SetPoint("TOPLEFT", anchor, "TOPLEFT", 0, 0)
       offset = FrameHeight(playerRow.spec)
-      lastHeight, lastDrawn = FrameHeight(playerRow.spec), false
       if FrameWidth(playerRow.spec) > width then
         width = FrameWidth(playerRow.spec)
       end
@@ -5250,7 +5247,6 @@ LayoutParty = function(force)
       member:ClearAllPoints()
       member:SetPoint("TOPLEFT", anchor, "TOPLEFT", 0, -offset)
       offset = offset + FrameHeight(member.spec)
-      lastHeight, lastDrawn = FrameHeight(member.spec), false
       if FrameWidth(member.spec) > width then width = FrameWidth(member.spec) end
     end
 
@@ -5264,8 +5260,9 @@ LayoutParty = function(force)
         -- overlap), so it cannot run into the next member.
         pet:ClearAllPoints()
         pet:SetPoint("TOPLEFT", anchor, "TOPLEFT", 0, -offset)
-        offset = offset + dressed * ratio
-        lastHeight, lastDrawn = dressed * ratio, true
+        -- `dressed` is the pet's own height before its frame scale, the same
+        -- units as `offset`.
+        offset = offset + dressed
         if FrameWidth(pet.spec) > width then width = FrameWidth(pet.spec) end
       elseif shown[i] then
         -- Overlapped by one border unit, the same trick the stacked bars
@@ -5274,7 +5271,6 @@ LayoutParty = function(force)
         pet:ClearAllPoints()
         pet:SetPoint("TOPLEFT", anchor, "TOPLEFT", 0, -(offset - border))
         offset = offset + FrameHeight(pet.spec) - border
-        lastHeight, lastDrawn = FrameHeight(pet.spec), false
         if FrameWidth(pet.spec) > width then width = FrameWidth(pet.spec) end
       else
         SetFrameShown(pet, false)
@@ -5285,12 +5281,8 @@ LayoutParty = function(force)
   -- The anchor carries the party mover, so its rect has to be the block as
   -- DRAWN: edit mode's handle and the magnet barrier are that rectangle, and a
   -- rect that does not cover the block puts both somewhere the player cannot
-  -- see. `ratio` (computed above) is how much larger than declared each row
-  -- is drawn; a last row already stacked by its drawn height needs no scaling.
-  local height = offset
-  if height > 0 and lastHeight > 0 and ratio ~= 1 and not lastDrawn then
-    height = height - lastHeight + lastHeight * ratio
-  end
+  -- see. `ratio` (computed above) converts the rows' units into the anchor's.
+  local height = offset * ratio
 
   anchor:SetWidth((width > 0 and width or
                    (PARTY_WIDTH + 2 * U.BorderSize())) * ratio)

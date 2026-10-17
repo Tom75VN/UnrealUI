@@ -863,12 +863,10 @@ end
 -- instead, which is the one remaining way to keep it off the item's text.
 --
 -- Geometry is handled in UIParent units. knowledge.json /
--- frames.scaled_frame_edge_coordinates_mixed_space (PARTIAL) records that on a
--- frame whose scale is not 1 this client returns the origin in the parent's
--- space while the extent stays in the frame's own, so GetLeft/GetBottom are
--- taken as they come back and GetWidth/GetHeight are converted through the
--- frame's effective-scale ratio. Both are identities for the scale-1 tooltips
--- this actually runs on, and neither guesses at a mixed-space rule.
+-- frames.ui_scale_frame_anchor_space_ratio: a frame's edges and dimensions are
+-- in its own units, so both are converted through the frame's effective-scale
+-- ratio to UIParent. That is an identity for the scale-1 tooltips this
+-- actually runs on.
 -- ---------------------------------------------------------------------------
 
 -- Between the host tooltip and a comparison frame, and between two comparison
@@ -927,7 +925,7 @@ local function CompareBox(frame)
   if width <= 0 or height <= 0 then return nil end
 
   local ratio = CompareScaleRatio(frame)
-  return left, bottom, width * ratio, height * ratio
+  return left * ratio, bottom * ratio, width * ratio, height * ratio
 end
 
 -- SetPoint offsets are read in the positioned frame's own units, so the
@@ -987,8 +985,8 @@ local function PositionCompareTooltips()
 
   -- The draw area's own borders, not 0 and the width: UIParent is read for its
   -- origin as well as its extent so nothing here assumes it starts at the
-  -- screen corner. U.UIWidth/U.UIHeight are the addon's single source for the
-  -- extent (core/compat.lua: GetScreenWidth is not in this unit space).
+  -- screen corner. The comparison boxes are normalized into UIParent's layout
+  -- space, so they use its edge span rather than the reported screen size.
   local uiLeft, uiBottom = 0, 0
   local originOk, originLeft, originBottom = pcall(function()
     return UIParent:GetLeft(), UIParent:GetBottom()
@@ -998,9 +996,9 @@ local function PositionCompareTooltips()
   end
 
   local minX = uiLeft + COMPARE_SCREEN_MARGIN
-  local maxX = uiLeft + U.UIWidth() - COMPARE_SCREEN_MARGIN
+  local maxX = uiLeft + U.UILayoutWidth() - COMPARE_SCREEN_MARGIN
   local minY = uiBottom + COMPARE_SCREEN_MARGIN
-  local maxY = uiBottom + U.UIHeight() - COMPARE_SCREEN_MARGIN
+  local maxY = uiBottom + U.UILayoutHeight() - COMPARE_SCREEN_MARGIN
 
   local hostRight = hostLeft + hostWidth
   local hostTop = hostBottom + hostHeight
@@ -1788,25 +1786,24 @@ function placement.NoteOverflow(tooltip)
      type(width) ~= "number" or width <= 0 or
      type(height) ~= "number" or height <= 0 then return end
 
-  -- frames.scaled_frame_edge_coordinates_mixed_space: the origin comes back in
-  -- the parent's space while the extent comes back unscaled, so measure the
-  -- corner from the edges and the size from the dimensions.
-  left, bottom = left - uiLeft, bottom - uiBottom
+  -- frames.ui_scale_frame_anchor_space_ratio: edges and dimensions are both in
+  -- the tooltip's own units, so both go through the same ratio.
+  local ratio = CompareScaleRatio(tooltip)
+  left, bottom = left * ratio - uiLeft, bottom * ratio - uiBottom
   if math.abs(left - placement.cursorX) > 0.5 or
      math.abs(bottom - placement.cursorY) > 0.5 then return end
 
-  local ratio = CompareScaleRatio(tooltip)
   local margin = placement.margin
-  local overX = left + width * ratio - (U.UIWidth() - margin)
-  local overY = bottom + height * ratio - (U.UIHeight() - margin)
+  local overX = left + width * ratio - (U.UILayoutWidth() - margin)
+  local overY = bottom + height * ratio - (U.UILayoutHeight() - margin)
 
   local grew = false
   if overX > 0.5 then
-    placement.padX = math.min((placement.padX or 0) + overX, U.UIWidth())
+    placement.padX = math.min((placement.padX or 0) + overX, U.UILayoutWidth())
     grew = true
   end
   if overY > 0.5 then
-    placement.padY = math.min((placement.padY or 0) + overY, U.UIHeight())
+    placement.padY = math.min((placement.padY or 0) + overY, U.UILayoutHeight())
     grew = true
   end
   if not grew then return end
@@ -1818,8 +1815,8 @@ end
 
 function placement.CursorTarget(tooltip)
   -- api.getcursorposition_usable_for_hit_testing verifies cursor / effective
-  -- scale conversion. Use dimensions, not scaled native edge differences
-  -- (frames.scaled_frame_edge_coordinates_mixed_space).
+  -- scale conversion; dimensions go through the tooltip's ratio
+  -- (frames.ui_scale_frame_anchor_space_ratio).
   local cx, cy = Call("GetCursorPosition")
   local ok, uiScale, left, bottom, width, height = pcall(function()
     return UIParent:GetEffectiveScale(), UIParent:GetLeft(), UIParent:GetBottom(),
@@ -1834,7 +1831,8 @@ function placement.CursorTarget(tooltip)
   local ratio = CompareScaleRatio(tooltip)
   -- Reserve the styled bar even before its native OnShow has arrived.
   local x, y = placement.CursorBox(cx / uiScale - left, cy / uiScale - bottom,
-    width * ratio, height * ratio, BAR_HEIGHT * ratio, U.UIWidth(), U.UIHeight(),
+    width * ratio, height * ratio, BAR_HEIGHT * ratio,
+    U.UILayoutWidth(), U.UILayoutHeight(),
     placement.padX, placement.padY)
   if x ~= placement.cursorX or y ~= placement.cursorY then
     if not U.ApplyFramePoint(placement.cursor, {

@@ -444,8 +444,17 @@ function ct.SaveDrop()
     return
   end
 
+  local ratio = 1
+  local frameScaleOk, frameScale = pcall(frame.GetEffectiveScale, frame)
+  local uiScaleOk, uiScale = pcall(UIParent.GetEffectiveScale, UIParent)
+  if frameScaleOk and uiScaleOk and tonumber(frameScale) and tonumber(uiScale) and
+     frameScale > 0 and uiScale > 0 then
+    ratio = frameScale / uiScale
+  end
+
   local position = { point = "TOPLEFT", relativePoint = "TOPLEFT",
-                     x = left, y = bottom + height - U.UIHeight() }
+                     x = left,
+                     y = bottom + height - U.UILayoutHeight() / ratio }
   U.ApplyFramePoint(frame, position)
   U.SavePosition(ct.MOVER_ID, position.point, position.relativePoint,
                  position.x, position.y)

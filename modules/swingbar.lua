@@ -224,7 +224,7 @@ end
 
 local function EnsureConfig()
   if not config then config = U.ModuleConfig("swingbar",
-      { enabled = true, width = 0, height = 0 }) end
+      { enabled = true, width = 0, height = 18 }) end
   return config
 end
 

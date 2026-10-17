@@ -97,29 +97,56 @@ end
 -- ---------------------------------------------------------------------------
 -- Screen metrics
 --
--- frames.json context (BEHAVIOR_VERIFIED) records GetScreenWidth() = 1920 while
--- UIParent:GetWidth() = 1365.33, with GetScreenHeight() = 768 matching
--- UIParent:GetHeight(). The two are not in the same unit space on this client,
--- so layout must be driven from UIParent and never from GetScreenWidth.
+-- UIParent now exposes two spaces. Its reported size matches the screen
+-- (1834.67 x 768), while its anchor-coordinate span is divided by its scale
+-- (2177.58 x 911.54 at 0.843). Keep both names explicit: general widgets use
+-- the reported viewport, while the edit grid uses the layout span.
 -- ---------------------------------------------------------------------------
+local function UIExtent(firstMethod, lastMethod, sizeMethod, fallback)
+  local firstOk, first = pcall(UIParent[firstMethod], UIParent)
+  local lastOk, last = pcall(UIParent[lastMethod], UIParent)
+  if firstOk and lastOk and tonumber(first) and tonumber(last) then
+    local span = last - first
+    if span > 0 then return span end
+  end
+
+  local sizeOk, size = pcall(UIParent[sizeMethod], UIParent)
+  if sizeOk and tonumber(size) and size > 0 then
+    local scaleOk, scale = pcall(UIParent.GetEffectiveScale, UIParent)
+    if scaleOk and tonumber(scale) and scale > 0 then
+      return size / scale
+    end
+    return size
+  end
+  return fallback
+end
+
 function U.UIWidth()
-  local ok, w = pcall(UIParent.GetWidth, UIParent)
-  if ok and tonumber(w) and w > 0 then return w end
+  local ok, width = pcall(UIParent.GetWidth, UIParent)
+  if ok and tonumber(width) and width > 0 then return width end
   return 1024
 end
 
 function U.UIHeight()
-  local ok, h = pcall(UIParent.GetHeight, UIParent)
-  if ok and tonumber(h) and h > 0 then return h end
+  local ok, height = pcall(UIParent.GetHeight, UIParent)
+  if ok and tonumber(height) and height > 0 then return height end
   return 768
 end
 
--- Physical pixels per UIParent unit. Used only for reporting and for deciding
--- that a sub-unit border is not worth asking for; see core/style.lua.
+function U.UILayoutWidth()
+  return UIExtent("GetLeft", "GetRight", "GetWidth", U.UIWidth())
+end
+
+function U.UILayoutHeight()
+  return UIExtent("GetBottom", "GetTop", "GetHeight", U.UIHeight())
+end
+
+-- Physical screen units per UIParent anchor unit. Used only for reporting and
+-- for deciding that a sub-unit border is not worth asking for; see style.lua.
 function U.PixelScale()
   local ok, screen = pcall(GetScreenWidth)
   if not ok or not tonumber(screen) or screen <= 0 then return 1 end
-  local width = U.UIWidth()
+  local width = U.UILayoutWidth()
   if width <= 0 then return 1 end
   local scale = screen / width
   if scale < 0.5 or scale > 8 then return 1 end
@@ -168,11 +195,57 @@ function U.GetFontChoice(role)
   return fallback
 end
 
+local function ReadTextColor(fontstring)
+  local ok, r, g, b, a = pcall(function() return fontstring:GetTextColor() end)
+  if ok and type(r) == "number" and type(g) == "number" and type(b) == "number" then
+    return { r, g, b, a or 1 }
+  end
+  return nil
+end
+
+local function RestoreTextColor(fontstring, color)
+  if color then
+    pcall(fontstring.SetTextColor, fontstring, color[1], color[2], color[3], color[4])
+  end
+end
+
+-- Puts the client's own face back: the inherited FontObject first, then the
+-- exact path/size/flags it reported when the label was first styled, because
+-- an explicit 1.12.1 SetFont is not guaranteed to yield to SetFontObject.
 local function RestoreOriginalFont(record)
   local fontstring = record.fontstring
   local original = record.original or U.G("GameFontNormal")
-  if not original or not fontstring.SetFontObject then return false end
-  return pcall(fontstring.SetFontObject, fontstring, original)
+  local ok = false
+  if original and fontstring.SetFontObject then
+    ok = pcall(fontstring.SetFontObject, fontstring, original)
+  end
+  local face = record.originalFace
+  if face and fontstring.SetFont then
+    if pcall(fontstring.SetFont, fontstring, face[1], face[2], face[3]) then
+      ok = true
+    end
+  end
+  return ok
+end
+
+-- The 1.12.1 FontString:SetFont(path, height, flags) route, added to this
+-- client in its latest build (user report, 2026-10-17). It supersedes
+-- fonts.setfont_silent_failure, which was recorded on an older build. The
+-- request is read back through GetFont: a client that still ignores it keeps
+-- reporting the inherited face, and the label falls back to that face rather
+-- than drawing in an unconfirmed one.
+local function SetBundledFont(record, media)
+  local fontstring = record.fontstring
+  if not fontstring.SetFont then return false end
+  if not pcall(fontstring.SetFont, fontstring, media.path, record.size,
+               record.flags) then
+    return false
+  end
+
+  local ok, path = pcall(function() return fontstring:GetFont() end)
+  if not ok or type(path) ~= "string" then return true end
+  local stem = string.lower((string.gsub(media.file, "%.[^%.]+$", "")))
+  return string.find(string.lower(path), stem, 1, true) ~= nil
 end
 
 local function EnsureCustomFont(record)
@@ -191,28 +264,37 @@ end
 local function ApplyFontRecord(record)
   local fontstring = record.fontstring
   local choice = U.GetFontChoice(record.role)
+  local media = choice ~= "original" and M.fontById[choice] or nil
+  local color = ReadTextColor(fontstring)
   local applied = false
 
-  -- Explicitly opted-in overlay labels use the verified shadow-free named
-  -- Font route. Never clear a shared inherited font's shadow. Keep this flag
-  -- on the record so changing the global font choice cannot restore shadows.
+  -- Explicitly opted-in overlay labels stay shadow-free. With the client's
+  -- own face they use the verified shadow-free named Font route; never clear
+  -- a shared inherited font's shadow. Keep this flag on the record so
+  -- changing the global font choice cannot restore shadows.
+  if record.shadowFree and media then
+    applied = SetBundledFont(record, media)
+    if applied then
+      U.ClearTextShadow(fontstring)
+      return true
+    end
+    media = nil
+  end
+
   if record.shadowFree then
-    local media = M.fontById[choice]
-    local path = media and media.path or M.fontCandidates[1]
-    local size = choice == "original" and record.originalSize or record.size
-    local colorOk, r, g, b, a = pcall(function() return fontstring:GetTextColor() end)
+    local size = record.originalSize or record.size
     local font = EnsureCustomFont(record)
     if font then
       local ok = pcall(function()
-        font:SetFont(path, size or record.size)
+        font:SetFont(M.fontCandidates[1], size)
         fontstring:SetFontObject(font)
         local bound = fontstring:GetFontObject()
         if not bound or bound:GetName() ~= font:GetName() then return end
         -- A newly created Font has no reliable white default. Preserve the
         -- label's own color on font-choice refresh; CreateLabel sets it first
         -- time after this function returns.
-        if colorOk and type(r) == "number" and type(g) == "number" and type(b) == "number" then
-          fontstring:SetTextColor(r, g, b, a or 1)
+        if color then
+          RestoreTextColor(fontstring, color)
         else
           fontstring:SetTextColor(1, 1, 1)
         end
@@ -220,26 +302,19 @@ local function ApplyFontRecord(record)
       end)
       if not ok then applied = false end
     end
-    if not applied then RestoreOriginalFont(record) end
+    if not applied then
+      RestoreOriginalFont(record)
+      RestoreTextColor(fontstring, color)
+    end
     return applied
   end
 
-  if choice == "original" then
-    applied = RestoreOriginalFont(record)
-  else
-    local media = M.fontById[choice]
-    local font = media and EnsureCustomFont(record)
-    if font and font.SetFont and fontstring.SetFontObject then
-      local setOk = pcall(font.SetFont, font, media.path, record.size)
-      local attachOk = false
-      if setOk then
-        attachOk = pcall(fontstring.SetFontObject, fontstring, font)
-      end
-      applied = setOk and attachOk
-    end
+  if media then applied = SetBundledFont(record, media) end
 
-    -- A missing or rejected font file must never make text disappear.
-    if not applied then RestoreOriginalFont(record) end
+  -- A missing or rejected font file must never make text disappear.
+  if not applied then
+    applied = RestoreOriginalFont(record) and choice == "original"
+    RestoreTextColor(fontstring, color)
   end
 
   return applied
@@ -249,7 +324,11 @@ function U.ApplyFontChoice(role)
   role = NormaliseFontRole(role)
   local fontstring, record
   for fontstring, record in pairs(styledFonts) do
-    if record.role == role then ApplyFontRecord(record) end
+    if record.role == role then
+      ApplyFontRecord(record)
+      -- Restoring the inherited FontObject can bring its own shadow back.
+      if not record.shadowFree then U.SetTextShadow(fontstring) end
+    end
   end
 end
 
@@ -389,12 +468,10 @@ function U.ClearTextShadow(fontstring)
   return colorOk and offsetOk
 end
 
--- Applies the selected font through a private named Font object. Direct
--- FontString:SetFont is intentionally not used: that is the silent-failure
--- path confirmed by fonts.pfui_path_and_measure.v1. Each FontString gets its
--- own Font object so later text-colour changes cannot leak into another label.
--- The original inherited object is retained for the "Original" option and as
--- a safe fallback if the documented custom-font route is unavailable.
+-- Applies the selected font. A bundled face goes through the client's 1.12.1
+-- FontString:SetFont (see SetBundledFont); the client's own face is the
+-- inherited FontObject, retained for the "Original" option and as the safe
+-- fallback whenever a bundled face is not confirmed by readback.
 function U.SetFont(fontstring, size, flags, role, shadowFree)
   if not fontstring then return false end
 
@@ -404,6 +481,11 @@ function U.SetFont(fontstring, size, flags, role, shadowFree)
     if fontstring.GetFontObject then
       local ok, original = pcall(fontstring.GetFontObject, fontstring)
       if ok then record.original = original end
+    end
+    local faceOk, facePath, faceSize, faceFlags =
+      pcall(function() return fontstring:GetFont() end)
+    if faceOk and type(facePath) == "string" and type(faceSize) == "number" then
+      record.originalFace = { facePath, faceSize, faceFlags }
     end
     if shadowFree then
       local ok, _, height = pcall(function() return fontstring:GetFont() end)
@@ -2048,6 +2130,8 @@ function U.RunSelfCheck()
 
   report.uiWidth = U.UIWidth()
   report.uiHeight = U.UIHeight()
+  report.uiLayoutWidth = U.UILayoutWidth()
+  report.uiLayoutHeight = U.UILayoutHeight()
   local ok, screenW = pcall(GetScreenWidth)
   report.screenWidth = (ok and screenW) or "?"
   report.pixelScale = U.PixelScale()

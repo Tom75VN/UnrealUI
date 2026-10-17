@@ -330,9 +330,10 @@ local function ScaleNativeMainMenuBar()
   local frame = U.G("MainMenuBar")
   if not frame or type(frame.SetScale) ~= "function" then return end
 
-  -- knowledge.json / frames.own_scale_resizes_about_anchor_in_parent_space:
-  -- SetScale keeps the root's bottom-centre anchor fixed while shrinking every
-  -- descendant with it, which preserves the stock assembly as one unit.
+  -- knowledge.json / frames.ui_scale_frame_anchor_space_ratio: SetScale moves
+  -- the root's offsets into its own units, and the stock bottom-centre anchor
+  -- has zero offsets, so it stays fixed while every descendant shrinks with
+  -- it, which preserves the stock assembly as one unit.
   pcall(frame.SetScale, frame, CLASSIC_NATIVE_MAIN_SCALE)
 end
 

@@ -17,15 +17,15 @@ local M = U.media
 -- ---------------------------------------------------------------------------
 -- Fonts
 --
--- behavior.json / fonts.pfui_path_and_measure.v1 is BROKEN with confidence
--- RUNTIME_FAILURE_CONFIRMED: assigning a bundled TTF directly to an inherited
--- FontString silently kept GameFontNormal. The client documentation records a
--- named-Font/SetFontObject route, but USER_CONFIRMED_INGAME: selecting a
--- bundled face through that route made UnrealUI text disappear. Keep the
--- inherited native FontObject as the safe default until a focused probe
--- establishes a working custom-font contract. core/compat.lua owns the
--- guarded experimental adapter used only when a bundled face is selected.
+-- The client's own face ("original") is the default. A bundled face is an
+-- explicit choice in Settings > General and is applied through the 1.12.1
+-- FontString:SetFont route, which the client's latest build added (user
+-- report, 2026-10-17; it supersedes fonts.setfont_silent_failure, recorded on
+-- an older build). core/compat.lua reads every request back and falls back to
+-- the original face if the client did not take it.
 -- Only these short ids are persisted; asset paths never enter SavedVariables.
+-- `selectable = false` keeps a face out of the settings dropdown: Invisible
+-- draws no glyphs, so choosing it would blank the very menu that undoes it.
 -- ---------------------------------------------------------------------------
 M.defaultFontId = "original"
 M.defaultUnitFrameFontId = "original"
@@ -36,7 +36,8 @@ M.fonts = {
   { id = "die_die_die",      label = "Die Die Die",      file = "DieDieDie.ttf" },
   { id = "expressway",       label = "Expressway",       file = "Expressway.ttf" },
   { id = "homespun",         label = "Homespun",         file = "Homespun.ttf" },
-  { id = "invisible",        label = "Invisible",        file = "Invisible.ttf" },
+  { id = "invisible",        label = "Invisible",        file = "Invisible.ttf",
+    selectable = false },
   { id = "pt_sans_narrow",   label = "PT Sans Narrow",   file = "PTSansNarrow.ttf" },
 }
 
@@ -86,6 +87,7 @@ M.compactTextShadowOffset = { 1, -1 }
 M.texture = {
   plain = "Interface\\BUTTONS\\WHITE8X8",
   statusBar = "Interface\\AddOns\\unrealUI\\media\\Textures\\normTex2",
+  addonLogo = "Interface\\AddOns\\unrealUI\\media\\icons\\uUI_logo",
   -- Official client documentation uses this native TargetingFrame texture as
   -- the StatusBar example; the Classic unit-frame theme reuses it directly.
   classicStatusBar = "Interface\\TargetingFrame\\UI-StatusBar",

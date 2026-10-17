@@ -137,6 +137,9 @@ local gs = {
   -- the band holds only the title and the 22-unit Defaults button, both
   -- centred on it, which is what lets it go this low.
   CONTENT_HEADER = 27.3,   -- 42 * 0.65
+  PAGE_LOGO_SIZE = 20,
+  CATEGORY_LOGO_SIZE = 18,
+  LOGO_GAP = 5,
   -- A page's tabs are drawn as sub-rows of its category row instead of a
   -- horizontal tab strip (user request, 2026-09-22). SUB_INDENT is how far
   -- their labels sit inside the parent's, and TOGGLE_SIZE / TOGGLE_RIGHT place
@@ -1060,7 +1063,28 @@ end
 -- The shared section header used by both "Game Settings" and "Unreal UI".
 -- Options_CategoryHeader_1 is taller than its frame so its gradient continues
 -- behind the rows beneath it, exactly as Forever's category list draws it.
-function gs.ListHeaderFrame(name, label, labelY)
+function gs.SetListHeaderLogo(header, logoPath, labelY)
+  if not header or not header.label then return end
+  if not header.logo and type(header.CreateTexture) == "function" then
+    header.logo = header:CreateTexture(nil, "OVERLAY")
+    header.logo:SetWidth(gs.CATEGORY_LOGO_SIZE)
+    header.logo:SetHeight(gs.CATEGORY_LOGO_SIZE)
+    header.logo:SetPoint("LEFT", header, "LEFT", gs.ROW_LABEL_INSET, 0)
+  end
+  header.label:ClearAllPoints()
+  if header.logo and logoPath then
+    header.logo:SetTexture(logoPath)
+    header.logo:Show()
+    header.label:SetPoint("LEFT", header.logo, "RIGHT", gs.LOGO_GAP,
+                          labelY or -1)
+  else
+    if header.logo then header.logo:Hide() end
+    header.label:SetPoint("LEFT", header, "LEFT", gs.ROW_LABEL_INSET,
+                          labelY or -1)
+  end
+end
+
+function gs.ListHeaderFrame(name, label, labelY, logoPath)
   local token = M.foreverWow.options.categoryHeader
   local panel = M.foreverWow.panel
   local header = CreateFrame("Frame", name, gs.sidebar)
@@ -1082,8 +1106,7 @@ function gs.ListHeaderFrame(name, label, labelY)
     justify = "LEFT",
   })
   if header.label then
-    header.label:SetPoint("LEFT", header, "LEFT", gs.ROW_LABEL_INSET,
-                          labelY or -1)
+    gs.SetListHeaderLogo(header, logoPath, labelY)
     header.label:SetText(U.L(label))
   end
   return header
@@ -1142,6 +1165,34 @@ function gs.CategoryTitleText(page)
            tostring(version) .. "|r"
   end
   return text
+end
+
+function gs.PageLogoPath(page)
+  if page.id == "unrealui" then return M.texture.addonLogo end
+  if page.settings and type(U.GetIntegratedSettingsIcon) == "function" then
+    return U.GetIntegratedSettingsIcon(page.settingsScope)
+  end
+  return nil
+end
+
+function gs.SetPageTitle(page)
+  if not gs.pageTitle then return end
+  local inset = M.foreverWow.panel.listTitleInset.x
+  local logoPath = gs.PageLogoPath(page)
+  gs.pageTitle:ClearAllPoints()
+  if gs.pageLogo and logoPath then
+    gs.pageLogo:SetTexture(logoPath)
+    gs.pageLogo:ClearAllPoints()
+    gs.pageLogo:SetPoint("LEFT", gs.content, "TOPLEFT", inset,
+                         -gs.CONTENT_HEADER / 2)
+    gs.pageLogo:Show()
+    gs.pageTitle:SetPoint("LEFT", gs.pageLogo, "RIGHT", gs.LOGO_GAP, 0)
+  else
+    if gs.pageLogo then gs.pageLogo:Hide() end
+    gs.pageTitle:SetPoint("LEFT", gs.content, "TOPLEFT", inset,
+                          -gs.CONTENT_HEADER / 2)
+  end
+  gs.pageTitle:SetText(gs.PageTitleText(page))
 end
 
 function gs.StyleRow(row, page, selected)
@@ -1314,13 +1365,26 @@ function gs.SizeSidebarItem(row, contentWidth)
     pcall(row.label.SetWidth, row.label, math.max(1, rowWidth - inset - 4))
   end
   if row.uuiToggle then
-    local right = contentWidth - gs.SIDEBAR_WIDTH - 5
-    pcall(row.uuiToggle.ClearAllPoints, row.uuiToggle)
-    pcall(row.uuiToggle.SetPoint, row.uuiToggle, "RIGHT", gs.sidebar,
-          "RIGHT", right, 0)
-    pcall(row.uuiToggle.SetPoint, row.uuiToggle, "TOP", row, "TOP", 0,
-          -(rowHeight - gs.TOGGLE_SIZE) / 2 + 1)
+    gs.PlaceRowToggle(row, contentWidth - gs.SIDEBAR_WIDTH - 5, rowHeight)
   end
+end
+
+-- One point, never two. This client build stretches a frame between two
+-- anchor points even when they only constrain one axis each and it has an
+-- explicit size (knowledge.json / frames.two_point_anchor_overrides_size,
+-- settoggle probe 2026-10-17): the old RIGHT(sidebar) + TOP(row) pair grew
+-- the 14x14 toggle to 177x415, which drew its hover glow across the list and
+-- swallowed clicks meant for other rows.
+--
+-- Every row sits at the sidebar's left edge (x 0), so the sidebar's RIGHT
+-- plus `right` is the row's TOPLEFT plus the sidebar width plus `right`.
+function gs.PlaceRowToggle(row, right, rowHeight)
+  local toggle = row and row.uuiToggle
+  if not toggle then return end
+  local width = tonumber(gs.Read(gs.sidebar, "GetWidth")) or gs.SIDEBAR_WIDTH
+  pcall(toggle.ClearAllPoints, toggle)
+  pcall(toggle.SetPoint, toggle, "TOPRIGHT", row, "TOPLEFT", width + right,
+        -((rowHeight or gs.ROW_HEIGHT) - gs.TOGGLE_SIZE) / 2 + 1)
 end
 
 -- Clicking a tree row's text has the same meaning as clicking its visible
@@ -1341,7 +1405,8 @@ function gs.CreateRow(index)
   if page.listHeader then
     local header = gs.ListHeaderFrame("UnrealUIGameSettingsRow" .. index,
                                       page.label,
-                                      gs.WORDMARK[page.id] and -3 or nil)
+                                      gs.WORDMARK[page.id] and -3 or nil,
+                                      gs.PageLogoPath(page))
     header.uuiListHeader = true
     gs.rows[index] = header
     return header
@@ -1577,12 +1642,10 @@ function gs.EnsureRowToggle(row)
     end,
   })
   if not toggle then return nil end
-  pcall(toggle.ClearAllPoints, toggle)
-  pcall(toggle.SetPoint, toggle, "RIGHT", gs.sidebar, "RIGHT", gs.TOGGLE_RIGHT, 0)
-  -- Anchored across to the list, so it follows the row's own vertical place
-  -- through its parent while keeping the list's right edge.
-  pcall(toggle.SetPoint, toggle, "TOP", row, "TOP", 0,
-        -(gs.ROW_HEIGHT - gs.TOGGLE_SIZE) / 2 + 1)
+  row.uuiToggle = toggle
+  -- Follows the row's own vertical place while keeping the list's right edge;
+  -- one point only (gs.PlaceRowToggle).
+  gs.PlaceRowToggle(row, gs.TOGGLE_RIGHT, gs.ROW_HEIGHT)
   -- Modern WoW media over that component, which is what a theme is allowed to
   -- override on a shared widget: Blizzard's own plus / minus tree button
   -- (buttons/plus-minus-button, M.modernWow.plusMinusCell) by user request,
@@ -1594,7 +1657,11 @@ function gs.EnsureRowToggle(row)
     local face = toggle.uuiModernWowFace
     if face then
       pcall(face.ClearAllPoints, face)
-      pcall(face.SetSize, face, gs.TOGGLE_FACE_SIZE, gs.TOGGLE_FACE_SIZE)
+      -- SetWidth/SetHeight, never SetSize: this client's regions have no
+      -- SetSize, the pcall swallowed the miss, and the face -- left with one
+      -- CENTER point and no size -- drew at the sheet's native size.
+      pcall(face.SetWidth, face, gs.TOGGLE_FACE_SIZE)
+      pcall(face.SetHeight, face, gs.TOGGLE_FACE_SIZE)
       pcall(face.SetPoint, face, "CENTER", toggle, "CENTER", 0, 0)
     end
   end
@@ -1755,6 +1822,8 @@ function gs.RenderList()
     if matches then
       local selected = gs.active ~= nil and gs.active.id == page.id
       if page.listHeader then
+        gs.SetListHeaderLogo(row, gs.PageLogoPath(page),
+                             gs.WORDMARK[page.id] and -3 or nil)
         if row.label then row.label:SetText(gs.CategoryTitleText(page)) end
       else
         gs.StyleRow(row, page, selected)
@@ -1926,6 +1995,7 @@ function gs.RenderList()
             -y)
       pcall(row.Show, row)
       if row.label then pcall(row.label.Show, row.label) end
+      if row.logo then pcall(row.logo.Show, row.logo) end
       if row.uuiToggle then
         if item.toggle then
           pcall(row.uuiToggle.Show, row.uuiToggle)
@@ -1936,6 +2006,7 @@ function gs.RenderList()
       y = y + ItemHeight(i)
     else
       pcall(row.Hide, row)
+      if row.logo then pcall(row.logo.Hide, row.logo) end
       if row.uuiToggle then pcall(row.uuiToggle.Hide, row.uuiToggle) end
     end
   end
@@ -1987,7 +2058,7 @@ function gs.SelectPage(id, keepSidebar)
     end
   end
 
-  if gs.pageTitle then gs.pageTitle:SetText(gs.PageTitleText(page)) end
+  gs.SetPageTitle(page)
 
   if sidebarOffset ~= nil then
     gs.sidebarOffset = sidebarOffset
@@ -4639,6 +4710,12 @@ function gs.Build()
 
   -- The open page's name, above that rule, where Forever puts
   -- SettingsList.Header.Title.
+  gs.pageLogo = gs.content:CreateTexture(nil, "OVERLAY")
+  gs.pageLogo:SetTexture(M.texture.addonLogo)
+  gs.pageLogo:SetWidth(gs.PAGE_LOGO_SIZE)
+  gs.pageLogo:SetHeight(gs.PAGE_LOGO_SIZE)
+  gs.pageLogo:Hide()
+
   gs.pageTitle = U.CreateLabel(gs.content, {
     size = M.fontSize.large,
     color = M.color.text,
@@ -4788,6 +4865,8 @@ function gs.Close()
   pcall(gs.Detach)
   pcall(gs.panel.Hide, gs.panel)
   gs.closing = false
+  -- A UI-scale change made here can leave HUD movers past the screen edge.
+  if type(U.RefreshMoverLayout) == "function" then U.RefreshMoverLayout() end
 end
 
 -- Escape while this window is open closes it and never opens the game menu

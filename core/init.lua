@@ -9,7 +9,7 @@ UnrealUI = {}
 local U = UnrealUI
 
 U.name      = "unrealUI"
-U.version   = "0.10.2"
+U.version   = "0.10.3"
 U.modules   = {}       -- name -> module table
 U.moduleOrder = {}     -- load/enable order, registration order
 U.ready     = false    -- set once PLAYER_LOGIN work has run
@@ -61,22 +61,25 @@ local function Output(text)
   end
 end
 
+-- Every chat line carries the same brand prefix: "Unreal" white, "UI" accent.
+local CHAT_PREFIX = "|cffffffffUnreal |cfff5ae0aUI|r"
+
 function U.Print(msg)
-  Output("|cfff5ae0aunreal|cffffffffUI|r: " .. tostring(msg))
+  Output(CHAT_PREFIX .. " |cffb3b3b3: " .. tostring(msg) .. "|r")
 end
 
 function U.PrintLoaded(msg)
-  Output("|cffffffffUnreal |cfff5ae0aUI|r |cffb3b3b3: " .. tostring(msg) .. "|r")
+  Output(CHAT_PREFIX .. " |cffb3b3b3: " .. tostring(msg) .. "|r")
 end
 
 function U.Error(msg)
-  Output("|cfff5ae0aunreal|cffffffffUI|r |cffff5555error|r: " .. tostring(msg))
+  Output(CHAT_PREFIX .. " |cffff5555error|r: " .. tostring(msg))
 end
 
 -- Debug output is opt-in and survives config not being loaded yet.
 function U.Debug(msg)
   if not U.db or not U.db.debug then return end
-  Output("|cfff5ae0aunreal|cffffffffUI|r |cff888888debug|r: " .. tostring(msg))
+  Output(CHAT_PREFIX .. " |cff888888debug|r: " .. tostring(msg))
 end
 
 -- ---------------------------------------------------------------------------

@@ -317,6 +317,19 @@ local function PrepareConfig(stored)
   return db
 end
 
+-- A new profile under modern-wow starts with class-coloured health bars off
+-- (user request, 2026-10-09): the theme's authored health fill is the look.
+-- New profiles are copies of another config, so the copied choice is cleared
+-- here rather than relying on the unit-frame module's own default, which a
+-- reset profile already gets.
+local function ApplyNewProfileThemeDefaults(profile)
+  if profile.themeStyle ~= "modern-wow" then return end
+  if type(profile.modules.unitframes) ~= "table" then
+    profile.modules.unitframes = {}
+  end
+  profile.modules.unitframes.classHealthColors = false
+end
+
 local function CharacterProfileName()
   -- UnitName/GetRealmName are documented by this client and used by the
   -- installed UnrealPfUI build. Keep the calls protected because LoadConfig
@@ -410,6 +423,7 @@ function U.LoadConfig()
       -- 2026-09-28). The legacy UnrealUIDB predates modern-wow and still
       -- stores "modern", so copying it made every new character Modern.
       profiles[active].themeStyle = defaults.themeStyle
+      ApplyNewProfileThemeDefaults(profiles[active])
     end
   end
 
@@ -517,6 +531,7 @@ function U.CreateProfile(name)
   profile.portraitTarget = false
   profile.portraitTargetTarget = false
   profile.portraitParty = false
+  ApplyNewProfileThemeDefaults(profile)
   profiles[name] = profile
   SetActiveProfile(name)
   return true

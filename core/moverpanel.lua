@@ -195,7 +195,7 @@ local function Place()
   if type(U.MoverBounds) == "function" then
     left, right, bottom, top = U.MoverBounds(anchor.id)
   end
-  local screenWidth, screenHeight = U.UIWidth(), U.UIHeight()
+  local screenWidth, screenHeight = U.UILayoutWidth(), U.UILayoutHeight()
 
   -- Nothing measurable to place against: sit against the anchor's right edge
   -- rather than reverting to a screen corner, which is what this panel is not.
