@@ -160,9 +160,10 @@ end
 -- ---------------------------------------------------------------------------
 -- Colours
 --
--- Read from the native health bar's own tint, the way UnrealPfUI derives unit
--- type, then mapped onto unrealUI's muted palette rather than the client's
--- saturated primaries.
+-- Chosen by reaction (see "Reaction, remembered by creature name" below) and
+-- drawn in unrealUI's muted palette rather than the client's saturated
+-- primaries. UnitTypeFromBarColor is UnrealPfUI's tint route; it only feeds
+-- /uui np's report, because this client has no GetStatusBarColor.
 -- ---------------------------------------------------------------------------
 local UNIT_COLOR = {
   ENEMY         = { 0.75, 0.27, 0.32, 1.00 },
@@ -231,6 +232,86 @@ local function ApiTruth(name, a, b)
     return false
   end
   return true
+end
+
+-- ---------------------------------------------------------------------------
+-- Reaction, remembered by creature name
+--
+-- This client has no GetStatusBarColor (documented, and the /uui np dump read
+-- nothing back on 2026-10-19), so a plate carries no reaction signal of its
+-- own. A unit token does: the target and the mouseover are classified each
+-- pass and remembered by name, and every plate with that name takes the same
+-- colour. A name never seen keeps the hostile default.
+-- ---------------------------------------------------------------------------
+local reaction = { byName = {} }
+
+function reaction.Classify(unit)
+  if not ApiTruth("UnitExists", unit) then return nil end
+  if ApiTruth("UnitIsPlayer", unit) and
+     not ApiTruth("UnitCanAttack", "player", unit) then
+    return "FRIENDLY_UNIT"
+  end
+  local value = ApiNumber("UnitReaction", unit, "player")
+  if not value then return nil end
+  if value <= 3 then return "ENEMY" end
+  if value == 4 then return "NEUTRAL" end
+  return "FRIENDLY_NPC"
+end
+
+function reaction.Learn(unit)
+  local unitType = reaction.Classify(unit)
+  local name = unitType and ApiString("UnitName", unit)
+  if name then reaction.byName[name] = unitType end
+end
+
+-- A name not yet seen live: its base reaction from Database/unit_reactions.lua
+-- (tools/import_unit_reactions.py, VMaNGOS faction templates), found through
+-- the bundled creature-name index U.unitNames (name -> id, or a list of ids).
+-- Every id sharing the name must agree, else nil. Cached per name, false for
+-- a name the tables cannot answer (players, unknown creatures).
+reaction.LETTER = { H = "ENEMY", N = "NEUTRAL", F = "FRIENDLY_NPC" }
+reaction.fromDb = {}
+
+function reaction.Letter(id)
+  local value = U.unitReactions.byId[id] or "H"
+  if string.len(value) == 1 then return value end
+  -- Eight letters, in UnitRace's numeric order (knowledge:
+  -- unit.race_class_return_numeric_id).
+  if not reaction.race then
+    local fn = ResolveApiFn("UnitRace")
+    local ok, _, _, raceId
+    if fn then ok, _, _, raceId = pcall(fn, "player") end
+    reaction.race = ok and tonumber(raceId) or 0
+  end
+  if reaction.race < 1 or reaction.race > 8 then return nil end
+  return string.sub(value, reaction.race, reaction.race)
+end
+
+function reaction.FromDatabase(name)
+  local cached = reaction.fromDb[name]
+  if cached ~= nil then return cached or nil end
+  local result = false
+  local names = U.unitNames
+  if type(names) == "table" and type(U.unitReactions) == "table" then
+    local entry = names[name]
+    local letter
+    if type(entry) == "number" then
+      letter = reaction.Letter(entry)
+    elseif type(entry) == "table" then
+      local i
+      for i = 1, table.getn(entry) do
+        local one = reaction.Letter(entry[i])
+        if not one or (letter and one ~= letter) then
+          letter = nil
+          break
+        end
+        letter = one
+      end
+    end
+    result = letter and reaction.LETTER[letter] or false
+  end
+  reaction.fromDb[name] = result
+  return result or nil
 end
 
 -- ---------------------------------------------------------------------------
@@ -414,6 +495,12 @@ local stats = {
   -- not WorldFrame children and no overlay approach can reach them.
   minChildren = -1,
   maxChildren = 0,
+  -- A recycled plate shown again, and which stock parts the client had
+  -- restored by the time WatchPlates saw it, before it is muted again. Tells
+  -- a reuse flash (client restores art) from a creation flash (a new plate
+  -- drawn once before any Lua runs). Read by UnrealRuntimeProbe npflicker.
+  reuse = { shows = 0, font = 0, fontAlpha = 0, texture = 0,
+            textureAlpha = 0, barTall = 0, barAlpha = 0 },
 }
 
 -- Why a WorldFrame child was not adopted. Measured first-pass result on this
@@ -467,6 +554,16 @@ local function ClassifyPlate(frame)
   -- Checked before the structural signatures: adopting mutes every child, and
   -- muting GroupLootFrameN hides its roll buttons.
   if IsNamedFrame(frame) then return Reject("named-frame") end
+  -- unrealUI's own overlay. Although parented to the plate, it is listed as a
+  -- WorldFrame child here and carries the same name/bar shape, so it used to
+  -- be adopted one frame after its plate: muted (the visible plate vanished)
+  -- and covered by a second overlay 14 units higher (UnrealRuntimeProbe
+  -- npflicker v3, 2026-10-19; knowledge nameplates.own_overlay_adopted).
+  local ownName = Call(frame, "GetName")
+  if type(ownName) == "string" and
+     string.find(ownName, "^UnrealUINamePlate%d+$") then
+    return Reject("own-overlay")
+  end
   -- The object type is recorded, not gated on. Measured: gating on
   -- Button/Frame plus "plates are anonymous" rejected all 28 WorldFrame
   -- children on this client -- and this runtime auto-names objects
@@ -937,6 +1034,8 @@ local function RefreshPlate(overlay)
 
   local name = Call(parts.name, "GetText")
   local levelText = Call(parts.level, "GetText")
+  -- WatchPlates compares against this to spot a plate recycled onto a new unit.
+  overlay.cache.plateName = name
 
   -- WORKING_SOURCE (UnrealPfUI): with no per-plate unit token, the current
   -- target's plate is the fully opaque one.
@@ -1034,26 +1133,12 @@ local function RefreshPlate(overlay)
     if overlay.healthText then overlay.healthText:SetText("") end
   end
 
-  -- Bar colour from the native bar's tint, which is the only unit-type signal
-  -- available for a plate that is not the target.
-  local r, g, b2 = Call(parts.healthbar, "GetStatusBarColor")
-  local unitType = UnitTypeFromBarColor(r, g, b2)
-
-  if not unitType and overlay.isTarget then
-    if ApiTruth("UnitIsPlayer", "target") and
-       not ApiTruth("UnitCanAttack", "player", "target") then
-      unitType = "FRIENDLY_UNIT"
-    else
-      local reaction = ApiNumber("UnitReaction", "target", "player")
-      if reaction then
-        if reaction <= 3 then unitType = "ENEMY"
-        elseif reaction == 4 then unitType = "NEUTRAL"
-        else unitType = "FRIENDLY_NPC" end
-      end
-    end
-  end
-
-  unitType = unitType or "ENEMY"
+  -- Bar colour by reaction: live for the target, then whatever the target or
+  -- mouseover last taught about this name (RefreshAll learns both first), then
+  -- the creature's base reaction from the bundled database.
+  local unitType = overlay.isTarget and reaction.Classify("target") or nil
+  unitType = unitType or (name and (reaction.byName[name] or
+                                    reaction.FromDatabase(name))) or "ENEMY"
   if unitType ~= overlay.cache.unitType then
     overlay.cache.unitType = unitType
     U.SetStatusBarColor(overlay.health, M.Unpack(UNIT_COLOR[unitType]))
@@ -1093,6 +1178,8 @@ local function RefreshAll()
   statRefreshed = statRefreshed + 1
   targetPlateActive = false
   targetOverlay = nil
+  reaction.Learn("target")
+  reaction.Learn("mouseover")
   local i
   for i = 1, table.getn(plateOrder) do
     local overlay = plateOrder[i]
@@ -1102,6 +1189,66 @@ local function RefreshAll()
         failures.refresh = failures.refresh + 1
         failures.lastRefresh = tostring(err)
         U.Debug("nameplate refresh: " .. tostring(err))
+      end
+    end
+  end
+end
+
+-- Diagnostic only: which stock parts a recycled plate came back with (see
+-- stats.reuse). Reads the parts unrealUI already holds; no region walk.
+local function NoteReuse(parts)
+  local r = stats.reuse
+  r.shows = r.shows + 1
+  local invisible = M.fontById and M.fontById.invisible and
+                    M.fontById.invisible.path
+  local font, fontAlpha, texture, textureAlpha = false, false, false, false
+  local i
+  for i = 1, table.getn(parts.fontstrings) do
+    local fs = parts.fontstrings[i]
+    if invisible and Call(fs, "GetFont") ~= invisible then font = true end
+    if (tonumber(Call(fs, "GetAlpha")) or 0) > 0.01 then fontAlpha = true end
+  end
+  for i = 1, table.getn(parts.textures) do
+    local tex = parts.textures[i]
+    if type(Call(tex, "GetTexture")) == "string" then texture = true end
+    if (tonumber(Call(tex, "GetAlpha")) or 0) > 0.01 then textureAlpha = true end
+  end
+  if font then r.font = r.font + 1 end
+  if fontAlpha then r.fontAlpha = r.fontAlpha + 1 end
+  if texture then r.texture = r.texture + 1 end
+  if textureAlpha then r.textureAlpha = r.textureAlpha + 1 end
+  local bar = parts.healthbar
+  if bar then
+    if (tonumber(Call(bar, "GetHeight")) or 0) > 1 then r.barTall = r.barTall + 1 end
+    if (tonumber(Call(bar, "GetAlpha")) or 0) > 0.01 then r.barAlpha = r.barAlpha + 1 end
+  end
+end
+
+-- Every render tick, but only for plates that just changed: one that appeared,
+-- vanished, or was recycled onto another unit (its name text changed). Without
+-- it the stock plate, or the overlay still hidden from the plate's last use,
+-- showed for up to one 0.1s refresh before the finished overlay replaced it
+-- (user-reported flicker, 2026-10-19). Health and the rest stay on RefreshAll.
+local function WatchPlates()
+  ScanWorldFrame()
+  local i
+  for i = 1, table.getn(plateOrder) do
+    local overlay = plateOrder[i]
+    if overlay then
+      local visible = Call(overlay.plate, "IsVisible") and true or false
+      local changed = visible ~= overlay.cache.visible
+      if not changed and visible then
+        changed = Call(overlay.parts.name, "GetText") ~= overlay.cache.plateName
+      end
+      if visible and overlay.cache.visible == false then
+        pcall(NoteReuse, overlay.parts)
+      end
+      if changed then
+        local ok, err = pcall(RefreshPlate, overlay)
+        if not ok then
+          failures.refresh = failures.refresh + 1
+          failures.lastRefresh = tostring(err)
+        end
       end
     end
   end
@@ -1124,7 +1271,24 @@ function U.NameplateStats()
     worldChildren = stats.worldChildren,
     minChildren = stats.minChildren,
     maxChildren = stats.maxChildren,
+    adopted = stats.plates,
+    -- Flat numbers only: core/perf.lua saves this table as-is.
+    reuseShows = stats.reuse.shows,
+    reuseFont = stats.reuse.font,
+    reuseFontAlpha = stats.reuse.fontAlpha,
+    reuseTexture = stats.reuse.texture,
+    reuseTextureAlpha = stats.reuse.textureAlpha,
+    reuseBarTall = stats.reuse.barTall,
+    reuseBarAlpha = stats.reuse.barAlpha,
   }
+end
+
+-- Read-only view of the adopted overlays for UnrealRuntimeProbe's npflicker
+-- group: it reads the parts unrealUI already holds instead of walking
+-- WorldFrame, whose per-frame GetRegions/GetChildren walk crashed the client
+-- (nameplates.flicker_probe_walk_crash).
+function U.NameplateOverlays()
+  return plateOrder
 end
 
 function U.NameplateReport()
@@ -1302,7 +1466,12 @@ local function DumpPlates()
     if overlay then
       local parts = overlay.parts or {}
       local value, minimum, maximum = ReadHealth(overlay)
+      local nativeName = Call(parts.name, "GetText")
       table.insert(out, {
+        learnedType = nativeName and reaction.byName[nativeName] or "unseen",
+        drawnType = overlay.cache and overlay.cache.unitType,
+        targetReaction = overlay.isTarget and
+                         ApiNumber("UnitReaction", "target", "player") or nil,
         id = overlay.id,
         detector = parts.detector,
         suspect = IsNamedFrame(overlay.plate),
@@ -1415,12 +1584,32 @@ end
 function NP:OnEnable()
   if not cfg.enabled then return end
 
+  -- Plates are created natively (UnrealRuntimeProbe npcreate: no Lua
+  -- CreateFrame), so a new one draws one stock frame before any Lua runs
+  -- (nameplates.new_plate_first_frame_stock). Its text font is the one input
+  -- that frame takes from Lua: the client's plate builder reads the
+  -- NAMEPLATE_FONT global (the name sits beside FNamePlateFrame's hard-coded
+  -- Nameplate-Border / UI-TargetingFrame-BarFill paths in the executable), so
+  -- pointing it at the invisible font keeps that frame's name and level
+  -- blank. The bar and border art are hard-coded and still show for it.
+  -- MuteFontString applies the same font after adoption, and the text stays
+  -- readable through GetText.
+  local invisible = M.fontById and M.fontById.invisible
+  if invisible and type(invisible.path) == "string" and
+     type(U.G("NAMEPLATE_FONT")) == "string" then
+    NAMEPLATE_FONT = invisible.path
+  end
+
   -- Discovery is cheap while the child count is unchanged, so it can share the
-  -- refresh tick. 0.1s keeps a new plate from lagging visibly behind the stock
-  -- one it replaces.
+  -- refresh tick. A plate that appears or changes unit is caught sooner, on the
+  -- next render tick, by WatchPlates.
   U.RegisterUpdate("nameplates.scan", 0.1, function()
     if U.PerfDisabled and U.PerfDisabled("plates") then return end
     ScanWorldFrame()
     RefreshAll()
+  end)
+  U.RegisterUpdate("nameplates.watch", 0, function()
+    if U.PerfDisabled and U.PerfDisabled("plates") then return end
+    WatchPlates()
   end)
 end

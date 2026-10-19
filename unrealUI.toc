@@ -47,6 +47,7 @@ Database\unit_vitals.lua
 Database\unit_names.lua
 Database\unit_names_ruRU.lua
 Database\unit_names_zhCN.lua
+Database\unit_reactions.lua
 Database\item_sort.lua
 Database\talent_advisor.lua
 core\unitvitals.lua
