@@ -1054,6 +1054,7 @@ mw.units = {
   -- different amounts on their right-hand label.
   { id = "player",       art = "playerFrame", bg = "playerFrameBg",
     power = "powerFill", mirror = true, shiftLabels = true,
+    powerTextSize = 8,
     -- The player's power opening narrows slightly at both ends. Keep its fill
     -- clear of that rim without changing the health bar or any other frame.
     powerInset = 2,
@@ -2122,8 +2123,8 @@ end
 -- silently failing on this client
 -- (knowledge.json / fonts.pfui_path_and_measure.v1), so nothing here touches
 -- SetFont on the widget itself.
-function mw.ApplyPowerTextSize(frame)
-  local size = mw.PowerTextSize()
+function mw.ApplyPowerTextSize(frame, explicitSize)
+  local size = tonumber(explicitSize) or mw.PowerTextSize()
   if size <= 0 or not frame or not frame.power then return end
 
   local labels = { frame.power.leftLabel, frame.power.rightLabel }
@@ -2414,6 +2415,9 @@ function mw.BuildUnitFrames()
     if frame then
       mw.BuildHousing(frame, entry)
       mw.ApplyPowerFill(frame, entry)
+      if entry.powerTextSize then
+        mw.ApplyPowerTextSize(frame, entry.powerTextSize)
+      end
     end
   end
 
@@ -5192,17 +5196,26 @@ function mw.PlaceCharacterLevelLine(frame)
   if not text or mw.characterLevelPlaced then return end
 
   local token = M.modernWow.characterLevelLine
+  local rise = mw.petHeaderOffset and 3 or 0
   local state = frame and frame.uuiModernWowWindow
   pcall(function()
     text:ClearAllPoints()
     if state and state.expanded then
       text:SetPoint("TOP", frame, "TOPLEFT",
-                    mw.CharacterPaperDollCentreX(), -token.top)
+                    mw.CharacterPaperDollCentreX(), -token.top + rise)
     else
-      text:SetPoint("TOP", frame, "TOP", 0, -token.top)
+      text:SetPoint("TOP", frame, "TOP", 0, -token.top + rise)
     end
   end)
   mw.characterLevelPlaced = true
+end
+
+function U.SetModernWowPetHeaderOffset(active)
+  active = active and true or false
+  if mw.petHeaderOffset == active then return end
+  mw.petHeaderOffset = active
+  mw.characterLevelPlaced = nil
+  mw.PlaceCharacterLevelLine(U.G("CharacterFrame"))
 end
 
 -- The guild line ("<rank> of <guild>", the native CharacterGuildText: global

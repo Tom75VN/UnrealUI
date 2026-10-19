@@ -725,6 +725,7 @@ local function CreateIcon(row, index)
   icon:SetHeight(size)
   icon.uuiRadialOnly = row.radialOnly
   icon.nativeAuraChrome = row.nativeAuraChrome
+  icon.modernWowAuraChrome = row.modernWowAuraChrome
 
   -- Classic's native target auras show the icon's full artwork instead of
   -- UnrealUI's cropped texture and flat outline. Debuffs additionally carry
@@ -742,7 +743,7 @@ local function CreateIcon(row, index)
       border:SetTexCoord(0.296875, 0.5703125, 0, 0.515625)
       icon.nativeBorder = border
     end
-  else
+  elseif not row.modernWowAuraChrome then
     U.CreateBackdrop(icon, {})
   end
 
@@ -755,6 +756,10 @@ local function CreateIcon(row, index)
   local texture = icon:CreateTexture(nil, "ARTWORK")
   if row.nativeAuraChrome then
     texture:SetAllPoints(icon)
+  elseif row.modernWowAuraChrome then
+    texture:SetAllPoints(icon)
+    local crop = M.modernWow.nameplateAura.iconCrop
+    pcall(texture.SetTexCoord, texture, crop, 1 - crop, crop, 1 - crop)
   else
     texture:SetPoint("TOPLEFT", icon, "TOPLEFT", 1, -1)
     texture:SetPoint("BOTTOMRIGHT", icon, "BOTTOMRIGHT", -1, 1)
@@ -770,8 +775,12 @@ local function CreateIcon(row, index)
   -- wipe that has to sit above the artwork, and a higher frame level is the
   -- only ordering this client guarantees between the two.
   local overlay = CreateFrame("Frame", nil, icon)
-  overlay:SetPoint("TOPLEFT", icon, "TOPLEFT", 1, -1)
-  overlay:SetPoint("BOTTOMRIGHT", icon, "BOTTOMRIGHT", -1, 1)
+  if row.modernWowAuraChrome then
+    overlay:SetAllPoints(icon)
+  else
+    overlay:SetPoint("TOPLEFT", icon, "TOPLEFT", 1, -1)
+    overlay:SetPoint("BOTTOMRIGHT", icon, "BOTTOMRIGHT", -1, 1)
+  end
   local levelOk, level = pcall(icon.GetFrameLevel, icon)
   if levelOk and tonumber(level) then
     pcall(overlay.SetFrameLevel, overlay, level + 5)
@@ -780,7 +789,23 @@ local function CreateIcon(row, index)
 
   -- The same hand-drawn radial the action buttons use. BACKGROUND within the
   -- raised frame keeps the number and the stack count on top of it.
-  icon.wipe = U.CreateRadialWipe(overlay, { size = size - 2 })
+  icon.wipe = U.CreateRadialWipe(overlay, {
+    size = row.modernWowAuraChrome and size or size - 2,
+  })
+
+  if row.modernWowAuraChrome then
+    local art = M.modernWow.nameplateAura
+    local cell = art.overlay
+    local inset = art.overlayInset
+    local chrome = overlay:CreateTexture(nil, "OVERLAY")
+    chrome:SetTexture(art.texture)
+    chrome:SetTexCoord(cell[1] / art.sheet[1], cell[3] / art.sheet[1],
+                       cell[2] / art.sheet[2], cell[4] / art.sheet[2])
+    chrome:SetPoint("TOPLEFT", overlay, "TOPLEFT", inset.left, inset.top)
+    chrome:SetPoint("BOTTOMRIGHT", overlay, "BOTTOMRIGHT",
+                    inset.right, inset.bottom)
+    icon.modernWowChrome = chrome
+  end
 
   icon.timer = U.CreateLabel(overlay, {
     size = TimerFontSize(size),
@@ -801,7 +826,11 @@ local function CreateIcon(row, index)
     inherits = "GameFontNormalSmall",
   })
   if icon.count then
-    icon.count:SetPoint("BOTTOMRIGHT", overlay, "BOTTOMRIGHT", 0, 0)
+    if row.modernWowAuraChrome then
+      icon.count:SetPoint("BOTTOMRIGHT", overlay, "BOTTOMRIGHT", 3, -2)
+    else
+      icon.count:SetPoint("BOTTOMRIGHT", overlay, "BOTTOMRIGHT", 0, 0)
+    end
   end
 
   icon:Hide()
@@ -846,6 +875,13 @@ end
 -- on the pass where the buff row is empty and hidden.
 local function PositionRow(row, below, offset)
   offset = offset or 0
+
+  if row.nameplate then
+    row:ClearAllPoints()
+    row:SetPoint("BOTTOMLEFT", row.anchor, "TOPLEFT", 0,
+                 (row.anchorOffsetY or 0) + offset)
+    return
+  end
 
   -- Controlled Classic bisect: attach only the above-frame player/target rows
   -- to the named native health bar. The previous version cleared and rewrote
@@ -1020,7 +1056,8 @@ local function ApplyIcon(icon, texture, count, borderColor, size, entry, now, ti
     icon.uuiSize = size
     icon:SetWidth(size)
     icon:SetHeight(size)
-    U.SizeRadialWipe(icon.wipe, size - 2)
+    U.SizeRadialWipe(icon.wipe,
+                     icon.modernWowAuraChrome and size or size - 2)
     if icon.timer then U.SetFont(icon.timer, TimerFontSize(size)) end
   end
 
@@ -1037,7 +1074,7 @@ local function ApplyIcon(icon, texture, count, borderColor, size, entry, now, ti
     icon.uuiBorder = borderColor
     if icon.nativeBorder then
       U.SetColor(icon.nativeBorder, M.Unpack(borderColor))
-    elseif not icon.nativeAuraChrome then
+    elseif not icon.nativeAuraChrome and not icon.modernWowAuraChrome then
       U.SetBorderColor(icon, M.Unpack(borderColor))
     end
   end
@@ -1076,9 +1113,11 @@ end
 -- Refresh
 -- ---------------------------------------------------------------------------
 local function RowEnabled(row)
+  if row.active ~= nil and not row.active then return false end
   -- The location switch wins over the per-type one, so an off display stays
   -- off whatever the buff/debuff checkboxes under it say.
   if row.master and not U.GetAuraSetting(row.master) then return false end
+  if not row.setting then return true end
   return U.GetAuraSetting(row.setting) and true or false
 end
 
@@ -1190,6 +1229,7 @@ local function SampleMoverId(row)
 end
 
 local function SampleWanted(row)
+  if row.noSample then return false end
   if type(U.MoverSampleShown) ~= "function" then return false end
   if type(U.CreateMoverSampleCell) ~= "function" then return false end
   return U.MoverSampleShown(SampleMoverId(row)) and true or false
@@ -1213,7 +1253,8 @@ local function ShowSample(row, offset)
   end
 
   local size, spacing, perRow = RowGeometry(row)
-  local below = not row.beside and U.GetAuraSetting("belowFrame")
+  local below = not row.nameplate and not row.beside and
+                U.GetAuraSetting("belowFrame")
   local maxIcons = row.maxIcons or
                    U.GetAuraSetting(row.harmful and "maxIcons" or "maxBuffs")
 
@@ -1284,7 +1325,8 @@ local function RefreshRow(row, offset)
   local size, spacing, perRow = RowGeometry(row)
   local maxIcons = row.maxIcons or
                    U.GetAuraSetting(row.harmful and "maxIcons" or "maxBuffs")
-  local below = not row.beside and U.GetAuraSetting("belowFrame")
+  local below = not row.nameplate and not row.beside and
+                U.GetAuraSetting("belowFrame")
   local timers = U.GetAuraSetting("showTimers")
 
   PositionRow(row, below, offset)
@@ -1712,22 +1754,21 @@ local function BuildRow(id, unit, harmful, setting, options)
   -- another: the party block's player row reads "player" and hangs on the party
   -- frame that shows the player.
   local frameId = (options and options.frameId) or unit
-  local anchor = U.GetUnitFrame(frameId)
+  local anchor = (options and options.anchor) or U.GetUnitFrame(frameId)
   if not anchor then
     U.Debug("no unit frame to anchor auras to: " .. id)
     return nil
   end
 
-  -- A plain container that rides the unit frame's mover rather than owning one
-  -- of its own, so the icons cannot drift away from the frame they describe.
+  -- A plain container that rides its anchor rather than owning a mover.
   -- Only the child icons accept hover, for their native aura tooltip.
-  local row = CreateFrame("Frame", "UnrealUIAuraRow" .. id, anchor)
+  local parent = (options and options.parent) or anchor
+  local row = CreateFrame("Frame", "UnrealUIAuraRow" .. id, parent)
   row.anchor = anchor
   if unit == "target" then row.belowAnchor = U.GetUnitFrame("targettarget") end
   RaiseAboveNativeFrame(row, anchor)
   row:SetWidth(1)
   row:SetHeight(1)
-  PositionRow(row, U.GetAuraSetting("belowFrame"), 0)
 
   row.id = id
   row.unit = unit
@@ -1743,9 +1784,14 @@ local function BuildRow(id, unit, harmful, setting, options)
     row.stopAtCap = options.stopAtCap
     row.radialOnly = options.radialOnly
     row.master = options.master
+    row.nameplate = options.nameplate
+    row.anchorOffsetY = options.anchorOffsetY
+    row.noSample = options.noSample
+    row.modernWowAuraChrome = options.modernWowAuraChrome
     row.nativeAuraChrome = options.nativeAuraChrome and
                            anchor.classicNativeFrame and true or false
   end
+  PositionRow(row, U.GetAuraSetting("belowFrame"), 0)
   row.icons = {}
   row.names = {}
   row:Hide()
@@ -1753,6 +1799,39 @@ local function BuildRow(id, unit, harmful, setting, options)
   rows[id] = row
   table.insert(rowOrder, row)
   return row
+end
+
+function U.CreateNameplateAuraRows(anchor, parent, id, offsetY)
+  if not anchor then return nil end
+
+  local modernWow = U.GetActiveThemeStyle() == "modern-wow"
+  local art = modernWow and M.modernWow.nameplateAura or nil
+  local size = art and art.size or 18
+  local options = {
+    anchor = anchor,
+    parent = parent or anchor,
+    nameplate = true,
+    anchorOffsetY = (tonumber(offsetY) or 0) - size,
+    noSample = true,
+    modernWowAuraChrome = modernWow,
+    size = size,
+    spacing = art and art.spacing or 2,
+    perRow = 8,
+    maxIcons = 8,
+    stopAtCap = true,
+  }
+
+  local prefix = "nameplate" .. tostring(id)
+  local debuffs = BuildRow(prefix, "target", true, nil, options)
+  if not debuffs then return nil end
+  debuffs.active = false
+  return { debuffs = debuffs }
+end
+
+function U.RefreshNameplateAuraRows(pair, active)
+  if not pair then return end
+  pair.debuffs.active = active and true or false
+  RefreshRow(pair.debuffs, 0)
 end
 
 -- ---------------------------------------------------------------------------

@@ -2536,6 +2536,12 @@ COOLDOWN_MANAGER_SOURCE = os.environ.get(
     r"\AddOns\BigWigs\Media\Textures\UICooldownManager2x.blp")
 COOLDOWN_MANAGER_DEST = "ui/cooldown-manager"
 
+NAMEPLATE_SOURCE = (
+    r"C:\Games\Azeroth Launcher\Azeroth\Binaries\Win64\Games\Emberveil"
+    r"\live\Azeroth\Interface\AddOns\ForeverFrameXML-1.60.1.69913"
+    r"\wowdata-art-ui\interface\unlisted\7241122.png")
+NAMEPLATE_SELECTED_DEST = "ui/nameplate-selected"
+
 
 def import_cooldown_manager(dest_root):
     if not os.path.isfile(COOLDOWN_MANAGER_SOURCE):
@@ -2563,7 +2569,9 @@ def import_cooldown_manager(dest_root):
                 "L=175 R=439 T=1 B=39, `-Bar-Pip` L=175 R=195 T=63 B=155 and "
                 "`-IconOverlay` L=1 R=173 T=1 B=173 (RetailFrameXML "
                 "`query.py filedata 6739577`). Drawn by the Tracked Bars "
-                "(M.modernWow.trackedBars).",
+                "(M.modernWow.trackedBars), Modern WoW nameplate auras "
+                "(M.modernWow.nameplateAura), and Modern WoW nameplate health "
+                "bars (M.modernWow.nameplate).",
     }
 
 
@@ -2571,6 +2579,52 @@ def main_cooldown_manager():
     """Import only the Cooldown Manager sheet and upsert its attribution row."""
     dest_root = os.path.join(os.getcwd(), DEST_SUBPATH)
     row = import_cooldown_manager(dest_root)
+    attribution = os.path.join(dest_root, "ATTRIBUTION.md")
+    rendered = "| `%s` | %s | `%s` | %s |" % (
+        row["dest"], row["size"], row["supplied"], row["note"])
+    with open(attribution, "r", encoding="utf-8") as handle:
+        lines = handle.read().splitlines()
+    prefix = "| `%s` |" % row["dest"]
+    for index, line in enumerate(lines):
+        if line.startswith(prefix):
+            lines[index] = rendered
+            break
+    else:
+        lines.append(rendered)
+    with open(attribution, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write("\n".join(lines) + "\n")
+    print(rendered)
+    return 0
+
+
+def import_nameplate_selected(dest_root):
+    if not os.path.isfile(NAMEPLATE_SOURCE):
+        raise IOError("Nameplate source missing: %s" % NAMEPLATE_SOURCE)
+    image = Image.open(NAMEPLATE_SOURCE).convert("RGBA")
+    selected = image.crop((1, 102, 217, 120))
+    dst = os.path.join(
+        dest_root, NAMEPLATE_SELECTED_DEST.replace("/", os.sep) + ".tga")
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    width, height = write_rle_tga(selected, dst)
+    selected.close()
+    image.close()
+    return {
+        "dest": NAMEPLATE_SELECTED_DEST + ".tga",
+        "size": "%dx%d" % (width, height),
+        "supplied": "ForeverFrameXML FileDataID 7241122",
+        "note": "Blizzard `UI-HUD-Nameplates-Selected`, cropped at Retail "
+                "12.1.0.69933's exact FileDataID 7241122 member rectangle "
+                "L=1 R=217 T=102 B=120, from the matching extracted sheet "
+                "in ForeverFrameXML-1.60.1.69913; pixels unchanged, PNG to "
+                "32-bit RLE TGA. Drawn by Modern WoW nameplates "
+                "(M.modernWow.nameplate).",
+    }
+
+
+def main_nameplate():
+    """Import the Retail selected-nameplate member and upsert attribution."""
+    dest_root = os.path.join(os.getcwd(), DEST_SUBPATH)
+    row = import_nameplate_selected(dest_root)
     attribution = os.path.join(dest_root, "ATTRIBUTION.md")
     rendered = "| `%s` | %s | `%s` | %s |" % (
         row["dest"], row["size"], row["supplied"], row["note"])
@@ -2734,6 +2788,8 @@ if __name__ == "__main__":
         sys.exit(main_minimap_player_arrow())
     if "--cooldown-manager" in sys.argv[1:]:
         sys.exit(main_cooldown_manager())
+    if "--nameplate" in sys.argv[1:]:
+        sys.exit(main_nameplate())
     if "--junk-coin" in sys.argv[1:]:
         sys.exit(main_junk_coin())
     if "--bag-indicator" in sys.argv[1:]:

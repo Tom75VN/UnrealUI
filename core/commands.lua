@@ -442,8 +442,8 @@ end
 -- Nameplate detection is the one part of unrealUI with no compact-DB evidence
 -- behind it at all, and the first run adopted none of this client's 28
 -- WorldFrame children. Rather than print one line per child (28+ lines, past
--- what can be copied out of chat), the full per-child breakdown is written to
--- UnrealUIDiagDB.nameplateDump and only a count prints in chat.
+-- what can be copied out of chat), the full per-child and per-plate breakdown
+-- is written to UnrealUIDiagDB.nameplateDump and only the verdict prints.
 local function ShowNameplateDump()
   if type(U.NameplateDump) ~= "function" then
     U.Print("nameplate module is not loaded")
@@ -451,13 +451,26 @@ local function ShowNameplateDump()
   end
 
   local dump = U.NameplateDump()
-  local total = table.getn(dump)
+  local s = dump.summary
   SaveDiagnostic("nameplateDump", dump)
 
-  U.Print("WorldFrame children: " .. tostring(total) ..
-          " - saved to UnrealUIDiagDB.nameplateDump")
-  U.Print("  |cffffff00/reload|r then open " ..
-          U.SavedVariablesHint() .. " to read it")
+  -- Verdict first: it is the answer. The counts after it say why.
+  U.Print("nameplates: |cffffff00" .. tostring(s.verdict) .. "|r")
+  U.Print("  adopted " .. s.adopted .. " (real " .. s.real ..
+          ", false-positive " .. s.suspect .. "), overlays visible " ..
+          s.overlaysVisible .. ", hidden on visible plate " ..
+          s.plateVisibleOverlayHidden)
+  U.Print("  WorldFrame children " .. s.worldChildren .. " (session " ..
+          tostring(s.minChildren) .. "-" .. tostring(s.maxChildren) ..
+          ", unnamed " .. s.unnamedChildren .. ", new since login " ..
+          s.arrivals .. ", NAMEPLATES_ON " .. tostring(s.nameplatesOn) .. ")")
+  if s.refreshFailures > 0 or s.buildFailures > 0 then
+    U.Print("  |cffff4040errors|r refresh " .. s.refreshFailures ..
+            ", build " .. s.buildFailures .. ": " ..
+            tostring(s.lastRefreshError or s.lastBuildError))
+  end
+  U.Print("  saved to UnrealUIDiagDB.nameplateDump - |cffffff00/reload|r " ..
+          "then open " .. U.SavedVariablesHint())
 end
 
 -- What this client actually calls each item, and which bag category that

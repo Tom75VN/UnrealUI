@@ -884,13 +884,29 @@ end
 local function UpdateUnitVisibility(tracker)
   local widget = tracker.bar
   if not widget then return end
-  local shown = tracker.casting or U.IsUnlocked() or Finishing(widget)
+  -- The tracker and its widget remain the state owner; a matched target plate
+  -- mirrors that state and temporarily replaces only the standalone view.
+  local onNameplate = tracker.id == "target" and
+                      type(U.NameplateTargetCastbarActive) == "function" and
+                      U.NameplateTargetCastbarActive()
+  local shown = not onNameplate and
+                (tracker.casting or U.IsUnlocked() or Finishing(widget))
   if shown then
     if not widget:IsShown() then widget:Show() end
   else
     if widget:IsShown() then widget:Hide() end
   end
   SetWidgetCellsShown(widget, shown)
+end
+
+function U.TargetCastInfo()
+  local tracker = trackers.target
+  if not tracker or not tracker.casting or not tracker.startTime or
+     not tracker.duration then return nil end
+  local elapsed = GetTime() - tracker.startTime
+  if elapsed < 0 then elapsed = 0 end
+  if elapsed > tracker.duration then elapsed = tracker.duration end
+  return tracker.spell, elapsed, tracker.duration
 end
 
 local function ApplyUnitIdlePlaceholder(tracker)
@@ -1257,6 +1273,10 @@ Tick = function()
            tracker.bar:IsShown() then
       ApplyUnitIdlePlaceholder(tracker)
     end
+  end
+
+  if type(U.RefreshNameplateTargetCast) == "function" then
+    U.RefreshNameplateTargetCast()
   end
 
   if not casting then

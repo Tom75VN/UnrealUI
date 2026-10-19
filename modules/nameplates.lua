@@ -11,9 +11,9 @@
 -- layout, which centres the name over the plate and puts the level outside the
 -- bar's left edge.
 --
--- None of pfUI's nameplate subsystem is reproduced. There are no debuff icons,
--- combo points, totem icons, castbars, raid icons, threat/combat-state colours,
--- click handling, mouselook emulation, visibility filtering or config GUI here.
+-- None of pfUI's nameplate subsystem is reproduced. There are no combo points,
+-- totem icons, raid icons, threat/combat-state colours, click handling,
+-- mouselook emulation or visibility filtering here.
 -- Those are separate scope.
 --
 -- Compatibility notes that shaped this file:
@@ -53,6 +53,7 @@ local U = UnrealUI
 local M = U.media
 
 local NP = U.RegisterModule("nameplates")
+local PLATE_LIFT = 14
 
 -- ---------------------------------------------------------------------------
 -- Configuration
@@ -68,11 +69,93 @@ local defaults = {
   healthTextSize = 11,
   verticalOffset = 0,
   showHealthText = true,
+  showAuras      = true,
+  attachTargetCast = true,
   fadeOthers     = true,   -- dim plates that are not the current target
   otherAlpha     = 0.75,
 }
 
 local cfg = defaults
+local targetPlateActive = false
+local targetOverlay = nil
+
+function U.NameplatesEnabled()
+  return U.ModuleConfig("nameplates", defaults).enabled and true or false
+end
+
+function U.SetNameplatesEnabled(value)
+  value = value and true or false
+  local settings = U.ModuleConfig("nameplates", defaults)
+  if settings.enabled == value then return value end
+  settings.enabled = value
+
+  U.ShowConfirm({
+    owner = "nameplates.enable-reload",
+    centered = true,
+    text = U.L("SETTINGS_NAMEPLATES_CHANGED"),
+    detail = value and U.L("SETTINGS_NAMEPLATES_RELOAD_ON")
+                   or U.L("SETTINGS_NAMEPLATES_RELOAD_OFF"),
+    acceptText = U.L("COMMON_OK_SHORT"),
+    cancelText = U.L("COMMON_CLOSE"),
+  })
+  return value
+end
+
+function U.NameplateTargetCastbarActive()
+  return cfg.enabled and cfg.attachTargetCast and targetPlateActive
+end
+
+local function SetDisplaySetting(key, value)
+  local settings = U.ModuleConfig("nameplates", defaults)
+  settings[key] = value and true or false
+  cfg = settings
+end
+
+local function BuildSettingsPage(parent)
+  local widgets = {}
+
+  local header = U.CreateSectionHeader(parent, {
+    text = U.L("SETTINGS_PAGE_NAMEPLATES"),
+    width = 484,
+    y = -4,
+  })
+  table.insert(widgets, header)
+
+  local enable = U.CreateCheckbox(parent, {
+    name = "UnrealUISettingsNameplates",
+    text = U.L("SETTINGS_NAMEPLATES"),
+    value = U.NameplatesEnabled(),
+    onChange = function(value) U.SetNameplatesEnabled(value) end,
+  })
+  enable.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -34)
+  table.insert(widgets, enable)
+
+  local auras = U.CreateCheckbox(parent, {
+    name = "UnrealUISettingsNameplateAuras",
+    text = U.L("SETTINGS_NAMEPLATE_AURAS"),
+    value = cfg.showAuras,
+    onChange = function(value) SetDisplaySetting("showAuras", value) end,
+  })
+  auras.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -66)
+  table.insert(widgets, auras)
+
+  local targetCast = U.CreateCheckbox(parent, {
+    name = "UnrealUISettingsNameplateTargetCast",
+    text = U.L("SETTINGS_NAMEPLATE_CASTBAR"),
+    value = cfg.attachTargetCast,
+    onChange = function(value) SetDisplaySetting("attachTargetCast", value) end,
+  })
+  targetCast.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -98)
+  table.insert(widgets, targetCast)
+
+  local function Refresh()
+    enable.SetValue(U.NameplatesEnabled())
+    auras.SetValue(cfg.showAuras)
+    targetCast.SetValue(cfg.attachTargetCast)
+  end
+
+  return widgets, Refresh
+end
 
 -- ---------------------------------------------------------------------------
 -- Colours
@@ -233,6 +316,13 @@ end
 local function MuteFontString(region)
   if not region then return end
   -- GetText() must keep working: the name and level are read back off these.
+  local invisible = M.fontById and M.fontById.invisible
+  if invisible then
+    local _, size, flags = Call(region, "GetFont")
+    pcall(function()
+      region:SetFont(invisible.path, tonumber(size) or cfg.levelSize, flags)
+    end)
+  end
   pcall(function() region:SetAlpha(0) end)
 end
 
@@ -240,14 +330,61 @@ end
 -- zeroing the frame alone is not enough to stop the fill drawing.
 local function MuteBar(bar)
   if not bar then return end
-  pcall(function() bar:SetStatusBarTexture(nil) end)
+  -- Keep the native widget logically shown. The client owns its lifecycle and
+  -- health updates; hiding it can make the owning nameplate disappear.
+  -- knowledge.json rendering.statusbar_alpha_does_not_fade_fill: widget alpha
+  -- leaves the fill drawn, and so did a nil fill texture and a zero vertex
+  -- alpha (user-confirmed 2026-10-19: the stock yellow bar stayed, then a
+  -- blinking 1px line once its height was collapsed). A fully transparent fill
+  -- texture draws nothing whatever the tint, and the tint itself is left alone:
+  -- the plate's unit type is read back from it. Re-applied on every refresh
+  -- via MuteNativePlate, since the client may restore its own fill.
+  pcall(function() bar:SetStatusBarTexture(M.texture.clear) end)
   pcall(function() bar:SetAlpha(0) end)
+  -- Belt and braces: collapse both dimensions, so a fill the client redraws
+  -- before the next refresh is a sub-pixel dot rather than a line.
+  -- GetValue/GetMinMaxValues do not depend on its size.
+  pcall(function() bar:SetHeight(0.01) end)
+  pcall(function() bar:SetWidth(0.01) end)
 
   local ok, regions = pcall(function() return { bar:GetRegions() } end)
   if not ok or type(regions) ~= "table" then return end
   local i
   for i = 1, table.getn(regions) do
     if ObjectType(regions[i]) == "Texture" then MuteTexture(regions[i]) end
+  end
+end
+
+local function MuteNativePlate(parts, plate, overlay)
+  if not parts then return end
+
+  MuteBar(parts.healthbar)
+  MuteBar(parts.castbar)
+
+  local i
+  for i = 1, table.getn(parts.textures) do
+    MuteTexture(parts.textures[i])
+  end
+  for i = 1, table.getn(parts.fontstrings) do
+    MuteFontString(parts.fontstrings[i])
+  end
+
+  -- Native aura buttons may be added after the plate was first classified.
+  -- Hide every direct native child while leaving UnrealUI's owned overlay.
+  local ok, children = pcall(function() return { plate:GetChildren() } end)
+  if not ok or type(children) ~= "table" then return end
+
+  for i = 1, table.getn(children) do
+    local child = children[i]
+    local childName = Call(child, "GetName")
+    local owned = child == overlay or
+                  (type(childName) == "string" and
+                   string.find(childName, "^UnrealUINamePlate"))
+    local nativeBar = child == parts.healthbar or child == parts.castbar
+    if not owned and not nativeBar then
+      pcall(function() child:Hide() end)
+      pcall(function() child:SetAlpha(0) end)
+    end
   end
 end
 
@@ -284,6 +421,15 @@ local stats = {
 -- reportable rather than inferred from the layout not changing.
 local rejectReasons = {}
 
+-- Build and refresh failures are pcall'd so a broken plate cannot take the
+-- world down with it, which also means they never reach the player. /uui np
+-- reads them from here instead of from a debug chat line nobody saw.
+local failures = { build = 0, refresh = 0 }
+
+-- WorldFrame children that appeared after login, capped (see ScanWorldFrame).
+local arrivals = {}
+local ARRIVAL_LIMIT = 12
+
 local function Reject(reason)
   rejectReasons[reason] = (rejectReasons[reason] or 0) + 1
   return nil
@@ -303,8 +449,24 @@ end
 -- cached, so it is re-classified in full on every rescan.
 local statScans, statRescans, statClassified, statRefreshed = 0, 0, 0, 0
 
+-- FrameXML frames the structural signature matches by accident. Measured here:
+-- GroupLootFrame1..4 (roll timer + "Item Name") and ShopFrameScanTooltip
+-- (StatusBar child + 60 FontStrings), knowledge.json
+-- world.nameplates_are_not_lua_widgets. A denylist, not "reject every named
+-- frame": what name, if any, this client gives a real plate is unmeasured.
+local function IsNamedFrame(frame)
+  local name = Call(frame, "GetName")
+  if type(name) ~= "string" then return false end
+  return string.find(name, "^GroupLootFrame%d+$") ~= nil or
+         name == "ShopFrameScanTooltip"
+end
+
 local function ClassifyPlate(frame)
   statClassified = statClassified + 1
+
+  -- Checked before the structural signatures: adopting mutes every child, and
+  -- muting GroupLootFrameN hides its roll buttons.
+  if IsNamedFrame(frame) then return Reject("named-frame") end
   -- The object type is recorded, not gated on. Measured: gating on
   -- Button/Frame plus "plates are anonymous" rejected all 28 WorldFrame
   -- children on this client -- and this runtime auto-names objects
@@ -411,34 +573,84 @@ local function BuildOverlay(frame, parts)
   plateCount = plateCount + 1
 
   local overlay = CreateFrame("Frame", "UnrealUINamePlate" .. plateCount, frame)
+  local themeStyle = U.GetActiveThemeStyle()
+  local modern = themeStyle == "modern"
+  local modernWow = themeStyle == "modern-wow"
+  -- Classic draws the stock fill, the same native texture its unit frames use.
+  local classic = themeStyle == "classic-wow"
+  local nativeTexture = classic and M.texture.classicStatusBar or nil
+  local nameplateArt = modernWow and M.modernWow.nameplate or nil
+  overlay.id = plateCount
   overlay.plate = frame
   overlay.parts = parts
   overlay.cache = {}
+  overlay.modernWow = modernWow
+
+  pcall(overlay.SetFrameStrata, overlay, "LOW")
 
   -- WORKING_SOURCE (UnrealPfUI): a WorldFrame-child overlay is scaled to the UI
   -- scale so plate sizes read in the same units as the rest of the addon.
   pcall(function() overlay:SetScale(UIParent:GetScale()) end)
 
-  overlay:SetWidth(cfg.width)
-  overlay:SetHeight(cfg.healthHeight + cfg.nameSize + 4)
-  overlay:SetPoint("TOP", frame, "TOP", 0, cfg.verticalOffset)
+  local artScale = nameplateArt and nameplateArt.scale or 1
+  local plateWidth = cfg.width * artScale
+  local healthHeight = (nameplateArt and nameplateArt.healthHeight or
+                        cfg.healthHeight) * artScale
+
+  overlay:SetWidth(plateWidth)
+  overlay:SetHeight(healthHeight + cfg.nameSize + 4)
+  overlay:SetPoint("TOP", frame, "TOP", 0,
+                   PLATE_LIFT + cfg.verticalOffset)
 
   local health = U.CreateStatusBar(overlay, {
-    width = cfg.width,
-    height = cfg.healthHeight,
+    width = plateWidth,
+    height = healthHeight,
     color = UNIT_COLOR.ENEMY,
-    background = M.color.healthBg,
+    background = nameplateArt and { 1, 1, 1, 1 } or M.color.healthBg,
+    texture = nameplateArt and nameplateArt.texture or
+              (modern and M.unitFrame.statusTexture or nativeTexture),
   })
   health:SetPoint("BOTTOM", overlay, "BOTTOM", 0, 0)
-  -- Border only: U.CreateStatusBar already owns the bar's background texture,
-  -- so the full backdrop would just paint a second fill behind it.
-  U.CreateBorder(health)
-  U.SetBorderColor(health, M.Unpack(M.color.border))
+  if nameplateArt then
+    local sheet = nameplateArt.sheet
+    local fill = nameplateArt.fill
+    local background = nameplateArt.background
+    local inset = nameplateArt.backgroundInset
+    health.uuiFillTexture:SetTexCoord(
+      fill[1] / sheet[1], fill[3] / sheet[1],
+      fill[2] / sheet[2], fill[4] / sheet[2])
+    health.uuiBackground:SetTexture(nameplateArt.texture)
+    health.uuiBackground:SetTexCoord(
+      background[1] / sheet[1], background[3] / sheet[1],
+      background[2] / sheet[2], background[4] / sheet[2])
+    health.uuiBackground:ClearAllPoints()
+    health.uuiBackground:SetPoint(
+      "TOPLEFT", health, "TOPLEFT",
+      inset.left * artScale, inset.top * artScale)
+    health.uuiBackground:SetPoint(
+      "BOTTOMRIGHT", health, "BOTTOMRIGHT",
+      inset.right * artScale, inset.bottom * artScale)
+
+    local selected = health:CreateTexture(nil, "OVERLAY")
+    selected:SetTexture(nameplateArt.selectedTexture)
+    inset = nameplateArt.selectedInset
+    selected:SetPoint("TOPLEFT", health, "TOPLEFT",
+                      inset.left * artScale, inset.top * artScale)
+    selected:SetPoint(
+      "BOTTOMRIGHT", health, "BOTTOMRIGHT",
+      inset.right * artScale, inset.bottom * artScale)
+    selected:Hide()
+    overlay.selectedBorder = selected
+  elseif not modern then
+    -- Border only: U.CreateStatusBar already owns the bar background.
+    U.CreateBorder(health)
+    U.SetBorderColor(health, M.Unpack(M.color.border))
+  end
   overlay.health = health
 
-  -- Percentage, centred in the bar. Its own layer so the fill never covers it.
+  -- Its own layer so the fill never covers the percentage.
   overlay.healthText = U.CreateLabel(health, {
-    size = cfg.healthTextSize,
+    size = modernWow and 9 or cfg.healthTextSize,
     color = M.color.text,
     inherits = "GameFontNormal",
   })
@@ -446,15 +658,21 @@ local function BuildOverlay(frame, parts)
     overlay.healthText:SetPoint("CENTER", health, "CENTER", 0, 0)
   end
 
-  -- Name on the bar's left edge, level on its right: one anchor each, per
-  -- fonts.stretched_justification_ignored.
+  -- One anchor per label, per fonts.stretched_justification_ignored.
   overlay.name = U.CreateLabel(overlay, {
     size = cfg.nameSize,
     color = { 1, 1, 1, 1 },
     inherits = "GameFontNormal",
+    -- The fixed width below centres the text inside it unless told otherwise.
+    justify = (modern or classic) and "LEFT" or nil,
   })
   if overlay.name then
-    overlay.name:SetPoint("BOTTOMLEFT", health, "TOPLEFT", 0, 2)
+    if modernWow then
+      overlay.name:Hide()
+    else
+      overlay.name:SetPoint("BOTTOMLEFT", health, "TOPLEFT", 0, 2)
+      overlay.name:SetWidth(plateWidth - 28)
+    end
   end
 
   overlay.level = U.CreateLabel(overlay, {
@@ -466,8 +684,98 @@ local function BuildOverlay(frame, parts)
     overlay.level:SetPoint("BOTTOMRIGHT", health, "TOPRIGHT", 0, 2)
   end
 
+  local cast = U.CreateStatusBar(overlay, {
+    width = plateWidth,
+    height = modernWow and 9 or 12,
+    color = M.color.cast,
+    background = M.color.healthBg,
+    texture = nativeTexture,
+  })
+  cast:SetPoint("TOPLEFT", health, "BOTTOMLEFT", 0, -2)
+  U.CreateBorder(cast)
+  U.SetBorderColor(cast, M.Unpack(M.color.border))
+  cast:Hide()
+  overlay.cast = cast
+
+  overlay.castName = U.CreateLabel(cast, {
+    size = M.fontSize.tiny,
+    color = M.color.text,
+    inherits = "GameFontNormalSmall",
+    justify = "LEFT",
+  })
+  if overlay.castName then
+    overlay.castName:SetPoint("LEFT", cast, "LEFT", 3, 0)
+    overlay.castName:SetWidth(plateWidth - 42)
+  end
+
+  overlay.castTime = U.CreateLabel(cast, {
+    size = M.fontSize.tiny,
+    color = M.color.text,
+    inherits = "GameFontNormalSmall",
+    justify = "RIGHT",
+  })
+  if overlay.castTime then
+    overlay.castTime:SetPoint("RIGHT", cast, "RIGHT", -3, 0)
+  end
+
+  if type(U.CreateNameplateAuraRows) == "function" then
+    local auraArt = modernWow and M.modernWow.nameplateAura or nil
+    local auraOffset = auraArt and
+                       (auraArt.size + auraArt.gap -
+                        auraArt.overlayInset.bottom) or
+                       cfg.nameSize + 30
+    overlay.auraRows = U.CreateNameplateAuraRows(
+      health, overlay, overlay.id, auraOffset)
+  end
+
   overlay:Show()
   return overlay
+end
+
+local function RefreshTargetAuras(overlay)
+  if type(U.RefreshNameplateAuraRows) ~= "function" then return end
+
+  local active = cfg.showAuras and overlay.isTarget
+  if not active then
+    if overlay.auraActive then
+      overlay.auraActive = false
+      U.RefreshNameplateAuraRows(overlay.auraRows, false)
+    end
+    return
+  end
+
+  local now = ApiNumber("GetTime") or 0
+  if not overlay.auraActive or now >= (overlay.nextAuraRefresh or 0) then
+    overlay.auraActive = true
+    overlay.nextAuraRefresh = now + 0.2
+    U.RefreshNameplateAuraRows(overlay.auraRows, true)
+  end
+end
+
+local function RefreshTargetCast(overlay)
+  if not cfg.attachTargetCast or not overlay.isTarget or
+     type(U.TargetCastInfo) ~= "function" then
+    overlay.cast:Hide()
+    return
+  end
+
+  local spell, elapsed, duration = U.TargetCastInfo()
+  if not spell or not duration then
+    overlay.cast:Hide()
+    return
+  end
+
+  overlay.cast:SetMinMaxValues(0, duration)
+  overlay.cast:SetValue(elapsed)
+  if overlay.castName then overlay.castName:SetText(spell) end
+  if overlay.castTime then
+    overlay.castTime:SetText(string.format("%.1f", duration - elapsed))
+  end
+  overlay.cast:Show()
+end
+
+function U.RefreshNameplateTargetCast()
+  if targetOverlay then RefreshTargetCast(targetOverlay) end
 end
 
 local function AdoptPlate(frame)
@@ -477,29 +785,17 @@ local function AdoptPlate(frame)
     return nil
   end
 
-  MuteTexture(parts.border)
-  MuteTexture(parts.glow)
-  MuteTexture(parts.raidicon)
-  MuteFontString(parts.name)
-  MuteFontString(parts.level)
-  MuteBar(parts.healthbar)
-  MuteBar(parts.castbar)
-
-  -- Anything not classified above is stock art unrealUI is replacing. The elite
-  -- icon is the one exception: it is muted but still read via IsShown().
-  local i
-  for i = 1, table.getn(parts.textures) do
-    local region = parts.textures[i]
-    if region ~= parts.border and region ~= parts.glow and
-       region ~= parts.raidicon then
-      MuteTexture(region)
-    end
-  end
-  for i = 1, table.getn(parts.fontstrings) do
-    MuteFontString(parts.fontstrings[i])
+  -- Do not erase the stock plate until its replacement exists. A construction
+  -- error must leave the player with the native nameplate, not a blank world.
+  local ok, overlay = pcall(BuildOverlay, frame, parts)
+  if not ok or not overlay then
+    failures.build = failures.build + 1
+    failures.lastBuild = tostring(overlay)
+    U.Debug("nameplate build: " .. tostring(overlay))
+    return nil
   end
 
-  local overlay = BuildOverlay(frame, parts)
+  MuteNativePlate(parts, frame, overlay)
   registry[frame] = overlay
   table.insert(plateOrder, overlay)
 
@@ -535,10 +831,40 @@ local function ScanWorldFrame()
   local ok, kids = pcall(function() return { worldFrame:GetChildren() } end)
   if not ok or type(kids) ~= "table" then return end
 
+  -- Children that appear after the first scan are the plate candidates: the
+  -- login-time set is FrameXML. Recorded whether adopted or not, so /uui np
+  -- shows what a real plate looks like here even if the classifier misses it.
+  local firstScan = statScans == 1
   local i
   for i = scannedChildren + 1, count do
     local child = kids[i]
-    if child and not registry[child] then AdoptPlate(child) end
+    if child and not registry[child] then
+      local overlay = AdoptPlate(child)
+      if not firstScan and table.getn(arrivals) < ARRIVAL_LIMIT then
+        local fontstrings = 0
+        local text
+        pcall(function()
+          local regions = { child:GetRegions() }
+          local j
+          for j = 1, table.getn(regions) do
+            if ObjectType(regions[j]) == "FontString" then
+              fontstrings = fontstrings + 1
+              text = text or Call(regions[j], "GetText")
+            end
+          end
+        end)
+        table.insert(arrivals, {
+          index = i,
+          name = Call(child, "GetName"),
+          otype = ObjectType(child),
+          parent = Call(Call(child, "GetParent"), "GetName"),
+          fontstrings = fontstrings,
+          firstText = text,
+          adopted = overlay and true or false,
+          at = ApiNumber("GetTime"),
+        })
+      end
+    end
   end
 
   scannedChildren = count
@@ -578,7 +904,24 @@ local function RefreshPlate(overlay)
   local plate = overlay.plate
 
   local visible = Call(plate, "IsVisible")
-  if not visible then return end
+  local plateAlpha = tonumber(Call(plate, "GetAlpha")) or 1
+  if not visible or plateAlpha <= 0 then
+    overlay.isTarget = false
+    RefreshTargetAuras(overlay)
+    if overlay.cache.visible ~= false then
+      overlay.cache.visible = false
+      pcall(overlay.Hide, overlay)
+    end
+    return
+  end
+  if overlay.cache.visible ~= true then
+    overlay.cache.visible = true
+    pcall(overlay.Show, overlay)
+  end
+
+  -- The client can repopulate recycled plates after adoption. Re-assert the
+  -- replacement so native art never draws underneath UnrealUI's overlay.
+  MuteNativePlate(parts, plate, overlay)
 
   -- Re-resolve which fontstring is the level: plates are recycled onto new
   -- units, and a name that happens to be numeric is not worth guarding against
@@ -598,8 +941,13 @@ local function RefreshPlate(overlay)
   -- WORKING_SOURCE (UnrealPfUI): with no per-plate unit token, the current
   -- target's plate is the fully opaque one.
   local hasTarget = ApiTruth("UnitExists", "target")
-  local plateAlpha = tonumber(Call(plate, "GetAlpha")) or 1
-  overlay.isTarget = hasTarget and plateAlpha >= 1 and true or false
+  local targetName = hasTarget and ApiString("UnitName", "target") or nil
+  overlay.isTarget = hasTarget and plateAlpha >= 1 and
+                     (not targetName or targetName == name) and true or false
+  if overlay.isTarget then
+    targetPlateActive = true
+    targetOverlay = overlay
+  end
 
   -- Name
   if overlay.name and name ~= overlay.cache.name then
@@ -639,8 +987,41 @@ local function RefreshPlate(overlay)
     overlay.health:SetMinMaxValues(minimum, maximum)
     overlay.health:SetValue(value)
 
+    if overlay.modernWow and maximum > minimum then
+      local fraction = (value - minimum) / (maximum - minimum)
+      if fraction < 0 then fraction = 0 end
+      if fraction > 1 then fraction = 1 end
+      if fraction ~= overlay.cache.fillFraction then
+        overlay.cache.fillFraction = fraction
+        local art = M.modernWow.nameplate
+        local cell = art.fill
+        local u1 = cell[1] / art.sheet[1]
+        local u2 = cell[3] / art.sheet[1]
+        overlay.health.uuiFillTexture:SetTexCoord(
+          u1, u1 + (u2 - u1) * fraction,
+          cell[2] / art.sheet[2], cell[4] / art.sheet[2])
+      end
+    end
+
     if overlay.healthText then
-      if cfg.showHealthText and maximum > minimum then
+      -- current / max from core/unitvitals.lua: the client only reports a
+      -- creature's health as 0..100 (knowledge.json
+      -- unitframes.nongroup_health_is_percent), and the bundled creature table
+      -- gives the exact maximum by name and level. The target gets the
+      -- combat-refined current value; any other plate scales the percentage.
+      local current, total
+      if cfg.showHealthText and maximum > minimum and
+         type(U.UnitVitalsHealth) == "function" then
+        current, total = U.UnitVitalsHealth(
+          overlay.isTarget and "target" or "nameplate",
+          name, tonumber(levelText), value - minimum, maximum - minimum)
+      end
+      if current and total then
+        overlay.healthText:SetText(string.format("%d / %d",
+          math.floor(current + 0.5), math.floor(total + 0.5)))
+      elseif cfg.showHealthText and maximum > minimum then
+        -- Players, pets and creatures missing from the table: no real
+        -- maximum exists, so the percentage stays rather than "68 / 100".
         local perc = (value - minimum) / (maximum - minimum) * 100
         overlay.healthText:SetText(string.format("%.1f%%", perc))
       else
@@ -691,22 +1072,37 @@ local function RefreshPlate(overlay)
   local borderKey = overlay.isTarget and "target" or "normal"
   if borderKey ~= overlay.cache.border then
     overlay.cache.border = borderKey
-    if overlay.isTarget then
+    if overlay.selectedBorder then
+      if overlay.isTarget then
+        overlay.selectedBorder:Show()
+      else
+        overlay.selectedBorder:Hide()
+      end
+    elseif overlay.isTarget then
       U.SetBorderColor(overlay.health, M.Unpack(M.color.accent))
     else
       U.SetBorderColor(overlay.health, M.Unpack(M.color.border))
     end
   end
+
+  RefreshTargetAuras(overlay)
+  RefreshTargetCast(overlay)
 end
 
 local function RefreshAll()
   statRefreshed = statRefreshed + 1
+  targetPlateActive = false
+  targetOverlay = nil
   local i
   for i = 1, table.getn(plateOrder) do
     local overlay = plateOrder[i]
     if overlay then
       local ok, err = pcall(RefreshPlate, overlay)
-      if not ok then U.Debug("nameplate refresh: " .. tostring(err)) end
+      if not ok then
+        failures.refresh = failures.refresh + 1
+        failures.lastRefresh = tostring(err)
+        U.Debug("nameplate refresh: " .. tostring(err))
+      end
     end
   end
 end
@@ -795,7 +1191,7 @@ end
 -- signature is wrong but not how. This is the readout that answers it: object
 -- type, region and child composition, the texture paths and the fontstring
 -- text actually present. It reads only -- nothing here mutes or adopts.
-function U.NameplateDump()
+local function DumpWorldChildren()
   local out = {}
 
   local worldFrame = U.G("WorldFrame")
@@ -866,11 +1262,154 @@ function U.NameplateDump()
   return out
 end
 
+local function Round(value)
+  if type(value) ~= "number" then return value end
+  return math.floor(value * 100 + 0.5) / 100
+end
+
+local function DescribeFrame(frame)
+  if not frame then return nil end
+  -- Call() keeps four returns; GetPoint has five.
+  local point, relativePoint, x, y
+  pcall(function()
+    local _
+    point, _, relativePoint, x, y = frame:GetPoint(1)
+  end)
+  return {
+    name = Call(frame, "GetName"),
+    shown = Call(frame, "IsShown") and true or false,
+    visible = Call(frame, "IsVisible") and true or false,
+    alpha = Round(tonumber(Call(frame, "GetAlpha"))),
+    width = Round(tonumber(Call(frame, "GetWidth"))),
+    height = Round(tonumber(Call(frame, "GetHeight"))),
+    strata = Call(frame, "GetFrameStrata"),
+    point = point and (tostring(point) .. ">" .. tostring(relativePoint) ..
+                       " " .. tostring(Round(x)) .. "," .. tostring(Round(y)))
+                  or nil,
+  }
+end
+
+-- Every adopted plate and the overlay drawn over it. "The nameplate
+-- disappeared" has four distinct causes and each leaves a different trace:
+-- nothing adopted (no plate entries), only FrameXML false positives adopted
+-- (every entry suspect), the plate adopted but the overlay hidden or
+-- transparent (plate visible, overlay not), or a refresh error (failures).
+local function DumpPlates()
+  local out = {}
+  local i
+  for i = 1, table.getn(plateOrder) do
+    local overlay = plateOrder[i]
+    if overlay then
+      local parts = overlay.parts or {}
+      local value, minimum, maximum = ReadHealth(overlay)
+      table.insert(out, {
+        id = overlay.id,
+        detector = parts.detector,
+        suspect = IsNamedFrame(overlay.plate),
+        plate = DescribeFrame(overlay.plate),
+        overlay = DescribeFrame(overlay),
+        health = DescribeFrame(overlay.health),
+        nativeName = Call(parts.name, "GetText"),
+        nativeLevel = Call(parts.level, "GetText"),
+        drawnName = Call(overlay.name, "GetText"),
+        drawnHealthText = Call(overlay.healthText, "GetText"),
+        healthValue = value,
+        healthMin = minimum,
+        healthMax = maximum,
+        isTarget = overlay.isTarget and true or false,
+        cachedVisible = overlay.cache and overlay.cache.visible,
+        modernWow = overlay.modernWow and true or false,
+      })
+    end
+  end
+  return out
+end
+
+function U.NameplateDump()
+  local children = DumpWorldChildren()
+  local plates = DumpPlates()
+
+  local summary = {
+    enabled = cfg.enabled and true or false,
+    showHealthText = cfg.showHealthText and true or false,
+    theme = U.GetActiveThemeStyle and U.GetActiveThemeStyle() or nil,
+    worldChildren = table.getn(children),
+    minChildren = stats.minChildren,
+    maxChildren = stats.maxChildren,
+    adopted = table.getn(plates),
+    suspect = 0,
+    real = 0,
+    overlaysVisible = 0,
+    plateVisibleOverlayHidden = 0,
+    unnamedChildren = 0,
+    buildFailures = failures.build,
+    lastBuildError = failures.lastBuild,
+    refreshFailures = failures.refresh,
+    lastRefreshError = failures.lastRefresh,
+    namedRejected = rejectReasons["named-frame"] or 0,
+    -- Vanilla FrameXML's enemy-plate toggle state; nil if this client has none.
+    nameplatesOn = U.G("NAMEPLATES_ON"),
+    arrivals = table.getn(arrivals),
+    suspectNames = {},
+  }
+
+  local i
+  for i = 1, table.getn(plates) do
+    local p = plates[i]
+    if p.suspect then
+      summary.suspect = summary.suspect + 1
+      table.insert(summary.suspectNames, p.plate and p.plate.name or "?")
+    else
+      summary.real = summary.real + 1
+    end
+    if p.overlay and p.overlay.visible then
+      summary.overlaysVisible = summary.overlaysVisible + 1
+    end
+    if p.plate and p.plate.visible and
+       not (p.overlay and p.overlay.visible and (p.overlay.alpha or 1) > 0) then
+      summary.plateVisibleOverlayHidden = summary.plateVisibleOverlayHidden + 1
+    end
+  end
+
+  for i = 1, table.getn(children) do
+    local name = children[i].name
+    if type(name) ~= "string" or string.find(name, "^GeneratedLuaUIObject_") then
+      summary.unnamedChildren = summary.unnamedChildren + 1
+    end
+  end
+
+  -- One machine-readable answer, most decisive cause first.
+  if not cfg.enabled then
+    summary.verdict = "module-disabled"
+  elseif summary.refreshFailures > 0 then
+    summary.verdict = "refresh-error"
+  elseif summary.real == 0 and summary.minChildren == summary.maxChildren then
+    -- Plates come and go on screen while WorldFrame's child count never moves:
+    -- the plates drawn are the engine's, not Lua widgets.
+    summary.verdict = "no-lua-plates"
+  elseif summary.real == 0 then
+    summary.verdict = "no-real-plate-adopted"
+  elseif summary.plateVisibleOverlayHidden > 0 then
+    summary.verdict = "overlay-hidden-on-visible-plate"
+  elseif summary.overlaysVisible == 0 then
+    summary.verdict = "no-plate-visible-now"
+  else
+    summary.verdict = "overlays-drawing"
+  end
+
+  return { summary = summary, plates = plates, arrivals = arrivals,
+           children = children }
+end
+
 -- ---------------------------------------------------------------------------
 -- Module lifecycle
 -- ---------------------------------------------------------------------------
 function NP:OnInit()
   cfg = U.ModuleConfig("nameplates", defaults)
+  if type(U.RegisterSettingsTab) == "function" then
+    U.RegisterSettingsTab("nameplates", U.L("SETTINGS_PAGE_NAMEPLATES"),
+                          BuildSettingsPage, { after = "general" })
+  end
 end
 
 function NP:OnEnable()

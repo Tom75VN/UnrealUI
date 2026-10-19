@@ -2209,19 +2209,13 @@ end
 -- No event: the pet frame already takes a full refresh on every scheduled
 -- sweep (see RefreshScheduledUnits), which is where the band is re-read.
 -- ---------------------------------------------------------------------------
-local HAPPINESS_SIZE = 24
+local HAPPINESS_SIZE = M.petHappiness.size
 
 -- User-requested modern-theme adjustment (2026-09-24): shrink the flat badge
 -- and nudge it up/right relative to the modern-wow layout below.
 local MODERN_HAPPINESS_SCALE = 0.6
 local MODERN_HAPPINESS_TOP_OFFSET = 6
 local MODERN_HAPPINESS_RIGHT_OFFSET = 1
-
-local HAPPINESS_CELLS = {
-  [1] = { 48 / 128, 72 / 128, 0, 24 / 64 }, -- sad
-  [2] = { 24 / 128, 48 / 128, 0, 24 / 64 }, -- neutral
-  [3] = { 0, 24 / 128, 0, 24 / 64 },        -- happy
-}
 
 local function BuildHappinessIndicator(frame, border)
   local box = frame.portrait
@@ -2276,7 +2270,7 @@ local function ApplyHappinessIndicator(frame)
     if ok then band = tonumber(value) end
   end
 
-  local cell = band and HAPPINESS_CELLS[band]
+  local cell = band and M.petHappiness.cells[band]
   local state = cell and band or false
   -- Nothing below needs to run again while the band has not changed.
   if frame.happinessState == state then return end

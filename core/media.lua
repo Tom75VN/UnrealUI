@@ -87,6 +87,9 @@ M.compactTextShadowOffset = { 1, -1 }
 M.texture = {
   plain = "Interface\\BUTTONS\\WHITE8X8",
   statusBar = "Interface\\AddOns\\unrealUI\\media\\Textures\\normTex2",
+  -- 8x8, alpha 0 everywhere. A native StatusBar fill given this draws nothing
+  -- whatever its vertex colour; a nil fill still draws as a solid tint here.
+  clear = "Interface\\AddOns\\unrealUI\\media\\Textures\\clear",
   addonLogo = "Interface\\AddOns\\unrealUI\\media\\icons\\uUI_logo",
   -- Official client documentation uses this native TargetingFrame texture as
   -- the StatusBar example; the Classic unit-frame theme reuses it directly.
@@ -162,6 +165,15 @@ M.texture = {
   targetSkinBoss  = "Interface\\AddOns\\unrealUI\\media\\frame-boss-350",
   fullscreenLowHealth = "Interface\\AddOns\\unrealUI\\media\\Textures\\fullscreen\\low-health",
   fullscreenOutOfControl = "Interface\\AddOns\\unrealUI\\media\\Textures\\fullscreen\\out-of-control",
+}
+
+M.petHappiness = {
+  size = 24,
+  cells = {
+    [1] = { 48 / 128, 72 / 128, 0, 24 / 64 },
+    [2] = { 24 / 128, 48 / 128, 0, 24 / 64 },
+    [3] = { 0, 24 / 128, 0, 24 / 64 },
+  },
 }
 
 -- ---------------------------------------------------------------------------
@@ -3979,6 +3991,31 @@ M.modernWow.trackedBars = {
   -- Pip: useAtlasSize, CENTER on the fill's RIGHT at y -1 (OnLoad).
   pipSize = { 10, 46 },
   pipY = -1,
+}
+
+-- Retail 12.1 nameplates use the same cooldown-manager icon overlay as the
+-- tracked bars. Nameplate auras are reduced to 70% of the authored size.
+M.modernWow.nameplateAura = {
+  texture = M.modernWow.trackedBars.texture,
+  sheet = M.modernWow.trackedBars.sheet,
+  overlay = M.modernWow.trackedBars.overlay,
+  overlayInset = { left = -4.2, top = 3.5, right = 4.2, bottom = -3.5 },
+  size = 17.5,
+  gap = 3,
+  spacing = 0,
+  iconCrop = 0.08,
+}
+
+M.modernWow.nameplate = {
+  texture = M.modernWow.trackedBars.texture,
+  sheet = M.modernWow.trackedBars.sheet,
+  fill = M.modernWow.trackedBars.bar,
+  background = M.modernWow.trackedBars.barBG,
+  scale = 0.7,
+  backgroundInset = { left = -2, top = 3, right = 6, bottom = -6 },
+  selectedTexture = M.modernWow.path .. "ui\\nameplate-selected",
+  selectedInset = { left = -3, top = 4, right = 3, bottom = -3 },
+  healthHeight = 20,
 }
 
 -- The micro bar under `modern-wow` and `modern` (user requests, 2026-09-28):

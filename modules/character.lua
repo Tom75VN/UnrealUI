@@ -15,6 +15,7 @@ local DIM   = { 0.60, 0.60, 0.60, 1.00 }
 
 local frame, panel, modernWowTabMode, toggleCharacterOriginal
 local StyleModel, RaiseResistancesAboveModel
+local petSummary = {}
 
 local SLOTS = {
   "HeadSlot", "NeckSlot", "ShoulderSlot", "BackSlot", "ChestSlot",
@@ -65,6 +66,234 @@ end
 
 local function SetTextFont(object, size, color)
   U.SetStockFont(object, size or M.fontSize.normal, color or WHITE)
+end
+
+function petSummary.Hide()
+  if petSummary.header then pcall(petSummary.header.Hide, petSummary.header) end
+  if petSummary.trainingPoints then
+    pcall(petSummary.trainingPoints.Hide, petSummary.trainingPoints)
+  end
+  if type(U.SetModernWowPetHeaderOffset) == "function" then
+    U.SetModernWowPetHeaderOffset(false)
+  end
+  local playerLevel = G("CharacterLevelText")
+  if playerLevel then pcall(playerLevel.Show, playerLevel) end
+end
+
+function petSummary.Layout()
+  local row = petSummary.header
+  if not row then return end
+
+  local width, previous = 0, nil
+  local function Place(object, shown, gap, y)
+    if not object then return end
+    if not shown then
+      pcall(object.Hide, object)
+      return
+    end
+
+    pcall(function()
+      object:ClearAllPoints()
+      object:SetPoint("LEFT", row, "LEFT",
+                      width + (previous and gap or 0), y or 0)
+      object:Show()
+    end)
+
+    local objectWidth = 0
+    if object.GetStringWidth then
+      local ok, value = pcall(object.GetStringWidth, object)
+      if ok then objectWidth = tonumber(value) or 0 end
+    elseif object.GetWidth then
+      local ok, value = pcall(object.GetWidth, object)
+      if ok then objectWidth = tonumber(value) or 0 end
+    end
+    if previous then width = width + gap end
+    width = width + objectWidth
+    previous = object
+  end
+
+  Place(petSummary.level, petSummary.levelVisible, 0, -11)
+  Place(petSummary.icon, petSummary.iconVisible, 8)
+  if petSummary.levelVisible and petSummary.level then
+    pcall(petSummary.level.ClearAllPoints, petSummary.level)
+    pcall(petSummary.level.SetPoint, petSummary.level,
+          "CENTER", row, "CENTER", 0, -11)
+    if petSummary.iconVisible and petSummary.icon then
+      pcall(petSummary.icon.ClearAllPoints, petSummary.icon)
+      pcall(petSummary.icon.SetPoint, petSummary.icon,
+            "LEFT", petSummary.level, "RIGHT", 16, 8)
+    end
+  end
+  pcall(row.SetWidth, row, math.max(1, width))
+  if previous then pcall(row.Show, row) else pcall(row.Hide, row) end
+end
+
+function petSummary.Build()
+  local parent = panel or frame
+  if petSummary.built or not parent then return end
+  petSummary.built = true
+
+  local ok, layer = pcall(CreateFrame, "Frame",
+                          "UnrealUICharacterPetSummary", parent)
+  if not ok or not layer then return end
+  petSummary.layer = layer
+  pcall(layer.SetAllPoints, layer, parent)
+  pcall(layer.EnableMouse, layer, false)
+  if parent.GetFrameLevel then
+    local levelOk, level = pcall(parent.GetFrameLevel, parent)
+    if levelOk and tonumber(level) then
+      pcall(layer.SetFrameLevel, layer, level + 20)
+    end
+  end
+
+  local header = CreateFrame("Frame", nil, layer)
+  header:SetWidth(1)
+  header:SetHeight(M.petHappiness.size)
+  header:SetPoint("TOP", layer, "TOP",
+                  panel and (PANEL_INSET_RIGHT - PANEL_INSET_LEFT) / 2 or 0,
+                  panel and -30 or -12)
+  pcall(header.EnableMouse, header, false)
+  petSummary.header = header
+
+  petSummary.level = U.CreateLabel(header, {
+    name = "UnrealUICharacterPetLevel",
+    size = M.fontSize.small,
+    color = WHITE,
+    justify = "CENTER",
+    inherits = "GameFontHighlight",
+  })
+
+  local icon = CreateFrame("Frame", nil, header)
+  icon:SetWidth(M.petHappiness.size)
+  icon:SetHeight(M.petHappiness.size)
+  pcall(icon.EnableMouse, icon, false)
+  local fill = icon:CreateTexture(nil, "ARTWORK")
+  fill:SetTexture(M.texture.petHappiness)
+  fill:SetAllPoints(icon)
+  icon.fill = fill
+  petSummary.icon = icon
+
+  petSummary.trainingPoints = U.CreateLabel(layer, {
+    name = "UnrealUICharacterPetTrainingPoints",
+    size = M.fontSize.small,
+    color = WHITE,
+    justify = "CENTER",
+    inherits = "GameFontHighlight",
+  })
+  if petSummary.trainingPoints then
+    pcall(petSummary.trainingPoints.SetPoint, petSummary.trainingPoints,
+          "BOTTOM", layer, "BOTTOM", 0, panel and 24 or 82)
+  end
+
+  pcall(header.Hide, header)
+  if petSummary.trainingPoints then
+    pcall(petSummary.trainingPoints.Hide, petSummary.trainingPoints)
+  end
+end
+
+function petSummary.Install()
+  if petSummary.installed then return end
+  petSummary.installed = true
+
+  local pet = G("PetPaperDollFrame")
+  U.PostHookScript(pet, "OnShow", petSummary.Refresh)
+  U.PostHookScript(pet, "OnHide", petSummary.Hide)
+  U.RegisterUpdate("character.pet-summary", 0.25, function()
+    if not frame or not frame.IsShown then return end
+    local ok, shown = pcall(frame.IsShown, frame)
+    if ok and shown then petSummary.Refresh() end
+  end)
+  petSummary.Refresh()
+end
+
+function petSummary.Refresh()
+  petSummary.Build()
+
+  local visible = false
+  -- CharacterFrame owns the native page selection; Pet is tab 2. Keep the
+  -- child-frame check as a fallback for the complete styled drawing paths.
+  if frame and frame.IsShown then
+    local ok, shown = pcall(frame.IsShown, frame)
+    visible = ok and shown and tonumber(frame.selectedTab) == 2
+  end
+  if not visible then
+    local pet = G("PetPaperDollFrame")
+    if pet and pet.IsShown then
+      local ok, shown = pcall(pet.IsShown, pet)
+      visible = ok and shown and true or false
+    end
+  end
+  if not visible then
+    petSummary.Hide()
+    return
+  end
+  if type(U.SetModernWowPetHeaderOffset) == "function" then
+    U.SetModernWowPetHeaderOffset(true)
+  end
+
+  -- These reads are documented by this client but remain runtime-unverified.
+  local getHappiness = G("GetPetHappiness")
+  local happiness
+  if type(getHappiness) == "function" then
+    local ok, value = pcall(getHappiness)
+    if ok then happiness = tonumber(value) end
+  end
+
+  local getTrainingPoints = G("GetPetTrainingPoints")
+  local trainingPoints
+  if type(getTrainingPoints) == "function" then
+    local ok, value = pcall(getTrainingPoints)
+    if ok then
+      trainingPoints = tonumber(value)
+      -- The packed unit field is signed 16-bit, but the client exposes its
+      -- high word unsigned (65535 is -1).
+      if trainingPoints and trainingPoints >= 32768 and
+         trainingPoints <= 65535 then
+        trainingPoints = trainingPoints - 65536
+      elseif trainingPoints and
+             (trainingPoints < -32768 or trainingPoints > 32767) then
+        trainingPoints = nil
+      end
+    end
+  end
+
+  local cell = happiness and M.petHappiness.cells[happiness]
+  petSummary.iconVisible = cell and true or false
+  if petSummary.iconVisible and petSummary.icon and petSummary.icon.fill then
+    pcall(petSummary.icon.fill.SetTexCoord, petSummary.icon.fill,
+          cell[1], cell[2], cell[3], cell[4])
+  end
+
+  local stockLevel = G("PetLevelText")
+  local levelText
+  if stockLevel and stockLevel.GetText then
+    local ok, value = pcall(stockLevel.GetText, stockLevel)
+    if ok and type(value) == "string" and value ~= "" then levelText = value end
+  end
+  petSummary.levelVisible = petSummary.level and levelText and true or false
+  if petSummary.levelVisible then
+    pcall(petSummary.level.SetText, petSummary.level, levelText)
+    pcall(stockLevel.Hide, stockLevel)
+  end
+  local playerLevel = G("CharacterLevelText")
+  if playerLevel then pcall(playerLevel.Hide, playerLevel) end
+  local stockLoyalty = G("PetLoyaltyText")
+  if stockLoyalty then pcall(stockLoyalty.Hide, stockLoyalty) end
+
+  petSummary.trainingPointsVisible = petSummary.trainingPoints and
+                                     trainingPoints ~= nil
+  if petSummary.trainingPointsVisible then
+    pcall(petSummary.trainingPoints.SetText, petSummary.trainingPoints,
+          U.L("CHARACTER_PET_TRAINING_POINTS", trainingPoints))
+    local stockLabel = G("PetTrainingPointLabel")
+    local stockValue = G("PetTrainingPointText")
+    if stockLabel then pcall(stockLabel.Hide, stockLabel) end
+    if stockValue then pcall(stockValue.Hide, stockValue) end
+    pcall(petSummary.trainingPoints.Show, petSummary.trainingPoints)
+  elseif petSummary.trainingPoints then
+    pcall(petSummary.trainingPoints.Hide, petSummary.trainingPoints)
+  end
+  petSummary.Layout()
 end
 
 -- The equipped item's quality index, or nil when this client will not report
@@ -1563,6 +1792,7 @@ local function StylePetTab()
   SetTextFont(G("PetArmorFrameText"), M.fontSize.small, WHITE)
   SetTextFont(G("PetTrainingPointLabel"), M.fontSize.small, DIM)
   SetTextFont(G("PetTrainingPointText"), M.fontSize.small, WHITE)
+  petSummary.Refresh()
 
   -- Happiness/loyalty/diet. Stripped of its frame art; the icon itself is
   -- meaningful content imagery and is left alone.
@@ -1576,6 +1806,10 @@ local function StylePetTab()
   -- and the fail-closed branch rather than a local strip here.
   local bar = G("PetPaperDollFrameExpBar")
   if bar then
+    if panel then
+      pcall(bar.ClearAllPoints, bar)
+      pcall(bar.SetPoint, bar, "BOTTOM", panel, "BOTTOM", 0, 10)
+    end
     local styled = U.StyleStockStatusBar(bar, { color = M.color.xp })
     if not styled then
       U.Debug("character: pet exp bar fill not found, left native")
@@ -1639,6 +1873,7 @@ local function Reapply()
   StyleSlots()
   StyleResistances()
   StyleAttributes()
+  petSummary.Refresh()
 end
 
 local function CharacterDragControls()
@@ -1819,10 +2054,12 @@ function CH:OnEnable()
         headerLevelOffset = 100,
         interactiveFrames = CharacterDragControls(),
       })
+      petSummary.Install()
     end
     return
   end
   if not BuildFrame() then return end
+  petSummary.Install()
   InstallModernWowCharacterToggle()
 
   -- Modern shares the complete paper-doll feature set with Modern WoW, but
@@ -1857,6 +2094,9 @@ function CH:OnEnable()
   U.RegisterEvent("UNIT_PET", function()
     if not frame or not frame.IsShown then return end
     local ok, shown = pcall(frame.IsShown, frame)
-    if ok and shown then LayoutTabs() end
+    if ok and shown then
+      LayoutTabs()
+      petSummary.Refresh()
+    end
   end)
 end
