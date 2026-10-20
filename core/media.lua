@@ -94,6 +94,10 @@ M.texture = {
   -- Official client documentation uses this native TargetingFrame texture as
   -- the StatusBar example; the Classic unit-frame theme reuses it directly.
   classicStatusBar = "Interface\\TargetingFrame\\UI-StatusBar",
+  -- The client's 4x4 raid-mark sheet (Vanilla FrameXML's path, the one the
+  -- nameplate classifier already matches by name). Nameplate raid icons draw
+  -- their cell of it. Presence on this client is WORKING_SOURCE, not measured.
+  raidTargetIcons = "Interface\\TargetingFrame\\UI-RaidTargetingIcons",
   -- knowledge.json / castbar.native_frame_hierarchy: measured native castbar
   -- geometry plus the isolated addon-owned visual probe. Candidate A was
   -- user-confirmed visible in game; neither path requires reading a native
@@ -169,6 +173,11 @@ M.texture = {
 
 M.petHappiness = {
   size = 24,
+  -- Pet tab (modules/character.lua, petSummary): how far UnrealUI's icon sits
+  -- above the native PetPaperDollPetInfo spot it is placed from. Set by eye
+  -- on the Classic WoW page and applied to every theme so all three match
+  -- (user requests, 2026-10-20); not an art measurement.
+  pageLift = 27,
   cells = {
     [1] = { 48 / 128, 72 / 128, 0, 24 / 64 },
     [2] = { 24 / 128, 48 / 128, 0, 24 / 64 },
@@ -231,6 +240,17 @@ M.minimapMail = {
 
 M.classicWow = {}
 M.classicWow.path = "Interface\\AddOns\\unrealUI\\media\\Textures\\classic-wow\\questLog\\"
+
+-- Classic Pet tab (modules/character.lua, petSummary). All are UnrealUI's
+-- choice, set by eye from user screenshots (2026-10-20), not art
+-- measurements: `headerDrop` lowers the native level/loyalty lines so they
+-- centre in the header band, and `trainingPointsBottom` is the
+-- training-points line's offset above the window's bottom edge. The
+-- happiness icon's lift is shared by every theme (M.petHappiness.pageLift).
+M.classicWow.petTab = {
+  headerDrop = 6,
+  trainingPointsBottom = 84,
+}
 
 -- Compact Classic target-of-target housing (modules/unitframes.lua). This is
 -- the player-facing slice of the client's UI-TargetingFrame atlas, not
@@ -3043,6 +3063,27 @@ M.modernWow.statBoxes = {
   statsRect = { left = 67, top = 291, width = 230, height = 78 },
 }
 
+-- Pet tab stat columns, each framed by the ThinBorder rim (user request,
+-- 2026-10-20) in place of the stock group boxes UnrealUI strips. A box is the
+-- union of its column's row frames -- names present in the 2026-08-16 global
+-- dump, geometry read at runtime -- grown by `pad`. `size` is the rim's drawn
+-- piece size; `fill` sits inside the rim's line (U.ModernWowThinBorderFill).
+M.modernWow.petStatBoxes = {
+  columns = {
+    { "PetStatFrame1", "PetStatFrame2", "PetStatFrame3", "PetStatFrame4",
+      "PetStatFrame5" },
+    { "PetAttackFrame", "PetAttackPowerFrame", "PetDamageFrame",
+      "PetDefenseFrame", "PetArmorFrame" },
+  },
+  pad = { left = 6, top = 5, right = 6, bottom = 5 },
+  -- Units the stat text drops from its stock place, boxes following it (user
+  -- requests, 2026-10-20: 10, then 6 more). `container` holds the rows.
+  down = 16,
+  container = "PetAttributesFrame",
+  size = 16,
+  fill = { 0, 0, 0, 0.5 },
+}
+
 -- Attribute value FontStrings (Strength, Agility, Stamina, Intellect, Spirit,
 -- Armor) shifted by `valueShift`. The names are the stock FrameXML globals,
 -- present in this client's global dump
@@ -4009,10 +4050,29 @@ M.modernWow.nameplateAura = {
 M.modernWow.nameplate = {
   texture = M.modernWow.trackedBars.texture,
   sheet = M.modernWow.trackedBars.sheet,
-  fill = M.modernWow.trackedBars.bar,
+  -- The Bar cell's opaque rows only: its last row (texel y 60) is fully
+  -- transparent, measured by alpha (user request, 2026-10-20: the fill must
+  -- fit inside the frame's rim).
+  fill = { 175, 41, 423, 60 },
   background = M.modernWow.trackedBars.barBG,
+  -- The window inside Bar-BG's 2-texel rim, in texels of the background cell
+  -- (left/top inclusive, right/bottom exclusive), measured by alpha: rim at
+  -- x 2-3 / 252-253 and y 3-4 / 24-25, so the window is 248x19 -- exactly the
+  -- opaque fill. The health bar's rect is mapped onto this window and the
+  -- frame is placed around it from these numbers (modules/nameplates.lua).
+  backgroundWindow = { left = 4, top = 5, right = 252, bottom = 24 },
+  -- The target cast bar under the plate (user request, 2026-10-20), Retail's
+  -- NamePlateCastingBarTemplate with the spell name inside the bar:
+  -- NamePlateSetupOptions castBarHeight 16, castBarToHealthBarSpacing 2,
+  -- castBarFontHeight 12; the spark 4 wide and CAST_BAR_SPARK_EXTRA_HEIGHT (8)
+  -- taller than the bar; the name 2 right of the icon
+  -- (Blizzard_NamePlateCastingBar.lua 83) and the timer 4 inside the right
+  -- edge (line 86). The icon is the bar's full height rather than Retail's 12
+  -- (user request, 2026-10-20). Plate units, before `scale`. Art: the Modern
+  -- WoW cast bar's own background, fill and spark (M.modernWow.texture.cast*).
+  cast = { height = 16, spacing = 2, font = 12,
+           sparkWidth = 4, sparkExtra = 8, textGap = 2, timeInset = 4 },
   scale = 0.7,
-  backgroundInset = { left = -2, top = 3, right = 6, bottom = -6 },
   selectedTexture = M.modernWow.path .. "ui\\nameplate-selected",
   selectedInset = { left = -3, top = 4, right = 3, bottom = -3 },
   healthHeight = 20,
@@ -4850,6 +4910,9 @@ M.color = {
   text       = { 0.90, 0.90, 0.90, 1.00 },
   textDim    = { 0.60, 0.60, 0.60, 1.00 },
   textAccent = { 0.96, 0.68, 0.04, 1.00 },
+  -- The player's own guild on a nameplate's guild line; the same green as
+  -- the tooltip's guild line (modules/tooltip.lua COLOR.guild).
+  guildOwn   = { 0.30, 1.00, 0.50, 1.00 },
 
   -- The X and the hover outline every unrealUI close button carries, whether
   -- the button is a skinned stock one (U.StyleStockCloseButton) or unrealUI's
@@ -4980,11 +5043,24 @@ M.tab = {
 -- Modern-WoW paper doll (stats, titles, equipment sets and slot flyouts), but
 -- every surface here is from UnrealUI's flat component family. No token in
 -- this table points at the Modern-WoW media tree.
+-- Pet tab experience bar, every theme (user request, 2026-10-20). Where the
+-- client still draws the bar's own segmented frame (PetPaperDollXPBar1, global
+-- present in the 2026-08-16 dump, plus its unnamed second half anchored to
+-- it: UI-MainMenuBar-Dwarf, 13 units high), the fill ran the bar's full
+-- height and showed above the frame's top rim. The bar is cut to the frame's
+-- inner channel and the frame hung `artTop` units above it. Both numbers were
+-- measured off an in-game screenshot at ~1.65 px/unit (the art's 322-unit
+-- width): top rim to texel 3, bottom rim from texel 10.3.
+M.petExpBar = { art = "PetPaperDollXPBar1", artTop = 3, channel = 7 }
+
 M.characterModern = {
   window = {
     left = 10, top = 10, width = 344, expandedWidth = 642, height = 430,
     gap = 6,
     pane = { top = 8, right = 8, bottom = 8 },
+    -- Guild line directly under the level/race/class line (user request,
+    -- 2026-10-20), instead of trailing the title dropdown's stock anchor.
+    guildGap = 2,
   },
   stats = {
     pane = { left = 0, top = 0, right = 0, bottom = 0 },

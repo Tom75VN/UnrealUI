@@ -142,6 +142,7 @@ local DIAGNOSTIC_HELP = {
   "  |cffffff00/uui keytest|r - measure whether key events reach addon frames",
   "  |cffffff00/uui elite|r - cycle the classification icon test",
   "  |cffffff00/uui np|r - dump WorldFrame children (nameplates)",
+  "  |cffffff00/uui npcast|r - preview the nameplate cast bar on every visible plate",
   "  |cffffff00/uui bagcat|r - dump what the client calls each bag item and " ..
     "which category it lands in",
   "  |cffffff00/uui tabs|r - dump what the character-sheet tab strip measured and wrote",
@@ -1214,6 +1215,14 @@ handlers["check"]  = function() ShowSelfCheck() end
 handlers["help"]   = function(rest) ShowHelp(rest) end
 handlers["movertest"] = function() ShowMoverTest() end
 handlers["np"] = function() ShowNameplateDump() end
+handlers["npcast"] = function()
+  if type(U.NameplateCastPreview) ~= "function" then
+    U.Print("nameplate module is not loaded")
+    return
+  end
+  U.Print("nameplate cast bar preview for " ..
+          tostring(U.NameplateCastPreview()) .. "s on every visible plate")
+end
 
 -- Mover snap trace.
 --

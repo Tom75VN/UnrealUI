@@ -11,10 +11,13 @@
 -- layout, which centres the name over the plate and puts the level outside the
 -- bar's left edge.
 --
--- None of pfUI's nameplate subsystem is reproduced. There are no combo points,
--- totem icons, raid icons, threat/combat-state colours, click handling,
--- mouselook emulation or visibility filtering here.
--- Those are separate scope.
+-- The options follow ShaguPlates' nameplate settings where they fit this
+-- client (diagnostics/shaguplates-index; NAMEPLATES_ROADMAP.md tracks what is
+-- done and what is not): sizes, hostile/friendly visibility, health text
+-- format, per-disposition health-bar hiding, target outline and zoom,
+-- reaction outlines, raid icons and name abbreviation. The settings pages are
+-- modules/nameplatesettings.lua. Combo points, totem icons, class colours,
+-- combat-state colours, click handling and mouselook are not here.
 --
 -- Compatibility notes that shaped this file:
 --
@@ -64,16 +67,83 @@ local defaults = {
   enabled        = true,
   width          = 160,
   healthHeight   = 17,
+  -- Modern WoW's bar height, in art units before its `scale`; the art
+  -- stretches on each axis (style.LayoutArt), so it defaults to the authored
+  -- height and the slider moves it from there.
+  artHealthHeight = M.modernWow.nameplate.healthHeight,
   nameSize       = 12,
   levelSize      = 12,
   healthTextSize = 11,
   verticalOffset = 0,
   showHealthText = true,
+  showName       = true,   -- the unit's name above the bar
   showAuras      = true,
   attachTargetCast = true,
   fadeOthers     = true,   -- dim plates that are not the current target
   otherAlpha     = 0.75,
+
+  -- The client's own enemy/friendly plate switches, applied on login and on
+  -- change (ShowNameplates & co. are documented, not runtime-verified here).
+  showHostile    = true,
+  showFriendly   = false,
+
+  -- percent | current | curmax | curperc | deficit
+  healthFormat   = "curmax",
+  healthTextPos  = "CENTER", -- LEFT | CENTER | RIGHT
+  abbrevNumbers  = false,    -- 4200 -> 4.2k
+  abbrevNames    = false,    -- "Defias Pillager Captain" -> "D. P. Captain"
+
+  -- Health bar hidden per disposition; the name and level row stays.
+  hideEnemyNpc       = false,
+  hideEnemyPlayer    = false,
+  hideNeutralNpc     = false,
+  hideFriendlyNpc    = false,
+  hideFriendlyPlayer = false,
+  keepHealthTarget   = true,  -- exceptions to the above
+  keepHealthDamaged  = true,
+
+  -- Target emphasis. The outline is the flat themes' 1-unit edge and Modern
+  -- WoW's tinted selected-plate art (style.RefreshOutline). Colours are flat
+  -- numbers: U.ModuleConfig copies a default table by reference.
+  targetOutline  = false,
+  highlightR     = M.color.accent[1],
+  highlightG     = M.color.accent[2],
+  highlightB     = M.color.accent[3],
+  targetZoom     = false,
+  targetZoomPercent = 25,
+
+  -- Reaction outlines, drawn in the plate's reaction colour.
+  outlineEnemy          = false,
+  outlineNeutral        = false,
+  outlineFriendlyNpc    = false,
+  outlineFriendlyPlayer = false,
+
+  -- Class colours for players named in core/playercache.lua.
+  classColorEnemy        = true,
+  classColorFriendly     = true,
+  classColorFriendlyName = false,
+  showGuild              = false,  -- guild line under the bar
+
+  -- Totems (style.TotemIcon): hide their bar, or draw their icon instead.
+  hideTotemHealth = true,
+  totemIcons      = false,
+  totemSize       = 24,
+  hideCritterHealth = true,  -- style.IsCritter
+
+  -- Combo points under the target's bar, filled points only.
+  comboPoints    = true,
+  comboSize      = 8,
+
+  raidIcon       = true,
+  raidIconPos    = "LEFT",    -- LEFT | TOP | RIGHT of the health bar
+  raidIconSize   = 16,
+  raidIconX      = 0,
+  raidIconY      = 0,
 }
+
+-- Option behaviour (see ShaguPlates' nameplate settings); one table so the
+-- file's top-level local budget only pays once for it.
+local style = {}
 
 local cfg = defaults
 local targetPlateActive = false
@@ -105,56 +175,30 @@ function U.NameplateTargetCastbarActive()
   return cfg.enabled and cfg.attachTargetCast and targetPlateActive
 end
 
-local function SetDisplaySetting(key, value)
-  local settings = U.ModuleConfig("nameplates", defaults)
-  settings[key] = value and true or false
-  cfg = settings
+-- Read and written by modules/nameplatesettings.lua. A write is coerced to the
+-- default's type, then every plate is re-laid-out and redrawn at once so a
+-- slider drag shows on the world immediately.
+function U.NameplateSetting(key)
+  return cfg[key]
 end
 
-local function BuildSettingsPage(parent)
-  local widgets = {}
-
-  local header = U.CreateSectionHeader(parent, {
-    text = U.L("SETTINGS_PAGE_NAMEPLATES"),
-    width = 484,
-    y = -4,
-  })
-  table.insert(widgets, header)
-
-  local enable = U.CreateCheckbox(parent, {
-    name = "UnrealUISettingsNameplates",
-    text = U.L("SETTINGS_NAMEPLATES"),
-    value = U.NameplatesEnabled(),
-    onChange = function(value) U.SetNameplatesEnabled(value) end,
-  })
-  enable.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -34)
-  table.insert(widgets, enable)
-
-  local auras = U.CreateCheckbox(parent, {
-    name = "UnrealUISettingsNameplateAuras",
-    text = U.L("SETTINGS_NAMEPLATE_AURAS"),
-    value = cfg.showAuras,
-    onChange = function(value) SetDisplaySetting("showAuras", value) end,
-  })
-  auras.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -66)
-  table.insert(widgets, auras)
-
-  local targetCast = U.CreateCheckbox(parent, {
-    name = "UnrealUISettingsNameplateTargetCast",
-    text = U.L("SETTINGS_NAMEPLATE_CASTBAR"),
-    value = cfg.attachTargetCast,
-    onChange = function(value) SetDisplaySetting("attachTargetCast", value) end,
-  })
-  targetCast.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -98)
-  table.insert(widgets, targetCast)
-
-  local function Refresh()
-    enable.SetValue(U.NameplatesEnabled())
-    auras.SetValue(cfg.showAuras)
-    targetCast.SetValue(cfg.attachTargetCast)
+function U.SetNameplateSetting(key, value)
+  local default = defaults[key]
+  if default == nil then return end
+  if type(default) == "boolean" then
+    value = value and true or false
+  elseif type(default) == "number" then
+    value = tonumber(value) or default
+  elseif type(value) ~= type(default) then
+    return
   end
-
-  return widgets, Refresh
+  local settings = U.ModuleConfig("nameplates", defaults)
+  settings[key] = value
+  cfg = settings
+  if key == "showHostile" or key == "showFriendly" then
+    style.ApplyVisibility()
+  end
+  style.Invalidate()
 end
 
 -- ---------------------------------------------------------------------------
@@ -243,7 +287,9 @@ end
 -- pass and remembered by name, and every plate with that name takes the same
 -- colour. A name never seen keeps the hostile default.
 -- ---------------------------------------------------------------------------
-local reaction = { byName = {} }
+-- player: name -> whether the unit seen live under it was a player, for the
+-- per-disposition health-bar hiding (style.IsPlayer).
+local reaction = { byName = {}, player = {} }
 
 function reaction.Classify(unit)
   if not ApiTruth("UnitExists", unit) then return nil end
@@ -261,7 +307,10 @@ end
 function reaction.Learn(unit)
   local unitType = reaction.Classify(unit)
   local name = unitType and ApiString("UnitName", unit)
-  if name then reaction.byName[name] = unitType end
+  if name then
+    reaction.byName[name] = unitType
+    reaction.player[name] = ApiTruth("UnitIsPlayer", unit)
+  end
 end
 
 -- A name not yet seen live: its base reaction from Database/unit_reactions.lua
@@ -444,7 +493,15 @@ local function MuteNativePlate(parts, plate, overlay)
 
   local i
   for i = 1, table.getn(parts.textures) do
-    MuteTexture(parts.textures[i])
+    local region = parts.textures[i]
+    if region == parts.raidicon then
+      -- Alpha only: its texture cell is what style.RaidIndex reads the mark
+      -- from, so clearing it would erase the one signal. Same walk, same
+      -- wrapper object, so the identity test holds here.
+      pcall(function() region:SetAlpha(0) end)
+    else
+      MuteTexture(region)
+    end
   end
   for i = 1, table.getn(parts.fontstrings) do
     MuteFontString(parts.fontstrings[i])
@@ -664,6 +721,668 @@ local function ClassifyPlate(frame)
 end
 
 -- ---------------------------------------------------------------------------
+-- Options: layout, health text, health-bar hiding, outlines, zoom, raid icon
+--
+-- Behaviour follows ShaguPlates' options (modules/nameplates.lua HidePlate,
+-- GetNameString, OnDataChanged's hp text, OnUpdate's zoom) -- WORKING_SOURCE
+-- for intent only; nothing here reuses its code or config schema.
+-- ---------------------------------------------------------------------------
+
+-- A name seen live as the target or mouseover is known, then a name the player
+-- cache read from a party, raid or guild unit (core/playercache.lua);
+-- otherwise a name the bundled creature index does not list is taken for a
+-- player. That heuristic also counts player pets and creatures missing from
+-- the index as players.
+function style.IsPlayer(name)
+  if not name then return false end
+  local known = reaction.player[name]
+  if known ~= nil then return known end
+  if type(U.PlayerKnown) == "function" and U.PlayerKnown(name) then
+    return true
+  end
+  if type(U.unitNames) ~= "table" then return false end
+  return U.unitNames[name] == nil
+end
+
+style.HIDE_KEY = {
+  ENEMY         = { npc = "hideEnemyNpc",       player = "hideEnemyPlayer" },
+  NEUTRAL       = { npc = "hideNeutralNpc",     player = "hideNeutralNpc" },
+  FRIENDLY_NPC  = { npc = "hideFriendlyNpc",    player = "hideFriendlyPlayer" },
+  FRIENDLY_UNIT = { npc = "hideFriendlyPlayer", player = "hideFriendlyPlayer" },
+}
+
+style.OUTLINE_KEY = {
+  ENEMY = "outlineEnemy",
+  NEUTRAL = "outlineNeutral",
+  FRIENDLY_NPC = "outlineFriendlyNpc",
+  FRIENDLY_UNIT = "outlineFriendlyPlayer",
+}
+
+-- ---------------------------------------------------------------------------
+-- Class colours (core/playercache.lua)
+--
+-- ShaguPlates' enemyclassc / friendclassc / friendclassnamec, by intent. The
+-- cache answers by name; a name seen live as a creature (reaction.player
+-- false) is never coloured, so an NPC sharing a player's name keeps its
+-- reaction colour.
+-- ---------------------------------------------------------------------------
+
+-- A name the cache knows but the reaction cache has never seen live came from
+-- the party, raid or guild roster: always the player's own side.
+function style.CachedFriend(name)
+  if type(U.PlayerKnown) == "function" and U.PlayerKnown(name) and
+     reaction.player[name] ~= false then
+    return "FRIENDLY_UNIT"
+  end
+  return nil
+end
+
+function style.ClassOf(name)
+  if type(U.PlayerInfo) ~= "function" or reaction.player[name] == false then
+    return nil
+  end
+  local token = U.PlayerInfo(name)
+  if token and M.ClassColor(token) then return token end
+  return nil
+end
+
+style.FRIENDLY_TYPE = { FRIENDLY_UNIT = true, FRIENDLY_NPC = true }
+
+-- The bar takes the class colour for an enemy or a friendly player when its
+-- option is on, else the reaction colour; a friendly player's name takes it
+-- with classColorFriendlyName. Cached per plate on the resolved key.
+function style.RefreshColors(overlay, unitType, name)
+  local class = name and style.ClassOf(name)
+  local friendly = style.FRIENDLY_TYPE[unitType] and true or false
+  local barClass = class and ((friendly and cfg.classColorFriendly) or
+                              (not friendly and cfg.classColorEnemy)) and
+                   class or nil
+  local barKey = barClass or unitType
+  if barKey ~= overlay.cache.barColor then
+    overlay.cache.barColor = barKey
+    if barClass then
+      U.SetStatusBarColor(overlay.health, M.ClassColor(barClass))
+    else
+      U.SetStatusBarColor(overlay.health, M.Unpack(UNIT_COLOR[unitType]))
+    end
+  end
+
+  if not overlay.name then return end
+  local nameClass = class and friendly and cfg.classColorFriendlyName and
+                    class or nil
+  local nameKey = nameClass or "plain"
+  if nameKey == overlay.cache.nameColor then return end
+  overlay.cache.nameColor = nameKey
+  local r, g, b = 1, 1, 1
+  if nameClass then r, g, b = M.ClassColor(nameClass) end
+  pcall(overlay.name.SetTextColor, overlay.name, r, g, b, 1)
+end
+
+-- ---------------------------------------------------------------------------
+-- Totems
+--
+-- ShaguPlates' totems / totemicons, by intent: hide a totem's health bar, or
+-- replace its plate with the totem's spell icon. Totems are found by creature
+-- id rather than by name: the bundled name tables (Database/unit_names*.lua,
+-- U.unitNames) map the client's own enUS, ruRU or zhCN name to the same ids,
+-- so this one table needs no translation. A frFR client has no localized name
+-- table, so its totems are not recognised. Ids: every rank of each shaman
+-- totem in the enUS table; icons: each totem spell's icon (WORKING_SOURCE:
+-- the same art names ShaguPlates' enUS table lists, plus Tranquil Air). A
+-- literal Interface\Icons path is what modules/bankview.lua's fallback and the
+-- /uui npcast preview already draw.
+-- ---------------------------------------------------------------------------
+style.TOTEM_IDS = {
+  Spell_Nature_DiseaseCleansingTotem = { 5924 }, -- Disease Cleansing Totem
+  Spell_Nature_StrengthOfEarthTotem02 = { 2630 }, -- Earthbind Totem
+  Spell_Fire_SealOfFire = { 5879, 6110, 6111, 7844, 7845 }, -- Fire Nova Totem
+  Spell_FireResistanceTotem_01 = { 5927, 7424, 7425 }, -- Fire Resistance Totem
+  Spell_Nature_GuardianWard = { 5950, 6012, 7423, 10557 }, -- Flametongue Totem
+  Spell_FrostResistanceTotem_01 = { 5926, 7412, 7413 }, -- Frost Resistance Totem
+  Spell_Nature_InvisibilityTotem = { 7486, 7487, 15463 }, -- Grace of Air Totem
+  Spell_Nature_GroundingTotem = { 5925 }, -- Grounding Totem
+  INV_Spear_04 = { 3527, 3906, 3907, 3908, 3909 }, -- Healing Stream Totem
+  Spell_Fire_SelfDestruct = { 5929, 7464, 7465, 7466 }, -- Magma Totem
+  Spell_Nature_ManaRegenTotem = { 3573, 7414, 7415, 7416 }, -- Mana Spring Totem
+  Spell_Frost_SummonWaterElemental = { 10467, 11100, 11101 }, -- Mana Tide Totem
+  Spell_Nature_NatureResistanceTotem = { 7467, 7468, 7469 }, -- Nature Resistance Totem
+  Spell_Nature_PoisonCleansingTotem = { 5923 }, -- Poison Cleansing Totem
+  Spell_Fire_SearingTotem = { 2523, 3902, 3903, 3904, 7400, 7402 }, -- Searing Totem
+  Spell_Nature_RemoveCurse = { 3968 }, -- Sentry Totem
+  Spell_Nature_StoneClawTotem = { 3579, 3911, 3912, 3913, 7398, 7399 }, -- Stoneclaw Totem
+  Spell_Nature_StoneSkinTotem = { 5873, 5919, 5920, 7366, 7367, 7368 }, -- Stoneskin Totem
+  Spell_Nature_EarthBindTotem = { 5874, 5921, 5922, 7403, 15464 }, -- Strength of Earth Totem
+  Spell_Nature_Brilliance = { 15803 }, -- Tranquil Air Totem
+  Spell_Nature_TremorTotem = { 5913 }, -- Tremor Totem
+  Spell_Nature_Windfury = { 6112, 7483, 7484 }, -- Windfury Totem
+  Spell_Nature_EarthBind = { 9687, 9688, 9689 }, -- Windwall Totem
+}
+style.totemByName = {}
+
+-- The totem's icon path, or nil. Cached per name (false for "not a totem").
+function style.TotemIcon(name)
+  if not name then return nil end
+  local cached = style.totemByName[name]
+  if cached ~= nil then return cached or nil end
+  if not style.totemById then
+    style.totemById = {}
+    local icon, ids, i
+    for icon, ids in pairs(style.TOTEM_IDS) do
+      for i = 1, table.getn(ids) do
+        style.totemById[ids[i]] = "Interface\\Icons\\" .. icon
+      end
+    end
+  end
+  local result = false
+  local entry = type(U.unitNames) == "table" and U.unitNames[name]
+  if type(entry) == "number" then
+    result = style.totemById[entry] or false
+  elseif type(entry) == "table" then
+    local i
+    for i = 1, table.getn(entry) do
+      if style.totemById[entry[i]] then
+        result = style.totemById[entry[i]]
+        break
+      end
+    end
+  end
+  style.totemByName[name] = result
+  return result or nil
+end
+
+-- ---------------------------------------------------------------------------
+-- Critters
+--
+-- ShaguPlates' critters option, by intent: hide a critter's health bar. Same
+-- id route as the totems above. The ids are every creature_template entry of
+-- type 8 (Critter), patch <= 10, in the VMaNGOS database
+-- tools/import_unit_reactions.py reads, less six GM, test and trigger
+-- entries; all 93 are in the enUS and ruRU name tables, and all but Roach
+-- (merged with Cockroach, so left out) in zhCN. A name counts only when every
+-- id sharing it is a critter, so a critter name reused by a real creature is
+-- never hidden.
+-- ---------------------------------------------------------------------------
+style.CRITTER_IDS = {
+  385, 582, 620, 721, 883, 890, 1262, 1352, 1412, 1420, 1932, 1933, 2098,
+  2110, 2442, 2620, 2848, 2914, 3300, 3444, 3681, 3835, 4075, 4076, 4166,
+  4953, 5689, 5739, 5740, 5741, 5742, 5743, 5866, 5867, 5868, 5951, 6145,
+  6271, 6368, 6653, 6827, 7208, 8881, 8963, 9600, 9699, 9700, 10016, 10017,
+  10441, 10461, 10510, 10536, 10582, 10685, 10716, 10779, 10780, 11776,
+  12120, 12152, 12296, 12297, 12298, 12299, 12383, 13016, 13017, 13321,
+  13338, 14361, 14681, 14801, 14881, 14886, 14892, 15010, 15065, 15066,
+  15071, 15072, 15219, 15475, 15476, 16030, 16068, 16369, 16372, 16373,
+  16479, 16779, 16998, 18078,
+}
+style.critterByName = {}
+
+function style.IsCritter(name)
+  if not name then return false end
+  local cached = style.critterByName[name]
+  if cached ~= nil then return cached end
+  if not style.critterSet then
+    style.critterSet = {}
+    local i
+    for i = 1, table.getn(style.CRITTER_IDS) do
+      style.critterSet[style.CRITTER_IDS[i]] = true
+    end
+  end
+  local result = false
+  local entry = type(U.unitNames) == "table" and U.unitNames[name]
+  if type(entry) == "number" then
+    result = style.critterSet[entry] or false
+  elseif type(entry) == "table" and table.getn(entry) > 0 then
+    result = true
+    local i
+    for i = 1, table.getn(entry) do
+      if not style.critterSet[entry[i]] then result = false end
+    end
+  end
+  style.critterByName[name] = result
+  return result
+end
+
+-- Icon mode: the totem's icon in place of the plate. The name, level, health
+-- text and bar step aside (style.HideHealth hides the bar); the raid mark,
+-- cast bar and combo points keep working.
+function style.RefreshTotem(overlay, name)
+  local icon = cfg.totemIcons and style.TotemIcon(name) or nil
+  overlay.totemShown = icon and true or false
+
+  -- The name: showName (user request, 2026-10-20), and never beside a totem
+  -- icon.
+  local showName = cfg.showName and not overlay.totemShown
+  if overlay.name and showName ~= overlay.cache.nameShown then
+    overlay.cache.nameShown = showName
+    if showName then overlay.name:Show() else overlay.name:Hide() end
+  end
+
+  if (icon or false) == overlay.cache.totem then return end
+  overlay.cache.totem = icon or false
+  local texture = overlay.totemIcon
+  if icon then
+    texture:SetTexture(icon)
+    texture:Show()
+    if overlay.level then overlay.level:Hide() end
+  else
+    texture:Hide()
+    if overlay.level then overlay.level:Show() end
+  end
+end
+
+function style.HideHealth(overlay, unitType, name, damaged)
+  if overlay.totemShown then return true end
+  if cfg.keepHealthTarget and overlay.isTarget then return false end
+  if cfg.keepHealthDamaged and damaged then return false end
+  if cfg.hideTotemHealth and style.TotemIcon(name) then return true end
+  if cfg.hideCritterHealth and style.IsCritter(name) then return true end
+  local keys = style.HIDE_KEY[unitType]
+  if not keys then return false end
+  return cfg[style.IsPlayer(name) and keys.player or keys.npc] and true or false
+end
+
+function style.Number(value)
+  value = math.floor(value + 0.5)
+  if cfg.abbrevNumbers then
+    if value >= 1000000 then
+      return string.format("%.1fm", value / 1000000)
+    elseif value >= 1000 then
+      return string.format("%.1fk", value / 1000)
+    end
+  end
+  return tostring(value)
+end
+
+-- current/total are real hitpoints when core/unitvitals.lua knows them, nil
+-- for players and unknown creatures; perc (0..100) always exists.
+function style.HealthText(current, total, perc)
+  local format = cfg.healthFormat
+  local pct = string.format("%d%%", math.floor(perc + 0.5))
+  if not current or not total then
+    if format == "deficit" then
+      if perc >= 99.5 then return "" end
+      return string.format("-%d%%", math.floor(100 - perc + 0.5))
+    end
+    return pct
+  end
+  if format == "percent" then return pct end
+  if format == "current" then return style.Number(current) end
+  if format == "curperc" then
+    return style.Number(current) .. " (" .. pct .. ")"
+  end
+  if format == "deficit" then
+    if total - current < 0.5 then return "" end
+    return "-" .. style.Number(total - current)
+  end
+  return style.Number(current) .. " / " .. style.Number(total)
+end
+
+-- First character, whole: a byte cut would break a Cyrillic or CJK name.
+function style.Initial(word)
+  local _, last = string.find(word, "^[\1-\127\192-\255][\128-\191]*")
+  return string.sub(word, 1, last or 1) .. ". "
+end
+
+style.NAME_LIMIT = 20
+
+-- ShaguPlates' GetNameString: shorten the first word, then every word but the
+-- last, until the name fits.
+function style.Name(name)
+  if not cfg.abbrevNames or type(name) ~= "string" or
+     string.len(name) <= style.NAME_LIMIT then
+    return name
+  end
+  name = string.gsub(name, "^(%S+) ", style.Initial)
+  if string.len(name) > style.NAME_LIMIT then
+    name = string.gsub(name, "(%S+) ", style.Initial)
+  end
+  return name
+end
+
+-- Offsets are in the overlay's own scale, so a zoomed plate divides them back
+-- out and stays where the unzoomed one was.
+function style.Anchor(overlay)
+  overlay:ClearAllPoints()
+  overlay:SetPoint("TOP", overlay.plate, "TOP", 0,
+                   (PLATE_LIFT + cfg.verticalOffset) / (overlay.zoom or 1))
+end
+
+-- Modern WoW: the bar's rect is the window inside the frame's rim, so the fill
+-- (drawn above the frame, ARTWORK over BACKGROUND) meets the rim on every
+-- side. Units per texel on each axis, then the frame's margins around it.
+function style.LayoutArt(overlay, plateWidth, healthHeight)
+  local art = overlay.art
+  local health = overlay.health
+  local background = art.background
+  local window = art.backgroundWindow
+  local sx = plateWidth / (window.right - window.left)
+  local sy = healthHeight / (window.bottom - window.top)
+  health.uuiBackground:ClearAllPoints()
+  health.uuiBackground:SetPoint(
+    "TOPLEFT", health, "TOPLEFT",
+    -window.left * sx, window.top * sy)
+  health.uuiBackground:SetPoint(
+    "BOTTOMRIGHT", health, "BOTTOMRIGHT",
+    (background[3] - background[1] - window.right) * sx,
+    -(background[4] - background[2] - window.bottom) * sy)
+end
+
+function style.LayoutRaidIcon(overlay)
+  local icon = overlay.raidIcon
+  if not icon then return end
+  local size, x, y = cfg.raidIconSize, cfg.raidIconX, cfg.raidIconY
+  icon:SetWidth(size)
+  icon:SetHeight(size)
+  icon:ClearAllPoints()
+  if cfg.raidIconPos == "TOP" then
+    icon:SetPoint("BOTTOM", overlay.health, "TOP", x, y + cfg.nameSize + 4)
+  elseif cfg.raidIconPos == "RIGHT" then
+    icon:SetPoint("LEFT", overlay.health, "RIGHT", 4 + x, y)
+  else
+    icon:SetPoint("RIGHT", overlay.health, "LEFT", -4 + x, y)
+  end
+end
+
+-- Every size and position the options control. Called once when the overlay
+-- is built and again by style.Invalidate after any option changes.
+function style.Layout(overlay)
+  local art = overlay.art
+  local artScale = overlay.artScale or 1
+  local plateWidth = cfg.width * artScale
+  local healthHeight = (art and cfg.artHealthHeight or cfg.healthHeight) *
+                       artScale
+  local health = overlay.health
+
+  overlay:SetWidth(plateWidth)
+  overlay:SetHeight(healthHeight + cfg.nameSize + 4)
+  style.Anchor(overlay)
+
+  health:SetWidth(plateWidth)
+  health:SetHeight(healthHeight)
+  if art then style.LayoutArt(overlay, plateWidth, healthHeight) end
+
+  if overlay.name then
+    overlay.name:SetWidth(plateWidth - 28)
+    U.SetFont(overlay.name, cfg.nameSize)
+  end
+  if overlay.level then U.SetFont(overlay.level, cfg.levelSize) end
+
+  local text = overlay.healthText
+  if text then
+    U.SetFont(text, cfg.healthTextSize)
+    text:ClearAllPoints()
+    if cfg.healthTextPos == "LEFT" then
+      text:SetPoint("LEFT", health, "LEFT", 3, 0)
+    elseif cfg.healthTextPos == "RIGHT" then
+      text:SetPoint("RIGHT", health, "RIGHT", -3, 0)
+    else
+      text:SetPoint("CENTER", health, "CENTER", 0, 0)
+    end
+  end
+
+  overlay.cast:SetWidth(plateWidth)
+  if overlay.castName then
+    overlay.castName:SetWidth(plateWidth - overlay.castTextX - 30)
+  end
+  style.LayoutRaidIcon(overlay)
+  style.LayoutCombo(overlay)
+  if overlay.totemIcon then
+    overlay.totemIcon:SetWidth(cfg.totemSize)
+    overlay.totemIcon:SetHeight(cfg.totemSize)
+  end
+end
+
+-- ---------------------------------------------------------------------------
+-- Combo points (target plate)
+--
+-- GetComboPoints("target") is documented, not runtime-verified, and is the
+-- same call the unit frames' combo strip already makes (modules/unitframes.lua),
+-- so that strip working in game is the evidence for this one. ShaguPlates'
+-- intent (nameplates.lua 429-445, 788-792): only the filled points, small
+-- squares under the bar, the first at its right edge. Flat themes draw the
+-- unit frames' muted red-to-green palette (M.rogueCombo) with a black outline;
+-- Modern WoW draws its active combo circle (M.modernWow.combo).
+-- ---------------------------------------------------------------------------
+style.COMBO_MAX = 5
+style.COMBO_GAP = 2
+
+function style.BuildCombo(overlay, modernWow)
+  local layer = CreateFrame("Frame", nil, overlay)
+  layer:SetWidth(1)
+  layer:SetHeight(1)
+  layer:Hide()
+  local pips = {}
+  local i
+  for i = 1, style.COMBO_MAX do
+    local pip = CreateFrame("Frame", nil, layer)
+    local fill = pip:CreateTexture(nil, "ARTWORK")
+    fill:SetAllPoints(pip)
+    if modernWow then
+      local cell = M.modernWow.combo.active
+      fill:SetTexture(M.modernWow.texture.comboPoints)
+      fill:SetTexCoord(cell[1], cell[2], cell[3], cell[4])
+    else
+      fill:SetTexture(M.texture.plain)
+      U.SetColor(fill, M.Unpack(M.rogueCombo[i]))
+      U.CreateBorder(pip, 1)
+      U.SetBorderColor(pip, 0, 0, 0, 1)
+    end
+    pip:Hide()
+    pips[i] = pip
+  end
+  overlay.combo = { layer = layer, pips = pips, modernWow = modernWow }
+end
+
+function style.LayoutCombo(overlay)
+  local combo = overlay.combo
+  if not combo then return end
+  local height = cfg.comboSize
+  local width = combo.modernWow and height * M.modernWow.combo.aspect or height
+  local gap = combo.modernWow and M.modernWow.combo.gap or style.COMBO_GAP
+  combo.layer:SetWidth(style.COMBO_MAX * width + (style.COMBO_MAX - 1) * gap)
+  combo.layer:SetHeight(height)
+  local i
+  for i = 1, style.COMBO_MAX do
+    local pip = combo.pips[i]
+    pip:SetWidth(width)
+    pip:SetHeight(height)
+    pip:ClearAllPoints()
+    pip:SetPoint("TOPRIGHT", combo.layer, "TOPRIGHT", -(i - 1) * (width + gap), 0)
+  end
+end
+
+-- Rows under the bar stack in a fixed order -- cast bar, guild line, combo
+-- points -- each skipped while hidden, so none overlaps another. The distance
+-- from the bar's bottom to the top of the next row, given which rows above it
+-- show.
+function style.BelowOffset(overlay, withGuild)
+  local offset = 0
+  if overlay.cast:IsShown() then
+    offset = offset + overlay.castGap + (overlay.cast:GetHeight() or 0)
+  end
+  if withGuild and overlay.guild and overlay.guild:IsShown() then
+    offset = offset + 2 + (overlay.guild:GetHeight() or 0)
+  end
+  return offset
+end
+
+-- ShaguPlates' showguildname, by intent: the player's guild in brackets,
+-- centred under the bar, green for the player's own guild and dim otherwise.
+-- From core/playercache.lua; a name seen live as a creature shows none.
+function style.RefreshGuild(overlay, name)
+  local label = overlay.guild
+  if not label then return end
+  local guild
+  if cfg.showGuild and name and reaction.player[name] ~= false and
+     type(U.PlayerInfo) == "function" then
+    local _, known = U.PlayerInfo(name)
+    guild = known
+  end
+  local offset = style.BelowOffset(overlay, false)
+  local own = guild and type(U.PlayerGuild) == "function" and
+              U.PlayerGuild() == guild
+  local key = guild and (guild .. "|" .. offset .. (own and "|own" or "")) or
+              "none"
+  if key == overlay.cache.guild then return end
+  overlay.cache.guild = key
+  if not guild then
+    label:Hide()
+    return
+  end
+  label:SetText("<" .. guild .. ">")
+  pcall(label.SetTextColor, label,
+        M.Unpack(own and M.color.guildOwn or M.color.textDim))
+  label:ClearAllPoints()
+  label:SetPoint("TOP", overlay.health, "BOTTOM", 0, -(offset + 2))
+  label:Show()
+end
+
+-- After the cast bar and the guild line: the points sit under whichever of
+-- them show (style.BelowOffset), at the bar's right edge.
+function style.RefreshCombo(overlay)
+  local combo = overlay.combo
+  if not combo then return end
+  local count = 0
+  if cfg.comboPoints and overlay.isTarget then
+    local get = ResolveApiFn("GetComboPoints")
+    if get then
+      local ok, value = pcall(get, "target")
+      count = ok and tonumber(value) or 0
+    end
+  end
+  local offset = style.BelowOffset(overlay, true)
+  if count == overlay.cache.combo and offset == overlay.cache.comboOffset then
+    return
+  end
+  overlay.cache.combo = count
+  overlay.cache.comboOffset = offset
+
+  combo.layer:ClearAllPoints()
+  combo.layer:SetPoint("TOPRIGHT", overlay.health, "BOTTOMRIGHT", 0,
+                       -(offset + style.COMBO_GAP))
+  local i
+  for i = 1, style.COMBO_MAX do
+    if i <= count then combo.pips[i]:Show() else combo.pips[i]:Hide() end
+  end
+  if count > 0 then combo.layer:Show() else combo.layer:Hide() end
+end
+
+-- Target zoom: the whole overlay scales, so text and art stay in proportion.
+function style.RefreshZoom(overlay)
+  local zoom = 1
+  if overlay.isTarget and cfg.targetZoom then
+    zoom = 1 + cfg.targetZoomPercent / 100
+  end
+  if zoom == overlay.zoom then return end
+  overlay.zoom = zoom
+  pcall(function() overlay:SetScale(UIParent:GetScale() * zoom) end)
+  style.Anchor(overlay)
+end
+
+-- The target plate draws above every overlapping plate: the others sit one
+-- strata lower. WORKING_SOURCE (ShaguPlates, nameplates.lua 881-888): BACKGROUND
+-- for the rest and LOW for the target, so the target never reaches MEDIUM,
+-- where the client's windows draw. SetFrameStrata also sets it on child frames
+-- (documented, not runtime-verified here), which carries the bars, cast bar
+-- and aura row along; none of them sets a strata of its own.
+function style.RefreshStrata(overlay)
+  local strata = overlay.isTarget and "LOW" or "BACKGROUND"
+  if strata == overlay.cache.strata then return end
+  overlay.cache.strata = strata
+  pcall(overlay.SetFrameStrata, overlay, strata)
+end
+
+-- Every theme: the target outline wins over a reaction outline; with neither
+-- nothing is drawn (no resting outline, user request 2026-10-20). The flat
+-- themes draw the 1-unit edges; Modern WoW draws its selected-plate art (a
+-- white frame) tinted the same colour, and keeps it untinted on the target
+-- when no outline applies, as its own target state. All options apply under
+-- every theme (user request, 2026-10-20).
+function style.RefreshOutline(overlay, unitType)
+  local key, r, g, b = "none", 0, 0, 0
+  if overlay.isTarget and cfg.targetOutline then
+    key, r, g, b = "target", cfg.highlightR, cfg.highlightG, cfg.highlightB
+  elseif style.OUTLINE_KEY[unitType] and cfg[style.OUTLINE_KEY[unitType]] then
+    key = unitType
+    r, g, b = M.Unpack(UNIT_COLOR[unitType])
+  elseif overlay.isTarget and overlay.selectedBorder then
+    key, r, g, b = "selected", 1, 1, 1
+  end
+  if key == overlay.cache.border then return end
+  overlay.cache.border = key
+
+  if overlay.selectedBorder then
+    if key == "none" then
+      overlay.selectedBorder:Hide()
+    else
+      overlay.selectedBorder:SetVertexColor(r, g, b, 1)
+      overlay.selectedBorder:Show()
+    end
+  else
+    style.ShowEdges(overlay.health, key ~= "none", r, g, b)
+  end
+end
+
+-- The edges are shown and hidden outright rather than given a zero alpha:
+-- a zero vertex alpha is exactly what failed to hide a fill on this client
+-- (knowledge.json statusbar.native_fill_hide_routes).
+function style.ShowEdges(frame, shown, r, g, b)
+  local edges = frame.uuiEdges
+  if not edges then return end
+  if shown then U.SetBorderColor(frame, r, g, b, 1) end
+  local i
+  for i = 1, table.getn(edges) do
+    if shown then edges[i]:Show() else edges[i]:Hide() end
+  end
+end
+
+-- The mark: GetRaidTargetIndex for the target, otherwise the native plate's
+-- own raid-icon region, read back through its texture cell. Which cell the
+-- client gives that region on this build is unmeasured (WORKING_SOURCE:
+-- Vanilla's 4x4 UI-RaidTargetingIcons sheet); a cell outside 1..8 shows none.
+function style.RaidIndex(overlay)
+  if overlay.isTarget then
+    local index = ApiNumber("GetRaidTargetIndex", "target")
+    if index and index >= 1 and index <= 8 then return index end
+  end
+  local region = overlay.parts.raidicon
+  if not region or not Call(region, "IsShown") then return nil end
+  local left, top = Call(region, "GetTexCoord")
+  left, top = tonumber(left), tonumber(top)
+  if not left or not top then return nil end
+  local index = math.floor(top * 4 + 0.5) * 4 + math.floor(left * 4 + 0.5) + 1
+  if index < 1 or index > 8 then return nil end
+  return index
+end
+
+function style.RefreshRaidIcon(overlay)
+  local icon = overlay.raidIcon
+  if not icon then return end
+  local index = cfg.raidIcon and style.RaidIndex(overlay) or nil
+  if index == overlay.cache.raid then return end
+  overlay.cache.raid = index
+  if not index then
+    icon:Hide()
+    return
+  end
+  local col = math.mod(index - 1, 4) * 0.25
+  local row = math.floor((index - 1) / 4) * 0.25
+  icon:SetTexCoord(col, col + 0.25, row, row + 0.25)
+  icon:Show()
+end
+
+-- The client's own switches; documented, unverified on this client, so a
+-- missing function is skipped rather than assumed.
+function style.ApplyVisibility()
+  if not cfg.enabled then return end
+  local fn = ResolveApiFn(cfg.showHostile and "ShowNameplates" or
+                          "HideNameplates")
+  if fn then pcall(fn) end
+  fn = ResolveApiFn(cfg.showFriendly and "ShowFriendNameplates" or
+                    "HideFriendNameplates")
+  if fn then pcall(fn) end
+end
+
+-- ---------------------------------------------------------------------------
 -- Overlay construction
 -- ---------------------------------------------------------------------------
 local function BuildOverlay(frame, parts)
@@ -682,8 +1401,10 @@ local function BuildOverlay(frame, parts)
   overlay.parts = parts
   overlay.cache = {}
   overlay.modernWow = modernWow
+  overlay.zoom = 1
 
-  pcall(overlay.SetFrameStrata, overlay, "LOW")
+  -- Non-target strata until the first refresh says otherwise (style.RefreshStrata).
+  pcall(overlay.SetFrameStrata, overlay, "BACKGROUND")
 
   -- WORKING_SOURCE (UnrealPfUI): a WorldFrame-child overlay is scaled to the UI
   -- scale so plate sizes read in the same units as the rest of the addon.
@@ -691,14 +1412,13 @@ local function BuildOverlay(frame, parts)
 
   local artScale = nameplateArt and nameplateArt.scale or 1
   local plateWidth = cfg.width * artScale
-  local healthHeight = (nameplateArt and nameplateArt.healthHeight or
+  local healthHeight = (nameplateArt and cfg.artHealthHeight or
                         cfg.healthHeight) * artScale
+  overlay.art = nameplateArt
+  overlay.artScale = artScale
 
-  overlay:SetWidth(plateWidth)
-  overlay:SetHeight(healthHeight + cfg.nameSize + 4)
-  overlay:SetPoint("TOP", frame, "TOP", 0,
-                   PLATE_LIFT + cfg.verticalOffset)
-
+  -- Size and position come from style.Layout at the end, so the options can
+  -- re-run it on a live plate.
   local health = U.CreateStatusBar(overlay, {
     width = plateWidth,
     height = healthHeight,
@@ -712,7 +1432,6 @@ local function BuildOverlay(frame, parts)
     local sheet = nameplateArt.sheet
     local fill = nameplateArt.fill
     local background = nameplateArt.background
-    local inset = nameplateArt.backgroundInset
     health.uuiFillTexture:SetTexCoord(
       fill[1] / sheet[1], fill[3] / sheet[1],
       fill[2] / sheet[2], fill[4] / sheet[2])
@@ -720,17 +1439,11 @@ local function BuildOverlay(frame, parts)
     health.uuiBackground:SetTexCoord(
       background[1] / sheet[1], background[3] / sheet[1],
       background[2] / sheet[2], background[4] / sheet[2])
-    health.uuiBackground:ClearAllPoints()
-    health.uuiBackground:SetPoint(
-      "TOPLEFT", health, "TOPLEFT",
-      inset.left * artScale, inset.top * artScale)
-    health.uuiBackground:SetPoint(
-      "BOTTOMRIGHT", health, "BOTTOMRIGHT",
-      inset.right * artScale, inset.bottom * artScale)
+    -- Its anchors inside the rim are style.LayoutArt's, run by style.Layout.
 
     local selected = health:CreateTexture(nil, "OVERLAY")
     selected:SetTexture(nameplateArt.selectedTexture)
-    inset = nameplateArt.selectedInset
+    local inset = nameplateArt.selectedInset
     selected:SetPoint("TOPLEFT", health, "TOPLEFT",
                       inset.left * artScale, inset.top * artScale)
     selected:SetPoint(
@@ -738,22 +1451,22 @@ local function BuildOverlay(frame, parts)
       inset.right * artScale, inset.bottom * artScale)
     selected:Hide()
     overlay.selectedBorder = selected
-  elseif not modern then
-    -- Border only: U.CreateStatusBar already owns the bar background.
+  else
+    -- No resting outline under `modern` or `classic-wow` (`classic-wow`'s was
+    -- removed by user request, 2026-10-20): the edges exist only for the
+    -- optional target and reaction outlines and start hidden.
     U.CreateBorder(health)
-    U.SetBorderColor(health, M.Unpack(M.color.border))
+    style.ShowEdges(health, false)
   end
   overlay.health = health
 
-  -- Its own layer so the fill never covers the percentage.
+  -- Its own layer so the fill never covers the percentage. Placed by
+  -- style.Layout (healthTextPos).
   overlay.healthText = U.CreateLabel(health, {
-    size = modernWow and 9 or cfg.healthTextSize,
+    size = cfg.healthTextSize,
     color = M.color.text,
     inherits = "GameFontNormal",
   })
-  if overlay.healthText then
-    overlay.healthText:SetPoint("CENTER", health, "CENTER", 0, 0)
-  end
 
   -- One anchor per label, per fonts.stretched_justification_ignored.
   overlay.name = U.CreateLabel(overlay, {
@@ -761,15 +1474,12 @@ local function BuildOverlay(frame, parts)
     color = { 1, 1, 1, 1 },
     inherits = "GameFontNormal",
     -- The fixed width below centres the text inside it unless told otherwise.
-    justify = (modern or classic) and "LEFT" or nil,
+    justify = "LEFT",
   })
+  -- Shown under every theme so the name options apply to all of them (user
+  -- request, 2026-10-20); Modern WoW used to hide it.
   if overlay.name then
-    if modernWow then
-      overlay.name:Hide()
-    else
-      overlay.name:SetPoint("BOTTOMLEFT", health, "TOPLEFT", 0, 2)
-      overlay.name:SetWidth(plateWidth - 28)
-    end
+    overlay.name:SetPoint("BOTTOMLEFT", health, "TOPLEFT", 0, 2)
   end
 
   overlay.level = U.CreateLabel(overlay, {
@@ -781,50 +1491,123 @@ local function BuildOverlay(frame, parts)
     overlay.level:SetPoint("BOTTOMRIGHT", health, "TOPRIGHT", 0, 2)
   end
 
+  -- Under `modern-wow` the cast bar is Retail's nameplate cast bar
+  -- (M.modernWow.nameplate.cast): the cast background and fill and an
+  -- additive spark on the fill's edge. The other themes keep the plain bar.
+  -- Every theme gets the spell icon and name inside the bar (below).
+  local castArt = nameplateArt and nameplateArt.cast or nil
+  local castHeight = castArt and castArt.height * artScale or 12
   local cast = U.CreateStatusBar(overlay, {
     width = plateWidth,
-    height = modernWow and 9 or 12,
-    color = M.color.cast,
-    background = M.color.healthBg,
-    texture = nativeTexture,
+    height = castHeight,
+    color = castArt and { 1, 1, 1, 1 } or M.color.cast,
+    background = castArt and { 1, 1, 1, 1 } or M.color.healthBg,
+    texture = castArt and M.modernWow.texture.castFill or nativeTexture,
   })
-  cast:SetPoint("TOPLEFT", health, "BOTTOMLEFT", 0, -2)
-  U.CreateBorder(cast)
-  U.SetBorderColor(cast, M.Unpack(M.color.border))
+  -- Kept for the rows stacked under the cast bar (style.BelowOffset).
+  overlay.castGap = castArt and castArt.spacing * artScale or 2
+  cast:SetPoint("TOPLEFT", health, "BOTTOMLEFT", 0, -overlay.castGap)
+  local castTextX, castTimeX = 3, -3
+  if castArt then
+    cast.uuiBackground:SetTexture(M.modernWow.texture.castBackground)
+
+    -- Additive, as the source draws it: with the default blend its black
+    -- field is a moving dark square (modules/modernwow.lua, CastFillUpdate),
+    -- so the spark is dropped if the blend mode cannot be set.
+    local spark = cast:CreateTexture(nil, "OVERLAY")
+    spark:SetTexture(M.modernWow.texture.castSpark)
+    if spark.SetBlendMode and pcall(spark.SetBlendMode, spark, "ADD") then
+      spark:SetWidth(castArt.sparkWidth * artScale)
+      spark:SetHeight((castArt.height + castArt.sparkExtra) * artScale)
+      spark:Hide()
+      overlay.castSpark = spark
+    else
+      spark:Hide()
+    end
+    castTimeX = -castArt.timeInset * artScale
+  elseif not classic then
+    -- The plain bar keeps its outline, except under `classic-wow`, where it
+    -- matches its health bar.
+    U.CreateBorder(cast)
+    U.SetBorderColor(cast, M.Unpack(M.color.border))
+  end
+
+  -- The spell icon, every theme (user request, 2026-10-20): a square the
+  -- bar's full height at its left edge, cropped like every other spell icon,
+  -- with the name beside it.
+  local icon = cast:CreateTexture(nil, "OVERLAY")
+  icon:SetWidth(castHeight)
+  icon:SetHeight(castHeight)
+  icon:SetPoint("TOPLEFT", cast, "TOPLEFT", 0, 0)
+  icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+  icon:Hide()
+  overlay.castIcon = icon
+  castTextX = castHeight + (castArt and castArt.textGap * artScale or 3)
+  overlay.castTextX = castTextX
   cast:Hide()
   overlay.cast = cast
 
+  local castFont = castArt and
+                   math.max(M.fontSize.tiny,
+                            math.floor(castArt.font * artScale + 0.5)) or
+                   M.fontSize.tiny
   overlay.castName = U.CreateLabel(cast, {
-    size = M.fontSize.tiny,
+    size = castFont,
     color = M.color.text,
     inherits = "GameFontNormalSmall",
     justify = "LEFT",
   })
   if overlay.castName then
-    overlay.castName:SetPoint("LEFT", cast, "LEFT", 3, 0)
-    overlay.castName:SetWidth(plateWidth - 42)
+    overlay.castName:SetPoint("LEFT", cast, "LEFT", castTextX, 0)
   end
 
   overlay.castTime = U.CreateLabel(cast, {
-    size = M.fontSize.tiny,
+    size = castFont,
     color = M.color.text,
     inherits = "GameFontNormalSmall",
     justify = "RIGHT",
   })
   if overlay.castTime then
-    overlay.castTime:SetPoint("RIGHT", cast, "RIGHT", -3, 0)
+    overlay.castTime:SetPoint("RIGHT", cast, "RIGHT", castTimeX, 0)
   end
 
   if type(U.CreateNameplateAuraRows) == "function" then
     local auraArt = modernWow and M.modernWow.nameplateAura or nil
+    -- Both clear the name row above the bar.
     local auraOffset = auraArt and
                        (auraArt.size + auraArt.gap -
-                        auraArt.overlayInset.bottom) or
+                        auraArt.overlayInset.bottom + cfg.nameSize + 4) or
                        cfg.nameSize + 30
     overlay.auraRows = U.CreateNameplateAuraRows(
       health, overlay, overlay.id, auraOffset)
   end
 
+  -- Raid mark. On the overlay rather than the bar, so hiding the health bar
+  -- (style.HideHealth) keeps the mark; it sits beside the bar, never on it.
+  local raid = overlay:CreateTexture(nil, "OVERLAY")
+  raid:SetTexture(M.texture.raidTargetIcons)
+  raid:Hide()
+  overlay.raidIcon = raid
+
+  style.BuildCombo(overlay, modernWow)
+
+  -- Guild line (style.RefreshGuild), placed under the bar on each refresh.
+  overlay.guild = U.CreateLabel(overlay, {
+    size = M.fontSize.small,
+    color = M.color.textDim,
+    inherits = "GameFontNormalSmall",
+  })
+  if overlay.guild then overlay.guild:Hide() end
+
+  -- Totem icon (style.RefreshTotem), centred on the bar's place, cropped like
+  -- every other spell icon.
+  local totem = overlay:CreateTexture(nil, "ARTWORK")
+  totem:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+  totem:SetPoint("CENTER", health, "CENTER", 0, 0)
+  totem:Hide()
+  overlay.totemIcon = totem
+
+  style.Layout(overlay)
   overlay:Show()
   return overlay
 end
@@ -849,14 +1632,33 @@ local function RefreshTargetAuras(overlay)
   end
 end
 
-local function RefreshTargetCast(overlay)
-  if not cfg.attachTargetCast or not overlay.isTarget or
-     type(U.TargetCastInfo) ~= "function" then
-    overlay.cast:Hide()
-    return
-  end
+-- /uui npcast: a looping fake cast on every visible plate for SECONDS, so the
+-- cast bar can be looked at without a casting mob (user request, 2026-10-20).
+-- Drawn through the same path as a real target cast below.
+local castPreview = { SECONDS = 20, CAST = 2.5, SPELL = "Shadow Bolt",
+                      ICON = "Interface\\Icons\\Spell_Shadow_ShadowBolt" }
 
-  local spell, elapsed, duration = U.TargetCastInfo()
+function U.NameplateCastPreview()
+  castPreview.start = GetTime()
+  castPreview.stop = castPreview.start + castPreview.SECONDS
+  return castPreview.SECONDS
+end
+
+local function RefreshTargetCast(overlay)
+  local spell, elapsed, duration, iconTexture
+  local now = GetTime()
+  if castPreview.stop and now < castPreview.stop then
+    spell, duration, iconTexture =
+      castPreview.SPELL, castPreview.CAST, castPreview.ICON
+    elapsed = math.mod(now - castPreview.start, duration)
+  else
+    if not cfg.attachTargetCast or not overlay.isTarget or
+       type(U.TargetCastInfo) ~= "function" then
+      overlay.cast:Hide()
+      return
+    end
+    spell, elapsed, duration, iconTexture = U.TargetCastInfo()
+  end
   if not spell or not duration then
     overlay.cast:Hide()
     return
@@ -864,6 +1666,37 @@ local function RefreshTargetCast(overlay)
 
   overlay.cast:SetMinMaxValues(0, duration)
   overlay.cast:SetValue(elapsed)
+
+  -- Modern WoW: the fill art is cropped to the progress rather than squeezed
+  -- (the shape is baked into it), and the spark rides the fill's edge, hidden
+  -- at both ends as in the source.
+  if overlay.castSpark then
+    local progress = duration > 0 and elapsed / duration or 0
+    if progress < 0 then progress = 0 end
+    if progress > 1 then progress = 1 end
+    if progress > 0 then
+      pcall(overlay.cast.uuiFillTexture.SetTexCoord,
+            overlay.cast.uuiFillTexture, 0, progress, 0, 1)
+    end
+    local spark = overlay.castSpark
+    if progress > 0 and progress < 1 then
+      spark:ClearAllPoints()
+      spark:SetPoint("CENTER", overlay.cast, "LEFT",
+                     (tonumber(overlay.cast:GetWidth()) or 0) * progress, 0)
+      spark:Show()
+    else
+      spark:Hide()
+    end
+  end
+
+  local icon = overlay.castIcon
+  if icon then
+    if iconTexture and iconTexture ~= overlay.cache.castIcon then
+      overlay.cache.castIcon = iconTexture
+      pcall(icon.SetTexture, icon, iconTexture)
+    end
+    if iconTexture then icon:Show() else icon:Hide() end
+  end
   if overlay.castName then overlay.castName:SetText(spell) end
   if overlay.castTime then
     overlay.castTime:SetText(string.format("%.1f", duration - elapsed))
@@ -1048,10 +1881,10 @@ local function RefreshPlate(overlay)
     targetOverlay = overlay
   end
 
-  -- Name
+  -- Name, shortened when abbrevNames asks for it (style.Name).
   if overlay.name and name ~= overlay.cache.name then
     overlay.cache.name = name
-    overlay.name:SetText(name or "")
+    overlay.name:SetText(style.Name(name) or "")
   end
 
   -- Level, with the stock elite/rare marker kept as a suffix. A plate that
@@ -1079,9 +1912,24 @@ local function RefreshPlate(overlay)
     end
   end
 
+  -- Reaction: live for the target, then whatever the target or mouseover
+  -- last taught about this name (RefreshAll learns both first), then the
+  -- creature's base reaction from the bundled database. Resolved before the
+  -- health bar, whose visibility depends on it (style.HideHealth).
+  local unitType = overlay.isTarget and reaction.Classify("target") or nil
+  unitType = unitType or (name and (reaction.byName[name] or
+                                    style.CachedFriend(name) or
+                                    reaction.FromDatabase(name))) or "ENEMY"
+  overlay.cache.unitType = unitType
+  style.RefreshColors(overlay, unitType, name)
+
+  -- Before the health bar, whose visibility depends on it (style.HideHealth).
+  style.RefreshTotem(overlay, name)
+
   -- Health
   local value, minimum, maximum = ReadHealth(overlay)
-  if value then
+  if value and not style.HideHealth(overlay, unitType, name,
+                                    value < maximum) then
     overlay.health:Show()
     overlay.health:SetMinMaxValues(minimum, maximum)
     overlay.health:SetValue(value)
@@ -1108,6 +1956,8 @@ local function RefreshPlate(overlay)
       -- unitframes.nongroup_health_is_percent), and the bundled creature table
       -- gives the exact maximum by name and level. The target gets the
       -- combat-refined current value; any other plate scales the percentage.
+      -- Players, pets and creatures missing from the table have no real
+      -- maximum, so style.HealthText falls back to the percentage.
       local current, total
       if cfg.showHealthText and maximum > minimum and
          type(U.UnitVitalsHealth) == "function" then
@@ -1115,36 +1965,21 @@ local function RefreshPlate(overlay)
           overlay.isTarget and "target" or "nameplate",
           name, tonumber(levelText), value - minimum, maximum - minimum)
       end
-      if current and total then
-        overlay.healthText:SetText(string.format("%d / %d",
-          math.floor(current + 0.5), math.floor(total + 0.5)))
-      elseif cfg.showHealthText and maximum > minimum then
-        -- Players, pets and creatures missing from the table: no real
-        -- maximum exists, so the percentage stays rather than "68 / 100".
+      if cfg.showHealthText and maximum > minimum then
         local perc = (value - minimum) / (maximum - minimum) * 100
-        overlay.healthText:SetText(string.format("%.1f%%", perc))
+        overlay.healthText:SetText(style.HealthText(current, total, perc))
       else
         overlay.healthText:SetText("")
       end
     end
   else
-    -- No health data at all: a name/level row on its own beats an empty bar.
+    -- No health data, or hidden by option: the name/level row stands alone.
     overlay.health:Hide()
     if overlay.healthText then overlay.healthText:SetText("") end
   end
 
-  -- Bar colour by reaction: live for the target, then whatever the target or
-  -- mouseover last taught about this name (RefreshAll learns both first), then
-  -- the creature's base reaction from the bundled database.
-  local unitType = overlay.isTarget and reaction.Classify("target") or nil
-  unitType = unitType or (name and (reaction.byName[name] or
-                                    reaction.FromDatabase(name))) or "ENEMY"
-  if unitType ~= overlay.cache.unitType then
-    overlay.cache.unitType = unitType
-    U.SetStatusBarColor(overlay.health, M.Unpack(UNIT_COLOR[unitType]))
-  end
-
-  -- Target emphasis: the accent border, and everything else dimmed.
+  -- Target emphasis: everything else dimmed, the target outlined (or its
+  -- Modern WoW selected art) and optionally zoomed.
   local wantAlpha = 1
   if cfg.fadeOthers and hasTarget and not overlay.isTarget then
     wantAlpha = cfg.otherAlpha
@@ -1154,24 +1989,15 @@ local function RefreshPlate(overlay)
     pcall(overlay.SetAlpha, overlay, wantAlpha)
   end
 
-  local borderKey = overlay.isTarget and "target" or "normal"
-  if borderKey ~= overlay.cache.border then
-    overlay.cache.border = borderKey
-    if overlay.selectedBorder then
-      if overlay.isTarget then
-        overlay.selectedBorder:Show()
-      else
-        overlay.selectedBorder:Hide()
-      end
-    elseif overlay.isTarget then
-      U.SetBorderColor(overlay.health, M.Unpack(M.color.accent))
-    else
-      U.SetBorderColor(overlay.health, M.Unpack(M.color.border))
-    end
-  end
+  style.RefreshOutline(overlay, unitType)
+  style.RefreshZoom(overlay)
+  style.RefreshStrata(overlay)
+  style.RefreshRaidIcon(overlay)
 
   RefreshTargetAuras(overlay)
   RefreshTargetCast(overlay)
+  style.RefreshGuild(overlay, name)
+  style.RefreshCombo(overlay)
 end
 
 local function RefreshAll()
@@ -1180,6 +2006,10 @@ local function RefreshAll()
   targetOverlay = nil
   reaction.Learn("target")
   reaction.Learn("mouseover")
+  if type(U.PlayerCacheLearn) == "function" then
+    U.PlayerCacheLearn("target")
+    U.PlayerCacheLearn("mouseover")
+  end
   local i
   for i = 1, table.getn(plateOrder) do
     local overlay = plateOrder[i]
@@ -1192,6 +2022,26 @@ local function RefreshAll()
       end
     end
   end
+end
+
+-- An option changed (U.SetNameplateSetting): drop every plate's draw cache so
+-- colours, outlines and text are re-applied, re-run the layout, and redraw now
+-- rather than on the next 0.1s tick.
+function style.Invalidate()
+  if not cfg.enabled then return end
+  local i
+  for i = 1, table.getn(plateOrder) do
+    local overlay = plateOrder[i]
+    if overlay then
+      overlay.cache = {}
+      local ok, err = pcall(style.Layout, overlay)
+      if not ok then
+        failures.refresh = failures.refresh + 1
+        failures.lastRefresh = tostring(err)
+      end
+    end
+  end
+  RefreshAll()
 end
 
 -- Diagnostic only: which stock parts a recycled plate came back with (see
@@ -1575,9 +2425,9 @@ end
 -- ---------------------------------------------------------------------------
 function NP:OnInit()
   cfg = U.ModuleConfig("nameplates", defaults)
-  if type(U.RegisterSettingsTab) == "function" then
-    U.RegisterSettingsTab("nameplates", U.L("SETTINGS_PAGE_NAMEPLATES"),
-                          BuildSettingsPage, { after = "general" })
+  -- The pages live in modules/nameplatesettings.lua.
+  if type(U.RegisterNameplateSettings) == "function" then
+    U.RegisterNameplateSettings()
   end
 end
 
@@ -1599,6 +2449,13 @@ function NP:OnEnable()
      type(U.G("NAMEPLATE_FONT")) == "string" then
     NAMEPLATE_FONT = invisible.path
   end
+
+  -- The hostile/friendly switches need a ready world (ShowNameplates is
+  -- documented as a no-op before that), and a loading screen may reset them.
+  -- OnEnable itself may run on that very event (core/init.lua), so apply once
+  -- now as well.
+  U.RegisterEvent("PLAYER_ENTERING_WORLD", style.ApplyVisibility)
+  style.ApplyVisibility()
 
   -- Discovery is cheap while the child count is unchanged, so it can share the
   -- refresh tick. A plate that appears or changes unit is caught sooner, on the

@@ -626,6 +626,9 @@ local function ApplyUnitIcon(tracker, info, preferred)
   end
 
   tracker.iconSource = texture and source or "none"
+  -- Remembered for U.TargetCastInfo (the nameplate cast bar's icon), since
+  -- GetTexture is not verified to read back the path that was set.
+  tracker.iconTexture = nil
   if not texture then
     widget.showIcon = false
     return
@@ -633,6 +636,7 @@ local function ApplyUnitIcon(tracker, info, preferred)
 
   if pcall(widget.icon.SetTexture, widget.icon, texture) then
     widget.showIcon = true
+    tracker.iconTexture = texture
   else
     tracker.iconSource = "failed"
     widget.showIcon = false
@@ -906,7 +910,7 @@ function U.TargetCastInfo()
   local elapsed = GetTime() - tracker.startTime
   if elapsed < 0 then elapsed = 0 end
   if elapsed > tracker.duration then elapsed = tracker.duration end
-  return tracker.spell, elapsed, tracker.duration
+  return tracker.spell, elapsed, tracker.duration, tracker.iconTexture
 end
 
 local function ApplyUnitIdlePlaceholder(tracker)

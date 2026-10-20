@@ -2,7 +2,7 @@
 ## Title: |cffffffffUnreal |cfff5ae0aUI
 ## Notes: Unreal Azeroth native UI addon.
 ## Author: Thomas
-## Version: 0.10.4
+## Version: 0.11.0
 ## X-License: MIT
 ## SavedVariables: UnrealUIDB, UnrealUIProfiles, UnrealUIDiagDB, UnrealUIPriceDB
 ## SavedVariablesPerCharacter: UnrealUIProfileDB, UnrealUIFavoriteDB, UnrealUIBankCountDB, UnrealUIBankCacheDB, UnrealUIEquipmentSetDB
@@ -51,6 +51,7 @@ Database\unit_reactions.lua
 Database\item_sort.lua
 Database\talent_advisor.lua
 core\unitvitals.lua
+core\playercache.lua
 
 core\compat.lua
 core\weapons.lua
@@ -125,6 +126,7 @@ modules\auras.lua
 modules\hots.lua
 modules\healpredict.lua
 modules\nameplates.lua
+modules\nameplatesettings.lua
 modules\tooltip.lua
 modules\itemprice.lua
 modules\loot.lua

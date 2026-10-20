@@ -1849,6 +1849,8 @@ function U.CreateSlider(parent, options)
     U.SetBorderColor(visual, M.Unpack(M.color.border))
   end)
 
+  control.enabled = options.disabled ~= true
+
   local function PlaceThumb(value)
     local usable = width - THUMB_WIDTH
     local offset = 0
@@ -2033,6 +2035,7 @@ function U.CreateSlider(parent, options)
   end
 
   thumb:SetScript("OnDragStart", function()
+    if not control.enabled then return end
     if not pcall(thumb.SetMovable, thumb, true) then return end
     if pcall(thumb.StartMoving, thumb) then
       pcall(thumb.StopMovingOrSizing, thumb)
@@ -2052,6 +2055,7 @@ function U.CreateSlider(parent, options)
   -- nearest stepped value and places both the input handle and visible square.
   pcall(track.EnableMouse, track, true)
   track:SetScript("OnMouseDown", function()
+    if not control.enabled then return end
     local value = ReadCursorValue()
     if value then
       BeginInput()
@@ -2070,11 +2074,13 @@ function U.CreateSlider(parent, options)
   -- arrow clicks take the same publish path as a track click or completed
   -- drag, including the page's onChange and live-preview brackets.
   control.GetStepState = function()
+    if not control.enabled then return false, false end
     local value = Clamp(control.current or min)
     return value > min, value < max
   end
 
   control.StepValue = function(direction)
+    if not control.enabled then return false end
     direction = tonumber(direction) or 0
     if direction == 0 then return false end
     local before = Clamp(control.current or min)
@@ -2085,6 +2091,27 @@ function U.CreateSlider(parent, options)
     EndInput()
     return true
   end
+
+  -- Disabled: dim caption and readout, a neutral thumb instead of the accent
+  -- one, and no input on the track or the thumb.
+  control.SetEnabled = function(enabled)
+    enabled = enabled and true or false
+    control.enabled = enabled
+    if not enabled then FinishDrag() end
+    pcall(track.EnableMouse, track, enabled)
+    pcall(thumb.EnableMouse, thumb, enabled)
+    U.SetBackgroundColor(visual, M.Unpack(enabled and M.color.accent or
+                                          M.color.border))
+    if caption then
+      pcall(caption.SetTextColor, caption,
+            M.Unpack(enabled and M.color.accent or M.color.textDim))
+    end
+    if readout then
+      pcall(readout.SetTextColor, readout,
+            M.Unpack(enabled and M.color.text or M.color.textDim))
+    end
+  end
+  if not control.enabled then control.SetEnabled(false) end
 
   control.SetControlWidth = function(value)
     value = tonumber(value)
