@@ -2,7 +2,9 @@
 
 # UnrealUI
 
-**Classic Azeroth, without fighting your interface.**
+**Rediscover Azeroth. Keep the soul of Vanilla, without the interface friction.**
+
+A complete interface overhaul built for **Unreal Azeroth / Emberveil**.
 
 > [!IMPORTANT]
 > ## Install UnrealUI
@@ -11,81 +13,89 @@
 > 3. Rename the extracted `unrealUI-master` folder to `unrealUI` by removing `-master`.
 > 4. Confirm that `unrealUI.toc` is directly inside the `unrealUI` folder, then launch the game or reload the interface.
 
-The original interface carries the soul of Vanilla, but it also makes you work for information that should be immediate. Important bars are scattered, key binding interrupts your flow, bags compete for space, and essential combat feedback can disappear into the screen.
+![UnrealUI: Classic WoW, Modern and Modern WoW](screenshots/main-screenshot.jpg)
 
-UnrealUI keeps Azeroth familiar while removing that daily friction. It brings the information you act on closer together, gives every important element a clear place, and applies one sharp visual language across the interface. The result is a calmer screen, faster decisions, and more attention left for the world itself.
+## Three interfaces, one addon
 
-Built specifically for **Unreal Azeroth / Emberveil**.
+Pick the look you want in the settings; every feature works in all three.
 
-![UnrealUI main interface](screenshots/main_overlay.png)
+- **Classic WoW**: keep the native interface you know, with all of UnrealUI's features.
+- **Modern**: a clean, minimalist flat design.
+- **Modern WoW**: the look and feel of the Retail interface.
 
-## Why install UnrealUI?
+| Classic WoW | Modern | Modern WoW |
+|---|---|---|
+| ![Classic WoW theme](screenshots/theme-classic-wow.jpg) | ![Modern theme](screenshots/theme-modern.jpg) | ![Modern WoW theme](screenshots/theme-modern-wow.jpg) |
 
-### Your layout should follow your instincts
+## Main features
 
-Move unit frames, action bars, bags, cast bars, XP and reputation bars, the quest tracker, status displays, the microbar, and other supported elements through one visual edit mode. Snap them cleanly to an adjustable grid, or hide the grid for free placement, then keep the layout across reloads.
+### Visual Edit Mode
 
-### Change bindings while you are still thinking about the ability
+Move any element, snap it to a grid or place it freely. Unit frames, action bars, bags, cast bars, XP and reputation bars, the quest tracker and more all live in one edit mode, and the layout is kept across reloads.
 
-Quick Binding removes the trip through nested menus. Hover an action slot, press a key, and continue building your layout. Clear or replace bindings directly on the bars with immediate visual feedback.
+![Visual Edit Mode](screenshots/edit-mode.jpg)
 
-### Read combat before the moment has passed
+### Quick Binding
 
-Clean player, target, target-of-target, pet, and party frames keep health and power readable at a glance. Modern nameplates emphasize your target, the player cast bar shows progress and remaining time, and configurable debuff rows separate Magic, Curse, Poison, Disease, and physical effects by color. The player and target frames each carry their buffs on a row of their own, and every aura icon runs the same radial wipe and countdown the action bars use. Two settings decide where your own auras appear: on the player frame, beside the minimap where the client draws them, either, or neither.
+Hover an action slot and press a key. No trip through nested menus.
 
-### Spend less time managing inventory
+![Quick Binding mode](screenshots/quickbinding.png)
 
-One unified bag window replaces the pile of separate containers. See item quality and cooldowns clearly, open the keyring when needed, and clean up grey items in one action—selling them at a merchant or asking before deleting them elsewhere.
+### Settings in one place
 
-The bank uses the same window: the bank container and every purchased bank bag are packed into one continuous grid, your bank bags sit in the header with the slot you have not bought yet, and item quality reads exactly as it does in your bags.
+UnrealUI's options sit inside the game settings window, next to Video, Sound and Interface. Switch theme, toggle features, and open Edit Mode from the same screen. The interface is available in **English, French, Russian and Chinese**.
 
-### Modern where it helps, familiar where it matters
+![UnrealUI settings](screenshots/settings-addon.png)
 
-The Quest Log, Character window, Spellbook, Social panels, merchants, trainers, quest dialogue, Game Menu, and other frequently used windows share the same compact modern style. The minimap surface and behavior remain native, while the Modern WoW theme gives its surrounding chrome matching artwork; the loot experience remains familiar and untouched.
+### 10 configurable action bars
 
-## See how UnrealUI improves the moment-to-moment experience
+Control the number of buttons, rows, size, spacing and cooldown display for each bar.
 
-### 1. Shape the interface around the way you play
+### Unit frames, nameplates and combat feedback
 
-Stop adapting your attention to a fixed layout. Enter edit mode, see every supported element, and place information exactly where your eyes already expect to find it.
+- Modern unit frames with real enemy HP and mana numbers.
+- Nameplates, colour-coded debuffs, a cast bar and a swing timer.
+- Heal prediction and HoT timers on party frames.
 
-![UnrealUI visual edit mode](screenshots/UI_edit-mode.png)
+![Raid frames](screenshots/raid.png)
 
-### 2. Bind abilities without leaving your bars
+### Restyled windows
 
-Hover a slot and press the key you want. Quick Binding turns a slow configuration chore into a direct, visual interaction.
+Quest Log, Character, Spellbook, Talents, Social and more share one consistent style.
 
-![UnrealUI Quick Binding mode](screenshots/quick-binding.png)
+**Character**
 
-### 3. Build action bars that match your playstyle
+![Character window](screenshots/character.png)
 
-Configure up to ten action bars with control over button count, rows, size, spacing, backgrounds, labels, and cooldown information. Class form, stance, and stealth pages stay part of the same coherent system.
+**Spellbook and Professions**
 
-![UnrealUI action bar settings](screenshots/action_bars-setting.png)
+![Professions window](screenshots/professions.png)
 
-### 4. See every cast at a glance
+![Spellbook](screenshots/spellbook.png)
 
-Spell name, icon, progress, pushback, and remaining time stay together in a compact movable cast bar.
+**Crafting** with recipe search, difficulty filter and a recipe tracker you can keep on screen.
 
-![UnrealUI player cast bar](screenshots/cast_bar.png)
+![Crafting window](screenshots/crafting.png)
 
-### 5. Follow quests without fighting the Quest Log
+### Talent build advisor and equipment sets
 
-Clear sections, visible tracked quests, optional quest levels, persistent tracking after reload, and a collapsible detail panel make long questing sessions easier to navigate.
+Follow a Leveling, PvP or Raid build: the advisor highlights the talent to pick next and flags points spent outside the build. Save and swap equipment sets from the Character window.
 
-![UnrealUI modern Quest Log](screenshots/modern-interfaces.png)
+![Talents and Build Advisor](screenshots/talents.png)
 
-### 6. Understand your character on one clean screen
+### Bags and bank
 
-Equipment, attributes, resistances, reputation, skills, and honor use the same readable visual hierarchy instead of competing pieces of stock artwork.
+A unified bag and bank window with sorting, search and one-click junk selling.
 
-![UnrealUI modern Character window](screenshots/modern-interface-2.png)
+## Extras
 
-### 7. Keep familiar systems, remove the visual noise
-
-Core Vanilla windows such as the Spellbook retain their meaning and imagery while gaining cleaner spacing, sharper controls, and consistent navigation.
-
-![UnrealUI modern Spellbook](screenshots/spell_book.png)
+- Saved bank, viewable anywhere.
+- Item sell prices and item comparison.
+- Auto-sorting into specialty bags.
+- World map coordinates and zone level ranges.
+- XP and reputation bars with rested XP.
+- Low-health and loss-of-control screen warnings.
+- Profession recipe tracker on screen.
 
 ## Get started
 
