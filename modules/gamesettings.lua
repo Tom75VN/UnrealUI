@@ -308,14 +308,10 @@ gs.PAGES = {
     -- Aligned to the page box's right edge rather than centred (user request,
     -- 2026-09-22: the page overlapped the category list on the left).
     align = "right",
-    -- No buttonWidth or buttonShift any more (measured 2026-09-22,
-    -- /uui gamedump keys). This client's page is already Forever-shaped: its
-    -- rows are the template's own 560 wide inside a 640 panel, and it lays
-    -- itself out AFTER this window styles it -- every binding read back 133
-    -- wide, the width the client had just given it, not the 90 set here. So
-    -- the width did nothing and the shift did harm: it was what carried the
-    -- bottom buttons off the panel's left edge. Both key columns sit inside
-    -- the page box at the client's own anchors.
+    -- No generic buttonWidth or buttonShift: the native page lays itself out
+    -- after the first skin pass, and shifting every chained button carried its
+    -- bottom actions off-panel. gs.AlignBindingList runs after that layout and
+    -- sizes only the two buttons inside each binding row.
   },
   {
     id = "unrealui",
@@ -2022,6 +2018,19 @@ function gs.SelectPage(id, keepSidebar)
   local sidebarOffset = keepSidebar and gs.sidebarOffset or nil
   if page.settings then gs.expanded[page.id] = true end
 
+  -- A selected row can be clicked again while its panel is already hosted.
+  -- Attaching it twice overwrites the first restore snapshot with the moved
+  -- layout, so the later detach can hand native controls back incorrectly.
+  if gs.active == page then
+    gs.SetPageTitle(page)
+    if sidebarOffset ~= nil then
+      gs.sidebarOffset = sidebarOffset
+      gs.revealSettingsSelection = nil
+    end
+    gs.RenderList()
+    return true
+  end
+
   -- Hiding the outgoing client panel hands control back to the client's own
   -- "back out of options" path, which shows the game menu and closes windows.
   -- The whole switch therefore runs behind one flag: this window's OnHide does
@@ -2031,7 +2040,7 @@ function gs.SelectPage(id, keepSidebar)
 
   -- Exactly one client panel is ever attached, the same way
   -- SettingsPanelMixin:SelectCategory clears the outgoing canvas first.
-  if gs.active ~= page then gs.Detach() end
+  gs.Detach()
 
   local attached = gs.Attach(page)
   page.unavailable = not attached
@@ -3446,10 +3455,10 @@ function gs.KeepPlaced(page, object)
 
   local record = {
     object = object,
-    parent = gs.Read(object, "GetParent"),
     width = gs.Number(object, "GetWidth"),
     height = gs.Number(object, "GetHeight"),
     scale = gs.Number(object, "GetScale"),
+    unit = gs.Unit and gs.Unit(object) or 1,
     points = {},
   }
   local count = gs.Number(object, "GetNumPoints") or 0
@@ -3475,11 +3484,10 @@ function gs.RestorePlaced(page)
   for i = table.getn(state.order), 1, -1 do
     local record = state.order[i]
     local object = record.object
-    -- Only a frame can be reparented on this client; a FontString is left
-    -- with the parent it always had and only re-anchored.
-    if record.parent and type(object.SetParent) == "function" then
-      pcall(object.SetParent, object, record.parent)
-    end
+    -- KeepPlaced callers only alter anchors, size or scale. Do not repeat
+    -- SetParent with the object's existing native parent: this client can
+    -- perform ownership work even for a same-parent call, and pcall cannot
+    -- contain a native allocator failure.
     pcall(object.ClearAllPoints, object)
     local j
     for j = 1, table.getn(record.points) do
@@ -3494,6 +3502,13 @@ function gs.RestorePlaced(page)
     end
     if record.scale and type(object.SetScale) == "function" then
       pcall(object.SetScale, object, record.scale)
+    end
+    if record.restoreShown then
+      if record.shown then
+        pcall(object.Show, object)
+      else
+        pcall(object.Hide, object)
+      end
     end
     object.uuiForeverDropped = nil
   end
@@ -3515,16 +3530,16 @@ end
 function gs.LiftToWindow(object, frame)
   if not object or type(object.SetScale) ~= "function" then return 1 end
 
-  -- The object's own scale is set so that its EFFECTIVE scale becomes the page
-  -- box's: effective = own x effective(parent), so own = the box's effective
-  -- over the parent's. Dividing the page's GetScale out instead lands
-  -- somewhere else entirely -- that scale is not what its children draw at
-  -- (see gs.Unit).
-  local parent = gs.Read(object, "GetParent")
-  local base = parent and gs.Unit(parent) or gs.Unit(frame)
+  -- Normalize from the OBJECT'S measured effective scale, not its parent's.
+  -- Native Key Bindings rows do not inherit a lifted ScrollFrame's drawn
+  -- scale on this client, so parentEffective * ownScale is not a safe model.
+  -- Multiplying the current own scale by target/current is direct and is
+  -- idempotent when a delayed layout asks us to dress the page again.
+  local own = gs.Number(object, "GetScale") or 1
+  local current = gs.Unit(object)
   local target = gs.Unit(gs.host)
-  if base > 0 and target > 0 then
-    pcall(object.SetScale, object, target / base)
+  if current > 0 and target > 0 then
+    pcall(object.SetScale, object, own * target / current)
   end
   return target
 end
@@ -3590,13 +3605,13 @@ function gs.LayoutBindingBar(row, bar)
   for i = 1, count do
     local key = U.G("KeyBindingFrameBinding" .. i .. "Key2Button")
     if key and gs.Read(key, "IsShown") then
-      keyRight = gs.Number(key, "GetRight")
+      keyRight = gs.LayoutEdge(key, "GetRight")
       if keyRight then break end
     end
   end
-  local rowLeft = gs.Number(row, "GetLeft")
+  local rowLeft = gs.LayoutEdge(row, "GetLeft")
   local fullWidth = keyRight and rowLeft and
-    (keyRight - rowLeft) or nil
+    (keyRight - rowLeft) / gs.Unit(row) or nil
 
   bar.right:ClearAllPoints()
   if fullWidth then
@@ -3676,37 +3691,45 @@ function gs.PaintBindingList()
   for i = 1, count do gs.PaintBindingRow(i) end
 end
 
--- The content column a list page draws, in screen units: from the page box's
--- left plus list.padLeft to where the scrollbar's own column begins. These are
--- L.Build's and L.Layout's own numbers, so a row here spans exactly what a row
--- on the Video page spans.
--- One object's pixels-per-unit: what a size or a SetPoint offset set on it is
--- multiplied by before it is drawn.
+-- One object's UIParent-layout-units per own unit. The current client reports
+-- each object's edges in that object's own coordinate space, so rectangles
+-- from different scales must pass through this ratio before they are compared.
 --
--- This matters everywhere a measured rect is turned back into a number to set.
--- Measured 2026-09-22 (/uui gamedump keys): a texture set to 12 read back
--- 14.5037 and a button set to 90 read back 108.778 -- both 1.2086x -- so
--- GetLeft / GetWidth and friends report in SCREEN pixels while SetPoint and
--- SetWidth take the frame's own units. The divisor is the frame's EFFECTIVE
--- scale, never the page's own GetScale: the page reported 0.8175 while its
--- children drew at 1.2086, and converting with the page's scale overshot every
--- shift by half as much again (reported in game 2026-09-22 -- the listing
--- still sat right of the other pages).
+-- uiscale.v2 (2026-10-17) superseded the September screen-pixel assumption:
+-- with UI scaling enabled, an edge moves into UIParent's layout space by
+-- effectiveScale / UIParentEffectiveScale. SetPoint offsets move back by the
+-- inverse ratio.
 function gs.Unit(object)
   local unit = gs.Number(object, "GetEffectiveScale")
   if not unit or unit <= 0 then unit = gs.Number(object, "GetScale") end
   if not unit or unit <= 0 then return 1 end
-  return unit
+  local parentUnit = gs.Number(UIParent, "GetEffectiveScale")
+  if not parentUnit or parentUnit <= 0 then parentUnit = 1 end
+  return unit / parentUnit
 end
 
--- The content column a list page draws, in SCREEN pixels: from the page box's
--- left plus list.padLeft to where the scrollbar's own column begins. The
--- tokens are the box's own units, so each is multiplied by the box's unit.
+function gs.LayoutEdge(object, method)
+  local edge = gs.Number(object, method)
+  if not edge then return nil end
+  return edge * gs.Unit(object)
+end
+
+function gs.LayoutWidth(object)
+  local left = gs.LayoutEdge(object, "GetLeft")
+  local right = gs.LayoutEdge(object, "GetRight")
+  if left and right and right >= left then return right - left end
+  local width = gs.Number(object, "GetWidth")
+  return width and width * gs.Unit(object) or nil
+end
+
+-- The content column a list page draws, in UIParent layout units: from the
+-- page box's left plus list.padLeft to where the scrollbar's own column
+-- begins. The tokens are the box's own units, so they use the box's ratio.
 function gs.ListContent()
   if not gs.host then return nil end
   local list = M.foreverWow.list
-  local left = gs.Number(gs.host, "GetLeft")
-  local width = gs.Number(gs.host, "GetWidth")
+  local left = gs.LayoutEdge(gs.host, "GetLeft")
+  local width = gs.LayoutWidth(gs.host)
   if not left or not width then return nil end
   local unit = gs.Unit(gs.host)
   local bar = (list.scrollbarWidth + list.scrollbarInset.right +
@@ -3774,11 +3797,66 @@ function gs.AlignBindingList(page, frame)
     local count = tonumber(U.G("KEY_BINDINGS_DISPLAYED")) or 0
     if count < 1 or count > 64 then count = gs.BINDING_ROWS end
 
+    -- The native template is 560 wide and keeps both key buttons at its old
+    -- fixed offsets even after the row itself is widened. Lay the three
+    -- visible columns out in the target width explicitly: command, Key 1 and
+    -- Key 2. Everything is expressed in UIParent layout units here and moved
+    -- into each destination button's own space only at the setter boundary.
+    local keys = M.foreverWow.keys
+    local columnGap = tonumber(keys.columnGap) or 4
+    local columnWidth = (width - columnGap * 2) / 3
+    if columnWidth < 1 then return end
+    -- The viewport keeps its authored scale but is seated directly in the
+    -- host. A delta from the native page's old position was unstable across
+    -- UI scales; these anchors make the top and scrollbar track deterministic.
+    local scroll = U.G("KeyBindingFrameScrollFrame")
+    if scroll then
+      gs.KeepPlaced(page, scroll)
+      local scrollUnit = gs.Unit(scroll)
+      local hostLeft = gs.LayoutEdge(gs.host, "GetLeft")
+      if hostLeft then
+        local left = (want - hostLeft) / scrollUnit
+        local right = (want + width - hostLeft) / scrollUnit
+        local bottom = (tonumber(keys.listBottomInset) or 48) /
+                       scrollUnit
+        pcall(scroll.ClearAllPoints, scroll)
+        pcall(scroll.SetPoint, scroll, "TOPLEFT", gs.host, "TOPLEFT",
+              left, 0)
+        pcall(scroll.SetPoint, scroll, "BOTTOMRIGHT", gs.host,
+              "BOTTOMLEFT", right, bottom)
+      else
+        pcall(scroll.SetWidth, scroll, width / scrollUnit)
+      end
+
+      local child = gs.Read(scroll, "GetScrollChild")
+      if child and type(child.SetWidth) == "function" then
+        gs.KeepPlaced(page, child)
+        pcall(child.SetWidth, child, width / gs.Unit(child))
+      end
+    end
+
+    -- Unlike ordinary addon children, these native rows do not take their
+    -- drawn scale from the ScrollFrame. The screenshot-confirmed result of
+    -- lifting only that ancestor was a large checkbox/actions beside the same
+    -- tiny rows. Lift every native row directly, and set its native text to
+    -- the body size used by gamesettingslist.lua on the other pages.
+    local i
+    for i = 1, count do
+      local row = gs.BindingRow(i)
+      if row then
+        gs.KeepPlaced(page, row)
+        gs.LiftToWindow(row, frame)
+      end
+      local label = gs.BindingLabel(i)
+      if label then U.SetFont(label, M.fontSize.normal) end
+      local header = U.G("KeyBindingFrameBinding" .. i .. "Header")
+      if header then U.SetFont(header, M.fontSize.normal) end
+    end
+
     -- Measured on a BINDING row, never a category row: a category's label has
     -- been moved onto the bar at Forever's own inset, and reading that one
     -- would drag the whole listing left by it.
     local reference = 1
-    local i
     for i = 1, count do
       local key = U.G("KeyBindingFrameBinding" .. i .. "Key1Button")
       if key and gs.Read(key, "IsShown") then
@@ -3787,11 +3865,12 @@ function gs.AlignBindingList(page, frame)
       end
     end
     local first = gs.BindingRow(reference)
-    local have = gs.Number(first, "GetLeft")
-    local span = gs.Number(first, "GetWidth")
-    if not want or not have or not span then return end
+    local root = gs.BindingRow(1) or first
+    local have = gs.LayoutEdge(first, "GetLeft")
+    local span = gs.LayoutWidth(first)
+    if not want or not have or not span or not root then return end
 
-    -- Pixels per unit for the rows themselves; see gs.Unit.
+    -- UIParent layout units per row unit; see gs.Unit.
     local scale = gs.Unit(first)
 
     -- What is aligned is the LINE the player sees -- the command's own text --
@@ -3801,7 +3880,7 @@ function gs.AlignBindingList(page, frame)
     -- this client insets its label inside the row instead, and the row has to
     -- move by that inset too.
     local label = gs.BindingLabel(reference)
-    local text = gs.Number(label, "GetLeft") or have
+    local text = gs.LayoutEdge(label, "GetLeft") or have
     local shift = want - text
     -- The right edge still lands on the column's end, so the row is widened by
     -- whatever the shift took off it.
@@ -3812,13 +3891,18 @@ function gs.AlignBindingList(page, frame)
     if delta > -0.5 and delta < 0.5 then delta = 0 end
     if grow > -0.5 and grow < 0.5 then grow = 0 end
 
-    -- The listing's own drop. Unlike the shift and the width it is not
-    -- measured against anything, so it is applied ONCE per attach -- marked on
-    -- the row that takes it -- and every later pass leaves it alone rather
-    -- than adding it again. gs.RestorePlaced clears the mark with the anchors.
-    local drop = (M.foreverWow.keys.listDrop or 0) / scale
-    local wanted = drop ~= 0 and first and not first.uuiForeverDropped
-    if delta == 0 and grow == 0 and not wanted then return end
+    -- Put the first visible category at one fixed distance below the host's
+    -- top rule. Every independent native row receives the same correction;
+    -- rows chained to an earlier row follow it and must not be moved twice.
+    local hostTop = gs.LayoutEdge(gs.host, "GetTop")
+    local rootTop = gs.LayoutEdge(root, "GetTop")
+    local rootUnit = gs.Unit(root)
+    local topInset = (tonumber(keys.listTopInset) or 28) * gs.Unit(gs.host)
+    local drop = 0
+    if hostTop and rootTop and rootUnit > 0 then
+      drop = (rootTop - (hostTop - topInset)) / rootUnit
+      if drop > -0.5 and drop < 0.5 then drop = 0 end
+    end
 
     local moved = {}
     for i = 1, count do
@@ -3829,52 +3913,127 @@ function gs.AlignBindingList(page, frame)
         local point, rel = U.GetFramePoint(row, 1)
         local chained = rel and moved[rel]
         gs.KeepPlaced(page, row)
-        local fall = 0
-        if not chained and drop ~= 0 and not row.uuiForeverDropped then
-          fall = drop
-          row.uuiForeverDropped = true
-        end
+        local fall = (not chained and drop ~= 0) and drop or 0
         local ok, spanned = gs.SpanPoints(row, chained and 0 or delta, grow, fall)
         if ok and not spanned and grow ~= 0 then
           pcall(row.SetWidth, row, width / scale)
+        end
+
+        local slot
+        for slot = 1, 2 do
+          local button = U.G("KeyBindingFrameBinding" .. i .. "Key" ..
+                             slot .. "Button")
+          if button then
+            gs.KeepPlaced(page, button)
+            gs.LiftToWindow(button, frame)
+            local buttonUnit = gs.Unit(button)
+            local buttonLeft = columnWidth * slot + columnGap * slot
+            pcall(button.ClearAllPoints, button)
+            pcall(button.SetPoint, button, "LEFT", row, "LEFT",
+                  buttonLeft / buttonUnit, 0)
+            pcall(button.SetWidth, button, columnWidth / buttonUnit)
+            local buttonLabel = gs.Read(button, "GetFontString")
+            if buttonLabel then U.SetFont(buttonLabel, M.fontSize.normal) end
+          end
         end
         moved[row] = true
       end
     end
 
-    -- The column headings sit over the rows' own columns: Name is offset right
-    -- of the command text, while each Key label is centred on its button. Key
-    -- 1 supplies the shared baseline, so all three captions stay level even
-    -- when the client gives Command a different default anchor.
-    local keyOneHeading = U.G("KeyBindingFrameKey1Label")
-    local headerTop = gs.Number(keyOneHeading, "GetTop")
-    local command = U.G("KeyBindingFrameCommandLabel")
-    local at = gs.Number(command, "GetLeft")
-    if command and at then
-      gs.KeepPlaced(page, command)
-      local commandWant = want + (M.foreverWow.keys.commandHeaderNudge or 0)
-      local commandTop = gs.Number(command, "GetTop")
-      local commandDrop = headerTop and commandTop and
-        (commandTop - headerTop) / gs.Unit(command) or 0
-      gs.SpanPoints(command, (commandWant - at) / gs.Unit(command), 0, commandDrop)
+    -- Repaint category bars after the hidden key buttons that define their
+    -- right edge have moved to the full-width columns.
+    gs.PaintBindingList()
+
+    -- Anchor headings directly to the row/button columns they name. Native
+    -- FontString offsets are not reliable when translated through UIParent
+    -- after their own scale changes; same-column anchors remain exact.
+    local headingGap = tonumber(keys.columnHeaderGap) or 8
+    local function PlaceHeading(object, point, relative, relativePoint, x)
+      if not object or not relative then return end
+      gs.KeepPlaced(page, object)
+      gs.LiftToWindow(object, frame)
+      -- These three labels are FontStrings owned directly by the fitted
+      -- native canvas, not children of the lifted binding rows. This client
+      -- does not expose their inherited effective scale through the Region,
+      -- so LiftToWindow cannot cancel the canvas shrink. Compensate the font
+      -- size by the owning frame-to-host ratio at the setter boundary.
+      local wantedSize = tonumber(keys.columnHeaderSize) or M.fontSize.large
+      local owner = gs.Read(object, "GetParent") or frame
+      local ownerUnit = owner and gs.Unit(owner) or 1
+      local hostUnit = gs.Unit(gs.host)
+      local appliedSize = wantedSize
+      if ownerUnit > 0 and hostUnit > 0 then
+        appliedSize = wantedSize * hostUnit / ownerUnit
+      end
+      U.SetStockFont(object,
+                     appliedSize,
+                     M.color.accent)
+      pcall(object.ClearAllPoints, object)
+      pcall(object.SetPoint, object, point, relative, relativePoint, x,
+            headingGap)
     end
+
+    local command = U.G("KeyBindingFrameCommandLabel")
+    PlaceHeading(command, "BOTTOMLEFT", root, "TOPLEFT",
+                 keys.commandHeaderNudge or 0)
+
     local j
     for j = 1, 2 do
       local heading = U.G("KeyBindingFrameKey" .. j .. "Label")
-      local key = U.G("KeyBindingFrameBinding" .. reference .. "Key" .. j .. "Button")
-      local from = gs.Number(heading, "GetLeft")
-      local to = gs.Number(key, "GetLeft")
-      local headWidth = gs.Number(heading, "GetWidth") or 0
-      local keyWidth = gs.Number(key, "GetWidth") or 0
-      if heading and from and to then
-        gs.KeepPlaced(page, heading)
-        local nudge = (M.foreverWow.keys.keyHeaderNudge or {})[j] or 0
-        local centre = (to + keyWidth / 2) - (from + headWidth / 2) + nudge
-        local keyTop = gs.Number(heading, "GetTop")
-        local keyDrop = headerTop and keyTop and
-          (keyTop - headerTop) / gs.Unit(heading) or 0
-        gs.SpanPoints(heading, centre / gs.Unit(heading), 0, keyDrop)
-      end
+      local nudge = (keys.keyHeaderNudge or {})[j] or 0
+      local centre = columnWidth * j + columnGap * j + columnWidth / 2
+      PlaceHeading(heading, "BOTTOM", root, "TOPLEFT", centre + nudge)
+    end
+
+    -- Character-specific bindings live in the page-title band, vertically
+    -- centred with the heading and right-aligned before the scrollbar seat.
+    local character = U.G("KeyBindingFrameCharacterButton")
+    local characterText = U.G("KeyBindingFrameCharacterButtonText") or
+                          (character and gs.Read(character, "GetFontString"))
+    if character and characterText then
+      gs.KeepPlaced(page, character)
+      gs.KeepPlaced(page, characterText)
+      gs.LiftToWindow(character, frame)
+      gs.LiftToWindow(characterText, frame)
+      U.SetFont(characterText, M.fontSize.normal)
+      pcall(characterText.ClearAllPoints, characterText)
+      pcall(characterText.SetPoint, characterText, "RIGHT", gs.content,
+            "TOPRIGHT", -(keys.characterHeaderRight or 40),
+            -gs.CONTENT_HEADER / 2)
+      pcall(character.ClearAllPoints, character)
+      pcall(character.SetPoint, character, "RIGHT", characterText, "LEFT",
+            -keys.characterTextGap, 0)
+    end
+
+    -- The scrollbar belongs to this viewport, not to the whole host panel.
+    -- Matching its two vertical anchors restores clipping and thumb travel.
+    local bar = U.G("KeyBindingFrameScrollFrameScrollBar")
+    if bar and scroll then
+      local list = M.foreverWow.list
+      local barDrop = tonumber(keys.scrollbarDrop) or 30
+      pcall(bar.ClearAllPoints, bar)
+      pcall(bar.SetPoint, bar, "TOPLEFT", scroll, "TOPRIGHT",
+            list.padRight + list.scrollbarGap, -barDrop)
+      pcall(bar.SetPoint, bar, "BOTTOMLEFT", scroll, "BOTTOMRIGHT",
+            list.padRight + list.scrollbarGap, -barDrop)
+    end
+
+    -- Keep the native local actions below the clipped list instead of inside
+    -- the row stack. Anchor to the host footer rather than the native
+    -- ScrollFrame: the two objects use different coordinate scales here.
+    local defaults = U.G("KeyBindingFrameDefaultButton")
+    local unbind = U.G("KeyBindingFrameUnbindButton")
+    if defaults and unbind and scroll then
+      local gap = tonumber(keys.actionGap) or 4
+      local drop = tonumber(keys.actionDrop) or 23
+      local bottom = tonumber(keys.listBottomInset) or 48
+      local top = bottom - drop
+      pcall(defaults.ClearAllPoints, defaults)
+      pcall(defaults.SetPoint, defaults, "TOPRIGHT", gs.host, "BOTTOM",
+            -gap / 2, top)
+      pcall(unbind.ClearAllPoints, unbind)
+      pcall(unbind.SetPoint, unbind, "TOPLEFT", gs.host, "BOTTOM",
+            gap / 2, top)
     end
   end)
 end
@@ -3883,13 +4042,9 @@ end
 -- the window's own scrollbar, its Okay and Cancel in the window's bottom-right
 -- corner, and the client's two header strings moved inside the page.
 --
--- Okay and Cancel are REPARENTED to the window rather than only re-anchored,
--- which is what modules/gamesettingslist.lua does for a list page's buttons.
--- A canvas page is scaled to fit the box and a reparented client widget does
--- not follow an ancestor's scale
--- (widgets.reparented_native_widget_ignores_ancestor_scale), so this is what
--- draws them at the same size as every other page's pair instead of at the
--- page's.
+-- Okay and Cancel stay owned by the native page but are scaled and re-anchored
+-- to the window. Their scripts reach the page through GetParent, so ownership
+-- must not change; gs.LiftToWindow gives them the window's effective scale.
 function gs.DressBindingChrome(page)
   local panel = M.foreverWow.panel
 
@@ -3960,38 +4115,44 @@ function gs.DressBindingChrome(page)
   local defaults = U.G("KeyBindingFrameDefaultButton")
   if frame and defaults then
     gs.KeepPlaced(page, defaults)
+    gs.LiftToWindow(defaults, frame)
     pcall(defaults.ClearAllPoints, defaults)
     pcall(defaults.SetPoint, defaults, "BOTTOMLEFT", frame, "BOTTOMLEFT",
           keys.actionInset.x, keys.actionInset.y)
     if unbind then
       gs.KeepPlaced(page, unbind)
+      gs.LiftToWindow(unbind, frame)
       pcall(unbind.ClearAllPoints, unbind)
       pcall(unbind.SetPoint, unbind, "LEFT", defaults, "RIGHT", keys.actionGap, 0)
     end
   end
 
-  -- The page's own title and its binding-set line. The client draws both on a
-  -- plate above the panel, which this window hides, so they are moved inside
-  -- the panel, with the binding-set line beside the title.
+  -- The window already supplies the page title. Hide the native yellow copy
+  -- while hosted, restoring its previous visibility when the page detaches.
+  -- The output line remains available for the client's "Press a key" prompt.
   local function Inside(object, inset)
     if not object or not frame or not inset then return end
     gs.KeepPlaced(page, object)
+    gs.LiftToWindow(object, frame)
     pcall(object.ClearAllPoints, object)
     pcall(object.SetPoint, object, "TOPLEFT", frame, "TOPLEFT", inset.x, inset.y)
   end
   local title = U.G("KeyBindingFrameHeaderText")
   local output = U.G("KeyBindingFrameOutputText")
-  if title and gs.pageTitle then
-    gs.KeepPlaced(page, title)
-    pcall(title.ClearAllPoints, title)
-    pcall(title.SetPoint, title, "LEFT", gs.pageTitle, "RIGHT", keys.titleGap, 0)
-  else
-    Inside(title, keys.titleInset)
+  if title then
+    local record = gs.KeepPlaced(page, title)
+    if record and not record.restoreShown then
+      record.restoreShown = true
+      record.shown = gs.Read(title, "IsShown") and true or false
+    end
+    pcall(title.Hide, title)
   end
-  if output and title then
+  if output and gs.pageTitle then
     gs.KeepPlaced(page, output)
+    gs.LiftToWindow(output, frame)
     pcall(output.ClearAllPoints, output)
-    pcall(output.SetPoint, output, "LEFT", title, "RIGHT", keys.outputGap, 0)
+    pcall(output.SetPoint, output, "LEFT", gs.pageTitle, "RIGHT",
+          keys.outputGap, 0)
   else
     Inside(output, keys.outputInset)
   end
@@ -4030,16 +4191,22 @@ function gs.DressBindingChrome(page)
   local characterRecord = gs.KeepPlaced(page, character)
   local characterPoint = characterRecord and characterRecord.points[1]
   if character and characterPoint then
-    local x = tonumber(characterPoint[4]) or 0
-    local y = tonumber(characterPoint[5]) or 0
+    local oldUnit = characterRecord.unit or gs.Unit(character)
+    gs.LiftToWindow(character, frame)
+    local unit = gs.Unit(character)
+    local x = ((tonumber(characterPoint[4]) or 0) * oldUnit +
+               keys.characterShift.x) / unit
+    local y = ((tonumber(characterPoint[5]) or 0) * oldUnit +
+               keys.characterShift.y) / unit
     pcall(character.ClearAllPoints, character)
     pcall(character.SetPoint, character, characterPoint[1], characterPoint[2],
-          characterPoint[3], x + keys.characterShift.x, y + keys.characterShift.y)
+          characterPoint[3], x, y)
   end
   local characterText = U.G("KeyBindingFrameCharacterButtonText") or
                         (character and gs.Read(character, "GetFontString"))
   if characterText then
     gs.KeepPlaced(page, characterText)
+    gs.LiftToWindow(characterText, frame)
     pcall(characterText.ClearAllPoints, characterText)
     pcall(characterText.SetPoint, characterText, "LEFT", character, "RIGHT",
           keys.characterTextGap, keys.characterTextLift)

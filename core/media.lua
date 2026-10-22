@@ -6624,8 +6624,17 @@ M.foreverWow.keys = {
   titleGap = 6,
   outputGap = 6,
   promptGap = 6,
+  -- The binding list fills the same inner content width as every other page.
+  -- Its command and two key columns divide that width evenly, with only the
+  -- native button-bed gap between them. Headings sit just above the first row.
+  columnGap = 4,
+  columnHeaderGap = 8,
+  columnHeaderSize = M.fontSize.large,
+  characterHeaderRight = 40,
+  scrollbarDrop = 30,
+  actionDrop = 23,
   commandHeaderNudge = 10,
-  keyHeaderNudge = { -10, -18 },
+  keyHeaderNudge = { 20, 20 },
   characterShift = { x = 6, y = 13 },
   characterTextGap = 3,
   characterTextLift = 0,
@@ -6638,16 +6647,16 @@ M.foreverWow.keys = {
   actionGap = 4,
   -- How far the listing's LEFT edge sits from the column a list page's rows
   -- start on: negative is further left (user request, 2026-09-22, 8 pixels).
-  -- Screen pixels, like listDrop. The right edge does not move with it --
+  -- UIParent layout units, like listDrop. The right edge does not move with
+  -- it --
   -- gs.AlignBindingList takes the same amount off the width -- so the gap
   -- between the listing and the scrollbar stays the one every page has.
   listNudge = -8,
-  -- How far the listing sits below where the client puts it (user request,
-  -- 2026-09-22). SCREEN pixels, unlike every other number here, because that
-  -- is how it was asked for and how it reads on the page; gs.AlignBindingList
-  -- divides it by the rows' own pixels-per-unit. Applied once per attach to
-  -- the row that carries the chain, so the rows below it follow.
-  listDrop = 6,
+  -- Fixed seats inside the host, independent of the native page's old canvas
+  -- offset. The captions and character checkbox occupy the band above the
+  -- first category; the viewport stops above its two local action buttons.
+  listTopInset = 28,
+  listBottomInset = 48,
 }
 
 -- ButtonFrameTemplateNoPortrait (Blizzard_SharedXML NineSliceLayouts.lua). The

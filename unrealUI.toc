@@ -2,7 +2,7 @@
 ## Title: |cffffffffUnreal |cfff5ae0aUI
 ## Notes: Unreal Azeroth native UI addon.
 ## Author: Thomas
-## Version: 0.11.0
+## Version: 0.11.1
 ## X-License: MIT
 ## SavedVariables: UnrealUIDB, UnrealUIProfiles, UnrealUIDiagDB, UnrealUIPriceDB
 ## SavedVariablesPerCharacter: UnrealUIProfileDB, UnrealUIFavoriteDB, UnrealUIBankCountDB, UnrealUIBankCacheDB, UnrealUIEquipmentSetDB
@@ -120,6 +120,7 @@ modules\microbar.lua
 modules\xpbar.lua
 modules\breathbar.lua
 modules\chat.lua
+core\fakeparty.lua
 modules\unitframes.lua
 modules\unitframeconfig.lua
 modules\auras.lua

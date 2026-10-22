@@ -151,6 +151,7 @@ local DIAGNOSTIC_HELP = {
   "  |cffffff00/uui sb|r - dump why a spellbook entry is marked off the action bars",
   "  |cffffff00/uui sb trace|r - record what the mark does as a spell goes on/off a bar",
   "  |cffffff00/uui sb ranks|r - dump the spell list layout the highest-rank filter reads",
+  "  |cffffff00/uui fakeparty [off]|r - fake full party with auras, for screenshots",
   "  |cffffff00/uui aura|r - dump the aura rows and why a timer is missing",
   "  |cffffff00/uui hot|r - dump the HoT indicators: resolved spells, live stamps, party buffs",
   "  |cffffff00/uui heal|r - dump incoming-heal prediction: templates, learned " ..
@@ -2121,6 +2122,11 @@ end
 -- Native Classic mode has no UnrealUI settings window by design.  Keep theme
 -- selection available through the existing native chat input so a player can
 -- return to Modern without editing SavedVariables by hand.
+handlers["fakeparty"] = function(rest)
+  if not U.FakeParty then return end
+  local arg = string.lower(Trim(rest))
+  U.FakeParty.Set(arg ~= "off" and not (arg == "" and U.FakeParty.active))
+end
 handlers["theme"] = function(rest)
   local id = string.lower(Trim(rest))
   local style = U.GetThemeStyleDefinition and U.GetThemeStyleDefinition(id)
