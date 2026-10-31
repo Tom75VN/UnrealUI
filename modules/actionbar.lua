@@ -347,10 +347,11 @@ end
 -- full-button highlight. Its main-bar housing and faction ornaments are
 -- reproduced on Bar 1 only, matching Retail's MainActionBar-only BorderArt;
 -- the per-button border is drawn on every bar (Retail's NormalTexture frame
--- is never bar-owned) but the filled face plate is Bar-1-only, matching
--- Retail's bar-owned SlotArt/SlotBackground swap
--- (BaseActionButtonMixin:UpdateButtonArt, self.bar.hideBarArt); MultiBars
--- 2-10 show a bordered but unfilled slot. Stock-button ownership,
+-- is never bar-owned) and the filled face plate follows the per-bar "Slot
+-- Background" option (bar<N>SlotBackground), on by default only on Bar 1,
+-- matching Retail's bar-owned SlotArt/SlotBackground swap
+-- (BaseActionButtonMixin:UpdateButtonArt, self.bar.hideBarArt); a bar with
+-- the option off shows a bordered but unfilled slot. Stock-button ownership,
 -- reparenting, paging, config, and update machinery
 -- are intentionally not copied.
 local modernWowAction = {
@@ -390,23 +391,27 @@ function modernWowAction.RefreshState(button)
   end
 end
 
+-- The per-bar "Slot Background" option (actionbarconfig.lua). Bar 1 defaults
+-- on, every other bar off; a missing key (older saved data) keeps that default.
+-- Literal key: Key() is declared further down this file. Shared with the
+-- Classic path, which has its own filled slot face.
+function modernWowAction.SlotBackground(bar)
+  if not cfg or not bar then return bar == 1 end
+  local value = cfg["bar" .. bar .. "SlotBackground"]
+  if value == nil then return bar == 1 end
+  return value and true or false
+end
+
 function modernWowAction.StyleButton(button)
   if not modernWowAction.active or not button or button.uuiModernWow then return end
 
-  -- Bar-1-only fill, every bar keeps its border: Retail's
-  -- BaseActionButtonMixin:UpdateButtonArt always sets a NormalTexture frame
-  -- per button (UI-HUD-ActionBar-IconFrame on the main bar,
-  -- UI-HUD-ActionBar-IconFrame-AddRow on MultiBars) and only swaps in a
-  -- filled SlotBackground plate where self.bar.hideBarArt is false -- the
-  -- same bar that owns the full housing above. MultiBars 2-10 therefore keep
-  -- the border ring but never the filled face.
-  local onMainBar = button.uuiBar == 1
-
-  local face
-  if onMainBar then
-    face = modernWowAction.Texture(
-      button, "BACKGROUND", M.modernWow.texture.actionButton)
-  end
+  -- Every bar keeps its border: Retail's BaseActionButtonMixin:UpdateButtonArt
+  -- always sets a NormalTexture frame per button (UI-HUD-ActionBar-IconFrame
+  -- on the main bar, UI-HUD-ActionBar-IconFrame-AddRow on MultiBars) and only
+  -- swaps in a filled SlotBackground plate where self.bar.hideBarArt is false.
+  -- That plate is the per-bar "Slot Background" option here; it is created on
+  -- first use by modernWowAction.SyncFace, so a bar that never shows it pays
+  -- no region for it.
 
   -- Bar 1's chrome is grown 5px past the icon (buttonGrow), so adjacent
   -- buttons' oversized regions overlap in the gap between them. Sibling
@@ -423,12 +428,9 @@ function modernWowAction.StyleButton(button)
     button, "OVERLAY", M.modernWow.texture.actionButtonHover)
 
   -- A partial ornamental button is worse than the established flat fallback.
-  -- The border is structural on every bar; the face is structural only where
-  -- Bar 1 is expected to draw one. Hover is optional and can safely degrade
-  -- on its own.
-  if not border or (onMainBar and not face) then
-    modernWowAction.SetShown(face, false)
-    modernWowAction.SetShown(border, false)
+  -- The border is structural on every bar. Hover is optional and can safely
+  -- degrade on its own, and so can the face plate (SyncFace).
+  if not border then
     modernWowAction.SetShown(highlight, false)
     button.uuiModernWow = { failed = true }
     U.CreateBackdrop(button, {})
@@ -442,57 +444,80 @@ function modernWowAction.StyleButton(button)
     U.SetColor(button.uuiPressed, 1, 1, 1, 0.95)
   end
 
-  if face then face:SetPoint("CENTER", button, "CENTER", 0, 0) end
-  if border then
-    border:SetPoint("CENTER", button, "CENTER", 0, 0)
-    U.SetColor(border, 0.9, 0.9, 0.9, 1)
-  end
+  border:SetPoint("CENTER", button, "CENTER", 0, 0)
+  U.SetColor(border, 0.9, 0.9, 0.9, 1)
   if highlight then
     highlight:SetAllPoints(button)
     highlight:Hide()
   end
 
   button.uuiModernWow = {
-    face = face,
     border = border,
     highlight = highlight,
     backgroundShown = true,
   }
 end
 
-function modernWowAction.SizeButton(button, size)
+-- Creates the face plate when this bar's option asks for one, sizes it and
+-- lays the icon out for whichever look is active. Safe to call repeatedly:
+-- SizeButton and SetButtonBackground both run it, so a toggled option lands
+-- on the next refresh whichever of them comes first.
+function modernWowAction.SyncFace(button)
   local state = button and button.uuiModernWow
-  if not state then return end
+  if not state or state.failed then return end
+
+  local wanted = modernWowAction.SlotBackground(button.uuiBar)
+  if wanted and not state.face and not state.faceFailed then
+    state.face = modernWowAction.Texture(
+      button, "BACKGROUND", M.modernWow.texture.actionButton)
+    if state.face then
+      state.face:SetPoint("CENTER", button, "CENTER", 0, 0)
+    else
+      state.faceFailed = true
+    end
+  end
+  state.faceOn = (wanted and state.face) and true or false
+
+  local size = button.uuiSize
+  if not size then return end
   local chromeSize = size + modernWowAction.buttonGrow
   if state.face then
     state.face:SetWidth(chromeSize)
     state.face:SetHeight(chromeSize)
   end
-  if state.border then
-    state.border:SetWidth(chromeSize)
-    state.border:SetHeight(chromeSize)
-  end
 
-  -- Bar 1's face plate fills between the icon (ICON_INSET) and the ring's
-  -- line; a faceless slot showed that gap see-through. There the icon runs
-  -- out to the line's inner edge instead, tucked under the ring's shadow.
+  -- The face plate fills between the icon (ICON_INSET) and the ring's line;
+  -- a faceless slot showed that gap see-through. There the icon runs out to
+  -- the line's inner edge instead, tucked under the ring's shadow.
   local icon = button.uuiIcon
-  if icon and state.border and not state.face then
-    local inset = chromeSize * M.modernWow.actionBar.borderOpening -
-                  modernWowAction.buttonGrow / 2
+  if not icon then return end
+  local inset = ICON_INSET
+  if not state.faceOn then
+    inset = chromeSize * M.modernWow.actionBar.borderOpening -
+            modernWowAction.buttonGrow / 2
     if inset < 0 then inset = 0 end
-    icon:ClearAllPoints()
-    icon:SetPoint("TOPLEFT", button, "TOPLEFT", inset, -inset)
-    icon:SetPoint("BOTTOMRIGHT", button, "BOTTOMRIGHT", -inset, inset)
   end
+  icon:ClearAllPoints()
+  icon:SetPoint("TOPLEFT", button, "TOPLEFT", inset, -inset)
+  icon:SetPoint("BOTTOMRIGHT", button, "BOTTOMRIGHT", -inset, inset)
+end
+
+function modernWowAction.SizeButton(button, size)
+  local state = button and button.uuiModernWow
+  if not state or state.failed then return end
+  local chromeSize = size + modernWowAction.buttonGrow
+  state.border:SetWidth(chromeSize)
+  state.border:SetHeight(chromeSize)
+  modernWowAction.SyncFace(button)
 end
 
 function modernWowAction.SetButtonBackground(button, shown)
   local state = button and button.uuiModernWow
   if not state or state.failed then return false end
   U.SetBackdropShown(button, false)
+  modernWowAction.SyncFace(button)
   state.backgroundShown = shown and true or false
-  modernWowAction.SetShown(state.face, state.backgroundShown)
+  modernWowAction.SetShown(state.face, state.backgroundShown and state.faceOn)
   modernWowAction.SetShown(state.border, state.backgroundShown)
   modernWowAction.RefreshState(button)
   return true
@@ -841,6 +866,39 @@ function classicAction.StyleButton(button, textLayer)
   end
 end
 
+-- The per-bar "Slot Background" option under Classic. The stock client swaps
+-- an action button's normal texture to the filled UI-Quickslot plate for an
+-- empty slot and to the rim-only UI-Quickslot2 once it holds an action; here
+-- the face sits below the icon (CLASSIC_FACE_LAYER), so the filled plate can
+-- stay on for every slot of a bar that asks for it. Same texture region, same
+-- size ratios, only the path changes; off restores the captured face. A path
+-- the client refuses keeps the captured face.
+classicAction.SLOT_FILL = "Interface\\Buttons\\UI-Quickslot"
+
+function classicAction.ApplySlotFill(button)
+  local texture = button and button.uuiClassicNormal
+  local face = classicAction.normal
+  if not texture or not face then return end
+  local wanted = modernWowAction.SlotBackground(button.uuiBar) and
+                 not classicAction.slotFillFailed
+  if (button.uuiClassicFill and true or false) == (wanted and true or false) then
+    return
+  end
+  if wanted then
+    local ok, result = pcall(texture.SetTexture, texture, classicAction.SLOT_FILL)
+    if not ok or not result then
+      classicAction.slotFillFailed = true
+      pcall(texture.SetTexture, texture, face.path)
+      button.uuiClassicFill = false
+      return
+    end
+    button.uuiClassicFill = true
+  else
+    pcall(texture.SetTexture, texture, face.path)
+    button.uuiClassicFill = false
+  end
+end
+
 function classicAction.SizeButton(button, size)
   if not button.uuiClassic then return end
   if classicAction.iconWidthRatio and classicAction.iconHeightRatio then
@@ -890,6 +948,8 @@ local function BuildDefaults()
     -- settings panel; enabling ten bars nobody asked for is not a default.
     defaults[Key(i, "Enabled")] = (i == 1)
     defaults[Key(i, "HideBackground")] = false
+    -- Filled slot plate (classic-wow and modern-wow only); Bar 1 by default.
+    defaults[Key(i, "SlotBackground")] = (i == 1)
     -- modern-wow gryphon/wyvern ornaments; only bar 1 draws them.
     if i == 1 then defaults[Key(i, "Gryphons")] = true end
     defaults[Key(i, "Buttons")] = 12
@@ -2413,8 +2473,9 @@ local function UpdateCooldown(button)
   RefreshCooldownText(button)
 end
 
--- Empty-slot backgrounds are optional per bar (actionbarconfig.lua's "Hide
--- Slot Background" checkbox): when hidden, only slots carrying an icon show
+-- Empty-slot backgrounds are optional per bar (actionbarconfig.lua's "Slot
+-- border" checkbox, ticked = shown; stored inverted as HideBackground): when
+-- hidden, only slots carrying an icon show
 -- any fill/outline at all, so an empty bar reads as bare icons with nothing
 -- behind them rather than a grid of boxes.
 -- ACTIONBAR_SHOWGRID/HIDEGRID (Cursor state, above) fires while a spell/item/
@@ -2433,6 +2494,7 @@ local function ApplyButtonBackground(button)
   end
   if button.uuiClassic then
     U.SetBackdropShown(button, false)
+    classicAction.ApplySlotFill(button)
     ShowRegion(button.uuiClassicNormal, shown)
     if button.uuiKeybind then
       ShowRegion(button.uuiKeybind,
@@ -2972,6 +3034,7 @@ function U.GetActionBarSetting(bar, name)
   if name == "Enabled" then return IsEnabled(bar) end
   if name == "HideBackground" then return HidesBackground(bar) end
   if name == "Gryphons" then return Get(bar, "Gryphons") ~= false end
+  if name == "SlotBackground" then return modernWowAction.SlotBackground(bar) end
   return Number(bar, name)
 end
 
@@ -2980,6 +3043,15 @@ end
 function U.ActionBarHasGryphons(bar)
   return tonumber(bar) == 1 and not U.ActionBarIsNative(bar) and
          modernWowAction.active and true or false
+end
+
+-- The "Slot Background" option exists only where a filled slot face is drawn:
+-- classic-wow's captured client face and modern-wow's face plate. The theme is
+-- fixed for the session, so the views ask once per refresh.
+function U.ActionBarHasSlotBackground(bar)
+  bar = tonumber(bar)
+  if not bar or U.ActionBarIsNative(bar) then return false end
+  return (modernWowAction.active or classicAction.ready) and true or false
 end
 
 -- Applies a numeric edit-mode value to the live bar without storing it or
@@ -3011,6 +3083,8 @@ function U.SetActionBarSetting(bar, name, value)
   elseif name == "Gryphons" then
     if bar ~= 1 then return nil end
     cfg[Key(bar, "Gryphons")] = value and true or false
+  elseif name == "SlotBackground" then
+    cfg[Key(bar, "SlotBackground")] = value and true or false
   else
     if not LIMITS[name] then return nil end
     cfg[Key(bar, name)] = Clamp(name, value)

@@ -28,6 +28,8 @@ jobs:
 
           test -n "$toc_version"
           test "$toc_version" = "$tag_version"
+          python3 -B tools/release.py check --release "$tag_version"
+          python3 -B tools/release.py notes "$tag_version" > release-notes.md
 
       - name: Package UnrealUI
         shell: bash
@@ -39,7 +41,7 @@ jobs:
           # locales/ and themes/ are listed in the .toc. A zip missing any of
           # them installs an addon that silently loses those files.
           cp -R core Database locales media modules themes package/unrealUI/
-          cp Bindings.xml unrealUI.toc LICENSE package/unrealUI/
+          cp Bindings.xml unrealUI.toc LICENSE README.md CHANGELOG.md package/unrealUI/
 
           # Guard against this copy list drifting from the .toc again: every
           # file the .toc lists must exist inside the package.
@@ -65,5 +67,5 @@ jobs:
           gh release create "$GITHUB_REF_NAME" UnrealUI.zip \
             --verify-tag \
             --title "UnrealUI ${GITHUB_REF_NAME#v}" \
-            --notes-file RELEASE_NOTES.md \
+            --notes-file release-notes.md \
             --latest

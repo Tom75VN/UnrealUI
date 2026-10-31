@@ -22,10 +22,10 @@ local GROUP = "actionbars"
 -- category and the mover id are two different names for the same bars.
 local MOVER_ID_PREFIX = "actionbar.bar"
 
--- Content geometry. The settings window is 700 wide with a 168 sidebar, so a
--- page has a little under 490 to work with: two slider columns and a gutter.
-local PAGE_WIDTH = 484
-local COLUMN_X = 258
+-- Content geometry: the shared settings page width (core/widgets.lua), two
+-- slider columns and a gutter.
+local PAGE_WIDTH = U.SETTINGS_PAGE_WIDTH
+local COLUMN_X = U.SETTINGS_COLUMN_X
 local SLIDER_WIDTH = 200
 
 local SLIDERS = {
@@ -183,14 +183,32 @@ local function BuildBarPage(parent, bar)
 
   local hideBackground = U.CreateCheckbox(parent, {
     name = "UnrealUIActionBarConfigHideBackground" .. bar,
-    text = U.L("ABC_HIDE_SLOT_BACKGROUND"),
-    value = U.GetActionBarSetting(bar, "HideBackground"),
+    text = U.L("ABC_SLOT_BORDER"),
+    value = not U.GetActionBarSetting(bar, "HideBackground"),
     onChange = function(value)
-      U.SetActionBarSetting(bar, "HideBackground", value)
+      U.SetActionBarSetting(bar, "HideBackground", not value)
     end,
   })
   hideBackground.SetPoint("TOPLEFT", parent, "TOPLEFT", COLUMN_X, -34)
   table.insert(widgets, hideBackground)
+
+  -- classic-wow and modern-wow only: the filled slot plate, per bar.
+  local slotBackground = nil
+  local extraY = -56
+  if type(U.ActionBarHasSlotBackground) == "function" and
+     U.ActionBarHasSlotBackground(bar) then
+    slotBackground = U.CreateCheckbox(parent, {
+      name = "UnrealUIActionBarConfigSlotBackground" .. bar,
+      text = U.L("ABC_SLOT_BACKGROUND"),
+      value = U.GetActionBarSetting(bar, "SlotBackground"),
+      onChange = function(value)
+        U.SetActionBarSetting(bar, "SlotBackground", value)
+      end,
+    })
+    slotBackground.SetPoint("TOPLEFT", parent, "TOPLEFT", COLUMN_X, extraY)
+    table.insert(widgets, slotBackground)
+    extraY = extraY - 22
+  end
 
   -- modern-wow only: the gryphon/wyvern ornaments either side of bar 1.
   local gryphons = nil
@@ -203,15 +221,18 @@ local function BuildBarPage(parent, bar)
         U.SetActionBarSetting(bar, "Gryphons", value)
       end,
     })
-    gryphons.SetPoint("TOPLEFT", parent, "TOPLEFT", COLUMN_X, -56)
+    gryphons.SetPoint("TOPLEFT", parent, "TOPLEFT", COLUMN_X, extraY)
     table.insert(widgets, gryphons)
   end
 
+  -- Kept to the left column: the right column carries checkboxes at this
+  -- height.
   local hint = U.CreateSettingsLabel(parent, {
     size = M.fontSize.tiny,
     color = M.color.textDim,
     inherits = "GameFontNormalSmall",
     justify = "LEFT",
+    width = COLUMN_X - 12,
   })
   if hint then
     U.AnchorSettingsDescription(hint, enable.box)
@@ -252,7 +273,10 @@ local function BuildBarPage(parent, bar)
 
   local function Refresh()
     enable.SetValue(U.GetActionBarSetting(bar, "Enabled"))
-    hideBackground.SetValue(U.GetActionBarSetting(bar, "HideBackground"))
+    hideBackground.SetValue(not U.GetActionBarSetting(bar, "HideBackground"))
+    if slotBackground then
+      slotBackground.SetValue(U.GetActionBarSetting(bar, "SlotBackground"))
+    end
     if gryphons then gryphons.SetValue(U.GetActionBarSetting(bar, "Gryphons")) end
 
     local j
@@ -304,10 +328,10 @@ local function BuildMoverPanel(frame, contentTop, contentWidth, includeClassicMo
 
   local hideBackground = U.CreateCheckbox(frame, {
     name = "UnrealUIActionBarMoverHideBackground",
-    text = U.L("ABC_HIDE_SLOT_BACKGROUND"),
-    value = false,
+    text = U.L("ABC_SLOT_BORDER"),
+    value = true,
     onChange = function(value)
-      U.SetActionBarSetting(moverBar, "HideBackground", value)
+      U.SetActionBarSetting(moverBar, "HideBackground", not value)
     end,
   })
   hideBackground.SetPoint("TOPLEFT", frame, "TOPLEFT", pad, contentTop - 22)
@@ -340,18 +364,32 @@ local function BuildMoverPanel(frame, contentTop, contentWidth, includeClassicMo
   controls.gryphons = gryphons
   table.insert(widgets, gryphons)
 
-  local hint = U.CreateSettingsLabel(frame, {
-    size = M.fontSize.tiny,
-    color = M.color.textDim,
-    inherits = "GameFontNormalSmall",
-    justify = "LEFT",
-    width = contentWidth,
+  -- Beside Slot border, only under classic-wow and modern-wow; the
+  -- same show filter as the gryphon checkbox above.
+  local slotBackground = U.CreateCheckbox(frame, {
+    name = "UnrealUIActionBarMoverSlotBackground",
+    text = U.L("ABC_SLOT_BACKGROUND"),
+    textWidth = MOVER_SLIDER_WIDTH - 20,
+    value = false,
+    onChange = function(value)
+      U.SetActionBarSetting(moverBar, "SlotBackground", value)
+    end,
   })
-  if hint then
-    U.AnchorSettingsDescription(hint, hideBackground.box)
-    table.insert(widgets, hint)
+  slotBackground.SetPoint("TOPLEFT", frame, "TOPLEFT", pad + MOVER_COLUMN_X,
+                          contentTop - 22)
+  local slotBackgroundParts = slotBackground.uuiParts
+  slotBackground.uuiParts = nil
+  slotBackground.uuiSetShown = function(shown)
+    shown = shown and type(U.ActionBarHasSlotBackground) == "function" and
+            U.ActionBarHasSlotBackground(moverBar)
+    local k
+    for k = 1, table.getn(slotBackgroundParts or {}) do
+      local part = slotBackgroundParts[k]
+      if shown then part:Show() else part:Hide() end
+    end
   end
-  controls.hint = hint
+  controls.slotBackground = slotBackground
+  table.insert(widgets, slotBackground)
 
   local i
   for i = 1, table.getn(SLIDERS) do
@@ -399,12 +437,15 @@ local function BuildMoverPanel(frame, contentTop, contentWidth, includeClassicMo
     if not bar then return end
 
     controls.enable.SetValue(U.GetActionBarSetting(bar, "Enabled"))
-    controls.hideBackground.SetValue(U.GetActionBarSetting(bar, "HideBackground"))
+    controls.hideBackground.SetValue(not U.GetActionBarSetting(bar, "HideBackground"))
     controls.gryphons.uuiSetShown(true)
+    controls.slotBackground.uuiSetShown(true)
+    if U.ActionBarHasSlotBackground and U.ActionBarHasSlotBackground(bar) then
+      controls.slotBackground.SetValue(U.GetActionBarSetting(bar, "SlotBackground"))
+    end
     if U.ActionBarHasGryphons and U.ActionBarHasGryphons(bar) then
       controls.gryphons.SetValue(U.GetActionBarSetting(bar, "Gryphons"))
     end
-    if controls.hint then controls.hint:SetText(MoverHint(bar)) end
 
     local j
     for j = 1, table.getn(SLIDERS) do

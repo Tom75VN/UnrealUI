@@ -9,7 +9,7 @@ UnrealUI = {}
 local U = UnrealUI
 
 U.name      = "unrealUI"
-U.version   = "0.11.1"
+U.version   = "0.12.0"
 U.modules   = {}       -- name -> module table
 U.moduleOrder = {}     -- load/enable order, registration order
 U.ready     = false    -- set once PLAYER_LOGIN work has run
@@ -28,8 +28,13 @@ if not _getglobal then
   end
 end
 
+-- U.gOverride is nil in normal play. "/uui party test" (modules/partytest.lua)
+-- sets it to a name -> function table so UnrealUI's own reads see a fake
+-- party; other addons and the client never see it.
 function U.G(name)
   if type(name) ~= "string" then return nil end
+  local override = U.gOverride
+  if override and override[name] then return override[name] end
   local ok, value = pcall(_getglobal, name)
   if ok then return value end
   return nil
@@ -213,6 +218,21 @@ function U.RegisterEvent(event, callback)
   end
 
   table.insert(listeners[event], callback)
+end
+
+-- Runs UnrealUI's own handlers for `event` as if the client had raised it.
+-- Test previews only ("/uui party test"); the client is not involved.
+function U.FireListeners(event, a1, a2)
+  local list = listeners[event]
+  if not list then return end
+  local n
+  for n = 1, table.getn(list) do
+    local callback = list[n]
+    if callback then
+      local ok, err = pcall(callback, event, a1, a2)
+      if not ok then U.Error(event .. " handler: " .. tostring(err)) end
+    end
+  end
 end
 
 function U.UnregisterEvent(event, callback)

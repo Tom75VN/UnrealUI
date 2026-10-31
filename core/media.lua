@@ -107,6 +107,9 @@ M.texture = {
   chatResizeGrip = "Interface\\AddOns\\unrealUI\\media\\resize",
   restIcon = "Interface\\AddOns\\unrealUI\\media\\rest-icon",
   petHappiness = "Interface\\AddOns\\unrealUI\\media\\Textures\\ui-pethappiness",
+  -- Available-quest mark drawn on a bag/bank item that begins a quest; the
+  -- 32x32 type-2 TGA ported unchanged from pandaUI's core/media.lua.
+  questStarter = "Interface\\AddOns\\unrealUI\\media\\Textures\\quest-starter",
   -- The modern unit frame's resting flipbook. This is an addon-owned copy of
   -- the user-supplied 42-cell sheet used by modern-wow, kept outside that
   -- theme's media tree so the two visual families do not depend on each
@@ -149,6 +152,10 @@ M.texture = {
   -- The bag window's saved-bank button (modules/bankview.lua). Bundled
   -- 64x64 uncompressed 32-bit TGA, the same encoding as sortIcon/stackIcon.
   bankViewIcon = "Interface\\AddOns\\unrealUI\\media\\icons\\view-bank-64",
+  -- The bag header's settings button (modules/bags.lua): the stock gear the
+  -- minimap settings button already draws, so one picture means "UnrealUI
+  -- settings" in both places.
+  settingsIcon = "Interface\\Icons\\INV_Misc_Gear_01",
   -- unrealUI's own open/close arrow (media/arrow.tga, 25x32, uncompressed
   -- 32-bit): a yellow triangle carrying its own dark outline, so it reads
   -- over the game world with no panel behind it and needs no vertex tint.
@@ -615,6 +622,156 @@ M.modernWow.swingTimer = {
   },
 }
 
+-- Forever 1.60.1.69913 raid frames, drawn by modules/raidframes.lua as the
+-- raid grid and the raid-style party column (user requests, 2026-10-31,
+-- ported from pandaUI). Like the swing bar above this is the client's own
+-- Blizzard raid art (Forever and Retail), not imported Dragonflight chrome,
+-- and it draws as one design under every theme, as in pandaUI. Structure is
+-- CompactUnitFrame (Blizzard_UnitFrame/Shared/CompactUnitFrame.xml/.lua,
+-- DefaultCompactUnitFrameSetup), CompactRaidGroup (Shared/CompactRaidGroup
+-- .xml/.lua) and the aura layouts of Blizzard_PrivateAurasUI.lua. Every cell below is the exact
+-- UiTextureAtlasMember rectangle; ATTRIBUTION.md records each sheet.
+M.modernWow.raid = {
+  texture = {
+    resource = M.modernWow.path .. "raid\\resource",
+    sheet = M.modernWow.path .. "raid\\raidframe",
+    dispelFill = M.modernWow.path .. "raid\\dispel-fill",
+    auraBorder = M.modernWow.path .. "raid\\debuff-overlays",
+    groupBackground = M.modernWow.path .. "raid\\group-bg",
+    -- Retail's shaded raid bars. Forever's flat RaidFrame-Hp-Fill is a
+    -- uniform grey square and cannot give that look, so it is not imported.
+    barHealth = M.modernWow.path .. "raid\\bar-hp-fill",
+    barBackground = M.modernWow.path .. "raid\\bar-hp-bg",
+    barPower = M.modernWow.path .. "raid\\bar-resource-fill",
+    barPowerBackground = M.modernWow.path .. "raid\\bar-resource-bg",
+    dispelVertical = M.modernWow.path .. "raid\\dispel-vertical",
+  },
+  -- Forever's three Edit Mode aura organizations, from
+  -- PrivateAuraUnitFrameLayoutTemplates in Blizzard_PrivateAurasUI.lua and
+  -- the Name templates in CompactUnitFrame.lua. Per group: the corner it
+  -- anchors to, how many per row, which way columns grow (dx) and the corner
+  -- offset before the dispel overlay's extra inset; `bottom` groups sit on
+  -- the power strip (CUF_AURA_BOTTOM_OFFSET + powerBarUsedHeight), the others
+  -- hang from the top. `fixed` groups ignore the overlay inset, as
+  -- Blizzard's Dispel groups do. gradient: which way the overlay fades.
+  -- name: LEFT for the Legacy top-left name, TOP for a centred top line,
+  -- CENTER for the frame centre.
+  organization = {
+    legacy = {
+      buffs = { point = "BOTTOMRIGHT", perRow = 3, dx = -1, x = -3,
+                bottom = true },
+      debuffs = { point = "BOTTOMLEFT", perRow = 3, dx = 1, x = 3,
+                  bottom = true },
+      dispel = { point = "TOPRIGHT", perRow = 3, dx = -1, x = -3, y = -2,
+                 fixed = true },
+      gradient = "top",
+      name = "LEFT",
+    },
+    buffsTop = {
+      buffs = { point = "TOPRIGHT", perRow = 6, dx = -1, x = -3, y = -3 },
+      debuffs = { point = "BOTTOMRIGHT", perRow = 3, dx = -1, x = -3,
+                  bottom = true },
+      dispel = { point = "BOTTOMLEFT", perRow = 3, dx = 1, x = 3,
+                 bottom = true, fixed = true },
+      gradient = "bottom",
+      name = "CENTER",
+    },
+    buffsRight = {
+      buffs = { point = "BOTTOMRIGHT", perRow = 3, dx = -1, x = -3,
+                bottom = true },
+      debuffs = { point = "BOTTOMLEFT", perRow = 3, dx = 1, x = 3,
+                  bottom = true },
+      dispel = { point = "TOPLEFT", perRow = 3, dx = 1, x = 3, y = -2,
+                 fixed = true },
+      gradient = "left",
+      name = "TOP",
+    },
+  },
+  -- NATIVE_UNIT_FRAME_WIDTH, a group column's width before its first layout.
+  width = 72,
+  -- The default cell, pandaUI's 90x45 rather than the native 72x36: aura
+  -- icons keep their size whatever the cell size, so a bigger cell is what
+  -- gives them room.
+  defaultWidth = 90,
+  defaultHeight = 45,
+  -- DefaultCompactUnitFrameSetup: the health bar sits 1 unit inside the cell
+  -- on every edge. The Retail look has the power strip directly under the
+  -- health bar (no 2-unit border gap), halved to 4 units with its 7-row art
+  -- squeezed to fit; the party column draws it 30 % taller.
+  inset = 1,
+  powerUsed = 4,
+  powerGap = 0,
+  -- NATIVE_UNIT_FRAME_AURA_SIZE at icon scale 1 and CUF_AURA_BOTTOM_OFFSET.
+  auraSize = 11,
+  auraBottom = 2,
+  maxBuffs = 6,
+  maxDebuffs = 5,
+  maxDispel = 3,
+  dispelIconSize = 14,
+  -- The dispel overlay pushes every aura 2 units further in while shown.
+  dispelAuraOffset = 2,
+  -- Name: TOPLEFT 3,-3 to TOPRIGHT -3,-3 (Legacy, no role icon on 1.12).
+  nameInset = 3,
+  -- CompactRaidGroup: a 14-unit title row above member 1; the border frame
+  -- runs from -2,2 off member 1 to 2,-3 off the last member. Retail's grid
+  -- has no gap between columns; the dark between cells is each cell's own
+  -- 1-unit background inset. groupGap only applies with the group border on.
+  titleHeight = 14,
+  groupGap = 4,
+  columnGap = 0,
+  groupBorder = { left = 2, top = 2, right = 2, bottom = 3 },
+  -- options_frame_child, cut from its 1024 sheet onto a 32x32 canvas.
+  groupBackgroundCoord = { 0, 28 / 32, 0, 26 / 32 },
+  coord = {
+    -- Measured by alpha on the Retail files: Raid-Bar-Hp-Bg's background
+    -- occupies rows 0-33 of 64, the resource pair rows 0-6 of 8.
+    barBackground = { 0, 1, 0, 34 / 64 },
+    barPower = { 0, 1, 0, 7 / 8 },
+    -- !RaidFrame-Dispel-Vertical L=1 R=41 T=0 B=8 on its 64x32 sheet.
+    dispelVertical = { 1 / 64, 41 / 64, 0, 8 / 32 },
+    -- _RaidFrame-Dispel-Highlight-Horizontal on the resource sheet.
+    dispelGradient = { 0, 8 / 16, 1 / 64, 41 / 64 },
+    dispelHighlight = { 73 / 256, 143 / 256, 1 / 128, 35 / 128 },
+    target = { 145 / 256, 215 / 256, 1 / 128, 35 / 128 },
+    -- RaidAuraFrameTemplate's white border cell on UI-Debuff-Overlays.
+    auraBorder = { 0.296875, 0.5703125, 0, 0.515625 },
+    dispelIcon = {
+      Curse = { 162 / 256, 183 / 256, 83 / 128, 104 / 128 },
+      Magic = { 162 / 256, 183 / 256, 106 / 128, 127 / 128 },
+      Disease = { 139 / 256, 160 / 256, 106 / 128, 127 / 128 },
+      Poison = { 185 / 256, 206 / 256, 37 / 128, 58 / 128 },
+    },
+  },
+  -- CUF_MY_HEAL_PREDICTION_COLOR / CUF_OTHER_HEAL_PREDICTION_COLOR.
+  myHeal = { 11 / 255, 136 / 255, 105 / 255, 1 },
+  otherHeal = { 21 / 255, 89 / 255, 72 / 255, 1 },
+  -- CompactUnitFrame_UpdateHealthColor's offline grey, and
+  -- CompactUnitFrame_GetRangeAlpha's 0.5 out-of-range alpha.
+  offlineColor = { 0.5, 0.5, 0.5, 1 },
+  rangeAlpha = 0.5,
+  -- Blizzard's stock power colours (1.12 ManaBarColor, Retail
+  -- PowerBarColor): the saturated blue / red / yellow strips of the Retail
+  -- raid, hardcoded as pandaUI does.
+  powerColor = {
+    [0] = { 0.00, 0.00, 1.00, 1 },  -- mana
+    [1] = { 1.00, 0.00, 0.00, 1 },  -- rage
+    [2] = { 1.00, 0.50, 0.25, 1 },  -- focus
+    [3] = { 1.00, 1.00, 0.00, 1 },  -- energy
+    [4] = { 0.00, 1.00, 1.00, 1 },  -- happiness
+  },
+  -- Stock Vanilla DebuffTypeColor, the same values modules/auras.lua uses.
+  debuffColor = {
+    Magic = { 0.20, 0.60, 1.00, 1 },
+    Curse = { 0.60, 0.00, 1.00, 1 },
+    Poison = { 0.00, 0.60, 0.00, 1 },
+    Disease = { 0.60, 0.40, 0.00, 1 },
+    none = { 0.80, 0.00, 0.00, 1 },
+  },
+}
+-- Read under its theme-neutral name: the frames draw the same under every
+-- theme.
+M.raidFrame = M.modernWow.raid
+
 -- The client's own Edit Mode selection nine-slice, from Forever build
 -- 1.60.1.69913 (Blizzard_EditMode/Shared/EditModeSystemTemplates.xml). Like
 -- the swing bar above this is Blizzard art rather than imported Dragonflight
@@ -741,11 +898,11 @@ M.modernWow.minimap = {
   topPanelHeight = 12,
   topPanelGap = 18,
   topPanelRightOverhang = 5,
-  -- 30, +7.65 so the taller band keeps its centre (it grows 3 px each way).
-  topPanelBottomOverhang = 37.65,
-  -- Drawn art height: the original 32 (12 panel + 20 overhang) plus 30%,
-  -- then +11 drawn for +6 visible px (the band is 35/64 of the art).
-  topPanelArtHeight = 52.6,
+  -- Keeps the band centred on the zone name (the old zoneY = 6 position).
+  topPanelBottomOverhang = 15.42,
+  -- Drawn art height for a 16 px visible band, one line of the 8 px zone
+  -- name (the band is 35/64 of the art).
+  topPanelArtHeight = 29.26,
   -- Visible band of uiminimap_toppanel.tga: alpha rows 2..36 top-down (end
   -- exclusive 37) of 64 -- the file is bottom-origin. Confirmed by the
   -- 2026-09-14 in-game screenshot; the zone name centres on this band.
@@ -757,7 +914,7 @@ M.modernWow.minimap = {
   topPanelVisibleTop = 2,
   topPanelVisibleBottom = 37,
   zoneX = 4,
-  zoneY = 6,  -- nudge above the band centre (positive = up)
+  zoneY = 0,  -- nudge above the band centre (positive = up)
   zoneHeight = 20,
   -- Warm title gold, as the theme's other short headings.
   zoneColor = { 1.00, 0.82, 0.00, 1.00 },
@@ -3842,6 +3999,17 @@ M.modernWow.metalFrame = {
   right  = { u1 = 159, u2 = 219, v1 = 1450, v2 = 1540 },
 }
 
+-- Edit mode's windows (core/mover.lua edit window and advanced drawer,
+-- core/moverpanel.lua's contextual panels) wear the metal frame above and the
+-- red close X under every theme, as Retail's EditModeSystemSettingsDialog
+-- wears one dialog border and UIPanelCloseButton at its TOPRIGHT
+-- (RetailFrameXML 12.1.0.69933, Blizzard_EditMode/Shared/EditModeDialogs.xml).
+-- `drawerGap` keeps the drawer's frame clear of the edit window's.
+M.editModeChrome = {
+  close = { size = 17, right = 9, top = 9 },
+  drawerGap = 4,
+}
+
 -- The Game Settings housing keeps Forever's ButtonFrameTemplateNoPortrait
 -- structure, but substitutes the Modern WoW metal atlas. Corners retain their
 -- authored proportions; only the straight rails stretch between them.
@@ -3998,7 +4166,6 @@ M.trackedBars = {
   -- EditModeCooldownViewerSetting.IconLimit's maximum.
   maxBars = 20,
   limit = {
-    size    = { min = 50, max = 200, step = 10, default = 100 },
     padding = { min = 0,  max = 10,  step = 1,  default = 5 },
     width   = { min = 50, max = 200, step = 1,  default = 100 },
     opacity = { min = 50, max = 100, step = 1,  default = 100 },
@@ -5743,6 +5910,18 @@ M.junkCoin = {
   height = 18,
   x = 1,
   y = 0,
+}
+
+-- Small available-quest mark on a bag or bank item that begins a quest. The
+-- source is a 19x32 glyph on a 32x32 power-of-two canvas; crop the empty right
+-- side and preserve the authored aspect at the compact item-slot scale.
+M.questStarter = {
+  texture = M.texture.questStarter,
+  sourceSlot = 30,
+  width = 13 * 19 / 32,
+  height = 13,
+  inset = 1,
+  texCoord = { 0, 19 / 32, 0, 1 },
 }
 
 -- Category view of the bag and bank windows (modules/bagcategoryview.lua).

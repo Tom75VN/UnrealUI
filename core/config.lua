@@ -15,7 +15,7 @@
 
 local U = UnrealUI
 
-local CONFIG_VERSION = 9
+local CONFIG_VERSION = 10
 local PROFILE_STORE_VERSION = 1
 local MAX_PROFILE_NAME = 64
 
@@ -65,17 +65,20 @@ local defaults = {
   --   3  + NPCs and pets (default; user-confirmed without a crash 2026-09-14)
   -- A number for the same SavedVariables-safety reason as suppressLevel.
   portrait3d = 3,
-  -- Each mover-facing switch owns only its unit-frame family. Pet follows the
-  -- player frame and party pets follow the party frames; target and
-  -- target-of-target remain independently configurable.
+  -- Each mover-facing switch owns only its unit-frame family. Party pets
+  -- follow the party frames; the pet's portrait visibility follows the player
+  -- frame, while its 2D/3D choice is its own (portrait3dPet).
   portraitPlayer = false,
   portraitTarget = false,
   portraitTargetTarget = false,
   portraitParty = false,
+  -- Target-of-target frame on or off; off hides it whatever the target does.
+  targetTargetEnabled = true,
   portrait3dPlayer = false,
   portrait3dTarget = false,
   portrait3dTargetTarget = false,
   portrait3dParty = false,
+  portrait3dPet = false,
   locked    = true,     -- mover mode state; see core/mover.lua
   positions = {},       -- mover id -> { point, relativePoint, x, y }
   modules   = {},       -- module name -> { enabled = true }
@@ -307,6 +310,11 @@ local function PrepareConfig(stored)
      (db.portrait3dPlayer or db.portrait3dTarget or
       db.portrait3dTargetTarget or db.portrait3dParty) then
     db.portrait3d = 3
+  end
+  -- Version 10 split the pet from the player family. It starts on the player
+  -- switch so the migration does not change what an existing profile draws.
+  if storedVersion < 10 then
+    db.portrait3dPet = db.portrait3dPlayer and true or false
   end
 
   if db.version ~= CONFIG_VERSION then

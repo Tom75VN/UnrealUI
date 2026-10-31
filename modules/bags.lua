@@ -76,6 +76,7 @@ local pending    -- { items, index, mode = "sell"|"delete", startGold }
 -- for /reload in both directions rather than pretending either can be undone
 -- live.
 local config
+local bagScale = { targets = {}, min = 60, max = 150, step = 5 }
 
 -- ---------------------------------------------------------------------------
 -- Config
@@ -92,9 +93,134 @@ local function EnsureConfig()
     config = U.ModuleConfig("bags",
                             { enabled = true, categories = false,
                               collapsed = {}, collapsedBank = {},
-                              specialOffsets = {} })
+                              specialOffsets = {}, scale = 100,
+                              resized = false, resizeColumns = COLUMNS,
+                              resizeHeight = 0, bankResized = false,
+                              bankColumns = COLUMNS, bankHeight = 0 })
   end
   return config
+end
+
+local function BagScalePercent(value)
+  value = tonumber(value) or tonumber(EnsureConfig().scale) or 100
+  value = math.floor((value - bagScale.min) / bagScale.step + 0.5) *
+          bagScale.step + bagScale.min
+  if value < bagScale.min then value = bagScale.min end
+  if value > bagScale.max then value = bagScale.max end
+  return value
+end
+
+local function ApplyBagScaleTarget(target, preserve)
+  local targetFrame = target and target.frame
+  if not targetFrame or type(targetFrame.SetScale) ~= "function" then return false end
+
+  local placement, oldScale, shown
+  if preserve then
+    local shownOk, value = pcall(targetFrame.IsShown, targetFrame)
+    shown = shownOk and value and true or false
+    local scaleOk, scaleValue = pcall(targetFrame.GetScale, targetFrame)
+    if scaleOk then oldScale = tonumber(scaleValue) end
+    if shown then
+      placement = U.GetFramePlacement(targetFrame)
+    else
+      -- A closed window keeps its stored offset; it is rewritten in the new
+      -- scale's units so it reopens where it was. A window with no stored
+      -- position of its own (the saved bank borrowing the live bank's) has
+      -- nothing to rewrite.
+      local saved = U.GetPosition(target.id)
+      if saved then
+        placement = { point = saved.point, relativePoint = saved.relativePoint,
+                      x = saved.x, y = saved.y }
+      end
+    end
+  end
+
+  local newScale = BagScalePercent() / 100
+  if not pcall(targetFrame.SetScale, targetFrame, newScale) then return false end
+  if placement and oldScale and oldScale > 0 and newScale > 0 and
+     math.abs(oldScale - newScale) > 0.0001 then
+    local ratio = oldScale / newScale
+    placement.x = (tonumber(placement.x) or 0) * ratio
+    placement.y = (tonumber(placement.y) or 0) * ratio
+    if not shown or U.ApplyFramePoint(targetFrame, placement) then
+      U.SavePosition(target.id, placement.point, placement.relativePoint,
+                     placement.x, placement.y)
+    end
+  end
+  if shown then U.CheckOnScreen(targetFrame) end
+  return true
+end
+
+function U.BagWindowScaleRange()
+  return bagScale.min, bagScale.max, bagScale.step
+end
+
+function U.GetBagWindowScale()
+  return BagScalePercent()
+end
+
+function U.SetBagWindowScale(value)
+  local percent = BagScalePercent(value)
+  EnsureConfig().scale = percent
+  local _, target
+  for _, target in pairs(bagScale.targets) do
+    ApplyBagScaleTarget(target, true)
+  end
+  return percent
+end
+
+-- Shared by the carried bag, live bank and read-only saved bank. Registering
+-- sets the scale before each window applies its saved position; later changes
+-- preserve the live screen position and rewrite the stored frame-unit offsets.
+function U.RegisterBagScaleTarget(id, targetFrame)
+  if type(id) ~= "string" or not targetFrame then return false end
+  local target = { id = id, frame = targetFrame }
+  bagScale.targets[id] = target
+  return ApplyBagScaleTarget(target, false)
+end
+
+-- The size chosen with a bag-family window's corner grip (user request,
+-- 2026-10-31, after pandaUI's bag resize): columns of slots, and a minimum
+-- height. The contents still decide the height when they need more room, so
+-- the stored height only ever adds empty space below the last row. Two stores:
+-- the carried bag, and "bank" shared by the live bank and the saved-bank view
+-- so the two always open at the same size.
+local function GeometryKeys(kind)
+  if kind == "bank" then return "bankColumns", "bankHeight", "bankResized" end
+  return "resizeColumns", "resizeHeight", "resized"
+end
+
+function U.GetBagWindowGeometry(kind)
+  local settings = EnsureConfig()
+  local columns, height, resized = GeometryKeys(kind)
+  return tonumber(settings[columns]) or COLUMNS,
+         tonumber(settings[height]) or 0,
+         settings[resized] and true or false
+end
+
+function U.SetBagWindowGeometry(kind, columns, height)
+  local settings = EnsureConfig()
+  local columnsKey, heightKey, resizedKey = GeometryKeys(kind)
+  columns = math.floor((tonumber(columns) or COLUMNS) + 0.5)
+  height = math.floor((tonumber(height) or 0) + 0.5)
+  settings[columnsKey] = columns
+  settings[heightKey] = height
+  settings[resizedKey] = true
+  return columns, height
+end
+
+function U.ResetBagWindowGeometry(kind)
+  local settings = EnsureConfig()
+  local columns, height, resized = GeometryKeys(kind)
+  settings[columns] = COLUMNS
+  settings[height] = 0
+  settings[resized] = false
+end
+
+function U.BagWindowHeight(kind, natural)
+  local _, requested, resized = U.GetBagWindowGeometry(kind)
+  if resized and requested > natural then return requested end
+  return natural
 end
 
 -- The persisted collapsed-category table of one window: "bank" for the bank,
@@ -452,7 +578,7 @@ function modernBag.StyleHeader(window)
 
   local controls = {
     window.keyToggle, window.bagsToggle, window.pickLock, window.sell,
-    window.sortBags, window.stackBags, window.bankView,
+    window.sortBags, window.stackBags, window.bankView, window.settings,
   }
   local i
   for i = 1, table.getn(controls) do
@@ -912,20 +1038,20 @@ end
 -- ---------------------------------------------------------------------------
 -- Header search (user request, 2026-09-24): the bag-family search field
 -- (U.ModernWowBagSearch, modules/bagdesign.lua), fitted between the last
--- header icon -- the saved-bank button, which follows every show/hide rule of
--- the icons before it -- and the close cell. Under `modern` the same lane on
+-- header icon -- the settings button, which follows the saved-bank button and
+-- every show/hide rule of the icons before it -- and the close cell. Under `modern` the same lane on
 -- the flat header (U.FlatBagSearch; user requests, 2026-09-24), which the
 -- money readout leaves for the footer (modernBag.StyleFlatFooter).
 -- ---------------------------------------------------------------------------
 local search = {}
 
 function search.Build(window)
-  if search.ctl or not window or not window.bankView then return end
+  if search.ctl or not window or not window.settings then return end
   local spec = {
     window = window,
     name = "UnrealUIBagSearch",
     id = "bags.search",
-    after = window.bankView,
+    after = window.settings,
     -- pairs, not table.getn: the category view builds no button for an empty
     -- slot, so a bag's slot table has holes and a counted walk stops at the
     -- first one, leaving every later item unshaded.
@@ -1565,9 +1691,33 @@ function specialBag.Layout(list)
   end
 end
 
+local resizeBag = { MIN_COLUMNS = 7, MAX_COLUMNS = 64 }
+
+-- Widest the grid can be and still fit on screen, in the window's own units.
+function resizeBag.MaxColumns()
+  if not anchor then return resizeBag.MAX_COLUMNS end
+  local gap = classicBag.SlotGap()
+  local pitch = SLOT_SIZE + gap
+  local width = U.UIWidth() / U.FrameUIRatio(anchor)
+  local columns = math.floor((width - classicBag.SidePad() * 2 + gap) / pitch)
+  return math.max(resizeBag.MIN_COLUMNS,
+                  math.min(resizeBag.MAX_COLUMNS, columns))
+end
+
+-- The column count both views lay out with: the stored one once the player has
+-- resized the window, the shipped default before.
+function resizeBag.Columns()
+  local columns, _, resized = U.GetBagWindowGeometry("bag")
+  if not resized then return COLUMNS end
+  columns = math.floor(columns + 0.5)
+  return math.max(resizeBag.MIN_COLUMNS,
+                  math.min(resizeBag.MaxColumns(), columns))
+end
+
 local function LayoutCategories()
   SetSortButtonShown(false)
   specialBag.HideAll()
+  catView.host.columns = resizeBag.Columns()
   catView.Layout()
 end
 
@@ -1579,6 +1729,7 @@ local function LayoutSlots()
   local slotGap = classicBag.SlotGap()
   local specials = {}
   local i
+  local columns = resizeBag.Columns()
 
   -- Switching back out of the category view leaves its boxes and its header
   -- readout behind otherwise; the slot buttons themselves are re-anchored below.
@@ -1610,7 +1761,7 @@ local function LayoutSlots()
         UpdateSlotAppearance(bag, slot)
         button:Show()
 
-        if x >= COLUMNS - 1 then
+        if x >= columns - 1 then
           x, y = 0, y + 1
         else
           x = x + 1
@@ -1636,11 +1787,11 @@ local function LayoutSlots()
 
   -- The anchor owns the rect; the visible frame is stretched over it, so the
   -- stored placement keeps the same bounds whether or not the bag is open.
-  anchor:SetWidth(COLUMNS * (SLOT_SIZE + slotGap) - slotGap +
+  anchor:SetWidth(columns * (SLOT_SIZE + slotGap) - slotGap +
                   classicBag.SidePad() * 2)
-  anchor:SetHeight(BagHeaderHeight() + BagFooterHeight() +
-                   y * (SLOT_SIZE + slotGap) - slotGap
-                   + PADDING)
+  anchor:SetHeight(U.BagWindowHeight("bag", BagHeaderHeight() +
+                   BagFooterHeight() + y * (SLOT_SIZE + slotGap) - slotGap
+                   + PADDING))
   modernBag.ResizePanel(frame)
 end
 
@@ -1708,6 +1859,29 @@ local function ProcessDirty()
 
 end
 
+-- Live request from the corner grip, in the anchor's own units. The column
+-- count snaps to whole slots; the height is a floor the contents can exceed.
+function resizeBag.Resize(width, height)
+  local gap = classicBag.SlotGap()
+  local pitch = SLOT_SIZE + gap
+  local inset = 0
+  if EnsureConfig().categories then
+    inset = U.ModernWowBagMetric("sectionInset", M.bagCategory.inset) * 2
+  end
+  local columns = math.floor((width - classicBag.SidePad() * 2 - inset + gap) /
+                             pitch + 0.5)
+  columns = math.max(resizeBag.MIN_COLUMNS,
+                     math.min(resizeBag.MaxColumns(), columns))
+
+  local minimum = BagHeaderHeight() + BagFooterHeight() + PADDING + SLOT_SIZE
+  local maximum = U.UIHeight() / U.FrameUIRatio(anchor)
+  height = math.floor((tonumber(height) or minimum) + 0.5)
+  height = math.max(minimum, math.min(maximum, height))
+  U.SetBagWindowGeometry("bag", columns, height)
+  layoutDirty = true
+  ProcessDirty()
+end
+
 local function MarkAllBagsDirty()
   local i
   for i = 1, table.getn(BAG_IDS) do bagDirty[BAG_IDS[i]] = true end
@@ -1727,6 +1901,14 @@ function U.MarkBagsDirty()
   InvalidateSlotCache()
   MarkAllBagsDirty()
   layoutDirty = true
+end
+
+-- Redraws the bag and live bank category views on their next refresh; the
+-- custom category editor (modules/bagcustomcategories.lua) calls it after
+-- every edit.
+function U.RefreshBagCategoryViews()
+  layoutDirty = true
+  if type(U.MarkBankLayoutDirty) == "function" then U.MarkBankLayoutDirty() end
 end
 
 local function RefreshAfterBagRun()
@@ -2012,8 +2194,25 @@ local function BuildHeader()
   classicBag.StyleIconButton(frame.bankView)
   frame.bankView:SetPoint("LEFT", frame.stackBags, "RIGHT", classicBag.IconGap(), 0)
 
+  -- Bag settings, last in the icon group: opens the Bags page of the settings
+  -- window. Always shown, so it follows the saved-bank button unconditionally.
+  frame.settings = U.CreateIconButton(frame, {
+    name = "UnrealUIBagSettings",
+    tooltipFrames = BagTooltipFrames,
+    size = HEADER_ICON,
+    texture = M.texture.settingsIcon,
+    fallback = "G",
+    title = U.L("BAGS_SETTINGS"),
+    detail = function() return U.L("BAGS_SETTINGS_HINT") end,
+    onClick = function()
+      if type(U.OpenSettingsPage) == "function" then U.OpenSettingsPage("bags") end
+    end,
+  })
+  classicBag.StyleIconButton(frame.settings)
+  frame.settings:SetPoint("LEFT", frame.bankView, "RIGHT", classicBag.IconGap(), 0)
+
   -- Slot readout, left-aligned after the header icon group. Anchored to the
-  -- saved-bank button because that is the last icon in the group either way:
+  -- settings button because that is the last icon in the group either way:
   -- the Rogue Pick Lock shortcut is inserted before sell, RefreshRogueBagButton
   -- re-anchors sell when the skill is missing, stack follows sell or sort
   -- (SetSortButtonShown) and the saved-bank button follows stack, so following
@@ -2026,7 +2225,7 @@ local function BuildHeader()
     justify = "LEFT",
   })
   if frame.slotCount then
-    frame.slotCount:SetPoint("LEFT", frame.bankView, "RIGHT", 8, 0)
+    frame.slotCount:SetPoint("LEFT", frame.settings, "RIGHT", 8, 0)
     frame.slotCount:Hide()
   end
 
@@ -2066,8 +2265,28 @@ local function ApplyBagPosition()
     U.Debug("bags: failed to apply position")
     return false
   end
-  U.PinFrameToBottomEdge(BAG_POSITION_ID, anchor, BAG_DEFAULT_POSITION)
+  -- A resized window is placed by its top-left corner (the resize grip pins
+  -- it there), so it is not held by its bottom edge any more.
+  local _, _, resized = U.GetBagWindowGeometry("bag")
+  if not resized then
+    U.PinFrameToBottomEdge(BAG_POSITION_ID, anchor, BAG_DEFAULT_POSITION)
+  end
   return true
+end
+
+local function BuildResizeGrip()
+  frame.resizeGrip = U.BuildBagResizeGrip({
+    window = frame,
+    target = anchor,
+    name = "UnrealUIBagResizeGrip",
+    id = BAG_POSITION_ID,
+    updateId = "bags.resize",
+    onResize = resizeBag.Resize,
+    onStop = function()
+      layoutDirty = true
+      ProcessDirty()
+    end,
+  })
 end
 
 local function StartBagDrag()
@@ -2098,7 +2317,9 @@ local function StopBagDrag()
     U.Debug("bags: no readable position after drag")
     return
   end
-  if U.SavePosition(BAG_POSITION_ID, p.point, p.relativePoint, p.x, p.y) then
+  local _, _, resized = U.GetBagWindowGeometry("bag")
+  if U.SavePosition(BAG_POSITION_ID, p.point, p.relativePoint, p.x, p.y) and
+     not resized then
     U.PinFrameToBottomEdge(BAG_POSITION_ID, anchor, BAG_DEFAULT_POSITION)
   end
   U.CheckOnScreen(anchor)
@@ -2111,7 +2332,7 @@ local function BuildDragHandle()
     BagHeaderHeight(), {
       frame.close, frame.money, frame.keyToggle, frame.bagsToggle,
       frame.pickLock, frame.sell, frame.sortBags, frame.stackBags,
-      frame.bankView, search.field,
+      frame.bankView, frame.settings, search.field,
     })
 
   handle:RegisterForDrag("LeftButton")
@@ -2135,6 +2356,7 @@ local function Build()
                   classicBag.SidePad() * 2)
   anchor:SetHeight(BagHeaderHeight() + BagFooterHeight() +
                    4 * (SLOT_SIZE + slotGap) - slotGap + PADDING)
+  U.RegisterBagScaleTarget(BAG_POSITION_ID, anchor)
 
   frame = U.CreatePanel(anchor, { name = "UnrealUIBagFrame" })
   frame:SetAllPoints(anchor)
@@ -2190,7 +2412,8 @@ local function Build()
     end,
     onLayout = function(width, height)
       anchor:SetWidth(width + classicBag.SidePad() * 2)
-      anchor:SetHeight(BagHeaderHeight() + height + PADDING + BagFooterHeight())
+      anchor:SetHeight(U.BagWindowHeight("bag", BagHeaderHeight() + height +
+                                         PADDING + BagFooterHeight()))
       modernBag.ResizePanel(frame)
     end,
   })
@@ -2223,6 +2446,8 @@ local function Build()
     frame.bagslots:Hide()
     search.Stop()
   end)
+  -- After the OnHide above: the grip post-hooks it to end a drag in progress.
+  BuildResizeGrip()
 
   -- No mover: the bag is dragged directly by its header instead of being
   -- placed in edit mode, so the stored position -- or the default -- is
@@ -2230,6 +2455,12 @@ local function Build()
   -- reset hook once /uui reset has cleared the store.
   pcall(anchor.SetMovable, anchor, true)
   ApplyBagPosition()
+  -- /uui reset also gives the bag its shipped size back, before the position
+  -- is re-applied (a resized window is not held by its bottom edge).
+  U.OnPositionReset(function()
+    U.ResetBagWindowGeometry("bag")
+    layoutDirty = true
+  end)
   U.OnPositionReset(ApplyBagPosition)
   U.OnPositionReset(specialBag.ResetPositions)
   -- Its height follows the contents, so a full category view can outgrow the
@@ -2257,7 +2488,7 @@ local function BuildSettingsPage(parent)
 
   local header = U.CreateSectionHeader(parent, {
     text = U.L("BAGS_TITLE"),
-    width = 484,
+    width = U.SETTINGS_PAGE_WIDTH,
     y = -4,
   })
   table.insert(widgets, header)
@@ -2276,7 +2507,7 @@ local function BuildSettingsPage(parent)
     color = M.color.textDim,
     inherits = "GameFontNormalSmall",
     justify = "LEFT",
-    width = 484,
+    width = U.SETTINGS_PAGE_WIDTH,
   })
   if hint then
     U.AnchorSettingsDescription(hint, enable.box)
@@ -2290,14 +2521,7 @@ local function BuildSettingsPage(parent)
     value = U.BagsCategoriesEnabled(),
     onChange = function(value) U.SetBagsCategories(value) end,
   })
-  -- Anchored under the description above rather than at a computed offset: that
-  -- text wraps to a different number of lines per language, and
-  -- unreal-ui-design.md forbids giving it a fixed height to measure.
-  if hint then
-    categories.SetPoint("TOPLEFT", hint, "BOTTOMLEFT", 0, -12)
-  else
-    categories.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -78)
-  end
+  -- Placed by Place() below, on the control above it rather than its text.
   table.insert(widgets, categories)
 
   local categoriesHint = U.CreateSettingsLabel(parent, {
@@ -2305,13 +2529,27 @@ local function BuildSettingsPage(parent)
     color = M.color.textDim,
     inherits = "GameFontNormalSmall",
     justify = "LEFT",
-    width = 484,
+    width = U.SETTINGS_PAGE_WIDTH,
   })
   if categoriesHint then
     U.AnchorSettingsDescription(categoriesHint, categories.box)
     categoriesHint:SetText(U.L("SETTINGS_BAGS_CATEGORIES_HINT"))
     table.insert(widgets, categoriesHint)
   end
+
+  local scaleMin, scaleMax, scaleStep = U.BagWindowScaleRange()
+  local scale = U.CreateSlider(parent, {
+    name = "UnrealUISettingsBagsScale",
+    text = U.L("SETTINGS_BAGS_SCALE"),
+    width = 220,
+    min = scaleMin,
+    max = scaleMax,
+    step = scaleStep,
+    value = U.GetBagWindowScale(),
+    onInput = function(value) U.SetBagWindowScale(value) end,
+    onChange = function(value) U.SetBagWindowScale(value) end,
+  })
+  table.insert(widgets, scale)
 
   -- The HUD bag bar (modules/bagbar.lua) stands in for this window while the
   -- module above is off -- and under modern-wow stays beside it while it is on
@@ -2332,11 +2570,7 @@ local function BuildSettingsPage(parent)
       U.SetBagBarEnabled(value)
     end,
   })
-  if categoriesHint then
-    bar.SetPoint("TOPLEFT", categoriesHint, "BOTTOMLEFT", 0, -12)
-  else
-    bar.SetPoint("TOPLEFT", categories.box, "BOTTOMLEFT", 0, -12)
-  end
+  bar.SetPoint("TOPLEFT", scale.track, "BOTTOMLEFT", 0, -54)
   table.insert(widgets, bar)
 
   local barHint = U.CreateSettingsLabel(parent, {
@@ -2344,7 +2578,7 @@ local function BuildSettingsPage(parent)
     color = M.color.textDim,
     inherits = "GameFontNormalSmall",
     justify = "LEFT",
-    width = 484,
+    width = U.SETTINGS_PAGE_WIDTH,
   })
   if barHint then
     U.AnchorSettingsDescription(barHint, bar.box)
@@ -2352,9 +2586,40 @@ local function BuildSettingsPage(parent)
     table.insert(widgets, barHint)
   end
 
+  -- The player's own categories (modules/bagcustomcategories.lua).
+  local custom
+  if type(U.BuildBagCustomCategoryEditor) == "function" then
+    custom = U.BuildBagCustomCategoryEditor(parent, bar.box)
+    if custom then
+      local k
+      for k = 1, table.getn(custom.widgets) do
+        table.insert(widgets, custom.widgets[k])
+      end
+    end
+  end
+
+  -- Every control hangs on the control above it, offset past that control's
+  -- description; no control is anchored to a description (see
+  -- U.SettingsDescriptionDrop: the custom category editor's ~2,000 objects
+  -- under six chained descriptions made every move of this page cost ~1.3s).
+  -- Re-run on refresh, once the descriptions have wrapped at their width.
+  local function Place()
+    categories.SetPoint("TOPLEFT", enable.box, "BOTTOMLEFT", 0,
+                        -(U.SettingsDescriptionDrop(hint) + 12))
+    scale.SetPoint("TOPLEFT", categories.box, "BOTTOMLEFT", 0,
+                   -(U.SettingsDescriptionDrop(categoriesHint) + 30))
+    if custom and custom.Place then
+      custom.Place(bar.box, -(U.SettingsDescriptionDrop(barHint) + 24))
+    end
+  end
+  Place()
+
   local function Refresh()
+    Place()
+    if custom then custom.Refresh() end
     enable.SetValue(U.BagsEnabled())
     categories.SetValue(U.BagsCategoriesEnabled())
+    scale.SetValue(U.GetBagWindowScale())
     if U.BagBarEnabled then bar.SetValue(U.BagBarEnabled()) end
   end
 

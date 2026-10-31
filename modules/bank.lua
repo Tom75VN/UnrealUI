@@ -704,6 +704,7 @@ end
 function modernBank.LayoutCategories()
   local bags = BankBags()
   modernBank.HideGoneBags(bags)
+  catView.host.columns = modernBank.Columns()
   local _, _, total = catView.Layout()
   return total or 0
 end
@@ -721,6 +722,7 @@ local function LayoutSlots()
   local placed = 0
   local x, y = 0, 0
   local gap = modernBank.SlotGap()
+  local columns = modernBank.Columns()
   local i
 
   for i = 1, table.getn(bags) do
@@ -742,7 +744,7 @@ local function LayoutSlots()
         button:Show()
         placed = placed + 1
 
-        if x >= COLUMNS - 1 then
+        if x >= columns - 1 then
           x, y = 0, y + 1
         else
           x = x + 1
@@ -776,13 +778,74 @@ local function LayoutSlots()
 
   -- The anchor owns the rect; the visible frame is stretched over it, so the
   -- mover handle keeps the same bounds whether or not the bank is open.
-  anchor:SetWidth(COLUMNS * (SLOT_SIZE + gap) - gap +
+  anchor:SetWidth(columns * (SLOT_SIZE + gap) - gap +
                   modernBank.SidePad() * 2)
-  anchor:SetHeight(modernBank.Header() + y * (SLOT_SIZE + gap) - gap +
-                   modernBank.BottomPad())
+  anchor:SetHeight(U.BagWindowHeight("bank", modernBank.Header() +
+                   y * (SLOT_SIZE + gap) - gap + modernBank.BottomPad()))
   if modernBank.Active() then U.ModernWowBagHousing(frame) end
 
   return placed
+end
+
+-- Resize (user request, 2026-10-31, after pandaUI's bank resize). The live
+-- bank and the saved-bank view share one stored size (U.GetBagWindowGeometry
+-- "bank"), set with the corner grip of either.
+modernBank.MIN_COLUMNS = 7
+modernBank.MAX_COLUMNS = 64
+
+-- Widest the grid can be and still fit on screen, in the window's own units.
+function modernBank.MaxColumns()
+  if not anchor then return modernBank.MAX_COLUMNS end
+  local gap = modernBank.SlotGap()
+  local width = U.UIWidth() / U.FrameUIRatio(anchor)
+  local columns = math.floor((width - modernBank.SidePad() * 2 + gap) /
+                             (SLOT_SIZE + gap))
+  return math.max(modernBank.MIN_COLUMNS,
+                  math.min(modernBank.MAX_COLUMNS, columns))
+end
+
+-- The column count both views lay out with: the stored one once the player has
+-- resized the window, the shipped default before.
+function modernBank.Columns()
+  local columns, _, resized = U.GetBagWindowGeometry("bank")
+  if not resized then return COLUMNS end
+  columns = math.floor(columns + 0.5)
+  return math.max(modernBank.MIN_COLUMNS,
+                  math.min(modernBank.MaxColumns(), columns))
+end
+
+-- Redraws just the layout, not the whole refresh tick: the grip calls this on
+-- every step of a drag, and the tick's stack reconciliation is meant to run at
+-- its own interval.
+function U.RefreshLiveBankWindowGeometry()
+  layoutDirty = true
+  if frame and frame:IsShown() and LayoutSlots() > 0 then
+    layoutDirty = false
+  end
+end
+
+-- Live request from the corner grip, in the anchor's own units. The column
+-- count snaps to whole slots; the height is a floor the contents can exceed.
+function modernBank.Resize(width, height)
+  local gap = modernBank.SlotGap()
+  local inset = 0
+  if modernBank.CategoriesWanted() then
+    inset = U.ModernWowBagMetric("sectionInset", M.bagCategory.inset) * 2
+  end
+  local columns = math.floor((width - modernBank.SidePad() * 2 - inset + gap) /
+                             (SLOT_SIZE + gap) + 0.5)
+  columns = math.max(modernBank.MIN_COLUMNS,
+                     math.min(modernBank.MaxColumns(), columns))
+
+  local minimum = modernBank.Header() + modernBank.BottomPad() + SLOT_SIZE
+  local maximum = U.UIHeight() / U.FrameUIRatio(anchor)
+  height = math.floor((tonumber(height) or minimum) + 0.5)
+  height = math.max(minimum, math.min(maximum, height))
+  U.SetBagWindowGeometry("bank", columns, height)
+  U.RefreshLiveBankWindowGeometry()
+  if type(U.RefreshSavedBankWindowGeometry) == "function" then
+    U.RefreshSavedBankWindowGeometry()
+  end
 end
 
 local function ProcessDirty()
@@ -1068,6 +1131,9 @@ local function Build()
   anchor:SetWidth(COLUMNS * (SLOT_SIZE + gap) - gap + modernBank.SidePad() * 2)
   anchor:SetHeight(modernBank.Header() + 4 * (SLOT_SIZE + gap) - gap +
                    modernBank.BottomPad())
+  if type(U.RegisterBagScaleTarget) == "function" then
+    U.RegisterBagScaleTarget(BANK_POSITION_ID, anchor)
+  end
 
   frame = U.CreatePanel(anchor, { name = "UnrealUIBankFrame" })
   frame:SetAllPoints(anchor)
@@ -1140,7 +1206,8 @@ local function Build()
     onDropped = function() layoutDirty = true end,
     onLayout = function(width, height)
       anchor:SetWidth(width + modernBank.SidePad() * 2)
-      anchor:SetHeight(modernBank.Header() + height + modernBank.BottomPad())
+      anchor:SetHeight(U.BagWindowHeight("bank", modernBank.Header() + height +
+                                         modernBank.BottomPad()))
       if modernBank.Active() then U.ModernWowBagHousing(frame) end
     end,
   })
@@ -1170,8 +1237,25 @@ local function Build()
     closing = false
   end)
 
+  -- After the OnHide above: the grip post-hooks it to end a drag in progress.
+  frame.resizeGrip = U.BuildBagResizeGrip({
+    window = frame,
+    target = anchor,
+    name = "UnrealUIBankResizeGrip",
+    id = BANK_POSITION_ID,
+    updateId = "bank.resize",
+    onResize = modernBank.Resize,
+    onStop = U.RefreshLiveBankWindowGeometry,
+  })
+
   pcall(anchor.SetMovable, anchor, true)
   ApplyBankPosition()
+  -- /uui reset also gives the bank its shipped size back (the saved-bank view
+  -- shares the store and redraws on its own reset).
+  U.OnPositionReset(function()
+    U.ResetBagWindowGeometry("bank")
+    layoutDirty = true
+  end)
   U.OnPositionReset(ApplyBankPosition)
   U.GuardOnScreen(anchor, { id = BANK_POSITION_ID })
 end

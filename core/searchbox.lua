@@ -569,6 +569,8 @@ function U.CreateSearchBox(parent, options)
     if SB.active == box then SB.End() end
     SB.SetText(box, "", true)
   end)
+  -- options.noIcon: a plain text field (a name or an id) rather than a search.
+  if options.noIcon then box.submit:Hide() end
 
   -- A field that goes away takes typing mode with it.
   box:SetScript("OnHide", function()

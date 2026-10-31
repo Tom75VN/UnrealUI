@@ -980,6 +980,222 @@ function U.SetItemSlotJunk(button, junk)
 end
 
 -- ---------------------------------------------------------------------------
+-- Quest-starter marker
+--
+-- ITEM_STARTS_QUEST is the client's localized tooltip line for an item that
+-- begins a quest. Each distinct item link is scanned once through a private
+-- tooltip, budgeted across ticks so opening a full merged bag never populates
+-- dozens of tooltips in one frame. The result is immutable item metadata, so
+-- the link is the cache key. Ported from pandaUI's core/itemslot.lua
+-- (WORKING_SOURCE; ITEM_STARTS_QUEST has no compact record on this client, so
+-- the English line is the fallback if the global is absent).
+-- ---------------------------------------------------------------------------
+local QS = {
+  name = "UnrealUIQuestStarterScanner",
+  update = "itemslot.quest-starter-scan",
+  fallback = "Begins a Quest",
+  maxLines = 30,
+  retryLimit = 3,
+  cache = {},
+  queued = {},
+  queue = {},
+  head = 1,
+  tail = 0,
+  running = false,
+}
+
+local function EnsureQuestStarterMark(button)
+  if button.uuiQuestStarterMark then return button.uuiQuestStarterMark end
+  local token = M.questStarter
+  if not token or not token.texture or
+     type(button.GetFrameLevel) ~= "function" then return nil end
+
+  local ok, layer = pcall(CreateFrame, "Frame", nil, button)
+  if not ok or not layer then return nil end
+  pcall(layer.EnableMouse, layer, false)
+
+  local levelOk, level = pcall(button.GetFrameLevel, button)
+  if levelOk and tonumber(level) then
+    -- Above the count, favourite and junk markers; never an input surface.
+    pcall(layer.SetFrameLevel, layer, level + 25)
+  end
+
+  local iconOk, icon = pcall(layer.CreateTexture, layer, nil, "OVERLAY")
+  if not iconOk or not icon then return nil end
+  pcall(icon.SetAllPoints, icon, layer)
+  pcall(icon.SetTexture, icon, token.texture)
+  if token.texCoord then
+    pcall(icon.SetTexCoord, icon, token.texCoord[1], token.texCoord[2],
+          token.texCoord[3], token.texCoord[4])
+  end
+
+  pcall(layer.Hide, layer)
+  button.uuiQuestStarterMark = layer
+  button.uuiQuestStarterState = false
+  return layer
+end
+
+local function SizeQuestStarterMark(button, layer)
+  local token = M.questStarter
+  local size = token.sourceSlot
+  local ok, width = pcall(button.GetWidth, button)
+  width = ok and tonumber(width) or nil
+  if width and width > 0 then size = width end
+  local scale = size / token.sourceSlot
+
+  pcall(layer.SetWidth, layer, token.width * scale)
+  pcall(layer.SetHeight, layer, token.height * scale)
+  pcall(layer.ClearAllPoints, layer)
+  pcall(layer.SetPoint, layer, "BOTTOMRIGHT", button, "BOTTOMRIGHT",
+        -token.inset * scale, token.inset * scale)
+end
+
+function U.SetItemSlotQuestStarter(button, startsQuest)
+  if not button then return end
+  if not startsQuest then
+    if button.uuiQuestStarterMark and button.uuiQuestStarterState ~= false then
+      button.uuiQuestStarterState = false
+      pcall(button.uuiQuestStarterMark.Hide, button.uuiQuestStarterMark)
+    end
+    return
+  end
+
+  local layer = EnsureQuestStarterMark(button)
+  if not layer then return end
+  SizeQuestStarterMark(button, layer)
+  if button.uuiQuestStarterState == true then return end
+
+  button.uuiQuestStarterState = true
+  pcall(layer.SetAlpha, layer, 1)
+  pcall(layer.Show, layer)
+end
+
+-- The bank's main slots are inventory slots (the same mapping
+-- modules/bagcustomcategories.lua reads). nil means the tooltip had nothing
+-- yet, so the scan is retried; false means a definitive "does not start one".
+local function ReadQuestStarterLine(tip, bag, slot)
+  local okSet
+  if bag == -1 then
+    local okSlot, invSlot = pcall(BankButtonIDToInvSlotID, slot)
+    okSet = okSlot and invSlot and
+            pcall(tip.SetInventoryItem, tip, "player", invSlot)
+  else
+    okSet = pcall(tip.SetBagItem, tip, bag, slot)
+  end
+  if not okSet then return nil end
+
+  local countOk, count = pcall(tip.NumLines, tip)
+  count = countOk and tonumber(count) or 0
+  if count < 2 then return nil end
+  if count > QS.maxLines then count = QS.maxLines end
+
+  local starts = U.G("ITEM_STARTS_QUEST")
+  if type(starts) ~= "string" or starts == "" then starts = QS.fallback end
+
+  local line
+  for line = 2, count do
+    local text = U.TooltipRegionText(U.G(QS.name .. "TextLeft" .. line))
+    if text and string.find(text, starts, 1, true) then return true end
+  end
+  return false
+end
+
+local function StopQuestStarterScan()
+  if not QS.running then return end
+  QS.running = false
+  U.UnregisterUpdate(QS.update)
+end
+
+local function ProcessQuestStarterScan()
+  if QS.head > QS.tail then
+    QS.head, QS.tail = 1, 0
+    StopQuestStarterScan()
+    return
+  end
+
+  local entry = QS.queue[QS.head]
+  QS.queue[QS.head] = nil
+  QS.head = QS.head + 1
+  if not entry then return end
+  QS.queued[entry.link] = nil
+
+  local source
+  local button
+  for button in pairs(entry.buttons) do
+    if button.uuiQuestStarterLink == entry.link then
+      local current = U.ContainerSlotLink(button.uuiQuestStarterBag,
+                                          button.uuiQuestStarterSlot)
+      if current == entry.link then source = button break end
+    end
+  end
+
+  local result
+  if source then
+    if not QS.scanner then
+      QS.scanner = U.CreateScannerTooltip(QS.name, UIParent)
+    end
+    result = U.ScanWithTooltip(QS.scanner, ReadQuestStarterLine,
+                               source.uuiQuestStarterBag,
+                               source.uuiQuestStarterSlot)
+  end
+
+  if result ~= nil then
+    QS.cache[entry.link] = result and true or false
+  elseif source and (entry.attempts or 0) + 1 < QS.retryLimit then
+    entry.attempts = (entry.attempts or 0) + 1
+    QS.tail = QS.tail + 1
+    QS.queue[QS.tail] = entry
+    QS.queued[entry.link] = entry
+  end
+
+  for button in pairs(entry.buttons) do
+    if button.uuiQuestStarterLink == entry.link then
+      U.SetItemSlotQuestStarter(button, result == true)
+    end
+  end
+
+  if QS.head > QS.tail then
+    QS.head, QS.tail = 1, 0
+    StopQuestStarterScan()
+  end
+end
+
+local function QueueQuestStarterScan(button, bag, slot, link)
+  button.uuiQuestStarterBag = bag
+  button.uuiQuestStarterSlot = slot
+  button.uuiQuestStarterLink = link
+
+  if type(link) ~= "string" or link == "" then
+    U.SetItemSlotQuestStarter(button, false)
+    return
+  end
+
+  local cached = QS.cache[link]
+  if cached ~= nil then
+    U.SetItemSlotQuestStarter(button, cached)
+    return
+  end
+
+  U.SetItemSlotQuestStarter(button, false)
+  local entry = QS.queued[link]
+  if entry then
+    entry.buttons[button] = true
+    return
+  end
+
+  entry = { link = link, buttons = {} }
+  entry.buttons[button] = true
+  QS.tail = QS.tail + 1
+  QS.queue[QS.tail] = entry
+  QS.queued[link] = entry
+
+  if not QS.running then
+    QS.running = true
+    U.RegisterUpdate(QS.update, 0, ProcessQuestStarterScan)
+  end
+end
+
+-- ---------------------------------------------------------------------------
 -- Update
 -- ---------------------------------------------------------------------------
 function U.UpdateItemSlotCooldown(bag, button)
@@ -1056,6 +1272,9 @@ function U.UpdateItemSlot(button, bag, slot)
       pcall(button.uuiEdges[i].Show, button.uuiEdges[i])
     end
   end
+
+  QueueQuestStarterScan(button, bag, slot,
+                        texture and U.ContainerSlotLink(bag, slot) or nil)
 
   U.UpdateItemSlotCooldown(bag, button)
 end

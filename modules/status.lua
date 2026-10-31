@@ -65,6 +65,52 @@ local COLOR_BAD  = { 1.00, 0.28, 0.20, 1.00 }
 local COLOR_GOLD = M.money.gold.color
 local COLOR_SILVER = M.money.silver.color
 local COLOR_COPPER = M.money.copper.color
+local OVERLAY_BACKGROUND = { 0.035, 0.035, 0.035, 0.20 }
+-- Width of an overlay with nothing to draw: wide enough that its edit-mode
+-- anchor stays easy to find and click, so it can be switched back on.
+local EMPTY_WIDTH = 120
+
+-- The status strip's readouts, left to right, with the switch each one has.
+local ELEMENTS = { "fps", "latency", "durability", "time", "money" }
+local ELEMENT_KEYS = {
+  fps = "showFps", latency = "showLatency", durability = "showDurability",
+  time = "showTime", money = "showMoney",
+}
+
+-- Built once: Config() runs ~30 times per refresh, and a new defaults table
+-- each time was the module's garbage. Booleans only, so sharing it is safe.
+local CONFIG_DEFAULTS = {
+  enabled = true, onlineEnabled = true,
+  showFps = true, showLatency = true, showDurability = true,
+  showTime = true, showMoney = true,
+}
+
+local function Config()
+  if not U.db then
+    -- Before SavedVariables load ModuleConfig hands back the defaults table
+    -- itself; give a copy so an early write cannot change the shared one.
+    local copy, key, value = {}, nil, nil
+    for key, value in pairs(CONFIG_DEFAULTS) do copy[key] = value end
+    return copy
+  end
+  return U.ModuleConfig("status", CONFIG_DEFAULTS)
+end
+
+local function ElementShown(name)
+  local config = Config()
+  return config.enabled and config[ELEMENT_KEYS[name]] and true or false
+end
+
+-- The fill only: the anchor frame itself stays shown, because the edit-mode
+-- handle is its child (core/mover.lua CreateHandle) -- the same rule as
+-- modules/bagbar.lua bb.HideControls.
+local function SetOverlayFill(frame, shown)
+  if not frame then return end
+  local r, g, b, a = M.Unpack(OVERLAY_BACKGROUND)
+  if not shown then a = 0 end
+  if frame.uuiFill then U.SetColor(frame.uuiFill, r, g, b, a) end
+  if frame.SetBackdropColor then pcall(frame.SetBackdropColor, frame, r, g, b, a) end
+end
 
 local anchor
 local display
@@ -138,18 +184,62 @@ local function LabelWidth(label)
   return ok and math.ceil(tonumber(width) or 0) or 0
 end
 
+-- One readout of the strip: the region the chain anchors, the region the next
+-- readout hangs off, every region it shows, and its rendered width.
+local function CaptionPart(caption, value)
+  return {
+    first = caption, last = value, regions = { caption, value },
+    Width = function() return LabelWidth(caption) + 2 + LabelWidth(value) end,
+  }
+end
+
+-- Chains only the readouts that are switched on, so a hidden one leaves no
+-- gap, and sizes the strip to them. Points are rewritten only when the set of
+-- shown readouts changes; the width follows the values on every refresh.
 local function UpdateOverlayWidth()
   if not anchor or not display then return end
 
-  local width = HORIZONTAL_PADDING
-  width = width + LabelWidth(display.fpsCaption) + 2 + LabelWidth(display.fpsValue)
-  width = width + MODULE_GAP + LabelWidth(display.latencyCaption) + 2 + LabelWidth(display.latencyValue)
-  width = width + MODULE_GAP + LabelWidth(display.durabilityCaption) + 2 + LabelWidth(display.durabilityValue)
-  width = width + MODULE_GAP + LabelWidth(display.timeCaption) + 2 + LabelWidth(display.timeValue)
-  width = width + MODULE_GAP
-  width = width + (display.gold.contentWidth or 26) + COIN_GAP
-  width = width + (display.silver.contentWidth or 26) + COIN_GAP
-  width = width + (display.copper.contentWidth or 26) + HORIZONTAL_PADDING
+  local key = ""
+  local i
+  for i = 1, table.getn(ELEMENTS) do
+    key = key .. (ElementShown(ELEMENTS[i]) and "1" or "0")
+  end
+
+  if key ~= display.layoutKey then
+    display.layoutKey = key
+    local prev = nil
+    for i = 1, table.getn(ELEMENTS) do
+      local part = display.parts[ELEMENTS[i]]
+      local shown = ElementShown(ELEMENTS[i])
+      local n
+      for n = 1, table.getn(part.regions) do
+        if shown then part.regions[n]:Show() else part.regions[n]:Hide() end
+      end
+      if shown then
+        part.first:ClearAllPoints()
+        if prev then
+          part.first:SetPoint("LEFT", prev, "RIGHT", MODULE_GAP, 0)
+        else
+          part.first:SetPoint("LEFT", anchor, "LEFT", HORIZONTAL_PADDING, 0)
+        end
+        prev = part.last
+      end
+    end
+    SetOverlayFill(anchor, prev ~= nil)
+  end
+
+  local width = 0
+  for i = 1, table.getn(ELEMENTS) do
+    if ElementShown(ELEMENTS[i]) then
+      if width > 0 then width = width + MODULE_GAP end
+      width = width + display.parts[ELEMENTS[i]].Width()
+    end
+  end
+  if width > 0 then
+    width = width + HORIZONTAL_PADDING * 2
+  else
+    width = EMPTY_WIDTH
+  end
   anchor:SetWidth(width)
 end
 
@@ -160,7 +250,7 @@ local function Build()
   anchor:SetWidth(WIDTH)
   anchor:SetHeight(HEIGHT)
   U.CreateBackdrop(anchor, {
-    background = { 0.035, 0.035, 0.035, 0.20 },
+    background = OVERLAY_BACKGROUND,
     border = false,
   })
 
@@ -219,6 +309,26 @@ local function Build()
   display.silver:SetPoint("LEFT", display.gold, "RIGHT", COIN_GAP, 0)
   display.copper:SetPoint("LEFT", display.silver, "RIGHT", COIN_GAP, 0)
 
+  display.parts = {
+    fps = CaptionPart(display.fpsCaption, display.fpsValue),
+    latency = CaptionPart(display.latencyCaption, display.latencyValue),
+    durability = CaptionPart(display.durabilityCaption, display.durabilityValue),
+    time = {
+      first = display.timeValue, last = display.timeValue,
+      regions = { display.timeValue },
+      Width = function() return LabelWidth(display.timeValue) end,
+    },
+    money = {
+      first = display.gold, last = display.copper,
+      regions = { display.gold, display.silver, display.copper },
+      Width = function()
+        return (display.gold.contentWidth or 26) + COIN_GAP +
+               (display.silver.contentWidth or 26) + COIN_GAP +
+               (display.copper.contentWidth or 26)
+      end,
+    },
+  }
+
   U.RegisterMover("status.overlay", anchor, {
     label = U.L("MOVER_LABEL_STATUS"),
     default = { point = "BOTTOMLEFT", relativePoint = "BOTTOMLEFT", x = 20, y = 20 },
@@ -227,6 +337,23 @@ end
 
 local function UpdatePopulationWidth()
   if not popAnchor or not popDisplay then return end
+
+  local shown = Config().onlineEnabled and true or false
+  if shown ~= popDisplay.shown then
+    popDisplay.shown = shown
+    if shown then
+      popDisplay.serverValue:Show()
+      popDisplay.serverSuffix:Show()
+    else
+      popDisplay.serverValue:Hide()
+      popDisplay.serverSuffix:Hide()
+    end
+    SetOverlayFill(popAnchor, shown)
+  end
+  if not shown then
+    popAnchor:SetWidth(EMPTY_WIDTH)
+    return
+  end
 
   local width = HORIZONTAL_PADDING
   width = width + LabelWidth(popDisplay.serverValue)
@@ -242,7 +369,7 @@ local function BuildPopulation()
   popAnchor:SetWidth(POP_WIDTH)
   popAnchor:SetHeight(HEIGHT)
   U.CreateBackdrop(popAnchor, {
-    background = { 0.035, 0.035, 0.035, 0.20 },
+    background = OVERLAY_BACKGROUND,
     border = false,
   })
 
@@ -324,12 +451,15 @@ end
 -- per interval.
 local function RefreshPopulation()
   if U.PerfDisabled and U.PerfDisabled("status") then return end
+  -- A hidden count sends no /who at all.
+  if not Config().onlineEnabled then return end
   if popPending then return end -- previous request never resolved; skip this tick
   RequestWho()
 end
 
 local function RefreshPerformance()
   if not display then return end
+  if not ElementShown("fps") and not ElementShown("latency") then return end
 
   local framerate = U.G("GetFramerate")
   local ok, fps = false, nil
@@ -352,7 +482,7 @@ end
 -- Local computer time. date() is the client's os.date global and formats the
 -- OS clock for a pattern without a leading '!'.
 local function RefreshTime()
-  if not display then return end
+  if not display or not ElementShown("time") then return end
 
   local dateFn = U.G("date")
   local ok, stamp = false, nil
@@ -364,7 +494,7 @@ local function RefreshTime()
 end
 
 local function RefreshMoney()
-  if not display then return end
+  if not display or not ElementShown("money") then return end
   local getMoney = U.G("GetMoney")
   local ok, total = false, nil
   if type(getMoney) == "function" then ok, total = pcall(getMoney) end
@@ -438,7 +568,8 @@ local function ScanLowestDurability()
 end
 
 local function RefreshDurability()
-  if not display then return end
+  -- The tooltip scan is the strip's one costly read: skipped while hidden.
+  if not display or not ElementShown("durability") then return end
   local percent = ScanLowestDurability()
   SetLabel(display.durabilityValue, percent and (tostring(percent) .. "%") or "--",
            ThresholdColor(percent, 70, 40, true))
@@ -457,6 +588,8 @@ function S:OnEnable()
   U.RegisterUpdate("status.population.refresh", POP_REFRESH_INTERVAL, RefreshPopulation)
 
   U.RegisterEvent("PLAYER_MONEY", RefreshMoney)
+  -- UPDATE_INVENTORY_ALERTS is the 1.12 event; the later one is kept too.
+  U.RegisterEvent("UPDATE_INVENTORY_ALERTS", RefreshDurability)
   U.RegisterEvent("UPDATE_INVENTORY_DURABILITY", RefreshDurability)
   U.RegisterEvent("UNIT_INVENTORY_CHANGED", function(event, unit)
     if not unit or unit == "player" then RefreshDurability() end
@@ -483,8 +616,206 @@ function S:OnEnable()
     end
   end)
 
+  U.ApplyStatusOverlay()
+  U.ApplyOnlineOverlay()
+end
+
+-- ---------------------------------------------------------------------------
+-- Switches
+--
+-- Each overlay's on/off switch is the edit-mode drawer row for its anchor
+-- (core/mover.lua, group `keepAnchor`), so the drawer, the contextual panel on
+-- the anchor and the settings page all write one saved value through
+-- U.SetMoverGroupEnabled. A switched-off overlay draws nothing but keeps its
+-- anchor in edit mode, which is where it is switched back on.
+-- ---------------------------------------------------------------------------
+local views = { page = nil }
+
+local function RefreshViews()
+  if type(U.RefreshMoverPanel) == "function" then
+    U.RefreshMoverPanel("status.overlay")
+    U.RefreshMoverPanel("status.population")
+  end
+  if views.page then pcall(views.page) end
+end
+
+local function SetSwitch(groupKey, configKey, apply, value)
+  value = value and true or false
+  if type(U.SetMoverGroupEnabled) == "function" then
+    local stored = U.SetMoverGroupEnabled(groupKey, value)
+    if stored ~= nil then return stored end
+  end
+  Config()[configKey] = value
+  apply()
+  RefreshViews()
+  return value
+end
+
+function U.ApplyStatusOverlay()
+  if not display then return end
+  display.layoutKey = nil
   RefreshPerformance()
   RefreshTime()
   RefreshMoney()
   RefreshDurability()
+  UpdateOverlayWidth()
+end
+
+function U.ApplyOnlineOverlay()
+  UpdatePopulationWidth()
+end
+
+function U.StatusOverlayEnabled() return Config().enabled and true or false end
+function U.OnlineOverlayEnabled() return Config().onlineEnabled and true or false end
+
+function U.SetStatusOverlayEnabled(value)
+  return SetSwitch("status", "enabled", U.ApplyStatusOverlay, value)
+end
+
+function U.SetOnlineOverlayEnabled(value)
+  return SetSwitch("online", "onlineEnabled", U.ApplyOnlineOverlay, value)
+end
+
+function U.StatusOverlayElementShown(name)
+  local key = ELEMENT_KEYS[name]
+  return key and Config()[key] and true or false
+end
+
+function U.SetStatusOverlayElement(name, value)
+  local key = ELEMENT_KEYS[name]
+  if not key then return nil end
+  Config()[key] = value and true or false
+  U.ApplyStatusOverlay()
+  RefreshViews()
+  return Config()[key]
+end
+
+-- ---------------------------------------------------------------------------
+-- Edit-mode panels: one Enable box beside each selected anchor.
+-- ---------------------------------------------------------------------------
+local function MoverPanelSpec(name, get, set)
+  return {
+    name = name,
+    width = 200 + U.MoverPanelPad() * 2,
+    height = 44 + 22 + 12,
+    build = function(frame, contentTop, contentWidth)
+      local box = U.CreateCheckbox(frame, {
+        name = name .. "Enable",
+        text = U.L("COMMON_ENABLE"),
+        textWidth = contentWidth,
+        value = get(),
+        onChange = function(value) set(value) end,
+      })
+      box.SetPoint("TOPLEFT", frame, "TOPLEFT", U.MoverPanelPad(), contentTop)
+      return { box }, function() box.SetValue(get()) end
+    end,
+  }
+end
+
+-- ---------------------------------------------------------------------------
+-- Settings page
+-- ---------------------------------------------------------------------------
+local PAGE_ROWS = {
+  { element = "fps", text = "STATUS_SHOW_FPS" },
+  { element = "latency", text = "STATUS_SHOW_LATENCY" },
+  { element = "durability", text = "STATUS_SHOW_DURABILITY" },
+  { element = "time", text = "STATUS_SHOW_TIME" },
+  { element = "money", text = "STATUS_SHOW_MONEY" },
+}
+
+local function BuildSettingsPage(parent)
+  local widgets = {}
+  local pageWidth = U.SETTINGS_PAGE_WIDTH
+  local rows = {}
+
+  local header = U.CreateSectionHeader(parent, {
+    text = U.L("MOVER_LABEL_STATUS"), width = pageWidth, y = -4,
+  })
+  table.insert(widgets, header)
+
+  local enable = U.CreateCheckbox(parent, {
+    name = "UnrealUIStatusOverlayEnable",
+    text = U.L("STATUS_ENABLE"),
+    value = U.StatusOverlayEnabled(),
+    onChange = function(value) U.SetStatusOverlayEnabled(value) end,
+  })
+  enable.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -34)
+  table.insert(widgets, enable)
+
+  local i
+  for i = 1, table.getn(PAGE_ROWS) do
+    local element = PAGE_ROWS[i].element
+    local row = U.CreateCheckbox(parent, {
+      name = "UnrealUIStatusOverlayShow" .. element,
+      text = U.L(PAGE_ROWS[i].text),
+      value = U.StatusOverlayElementShown(element),
+      onChange = function(value) U.SetStatusOverlayElement(element, value) end,
+    })
+    row.SetPoint("TOPLEFT", parent, "TOPLEFT", 20, -34 - i * 22)
+    table.insert(rows, { control = row, element = element })
+    table.insert(widgets, row)
+  end
+
+  local onlineY = -34 - (table.getn(PAGE_ROWS) + 1) * 22 - 16
+  local onlineHeader = U.CreateSectionHeader(parent, {
+    text = U.L("MOVER_LABEL_ONLINE_COUNT"), width = pageWidth, y = onlineY,
+  })
+  table.insert(widgets, onlineHeader)
+
+  local online = U.CreateCheckbox(parent, {
+    name = "UnrealUIOnlineOverlayEnable",
+    text = U.L("STATUS_ONLINE_ENABLE"),
+    value = U.OnlineOverlayEnabled(),
+    onChange = function(value) U.SetOnlineOverlayEnabled(value) end,
+  })
+  online.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, onlineY - 30)
+  table.insert(widgets, online)
+
+  local hint = U.CreateSettingsLabel(parent, {
+    size = M.fontSize.small,
+    color = M.color.textDim,
+    inherits = "GameFontNormalSmall",
+    justify = "LEFT",
+    width = pageWidth,
+  })
+  if hint then
+    U.AnchorSettingsDescription(hint, online.box)
+    hint:SetText(U.L("STATUS_PAGE_HINT"))
+    table.insert(widgets, hint)
+  end
+
+  local function Refresh()
+    local enabled = U.StatusOverlayEnabled()
+    enable.SetValue(enabled)
+    local n
+    for n = 1, table.getn(rows) do
+      rows[n].control.SetValue(U.StatusOverlayElementShown(rows[n].element))
+      rows[n].control.SetEnabled(enabled)
+    end
+    online.SetValue(U.OnlineOverlayEnabled())
+  end
+  views.page = Refresh
+  Refresh()
+
+  return widgets, Refresh
+end
+
+function S:OnInit()
+  Config()
+  if type(U.RegisterSettingsTab) == "function" then
+    U.RegisterSettingsTab("status-overlay", U.L("STATUS_PAGE"),
+                          BuildSettingsPage, { after = "general" })
+  end
+  if type(U.RegisterMoverPanel) == "function" then
+    U.RegisterMoverPanel("status.overlay", MoverPanelSpec(
+      "UnrealUIStatusMoverSettings", U.StatusOverlayEnabled,
+      U.SetStatusOverlayEnabled))
+    U.RegisterMoverPanel("status.population", MoverPanelSpec(
+      "UnrealUIOnlineMoverSettings", U.OnlineOverlayEnabled,
+      U.SetOnlineOverlayEnabled))
+  end
+  if type(U.OnMoverGroupChanged) == "function" then
+    U.OnMoverGroupChanged("status", RefreshViews)
+    U.OnMoverGroupChanged("online", RefreshViews)
+  end
 end

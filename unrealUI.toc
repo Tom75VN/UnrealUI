@@ -2,9 +2,9 @@
 ## Title: |cffffffffUnreal |cfff5ae0aUI
 ## Notes: Unreal Azeroth native UI addon.
 ## Author: Thomas
-## Version: 0.11.1
+## Version: 0.12.0
 ## X-License: MIT
-## SavedVariables: UnrealUIDB, UnrealUIProfiles, UnrealUIDiagDB, UnrealUIPriceDB
+## SavedVariables: UnrealUIDB, UnrealUIProfiles, UnrealUIDiagDB, UnrealUIPriceDB, UnrealUICategoryDB
 ## SavedVariablesPerCharacter: UnrealUIProfileDB, UnrealUIFavoriteDB, UnrealUIBankCountDB, UnrealUIBankCacheDB, UnrealUIEquipmentSetDB
 
 core\init.lua
@@ -126,6 +126,13 @@ modules\unitframeconfig.lua
 modules\auras.lua
 modules\hots.lua
 modules\healpredict.lua
+# /uui party test: fake party data for the modules above and below.
+modules\partytest.lua
+# Raid frames and the raid-style party column; read U.HotLiveOn and
+# U.UnitIncomingHeal above.
+modules\raidframes.lua
+# The Raid Frames settings group; state and behaviour stay in the line above.
+modules\raidframesettings.lua
 modules\nameplates.lua
 modules\nameplatesettings.lua
 modules\tooltip.lua
@@ -144,6 +151,8 @@ modules\stancebar.lua
 modules\rogue.lua
 modules\bagfavorites.lua
 modules\bagdesign.lua
+# Player-made bag categories; read by the category view below.
+modules\bagcustomcategories.lua
 # The category view shared by the bag and bank windows; loaded before both.
 modules\bagcategoryview.lua
 modules\bags.lua

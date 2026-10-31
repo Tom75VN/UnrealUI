@@ -108,16 +108,20 @@ local H = U.RegisterModule("hots")
 -- ---------------------------------------------------------------------------
 local CONFIG = "hots"
 
+-- The icon size follows the party aura icon size (modules/auras.lua
+-- partyIconSize, a percent of BASE_SIZE; user request, 2026-10-26): one slider
+-- sizes the party buffs, debuffs and HoTs together. The icons are children of
+-- the scaled party mover, so 120 is 20 % larger than at the current scale.
+local BASE_SIZE = 14
+
 local defaults = {
   enabled = true,
   corner  = "TOPLEFT",
-  size    = 14,
   spacing = 2,
 }
 
 -- Shared with the settings page so the slider and the clamp cannot disagree.
 local LIMITS = {
-  size    = { min = 10, max = 28, step = 1 },
   spacing = { min = 0,  max = 10, step = 1 },
 }
 
@@ -141,6 +145,13 @@ function U.GetHotSetting(key)
   local value = Config()[key]
   if value == nil then return defaults[key] end
   return value
+end
+
+-- The icon's edge in the party row's own units.
+local function IconSize()
+  local percent = type(U.GetAuraSetting) == "function" and
+                  tonumber(U.GetAuraSetting("partyIconSize")) or 100
+  return BASE_SIZE * (percent or 100) / 100
 end
 
 function U.HotLimits(key)
@@ -512,7 +523,7 @@ end
 local units = {}          -- unit token -> { anchor, frame, icons }
 
 local function CreateIcon(holder, index)
-  local size = U.GetHotSetting("size")
+  local size = IconSize()
 
   local icon = CreateFrame("Frame", "UnrealUIHot" .. holder.unit .. index,
                            holder.frame)
@@ -643,7 +654,7 @@ local function PlaceAtCorner(holder, object, slot, size, spacing)
 end
 
 local function PlaceIcon(holder, icon, slot)
-  local size = U.GetHotSetting("size")
+  local size = IconSize()
   PlaceAtCorner(holder, icon, slot, size, U.GetHotSetting("spacing"))
   -- The overlay carries its own size for the reason CreateIcon states, so it
   -- has to be re-sized here rather than following the icon through an anchor.
@@ -677,7 +688,7 @@ local function SampleWanted()
 end
 
 local function PlaceSample(holder, cell, slot)
-  local size = U.GetHotSetting("size")
+  local size = IconSize()
   PlaceAtCorner(holder, cell, slot, size, U.GetHotSetting("spacing"))
 end
 
@@ -821,6 +832,10 @@ local function LiveStore(unit)
   return nil
 end
 
+-- The live-HoT walk shared with U.HotLiveOn (Collect, defined below) and the
+-- party rows' scratch list it fills.
+local hotLive = { scratch = {} }
+
 local function ScanUnit(unit)
   local holder = Holder(unit)
   if not holder then return end
@@ -838,12 +853,74 @@ local function ScanUnit(unit)
     return
   end
 
-  if not Tracking() or not Call("UnitExists", unit) or
-     U.UnitObjectVisible(unit) == false then
+  -- "/uui party test" (modules/partytest.lua) supplies its own HoTs for the
+  -- fake members, so the indicators draw even for a class with no HoT spells.
+  local found = nil
+  if U.partyTest and U.PartyTestHots and U.GetHotSetting("enabled") then
+    found = U.PartyTestHots(unit, hotLive.scratch)
+  end
+
+  if found == nil then
+    if not Tracking() or not Call("UnitExists", unit) or
+       U.UnitObjectVisible(unit) == false then
+      ClearUnit(holder)
+      return
+    end
+
+    -- Adoption, verification against the unit's buffs and the set-bonus
+    -- restart all live in hotLive.Collect, shared with the raid frames
+    -- (U.HotLiveOn).
+    found = hotLive.Collect(unit, hotLive.scratch)
+  end
+  if found == 0 then
     ClearUnit(holder)
     return
   end
 
+  SizeHolder(holder)
+
+  local active = {}
+  local i
+
+  for i = 1, found do
+    local item = hotLive.scratch[i]
+    local count = item.count
+
+    local slot = table.getn(active) + 1
+    local icon = holder.icons[slot] or CreateIcon(holder, slot)
+    PlaceIcon(holder, icon, slot)
+    icon.texture:SetTexture(item.entry.texture)
+    if icon.count then
+      if count > 1 then
+        icon.count:SetText(count)
+        icon.count:Show()
+      else
+        icon.count:Hide()
+      end
+    end
+    icon:Show()
+
+    table.insert(active, { icon = icon, live = item.live })
+  end
+
+  holder.active = active
+  HideFrom(holder, table.getn(active) + 1)
+  if table.getn(active) > 0 then
+    HideSample(holder)
+  else
+    ShowSample(holder)
+  end
+end
+
+-- The HoTs of ours this unit carries right now, checked against its real
+-- buffs: fills `out[1..n]` with { entry, live, count } in resolved order and
+-- returns n. Entries past n are stale and never read. Shared by the party
+-- rows above and the raid-style party column (U.HotLiveOn,
+-- modules/raidframes.lua), so both apply the same adoption, drop and
+-- set-bonus rules to the same stamps. A table rather than file locals: this
+-- chunk's top-level local budget (rules/unreal-ui.md).
+hotLive.Collect = function(unit, out)
+  local n = 0
   local now = Now()
   -- Inside the window the unit is read even with nothing stamped, because that
   -- read is what finds the HoT to adopt. Outside it the walk is skipped for a
@@ -851,10 +928,7 @@ local function ScanUnit(unit)
   local adopting = (now - lastCast) <= ADOPT_WINDOW
 
   local store = LiveStore(unit)
-  if not store and not adopting then
-    ClearUnit(holder)
-    return
-  end
+  if not store and not adopting then return 0 end
 
   ReadBuffs(unit)
 
@@ -878,14 +952,7 @@ local function ScanUnit(unit)
     end
   end
 
-  if not store then
-    ClearUnit(holder)
-    return
-  end
-
-  SizeHolder(holder)
-
-  local active = {}
+  if not store then return 0 end
 
   for i = 1, table.getn(list) do
     local entry = list[i]
@@ -913,33 +980,21 @@ local function ScanUnit(unit)
           live.start = now
           live.extended = true
         end
-
-        local slot = table.getn(active) + 1
-        local icon = holder.icons[slot] or CreateIcon(holder, slot)
-        PlaceIcon(holder, icon, slot)
-        icon.texture:SetTexture(entry.texture)
-        if icon.count then
-          if count > 1 then
-            icon.count:SetText(count)
-            icon.count:Show()
-          else
-            icon.count:Hide()
-          end
-        end
-        icon:Show()
-
-        table.insert(active, { icon = icon, live = live })
+        n = n + 1
+        out[n] = { entry = entry, live = live, count = count }
       end
     end
   end
 
-  holder.active = active
-  HideFrom(holder, table.getn(active) + 1)
-  if table.getn(active) > 0 then
-    HideSample(holder)
-  else
-    ShowSample(holder)
-  end
+  return n
+end
+
+-- Read by modules/raidframes.lua for raid and party cells. Same answer
+-- as the party rows: nothing while tracking is off or the unit is gone.
+function U.HotLiveOn(unit, out)
+  if type(out) ~= "table" then return 0 end
+  if not Tracking() or not Call("UnitExists", unit) then return 0 end
+  return hotLive.Collect(unit, out)
 end
 
 -- The party token currently holding this character, or nil.
@@ -947,6 +1002,14 @@ local function PartyUnitFor(name)
   local i
   for i = 1, table.getn(DRAWN_UNITS) do
     local unit = DRAWN_UNITS[i]
+    if Call("UnitName", unit) == name then return unit end
+  end
+  -- In a raid the target may be outside the player's own subgroup, which the
+  -- raid frames draw (modules/raidframes.lua). raid1-40 are the documented
+  -- 1.12 tokens; GetNumRaidMembers is 0 outside a raid.
+  local members = tonumber(Call("GetNumRaidMembers")) or 0
+  for i = 1, members do
+    local unit = "raid" .. i
     if Call("UnitName", unit) == name then return unit end
   end
   return nil
@@ -1047,7 +1110,7 @@ function U.HotDebugDump()
   U.Print("unrealUI HoT indicators")
   U.Print("  enabled: " .. tostring(U.GetHotSetting("enabled")) ..
           "  corner: " .. tostring(U.GetHotSetting("corner")) ..
-          "  size: " .. tostring(U.GetHotSetting("size")) ..
+          "  size: " .. tostring(IconSize()) ..
           "  spacing: " .. tostring(U.GetHotSetting("spacing")))
 
   local spells = U.HotSpells()
@@ -1167,12 +1230,12 @@ end
 -- `y` is where the caller wants this section's heading, so the party page can
 -- move it without this file knowing what sits above it.
 -- ---------------------------------------------------------------------------
-local SETTINGS_COLUMN_X = 258
+local SETTINGS_COLUMN_X = U.SETTINGS_COLUMN_X
 local SETTINGS_SLIDER_WIDTH = 200
 
+-- No size slider: the Party Frames icon size above sizes the HoTs too.
 local SLIDERS = {
-  { key = "size",    textKey = "HOTS_SIZE",    column = 0 },
-  { key = "spacing", textKey = "HOTS_SPACING", column = 1 },
+  { key = "spacing", textKey = "HOTS_SPACING", column = 0 },
 }
 
 function U.BuildHotSettings(parent, y, width)
@@ -1182,7 +1245,7 @@ function U.BuildHotSettings(parent, y, width)
 
   local header = U.CreateSectionHeader(parent, {
     text = U.L("HOTS_HEADER"),
-    width = width or 484,
+    width = width or U.SETTINGS_PAGE_WIDTH,
     y = y,
   })
   table.insert(widgets, header)

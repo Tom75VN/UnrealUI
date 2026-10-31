@@ -402,6 +402,7 @@ function view.Layout()
   local db = view.EnsureStore()
   local n, x, y = 0, 0, 0
   local gap = view.SlotGap()
+  local columns = view.Columns()
   local i
 
   for i = 1, table.getn(db.bags) do
@@ -416,7 +417,7 @@ function view.Layout()
       view.FillSlot(button, bag.items[slot])
       button:Show()
 
-      if x >= COLUMNS - 1 then
+      if x >= columns - 1 then
         x, y = 0, y + 1
       else
         x = x + 1
@@ -439,10 +440,61 @@ function view.Layout()
   if n == 0 then y = EMPTY_ROWS end
 
   local frame = view.frame
-  frame:SetWidth(COLUMNS * (SLOT_SIZE + gap) - gap + view.SidePad() * 2)
-  frame:SetHeight(view.Header() + y * (SLOT_SIZE + gap) - gap +
-                  view.BottomPad())
+  frame:SetWidth(columns * (SLOT_SIZE + gap) - gap + view.SidePad() * 2)
+  frame:SetHeight(U.BagWindowHeight("bank", view.Header() +
+                  y * (SLOT_SIZE + gap) - gap + view.BottomPad()))
+  if view.grid.empty then
+    pcall(view.grid.empty.SetWidth, view.grid.empty,
+          columns * (SLOT_SIZE + gap) - gap - 16)
+  end
   if view.Modern() then U.ModernWowBagHousing(frame) end
+end
+
+-- Resize (user request, 2026-10-31, after pandaUI's bank resize). The window
+-- shares its stored size with the live bank (U.GetBagWindowGeometry "bank");
+-- either window's corner grip sets it for both.
+view.MIN_COLUMNS = 7
+view.MAX_COLUMNS = 64
+
+-- Widest the grid can be and still fit on screen, in the window's own units.
+function view.MaxColumns()
+  if not view.frame then return view.MAX_COLUMNS end
+  local gap = view.SlotGap()
+  local width = U.UIWidth() / U.FrameUIRatio(view.frame)
+  local columns = math.floor((width - view.SidePad() * 2 + gap) /
+                             (SLOT_SIZE + gap))
+  return math.max(view.MIN_COLUMNS, math.min(view.MAX_COLUMNS, columns))
+end
+
+-- The stored column count once the player has resized, the default before.
+function view.Columns()
+  local columns, _, resized = U.GetBagWindowGeometry("bank")
+  if not resized then return COLUMNS end
+  columns = math.floor(columns + 0.5)
+  return math.max(view.MIN_COLUMNS, math.min(view.MaxColumns(), columns))
+end
+
+function U.RefreshSavedBankWindowGeometry()
+  if view.frame and view.frame:IsShown() then view.Layout() end
+end
+
+-- Live request from the corner grip, in the window's own units. The column
+-- count snaps to whole slots; the height is a floor the contents can exceed.
+function view.Resize(width, height)
+  local gap = view.SlotGap()
+  local columns = math.floor((width - view.SidePad() * 2 + gap) /
+                             (SLOT_SIZE + gap) + 0.5)
+  columns = math.max(view.MIN_COLUMNS, math.min(view.MaxColumns(), columns))
+
+  local minimum = view.Header() + view.BottomPad() + SLOT_SIZE
+  local maximum = U.UIHeight() / U.FrameUIRatio(view.frame)
+  height = math.floor((tonumber(height) or minimum) + 0.5)
+  height = math.max(minimum, math.min(maximum, height))
+  U.SetBagWindowGeometry("bank", columns, height)
+  U.RefreshSavedBankWindowGeometry()
+  if type(U.RefreshLiveBankWindowGeometry) == "function" then
+    U.RefreshLiveBankWindowGeometry()
+  end
 end
 
 -- Opens where the player last dragged it. Until it has been dragged once, it
@@ -560,6 +612,9 @@ function view.Build()
   pcall(frame.EnableMouse, frame, true)
   frame:Hide()
   view.frame = frame
+  if type(U.RegisterBagScaleTarget) == "function" then
+    U.RegisterBagScaleTarget(VIEW_POSITION_ID, frame)
+  end
 
   local special = U.G("UISpecialFrames")
   if type(special) == "table" then
@@ -649,12 +704,28 @@ function view.Build()
       U.RaiseOverBagDragStrip(frame, { view.search.field })
     end
   end
+  -- After the OnHide above: the grip post-hooks it to end a drag in progress.
+  frame.resizeGrip = U.BuildBagResizeGrip({
+    window = frame,
+    target = frame,
+    name = "UnrealUIBankViewResizeGrip",
+    id = VIEW_POSITION_ID,
+    updateId = "bankview.resize",
+    onResize = view.Resize,
+    onStop = U.RefreshSavedBankWindowGeometry,
+  })
+
   pcall(frame.SetMovable, frame, true)
   U.GuardOnScreen(frame, { id = VIEW_POSITION_ID })
-  -- /uui reset clears the stored placement; an open window goes back to the
-  -- bank's position straight away instead of on its next open.
+  -- /uui reset clears the stored placement and the shared window size; an open
+  -- window goes back to the bank's position and default size straight away
+  -- instead of on its next open.
   U.OnPositionReset(function()
-    if frame:IsShown() then view.Place() end
+    U.ResetBagWindowGeometry("bank")
+    if frame:IsShown() then
+      view.Layout()
+      view.Place()
+    end
   end)
 end
 

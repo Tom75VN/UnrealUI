@@ -410,6 +410,12 @@ function U.CreateStatusBar(parent, options)
 
   local fill = bar:CreateTexture(nil, "ARTWORK")
   fill:SetTexture(options.texture or M.texture.plain)
+  -- A fill drawn from part of its file (the raid power strip's 7 of 8 rows).
+  -- Only set when asked, so no other bar's coordinates are touched.
+  local crop = options.crop
+  if crop then
+    pcall(fill.SetTexCoord, fill, crop[1], crop[2], crop[3], crop[4])
+  end
   U.SetColor(fill, M.Unpack(options.color or M.color.health))
   bar.uuiFillTexture = fill
 
@@ -429,6 +435,13 @@ function U.CreateStatusBar(parent, options)
 
   UpdateStatusBarFill(bar)
   return bar
+end
+
+-- Re-measures the fill and prediction segments after a caller resizes the
+-- bar: SetWidth/SetHeight do not reach UpdateStatusBarFill, and SetValue
+-- skips an unchanged value. modules/raidframes.lua resizes from its settings.
+function U.RefreshStatusBar(bar)
+  if bar and bar.uuiFillTexture then UpdateStatusBarFill(bar) end
 end
 
 function U.SetStatusBarColor(bar, r, g, b, a)

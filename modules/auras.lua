@@ -128,6 +128,10 @@ local defaults = {
   targetBuffEnabled = true,
   partyEnabled      = true,
   partyBuffEnabled  = true,
+  -- Party aura icons, in percent of their built size (user request,
+  -- 2026-10-26). The rows are children of the scaled party mover, so 120 is
+  -- 20 % larger than the icon at the current mover scale.
+  partyIconSize     = 100,
   showTimers        = true,
   belowFrame        = false,
   size              = 24,
@@ -179,10 +183,35 @@ function U.SetAuraSetting(key, value)
   if defaults[key] == nil then return false end
   Config()[key] = value
   U.ApplyAuras()
+  -- The party HoT icons (modules/hots.lua IconSize) and the raid-style party
+  -- column (modules/raidframes.lua partyGeo) share this size.
+  if key == "partyIconSize" then
+    if type(U.ApplyHotIndicators) == "function" then
+      pcall(U.ApplyHotIndicators)
+    end
+    if type(U.ApplyRaidPartyStyle) == "function" then
+      pcall(U.ApplyRaidPartyStyle)
+    end
+  end
   if type(U.RefreshUnitFrameSettingsViews) == "function" then
     U.RefreshUnitFrameSettingsViews()
   end
   return true
+end
+
+local PARTY_ICON_LIMITS = { min = 50, max = 200, step = 10 }
+
+function U.AuraPartyIconSizeLimits()
+  return PARTY_ICON_LIMITS.min, PARTY_ICON_LIMITS.max, PARTY_ICON_LIMITS.step
+end
+
+-- The party rows are the only rows drawn beside a frame (BuildRow `beside`).
+local function PartyIconScale(row)
+  if not row.beside then return 1 end
+  local value = tonumber(U.GetAuraSetting("partyIconSize")) or 100
+  if value < PARTY_ICON_LIMITS.min then value = PARTY_ICON_LIMITS.min end
+  if value > PARTY_ICON_LIMITS.max then value = PARTY_ICON_LIMITS.max end
+  return value / 100
 end
 
 -- ---------------------------------------------------------------------------
@@ -239,6 +268,9 @@ end
 local resolved = {}
 
 local function Fn(name)
+  -- "/uui party test" fake party (modules/partytest.lua); nil in normal play.
+  local override = U.gOverride
+  if override and override[name] then return override[name] end
   local cached = resolved[name]
   if cached == nil then
     local value = U.G(name)
@@ -853,6 +885,27 @@ local function PlaceIcon(row, icon, slot, size, spacing, perRow, below)
   local line = math.floor((slot - 1) / perRow)
 
   icon:ClearAllPoints()
+  -- Nameplate rows grow away from the bar, from the chosen corner inward.
+  if row.nameplate then
+    local corner = row.nameplateCorner or "TOPLEFT"
+    local right = corner == "TOPRIGHT" or corner == "BOTTOMRIGHT"
+    local bottom = corner == "BOTTOMLEFT" or corner == "BOTTOMRIGHT"
+    local x = column * (size + spacing)
+    local y = line * (size + spacing)
+    if bottom then
+      if right then
+        icon:SetPoint("TOPRIGHT", row, "TOPRIGHT", -x, -y)
+      else
+        icon:SetPoint("TOPLEFT", row, "TOPLEFT", x, -y)
+      end
+    elseif right then
+      icon:SetPoint("BOTTOMRIGHT", row, "BOTTOMRIGHT", -x, y)
+    else
+      icon:SetPoint("BOTTOMLEFT", row, "BOTTOMLEFT", x, y)
+    end
+    return
+  end
+
   if below then
     icon:SetPoint("TOPLEFT", row, "TOPLEFT",
                   column * (size + spacing),
@@ -876,10 +929,28 @@ end
 local function PositionRow(row, below, offset)
   offset = offset or 0
 
+  -- Nameplate rows ride the plate's health bar at the chosen corner, `auraGap`
+  -- units from the bar edge (the build-time offset when the setting is absent).
   if row.nameplate then
+    local setting = type(U.NameplateSetting) == "function" and
+                    U.NameplateSetting or nil
+    local corner = setting and setting("auraPosition") or "TOPLEFT"
+    if corner ~= "TOPLEFT" and corner ~= "TOPRIGHT" and
+       corner ~= "BOTTOMLEFT" and corner ~= "BOTTOMRIGHT" then
+      corner = "TOPLEFT"
+    end
+    row.nameplateCorner = corner
+    local right = corner == "TOPRIGHT" or corner == "BOTTOMRIGHT"
+    local gap = setting and tonumber(setting("auraGap")) or nil
+    local distance = (gap or row.anchorOffsetY or 0) + offset
     row:ClearAllPoints()
-    row:SetPoint("BOTTOMLEFT", row.anchor, "TOPLEFT", 0,
-                 (row.anchorOffsetY or 0) + offset)
+    if corner == "BOTTOMLEFT" or corner == "BOTTOMRIGHT" then
+      row:SetPoint(right and "TOPRIGHT" or "TOPLEFT", row.anchor,
+                   right and "BOTTOMRIGHT" or "BOTTOMLEFT", 0, -distance)
+    else
+      row:SetPoint(right and "BOTTOMRIGHT" or "BOTTOMLEFT", row.anchor,
+                   right and "TOPRIGHT" or "TOPLEFT", 0, distance)
+    end
     return
   end
 
@@ -916,8 +987,9 @@ local function PositionRow(row, below, offset)
   row:ClearAllPoints()
   if row.beside then
     local rightOffset = tonumber(row.anchor.uuiAuraRightOffset) or 0
+    -- The two lines' offsets grow with the icons so they never overlap.
     row:SetPoint("LEFT", row.anchor, "RIGHT", ROW_GAP + rightOffset,
-                 row.besideY or 0)
+                 (row.besideY or 0) * PartyIconScale(row))
     return
   end
 
@@ -1178,7 +1250,7 @@ end
 -- icons and keep primary rows within the art's bar opening. Other themes have
 -- no layout table and therefore retain the existing settings unchanged.
 local function RowGeometry(row)
-  local size = row.size or U.GetAuraSetting("size")
+  local size = (row.size or U.GetAuraSetting("size")) * PartyIconScale(row)
   local spacing = row.spacing or U.GetAuraSetting("spacing")
   local perRow = row.perRow or U.GetAuraSetting("perRow")
   local layout = row.anchor and row.anchor.uuiAuraLayout
@@ -1848,12 +1920,12 @@ end
 -- The page owns its whole content frame now, so every offset below is measured
 -- from its own top rather than from a block another module stacked above it.
 -- ---------------------------------------------------------------------------
-local PAGE_WIDTH = 484
-local FILTER_COLUMN_X = 160
+local PAGE_WIDTH = U.SETTINGS_PAGE_WIDTH
+local FILTER_COLUMN_X = math.floor(PAGE_WIDTH / 3)
 
 -- Two columns keep the toggles to five compact rows and leave the colour
 -- controls inside the fixed-height settings panel.
-local TOGGLE_COLUMN_X = 240
+local TOGGLE_COLUMN_X = U.SETTINGS_COLUMN_X
 
 -- The client's own display is modules/buffframe.lua's frames, not this
 -- module's rows, so this toggle reads and writes through that module rather

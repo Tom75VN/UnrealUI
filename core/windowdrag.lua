@@ -365,6 +365,14 @@ function U.RefreshWindowOverlap(frame)
   return true
 end
 
+-- True while the player is dragging this registered window by its header.
+-- Pollers that read a window's geometry pause on it: every rect in a moving
+-- window is stale each frame, so each read makes the client lay it out again.
+function U.IsWindowDragging(frame)
+  local state = frameStates[frame]
+  return state and state.dragging and true or false
+end
+
 local function ReadDragPosition(frame)
   return U.GetFramePlacement(frame)
 end

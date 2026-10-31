@@ -1831,10 +1831,18 @@ function gs.RenderList()
       }
       table.insert(items, item)
 
-      local tabs = gs.PageTabs(page)
+      -- While a query is active, only the sub-rows holding a hit.
+      local tabs
+      if gs.list and type(gs.list.VisibleTabs) == "function" then
+        tabs = gs.list.VisibleTabs(page)
+      else
+        tabs = gs.PageTabs(page)
+      end
       local count = table.getn(tabs)
+      -- A hit is never hidden under a collapsed category.
+      local searching = gs.list and (gs.list.filter or "") ~= ""
       local open = count > 0 and
-                   (page.listHeader or gs.expanded[page.id] ~= false)
+                   (page.listHeader or gs.expanded[page.id] ~= false or searching)
 
       -- The toggle exists only on a row that has tabs, and is created the first
       -- time that row has them: the client's panels are not all loaded when the
@@ -2874,7 +2882,9 @@ function gs.StyleOwnedRadio(control)
   return true
 end
 
-function gs.StyleOwnedDropdown(control)
+-- keepLayout: art only, for a caller laid out around the flat control (the
+-- edit-mode panels): the width and the outside steppers are left out.
+function gs.StyleOwnedDropdown(control, keepLayout)
   if not control or control.uuiForeverStyled or not control.button then return false end
   if type(U.Dropdown) ~= "table" or type(U.Dropdown.BuildBed) ~= "function" then
     return false
@@ -2883,6 +2893,7 @@ function gs.StyleOwnedDropdown(control)
   local token = M.foreverWow.control.dropdown
   local button = control.button
   local _, controlWidth = gs.DropdownControlSpan()
+  if keepLayout then controlWidth = nil end
   if controlWidth and controlWidth > 0 then
     pcall(button.SetWidth, button, controlWidth)
     if control.menu then pcall(control.menu.SetWidth, control.menu, controlWidth) end
@@ -2947,7 +2958,7 @@ function gs.StyleOwnedDropdown(control)
     control.SetOpen(control.open)
   end
 
-  local steppers = gs.BuildDropdownSteppers(button)
+  local steppers = (not keepLayout) and gs.BuildDropdownSteppers(button)
   if steppers then
     local function RefreshSteppers()
       local back, next = false, false
@@ -3140,10 +3151,42 @@ function gs.StyleOwnedSectionHeader(control)
   return true
 end
 
-function gs.StyleIntegratedWidget(widget)
+-- The slider's bar and thumb only, at the control's own width, with its value
+-- box and min/max labels where the caller put them: no steppers, no resize.
+-- For a panel laid out around the flat control (the edit-mode windows).
+function gs.SkinOwnedSliderArt(control)
+  if not control or control.uuiForeverStyled or not control.track then return false end
+  control.uuiForeverStyled = true
+  local token = M.foreverWow.control.slider
+  U.SetBackdropShown(control.track, false)
+  control.uuiForeverBar = gs.BuildSliderBar(control.track)
+  if control.thumbVisual then
+    U.SetBackdropShown(control.thumbVisual, false)
+    local thumb = gs.Cell(control.thumbVisual, "OVERLAY", token.texture)
+    if thumb then
+      gs.StyleSliderThumb(thumb)
+      pcall(thumb.SetPoint, thumb, "CENTER", control.thumbVisual, "CENTER", 0, 0)
+      control.uuiForeverThumb = thumb
+    end
+  end
+  -- The value stays where the caller put it, as plain text the way this
+  -- window writes it, without the flat box behind it.
+  if control.box then
+    U.SetBackdropShown(control.box, false)
+    if control.readout then
+      U.SetStockFont(control.readout, M.fontSize.normal,
+                     M.foreverWow.list.valueColor)
+    end
+  end
+  return true
+end
+
+-- keepLayout: restyle the art of each control but not its geometry; section
+-- headers keep their own face.
+function gs.StyleIntegratedWidget(widget, keepLayout)
   if not widget then return end
   if widget.uuiSectionHeader then
-    gs.StyleOwnedSectionHeader(widget)
+    if not keepLayout then gs.StyleOwnedSectionHeader(widget) end
     return
   end
   if widget.box and widget.Apply and widget.SetEnabled then
@@ -3151,11 +3194,11 @@ function gs.StyleIntegratedWidget(widget)
     return
   end
   if widget.button and widget.menu and widget.rows then
-    gs.StyleOwnedDropdown(widget)
+    gs.StyleOwnedDropdown(widget, keepLayout)
     return
   end
   if widget.track and widget.thumbVisual then
-    gs.StyleOwnedSlider(widget)
+    if keepLayout then gs.SkinOwnedSliderArt(widget) else gs.StyleOwnedSlider(widget) end
     return
   end
   if widget.swatch and widget.preview then
@@ -3172,10 +3215,10 @@ function gs.StyleIntegratedWidget(widget)
   end
 end
 
-function gs.StyleIntegratedWidgets(widgets)
+function gs.StyleIntegratedWidgets(widgets, keepLayout)
   if type(widgets) ~= "table" then return end
   local i
-  for i = 1, table.getn(widgets) do gs.StyleIntegratedWidget(widgets[i]) end
+  for i = 1, table.getn(widgets) do gs.StyleIntegratedWidget(widgets[i], keepLayout) end
 end
 
 -- ---------------------------------------------------------------------------
@@ -4935,50 +4978,17 @@ end
 -- would otherwise take its clicks.
 function gs.BuildCloseX(panel)
   local token = M.foreverWow.control.close
-  local cells = M.modernWow.redButtonCell
-  local path = M.modernWow.texture.redButton
-  if not cells or not path then return end
-  local ok, button = pcall(CreateFrame, "Button", "UnrealUIGameSettingsCloseX", panel)
-  if not ok or not button then return end
-  button:SetWidth(token.size)
-  button:SetHeight(token.size)
+  local button = U.CreateRedCloseButton(panel, {
+    name = "UnrealUIGameSettingsCloseX",
+    size = token.size,
+    onClick = function() gs.Close() end,
+  })
+  if not button then return end
   -- Forever's horizontal inset plus the requested local adjustment.
   button:SetPoint("RIGHT", panel, "TOPRIGHT", token.x + gs.CLOSE_NUDGE.x,
                   -gs.HEADER_HEIGHT / 2 + gs.CLOSE_NUDGE.y)
-  pcall(button.EnableMouse, button, true)
   panel.closeX = button
   gs.RaiseCloseX()
-
-  local function Piece(layer)
-    local made, texture = pcall(button.CreateTexture, button, nil, layer)
-    if not made or not texture then return nil end
-    pcall(texture.SetTexture, texture, path)
-    pcall(texture.SetAllPoints, texture, button)
-    return texture
-  end
-  local face, glow = Piece("ARTWORK"), Piece("OVERLAY")
-  if not face then return end
-  if glow then
-    pcall(glow.SetTexCoord, glow, cells.highlight[1], cells.highlight[2],
-          cells.highlight[3], cells.highlight[4])
-    pcall(glow.SetBlendMode, glow, "ADD")
-    pcall(glow.Hide, glow)
-  end
-
-  local state = { over = false, down = false }
-  local function Paint()
-    local cell = state.down and cells.closePushed or cells.closeNormal
-    pcall(face.SetTexCoord, face, cell[1], cell[2], cell[3], cell[4])
-    if glow then
-      if state.over then pcall(glow.Show, glow) else pcall(glow.Hide, glow) end
-    end
-  end
-  button:SetScript("OnEnter", function() state.over = true; Paint() end)
-  button:SetScript("OnLeave", function() state.over = false; state.down = false; Paint() end)
-  button:SetScript("OnMouseDown", function() state.down = true; Paint() end)
-  button:SetScript("OnMouseUp", function() state.down = false; Paint() end)
-  button:SetScript("OnClick", function() gs.Close() end)
-  Paint()
 end
 
 -- Reported in game 2026-09-23: the X lit up only with the cursor at or below
@@ -4996,15 +5006,61 @@ function gs.RaiseCloseX()
   pcall(button.SetFrameLevel, button, level + gs.ACTION_LEVEL + 1)
 end
 
+-- The window keeps one on-screen size whatever the client's UI scale (user
+-- request, 2026-10-31, ported from pandaUI's 2026-10-25 fix: at the minimum UI
+-- scale its text, and a hosted addon page's above all, was too small to read).
+-- Its own scale cancels UIParent's, so its effective scale is always
+-- gs.SCREEN_SCALE: 1, UIParent's effective scale with client UI scaling off
+-- (this client's default; UIParent 1834.67x768 at scale 1), i.e. the size the
+-- window was authored at. Set on Open, before any page is attached (gs.Close
+-- detaches them), so hosted client pages are reparented into an
+-- already-scaled window. The screen guard treats this as the owner's base
+-- scale and only shrinks it to fit.
+--
+-- UNVERIFIED on this client: the 2026-09-21 attempt to scale this window DOWN
+-- left the reparented client dropdowns at full size (knowledge.json /
+-- widgets.reparented_native_widget_ignores_ancestor_scale), on a build before
+-- client UI scaling moved onto the frame hierarchy (uiscale.v2, 2026-10-17).
+-- pandaUI's probe uiscale.v1 found hosted client controls do follow the
+-- window's scale on OctoWoW. Check the Video page's dropdowns at the minimum
+-- UI scale before treating this as confirmed.
+gs.SCREEN_SCALE = 1
+-- How often the open window checks UIParent's scale (gs.WatchScreenScale).
+gs.SCALE_WATCH_INTERVAL = 0.2
+gs.SCALE_WATCH_ID = "gamesettings.screenscale"
+
+function gs.ApplyScreenScale()
+  pcall(gs.panel.SetScale, gs.panel, 1)
+  local parent = gs.Number(gs.panel, "GetEffectiveScale")
+  local scale = 1
+  if parent and parent > 0 then scale = gs.SCREEN_SCALE / parent end
+  pcall(gs.panel.SetScale, gs.panel, scale)
+  gs.parentScale = gs.Number(UIParent, "GetEffectiveScale")
+end
+
+-- The UI Scale slider and Use UI Scale box live on this window's own Video
+-- page, so the scale can change while it is open. UI_SCALE_CHANGED is not
+-- relied on, so the open window polls UIParent's effective scale and
+-- re-applies its own when that moves.
+function gs.WatchScreenScale()
+  if not gs.panel or not gs.panel:IsShown() then
+    U.UnregisterUpdate(gs.SCALE_WATCH_ID)
+    return
+  end
+  local parent = gs.Number(UIParent, "GetEffectiveScale")
+  if not parent or not gs.parentScale or
+     math.abs(parent - gs.parentScale) > 0.001 then
+    gs.ApplyScreenScale()
+  end
+end
+
 -- id selects the page to open on; omitted keeps the last one, or Video.
 function gs.Open(id)
   if not gs.panel then gs.Build() end
 
-  -- Always drawn at scale 1 (user decision, 2026-09-21). Scaling the window
-  -- down to Forever's on-screen size was tried and reverted: the client's own
-  -- controls, reparented into it, kept their full size inside the shrunken
-  -- window (knowledge.json / widgets.reparented_native_widget_ignores_ancestor_scale).
-  pcall(gs.panel.SetScale, gs.panel, 1)
+  gs.ApplyScreenScale()
+  U.RegisterUpdate(gs.SCALE_WATCH_ID, gs.SCALE_WATCH_INTERVAL,
+                   gs.WatchScreenScale)
   gs.panel:Show()
   if gs.list and type(gs.list.ShowSearch) == "function" then
     gs.list.ShowSearch()
@@ -5176,6 +5232,12 @@ function U.CloseGameSettings()
   gs.Close()
 end
 
+-- True while the window is open, for a sibling addon that needs to know
+-- (type-checked by the caller).
+function U.IsGameSettingsShown()
+  return gs.panel ~= nil and gs.panel:IsShown() and true or false
+end
+
 -- ---------------------------------------------------------------------------
 -- This window's checkbox, lent to other windows
 --
@@ -5186,6 +5248,19 @@ end
 -- ---------------------------------------------------------------------------
 
 -- A U.CreateCheckbox control. paintLabel is optional, see gs.StyleOwnedCheckbox.
+-- The edit-mode windows (core/mover.lua, core/moverpanel.lua) wear this
+-- window's control art under every theme. They are laid out around the flat
+-- controls, so they take the art only (keepLayout): checkbox, slider
+-- bar/thumb, dropdown bed, 128RedButton face.
+function U.StyleGameSettingsWidgets(widgets, keepLayout)
+  gs.StyleIntegratedWidgets(widgets, keepLayout)
+end
+
+-- The drawn box size, for a caller that sizes its U.CreateCheckbox to it.
+function U.GameSettingsCheckboxSize()
+  return math.ceil(M.foreverWow.control.checkbox.width)
+end
+
 function U.StyleGameSettingsCheckbox(control, paintLabel)
   return gs.StyleOwnedCheckbox(control, paintLabel)
 end

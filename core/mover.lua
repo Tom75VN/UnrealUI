@@ -4,8 +4,8 @@
 -- be able to place; unlocking shows a drag handle over each one.
 --
 -- Deliberately small. This is not pfUI's mover/config framework: it provides
--- only an alignment grid, nearby-mover magnets and pixel nudging -- no
--- per-frame scale editing or configuration machinery. Only intended unrealUI
+-- only an alignment grid, nearby-mover magnets, pixel nudging and an opt-in
+-- per-anchor scale -- no configuration machinery. Only intended unrealUI
 -- elements are ever registered. Explicitly requested native widgets use either
 -- their native root (modules/minimap.lua) or an unrealUI-owned placement anchor
 -- (modules/durabilityframe.lua); their artwork and visibility remain
@@ -32,7 +32,9 @@ local IsEntryAvailable, IsEntryVisible
 local UpdateAlignmentGuides, HideAlignmentGuides
 local advanced = {
   width = 350,
-  height = 260,
+  -- Eleven rows of the game settings checkbox, 22 apart from 40 down.
+  height = 292,
+  rowSpacing = 22,
   closedWidth = 1,
   duration = 0.22,
   currentWidth = 1,
@@ -65,9 +67,15 @@ local advanced = {
     { key = "repbar", labelKey = "MOVER_LABEL_REP_BAR",
       setting = { module = "xpbar", key = "repEnabled", default = false,
                   apply = "ApplyXPBar" }, movers = { "xpbar.reputation" } },
-    { key = "status", labelKey = "MOVER_LABEL_STATUS",
+    -- keepAnchor: switched off, the overlay hides its own content and its
+    -- anchor stays in edit mode, so it can be switched back on there.
+    { key = "status", labelKey = "MOVER_LABEL_STATUS", keepAnchor = true,
+      setting = { module = "status", key = "enabled", default = true,
+                  apply = "ApplyStatusOverlay" },
       movers = { "status.overlay" } },
-    { key = "online", labelKey = "MOVER_LABEL_ONLINE_COUNT",
+    { key = "online", labelKey = "MOVER_LABEL_ONLINE_COUNT", keepAnchor = true,
+      setting = { module = "status", key = "onlineEnabled", default = true,
+                  apply = "ApplyOnlineOverlay" },
       movers = { "status.population" } },
     { key = "microbar", labelKey = "MOVER_LABEL_MICRO_BAR",
       setting = { module = "microbar", key = "enabled", default = true,
@@ -146,6 +154,17 @@ local MAGNET_DISTANCE = 8
 local ALIGNMENT_EPSILON = 0.01
 
 local function MoverConfig()
+  -- Read every frame while a mover is switched off: return the saved table
+  -- without building the defaults below (garbage) when nothing needs filling.
+  local modules = U.db and U.db.modules
+  local saved = type(modules) == "table" and modules.mover
+  if type(saved) == "table" and type(saved.gridShown) == "boolean" and
+     type(saved.gridSize) == type(DEFAULT_GRID_SIZE) and
+     type(saved.magnet) == "boolean" and
+     type(saved.groupTouching) == "boolean" and
+     type(saved.anchorEnabled) == "table" and type(saved.scales) == "table" then
+    return saved
+  end
   return U.ModuleConfig("mover", {
     gridShown = true,
     gridSize = DEFAULT_GRID_SIZE,
@@ -155,6 +174,8 @@ local function MoverConfig()
     -- Off by default.
     groupTouching = false,
     anchorEnabled = {},
+    -- Player scale per scalable mover id, in percent; absent means 100.
+    scales = {},
   })
 end
 
@@ -382,6 +403,53 @@ local function ClosestDelta(candidate, best, bestDistance)
   return best, bestDistance
 end
 
+-- Smart alignment along one axis: the anchor's low edge, centre and high edge
+-- against the same three lines of another anchor, nine pairs, in two tiers.
+-- Same-line pairs (low-low, centre-centre, high-high) are kept apart from the
+-- six cross pairs and win whenever one is in reach: an anchor's centre and
+-- edge are often closer together than a grid cell, and closest-of-nine then
+-- let a centre-to-edge match capture every step, so centre-to-centre was
+-- never reachable (pandaUI user screenshot 2026-10-26, swing bar beside cast
+-- bar).
+local function AlignDelta(low, high, otherLow, otherHigh,
+                          same, sameDistance, cross, crossDistance)
+  local mid, otherMid = (low + high) / 2, (otherLow + otherHigh) / 2
+  same, sameDistance = ClosestDelta(otherLow - low, same, sameDistance)
+  same, sameDistance = ClosestDelta(otherMid - mid, same, sameDistance)
+  same, sameDistance = ClosestDelta(otherHigh - high, same, sameDistance)
+  cross, crossDistance = ClosestDelta(otherLow - high, cross, crossDistance)
+  cross, crossDistance = ClosestDelta(otherHigh - low, cross, crossDistance)
+  cross, crossDistance = ClosestDelta(otherMid - low, cross, crossDistance)
+  cross, crossDistance = ClosestDelta(otherMid - high, cross, crossDistance)
+  cross, crossDistance = ClosestDelta(otherLow - mid, cross, crossDistance)
+  cross, crossDistance = ClosestDelta(otherHigh - mid, cross, crossDistance)
+  return same, sameDistance, cross, crossDistance
+end
+
+-- The other anchor's line that one of the anchor's own three lines sits
+-- exactly on, or nil. sameOnly checks only the same-line pairs, so the guide
+-- shows the match the snap preferred. Drives the red alignment guide.
+local function AlignedLine(low, high, otherLow, otherHigh, sameOnly)
+  local mid = (low + high) / 2
+  local otherMid = (otherLow + otherHigh) / 2
+  if math.abs(low - otherLow) <= ALIGNMENT_EPSILON then return otherLow end
+  if math.abs(mid - otherMid) <= ALIGNMENT_EPSILON then return otherMid end
+  if math.abs(high - otherHigh) <= ALIGNMENT_EPSILON then return otherHigh end
+  if sameOnly then return nil end
+  local line, i
+  for i = 1, 3 do
+    if i == 1 then line = otherLow
+    elseif i == 2 then line = otherMid
+    else line = otherHigh end
+    if math.abs(low - line) <= ALIGNMENT_EPSILON or
+       math.abs(mid - line) <= ALIGNMENT_EPSILON or
+       math.abs(high - line) <= ALIGNMENT_EPSILON then
+      return line
+    end
+  end
+  return nil
+end
+
 -- Where a frame is, as { point, relative, relativePoint, x, y }. Offsets come
 -- from its measured edges (U.GetFramePlacement, core/screenguard.lua), never
 -- from GetPoint: knowledge.json / frames.getpoint_y_same_sign_as_setpoint
@@ -433,6 +501,174 @@ local function EntryPosition(entry)
   if not placement or (placement.relative and
                        placement.relative ~= UIParent) then return nil end
   return placement
+end
+
+-- ---------------------------------------------------------------------------
+-- Per-anchor scale (edit mode "Scale (%)")
+--
+-- A mover registered with `scalable = true` gets a player scale, stored in
+-- percent under the mover config's `scales[id]`. It multiplies the scale the
+-- owner gives the frame (entry.baseScale: the modern-wow pixel scale, the cast
+-- bar trim, or 1). An owner that rescales a scalable frame goes through
+-- U.SetMoverBaseScale, so the player's scale is kept.
+--
+-- Offsets are in the frame's own units (knowledge.json /
+-- frames.ui_scale_frame_anchor_space_ratio), so a new scale alone would move
+-- the frame. The placement is converted by old/new scale, which keeps the
+-- frame's anchor point where it was on screen.
+-- ---------------------------------------------------------------------------
+local scaling = { MIN = 50, MAX = 200, STEP = 5, byFrame = {}, preview = nil }
+
+function scaling.Percent(entry, value)
+  value = tonumber(value)
+  if not value then
+    local stored = MoverConfig().scales
+    value = type(stored) == "table" and tonumber(stored[entry.id]) or nil
+  end
+  if not value then return 100 end
+  value = math.floor(value / scaling.STEP + 0.5) * scaling.STEP
+  if value < scaling.MIN then value = scaling.MIN end
+  if value > scaling.MAX then value = scaling.MAX end
+  return value
+end
+
+function scaling.Factor(entry, percent)
+  if not entry or not entry.scalable then return 1 end
+  return scaling.Percent(entry, percent) / 100
+end
+
+-- The scalable mover nearest above `frame` in its parent chain, or nil.
+function scaling.Ancestor(frame)
+  local depth = 0
+  local ok, parent = pcall(frame.GetParent, frame)
+  while ok and parent and depth < 20 do
+    local entry = scaling.byFrame[parent]
+    if entry then return entry end
+    ok, parent = pcall(parent.GetParent, parent)
+    depth = depth + 1
+  end
+  return nil
+end
+
+-- A scalable mover's own scale replaces an ancestor anchor's rather than
+-- compounding it (target-of-target is a child of the target frame): the
+-- inherited factor is divided back out. appliedFactor is the live factor,
+-- preview included, so children follow a held slider too.
+function scaling.Apply(entry, percent)
+  local frame = entry.frame
+  local factor = scaling.Factor(entry, percent)
+  entry.appliedFactor = factor
+  local inherited = U.MoverAncestorScale(frame)
+  pcall(frame.SetScale, frame, (entry.baseScale or 1) * factor / inherited)
+  if type(entry.onScale) == "function" then pcall(entry.onScale, factor) end
+  scaling.ApplyChildren(entry)
+end
+
+-- Re-applies every scalable mover whose nearest scalable ancestor is `entry`.
+function scaling.ApplyChildren(entry)
+  local frame, child
+  for frame, child in pairs(scaling.byFrame) do
+    if child ~= entry and scaling.Ancestor(frame) == entry then
+      scaling.Apply(child)
+    end
+  end
+end
+
+function scaling.FrameScale(frame)
+  local ok, value = pcall(frame.GetScale, frame)
+  value = ok and tonumber(value) or nil
+  if not value or value <= 0 then return nil end
+  return value
+end
+
+-- The placement and frame scale a change starts from, captured once so a live
+-- preview never compounds its own conversion.
+function scaling.Reference(entry)
+  return { id = entry.id, position = EntryPosition(entry),
+           scale = scaling.FrameScale(entry.frame) }
+end
+
+function scaling.Place(entry, ref, store)
+  local position = ref and ref.position
+  local now = scaling.FrameScale(entry.frame)
+  if not position or not ref.scale or not now then return end
+  local ratio = ref.scale / now
+  local moved = {
+    point = position.point,
+    relativePoint = position.relativePoint or position.point,
+    x = (tonumber(position.x) or 0) * ratio,
+    y = (tonumber(position.y) or 0) * ratio,
+  }
+  U.ApplyFramePoint(entry.frame, moved)
+  if store and math.abs(ratio - 1) > ALIGNMENT_EPSILON then
+    U.SavePosition(entry.id, moved.point, moved.relativePoint, moved.x, moved.y)
+  end
+end
+
+function U.MoverScalable(id)
+  local entry = type(id) == "string" and movers[id] or nil
+  return entry and entry.scalable and true or false
+end
+
+function U.MoverScaleRange()
+  return scaling.MIN, scaling.MAX, scaling.STEP
+end
+
+-- The player's scale for a mover, in percent (100 = the owner's own size).
+function U.GetMoverScale(id)
+  local entry = type(id) == "string" and movers[id] or nil
+  if not entry or not entry.scalable then return 100 end
+  return scaling.Percent(entry)
+end
+
+-- Live while the slider thumb is held; nothing is stored until it is released.
+function U.PreviewMoverScale(id, percent)
+  local entry = type(id) == "string" and movers[id] or nil
+  if not entry or not entry.scalable then return false end
+  if not scaling.preview or scaling.preview.id ~= id then
+    scaling.preview = scaling.Reference(entry)
+  end
+  scaling.Apply(entry, percent)
+  scaling.Place(entry, scaling.preview, false)
+  return true
+end
+
+function U.SetMoverScale(id, percent)
+  local entry = type(id) == "string" and movers[id] or nil
+  if not entry or not entry.scalable then return nil end
+  local ref = scaling.preview
+  if not ref or ref.id ~= id then ref = scaling.Reference(entry) end
+  scaling.preview = nil
+
+  percent = scaling.Percent(entry, percent)
+  local scales = MoverConfig().scales
+  if percent == 100 then scales[id] = nil else scales[id] = percent end
+  scaling.Apply(entry)
+  scaling.Place(entry, ref, true)
+  return percent
+end
+
+-- For a module that sets its own scale on a frame that may be a scalable
+-- mover: the player's scale is multiplied in rather than overwritten.
+function U.SetMoverBaseScale(frame, base)
+  if not frame or type(frame.SetScale) ~= "function" then return false end
+  base = tonumber(base) or 1
+  local entry = scaling.byFrame[frame]
+  if not entry then return pcall(frame.SetScale, frame, base) end
+  entry.baseScale = base
+  scaling.Apply(entry)
+  return true
+end
+
+-- The player scale `frame` inherits from its scalable ancestors. Only the
+-- nearest one's live factor reaches a descendant (each cancels its own
+-- ancestors). A child that cancels its parent chain to land on whole pixels
+-- (modern-wow unit frames) multiplies this back in so it still follows.
+function U.MoverAncestorScale(frame)
+  if not frame then return 1 end
+  local entry = scaling.Ancestor(frame)
+  if not entry then return 1 end
+  return entry.appliedFactor or scaling.Factor(entry)
 end
 
 -- Bounds of a registered mover in UIParent layout space, as MoverBounds
@@ -802,28 +1038,51 @@ end
 --     happens to sit in cannot hold it out of magnet range; a hit on an axis
 --     replaces the grid value on that axis only, and the other axis stays on
 --     the grid;
---   * centre alignment (screen and neighbour) stays grid-off only, since the
---     grid already provides alignment;
+--   * smart alignment -- the screen centre, and any of the anchor's left/
+--     centre/right (bottom/centre/top) lines onto any of another anchor's,
+--     touching or not -- runs in both modes. With the grid on it is measured
+--     from the grid position, within half a cell (at most MAGNET_DISTANCE):
+--     the grid keeps stepping, and the one step nearest a line lands on it
+--     exactly. Measured from the cursor instead (the first phase-1 build),
+--     a step a unit or two off the centre never reached it (pandaUI user
+--     report 2026-10-25, grid 20);
+--   * contact wins over alignment on an axis where both hit;
 --   * the collision escape is exact, leaving the anchor flush against the
 --     edge it approached.
+--
+-- Alignment runs whatever the magnet toggle says; magnetOn gates only the
+-- edge contact pull and the collision barrier, which is what the option
+-- names ("Magnet elements (prevent overlap)"): a grid step cannot close a
+-- fraction of a unit, so with the magnet off two centres a quarter unit
+-- apart never aligned (pandaUI movesnap trace, 2026-10-26).
 local function SnapToMovers(entry, point, relativePoint, x, y, gridOn,
-                            rawX, rawY)
+                            rawX, rawY, magnetOn)
   local fromX, fromY = x, y
   if gridOn then fromX, fromY = rawX or x, rawY or y end
-  local moving = { point = point, relativePoint = relativePoint,
-                   x = fromX, y = fromY }
-  local left, right, bottom, top = MoverBounds(entry, moving)
-  if not left then return x, y, false, false end
+  local left, right, bottom, top = MoverBounds(entry, {
+    point = point, relativePoint = relativePoint, x = fromX, y = fromY,
+  })
+  -- Where the grid put it (the same rectangle with the grid off).
+  local gLeft, gRight, gBottom, gTop = MoverBounds(entry, {
+    point = point, relativePoint = relativePoint, x = x, y = y,
+  })
+  if not left or not gLeft then return x, y, false, false end
 
+  local reach = MAGNET_DISTANCE
+  if gridOn and GridSize() / 2 < reach then reach = GridSize() / 2 end
+  reach = reach + ALIGNMENT_EPSILON
   local bestX, bestY, bestXDistance, bestYDistance = nil, nil,
     MAGNET_DISTANCE + 1, MAGNET_DISTANCE + 1
+  -- Same-line tier (screen centre included) and cross tier, per axis.
+  local alignX, alignY, alignXDistance, alignYDistance = nil, nil,
+    reach, reach
+  local crossX, crossY, crossXDistance, crossYDistance = nil, nil,
+    reach, reach
   local i
-  if not gridOn then
-    bestX, bestXDistance = ClosestDelta(
-      U.UILayoutWidth() / 2 - (left + right) / 2, bestX, bestXDistance)
-    bestY, bestYDistance = ClosestDelta(
-      U.UILayoutHeight() / 2 - (bottom + top) / 2, bestY, bestYDistance)
-  end
+  alignX, alignXDistance = ClosestDelta(
+    U.UILayoutWidth() / 2 - (gLeft + gRight) / 2, alignX, alignXDistance)
+  alignY, alignYDistance = ClosestDelta(
+    U.UILayoutHeight() / 2 - (gBottom + gTop) / 2, alignY, alignYDistance)
   for i = 1, table.getn(moverOrder) do
     local other = movers[moverOrder[i]]
     if other ~= entry and IsEntryVisible(other) and
@@ -832,35 +1091,50 @@ local function SnapToMovers(entry, point, relativePoint, x, y, gridOn,
       local otherLeft, otherRight, otherBottom, otherTop =
         MoverBounds(other, position)
       if otherLeft then
+        alignX, alignXDistance, crossX, crossXDistance = AlignDelta(
+          gLeft, gRight, otherLeft, otherRight,
+          alignX, alignXDistance, crossX, crossXDistance)
+        alignY, alignYDistance, crossY, crossYDistance = AlignDelta(
+          gBottom, gTop, otherBottom, otherTop,
+          alignY, alignYDistance, crossY, crossYDistance)
+      end
+      -- Grid on: edge contact from the cursor position, as before. Grid off
+      -- the alignment pass above already holds these pairs.
+      if otherLeft and gridOn and magnetOn then
         if IntervalsNear(bottom, top, otherBottom, otherTop) then
           bestX, bestXDistance = ClosestDelta(
             otherLeft - right, bestX, bestXDistance)
           bestX, bestXDistance = ClosestDelta(
             otherRight - left, bestX, bestXDistance)
-          if not gridOn then
-            bestX, bestXDistance = ClosestDelta(
-              ((otherLeft + otherRight) - (left + right)) / 2,
-              bestX, bestXDistance)
-          end
         end
         if IntervalsNear(left, right, otherLeft, otherRight) then
           bestY, bestYDistance = ClosestDelta(
             otherBottom - top, bestY, bestYDistance)
           bestY, bestYDistance = ClosestDelta(
             otherTop - bottom, bestY, bestYDistance)
-          if not gridOn then
-            bestY, bestYDistance = ClosestDelta(
-              ((otherBottom + otherTop) - (bottom + top)) / 2,
-              bestY, bestYDistance)
-          end
         end
       end
     end
   end
 
+  -- Every delta above is in UIParent units (MoverBounds); the offsets are in
+  -- the frame's own, so each correction is divided by the ratio on the way in.
+  -- Contact deltas are from the cursor position, alignment deltas from the
+  -- grid position (x, y).
   local ratio = EntryScale(entry)
-  if bestX then x = fromX + bestX / ratio end
-  if bestY then y = fromY + bestY / ratio end
+  if not alignX then alignX = crossX end
+  if not alignY then alignY = crossY end
+  if bestX then
+    x = fromX + bestX / ratio
+  elseif alignX then
+    x, bestX = x + alignX / ratio, alignX
+  end
+  if bestY then
+    y = fromY + bestY / ratio
+  elseif alignY then
+    y, bestY = y + alignY / ratio, alignY
+  end
+  if not magnetOn then return x, y, bestX ~= nil, bestY ~= nil end
 
   -- A magnet is also a collision barrier. Resolve every overlap after the
   -- proximity snap, backing the anchor out the way it came in. Repeating the
@@ -1030,11 +1304,12 @@ local function ResolveSnap(entry, point, relative, relativePoint, x, y)
   end
   local gridX, gridY = x, y
 
-  if config.magnet and (not relative or relative == UIParent) then
+  -- Alignment always; contact and overlap only with the magnet on.
+  if not relative or relative == UIParent then
     local magneticX, magneticY
     x, y, magneticX, magneticY =
       SnapToMovers(entry, point, relativePoint, x, y, config.gridShown,
-                   rawX, rawY)
+                   rawX, rawY, config.magnet and true or false)
     snapped = snapped or magneticX or magneticY
   end
   trace.Commit(sample, gridX, gridY, x, y)
@@ -1849,9 +2124,15 @@ if type(U.RegisterEvent) == "function" then
   U.RegisterEvent("PLAYER_LEAVING_WORLD", function() nudgeKeys.Release() end)
 end
 
-local function SetActiveMover(entry)
+-- True once the user closed the selected anchor's panel. The anchor stays
+-- selected so it can be moved without the panel in the way; dragging it does
+-- not bring the panel back, a plain click on it does.
+local panelDismissed = false
+
+local function SetActiveMover(entry, reopenPanel)
   local previous = activeMover
   activeMover = entry
+  if entry ~= previous or reopenPanel then panelDismissed = false end
   ApplyHandleState(previous)
   if entry ~= previous then ApplyHandleState(entry) end
 
@@ -1877,7 +2158,10 @@ local function SetActiveMover(entry)
   -- Which movers have a panel is not decided here: a module registers one for
   -- its own mover id (core/moverpanel.lua), and a mover with no registered
   -- panel simply selects with nothing beside it.
-  if entry and type(entry.id) == "string" and
+  if entry and panelDismissed then
+    -- Closed by the user for this selection: leave it down.
+    return
+  elseif entry and type(entry.id) == "string" and
      type(U.ShowMoverPanel) == "function" then
     U.ShowMoverPanel(entry.id, {
       id = entry.id, frame = entry.handle or entry.frame, label = entry.label,
@@ -1895,6 +2179,16 @@ end
 function U.ClearMoverSelection()
   if not activeMover then return false end
   SetActiveMover(nil)
+  return true
+end
+
+-- The contextual panel's close button: hides the panel but keeps the anchor
+-- selected (highlight, arrow-key nudging, click-outside deselect). Returns
+-- false when nothing is selected, so U.CloseMoverPanel falls back to a hide.
+function U.DismissMoverPanel()
+  if not activeMover then return false end
+  panelDismissed = true
+  if type(U.HideMoverPanel) == "function" then U.HideMoverPanel() end
   return true
 end
 
@@ -2003,7 +2297,12 @@ local function CreateHandle(entry)
 
   -- knowledge.json / scripts.handler_arguments_direct: these close over entry
   -- instead of depending on the callback argument shape.
+  -- dragGesture tells OnClick whether this press was a drag: a drag keeps a
+  -- closed panel closed, a plain click on the anchor reopens it.
+  input:SetScript("OnMouseDown", function() entry.dragGesture = nil end)
+
   input:SetScript("OnDragStart", function()
+    entry.dragGesture = true
     SetActiveMover(entry)
     entry.dragStarts = entry.dragStarts + 1
     StartDrag(entry)
@@ -2022,7 +2321,10 @@ local function CreateHandle(entry)
   -- way to poll a missed release back out of the shared updater.
   input:SetScript("OnMouseUp", function() StopDrag(entry) end)
 
-  input:SetScript("OnClick", function() SetActiveMover(entry) end)
+  input:SetScript("OnClick", function()
+    SetActiveMover(entry, not entry.dragGesture)
+    entry.dragGesture = nil
+  end)
 
   -- OnEnter is instrumentation as much as highlight: if the enter count stays
   -- at zero the client is not routing mouse input to the handle at all, which
@@ -2045,8 +2347,37 @@ local function CreateHandle(entry)
   return handle
 end
 
+-- The edit window, its anchor drawer and the per-anchor settings panel all sit
+-- at HIGH. A moved frame in HIGH or above (the cast bars, raised over crafting
+-- windows) puts its handle there too, at frame level + HANDLE_LEVEL_OFFSET, so
+-- the handle drew over those panels. While its handle is shown such a frame is
+-- held at MEDIUM; the strata it had is restored when the handle goes away.
+local EDIT_CHROME_STRATA = "HIGH"
+local EDIT_TARGET_STRATA = "MEDIUM"
+
+local function LowerForEdit(entry)
+  if entry.editStrata then return end
+  local ok, strata = pcall(entry.frame.GetFrameStrata, entry.frame)
+  if not ok or type(strata) ~= "string" then return end
+  if (INPUT_STRATA_RANK[strata] or 0) <
+     INPUT_STRATA_RANK[EDIT_CHROME_STRATA] then
+    return
+  end
+  if pcall(entry.frame.SetFrameStrata, entry.frame, EDIT_TARGET_STRATA) then
+    entry.editStrata = strata
+  end
+end
+
+local function RestoreEditStrata(entry)
+  local strata = entry.editStrata
+  if not strata then return end
+  entry.editStrata = nil
+  pcall(entry.frame.SetFrameStrata, entry.frame, strata)
+end
+
 local function HideHandle(entry)
   entry.handleShown = false
+  RestoreEditStrata(entry)
   -- An anchor whose element a module has just switched off must not stay
   -- selected: its highlight and panel would be gone, but the click catcher
   -- holding the screen would not.
@@ -2092,6 +2423,8 @@ local function ShowHandle(entry)
   end
 
   if not entry.handle then CreateHandle(entry) end
+  -- Before RaiseHandle, which reads the frame's strata for the drag input.
+  LowerForEdit(entry)
   -- Parent/native frame levels can change while the handle is hidden. Refresh
   -- on every unlock instead of trusting the value captured at construction.
   RaiseHandle(entry)
@@ -2254,21 +2587,27 @@ UpdateAlignmentGuides = function(entry, point, relativePoint, x, y)
     guideY = screenCenterY
   end
   local i
-  for i = 1, table.getn(moverOrder) do
-    local other = movers[moverOrder[i]]
-    if other ~= entry and IsEntryVisible(other) then
-      local otherLeft, otherRight, otherBottom, otherTop =
-        MoverBounds(other, EntryPosition(other))
-      if otherLeft then
-        local otherCenterX = (otherLeft + otherRight) / 2
-        local otherCenterY = (otherBottom + otherTop) / 2
-        if not guideX and
-           math.abs(centerX - otherCenterX) <= ALIGNMENT_EPSILON then
-          guideX = otherCenterX
-        end
-        if not guideY and
-           math.abs(centerY - otherCenterY) <= ALIGNMENT_EPSILON then
-          guideY = otherCenterY
+  -- Any of the anchor's three lines per axis on any line of another anchor,
+  -- touching or not. Same tiers as the snap (AlignDelta): screen centre, then
+  -- same-line matches across every anchor, then cross matches.
+  local pass
+  for pass = 1, 2 do
+    for i = 1, table.getn(moverOrder) do
+      if guideX and guideY then break end
+      local other = movers[moverOrder[i]]
+      if other ~= entry and IsEntryVisible(other) and
+         not IsFollower(entry, other) then
+        local otherLeft, otherRight, otherBottom, otherTop =
+          MoverBounds(other, EntryPosition(other))
+        if otherLeft then
+          if not guideX then
+            guideX = AlignedLine(left, right, otherLeft, otherRight,
+                                 pass == 1)
+          end
+          if not guideY then
+            guideY = AlignedLine(bottom, top, otherBottom, otherTop,
+                                 pass == 1)
+          end
         end
       end
     end
@@ -2304,6 +2643,45 @@ UpdateAlignmentGuides = function(entry, point, relativePoint, x, y)
   end
 end
 
+-- Edit mode's housing and controls under every theme: the diamond-metal
+-- frame, the red close X and the game settings window's control art, the way
+-- Retail's edit-mode dialogs wear one dialog border, UIPanelCloseButton and
+-- the settings controls (RetailFrameXML 12.1.0.69933,
+-- Blizzard_EditMode/Shared/EditModeDialogs.xml). core/moverpanel.lua uses
+-- the same exports.
+local editChrome = {}
+
+function editChrome.Housing(frame, width, height)
+  if type(U.ModernWowMetalFrame) ~= "function" then return end
+  if U.ModernWowMetalFrame(frame, width, height, true) then
+    U.SetBackdropShown(frame, false)
+  end
+end
+
+function editChrome.CheckboxSize()
+  if type(U.GameSettingsCheckboxSize) == "function" then
+    return U.GameSettingsCheckboxSize()
+  end
+  return 14
+end
+
+-- Art only: these windows are laid out around the flat controls.
+function editChrome.StyleControls(widgets)
+  if type(U.StyleGameSettingsWidgets) == "function" then
+    U.StyleGameSettingsWidgets(widgets, true)
+  end
+end
+
+function editChrome.CloseX(frame, name, onClick)
+  local token = M.editModeChrome.close
+  local button = U.CreateRedCloseButton(frame, {
+    name = name, size = token.size, onClick = onClick,
+  })
+  if not button then return nil end
+  button:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -token.right, -token.top)
+  return button
+end
+
 -- The edit panel is the only way out of edit mode that does not need a slash
 -- command. It is deliberately not registered as a mover: it belongs to the mode
 -- rather than to the layout.
@@ -2315,6 +2693,7 @@ local function CreateEditPanel()
   })
   editPanel:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
   pcall(editPanel.SetFrameStrata, editPanel, "HIGH")
+  editChrome.Housing(editPanel, 280, 237)
 
   local title = U.CreateLabel(editPanel, {
     size = M.fontSize.large,
@@ -2343,6 +2722,7 @@ local function CreateEditPanel()
   editPanel.gridToggle = U.CreateCheckbox(editPanel, {
     name = "UnrealUIEditGridToggle",
     text = U.L("MOVER_GRID"),
+    size = editChrome.CheckboxSize(),
     textWidth = 220,
     value = config.gridShown,
     onChange = function(value)
@@ -2355,6 +2735,7 @@ local function CreateEditPanel()
   editPanel.magnetToggle = U.CreateCheckbox(editPanel, {
     name = "UnrealUIEditMagnetToggle",
     text = U.L("MOVER_MAGNET"),
+    size = editChrome.CheckboxSize(),
     textWidth = 220,
     value = config.magnet,
     onChange = function(value) MoverConfig().magnet = value end,
@@ -2364,6 +2745,7 @@ local function CreateEditPanel()
   editPanel.groupToggle = U.CreateCheckbox(editPanel, {
     name = "UnrealUIEditGroupToggle",
     text = U.L("MOVER_GROUP"),
+    size = editChrome.CheckboxSize(),
     textWidth = 220,
     value = config.groupTouching,
     onChange = function(value) MoverConfig().groupTouching = value end,
@@ -2405,6 +2787,7 @@ local function CreateEditPanel()
     onClick = function()
       U.ShowConfirm({
         owner = "mover.reset",
+        editMode = true,
         centered = true,
         text = U.L("COMMON_ARE_YOU_SURE"),
         detail = U.L("COMMON_CANNOT_BE_UNDONE"),
@@ -2418,10 +2801,29 @@ local function CreateEditPanel()
   -- The edit window uses the same persistent header-drag behavior as the other
   -- UnrealUI windows. Only its title strip is a drag surface, leaving every
   -- option below fully interactive.
+  -- Retail's edit-mode window closes from a red X at its top-right; here it
+  -- leaves edit mode, as Save and exit does. Kept above the title-strip drag
+  -- handle and its drag input, which would otherwise take its clicks.
+  local close = editChrome.CloseX(editPanel, "UnrealUIEditClose",
+    function() U.LockUI() end)
+  editPanel.close = close
+  local closeOffsets
+  if close then
+    closeOffsets = {}
+    closeOffsets[close] = 2
+  end
+
   U.MakeWindowDraggable("mover.edit", editPanel, {
     headerHeight = 30,
     headerInset = 0,
     avoidOverlap = false,
+    interactiveFrames = close and { close } or nil,
+    interactiveFrameOffsets = closeOffsets,
+  })
+
+  editChrome.StyleControls({
+    editPanel.gridToggle, editPanel.magnetToggle, editPanel.groupToggle,
+    editPanel.gridSlider, editPanel.save, editPanel.reset,
   })
 
   editPanel:Hide()
@@ -2468,7 +2870,10 @@ function advanced.SetWidth(width)
   if width < advanced.closedWidth then width = advanced.closedWidth end
   if width > advanced.width then width = advanced.width end
   advanced.currentWidth = width
-  if advanced.panel then advanced.panel:SetWidth(width) end
+  if advanced.panel then
+    advanced.panel:SetWidth(width)
+    editChrome.Housing(advanced.panel, width, advanced.height)
+  end
 end
 
 function advanced.SetOpen(open, immediate)
@@ -2595,7 +3000,7 @@ function advanced.ApplyGroup(group, value)
   for i = 1, table.getn(group.movers) do
     local entry = movers[group.movers[i]]
     if entry then
-      if value then
+      if value or group.keepAnchor then
         -- Handles exist only in edit mode; the content gate is persistent, so
         -- it is released whether or not the drawer is on screen. A settings
         -- page can switch an element back on with edit mode closed.
@@ -2671,6 +3076,8 @@ function advanced.UserEnabled(entry)
   local groupKey = entry and advanced.moverKeys[entry.id]
   if not groupKey then return true end
   local group = advanced.Group(groupKey)
+  -- The module gates its own content and the anchor always stays.
+  if group and group.keepAnchor then return true end
   local settingValue = advanced.GroupSettingValue(group)
   if settingValue ~= nil then return settingValue and true or false end
   local enabled = MoverConfig().anchorEnabled
@@ -2682,7 +3089,12 @@ end
 
 function advanced.EnforceHiddenContent()
   local _, entry, i
-  local release = {}
+  -- Runs every frame: reuse one scratch list instead of a new table.
+  local release = advanced.releaseScratch
+  if not release then
+    release = {}
+    advanced.releaseScratch = release
+  end
   for _, entry in pairs(advanced.hiddenEntries) do
     if advanced.UserEnabled(entry) then
       table.insert(release, entry)
@@ -2690,8 +3102,16 @@ function advanced.EnforceHiddenContent()
       advanced.SetEntryContent(entry, false)
     end
   end
-  for i = 1, table.getn(release) do
-    advanced.SetEntryContent(release[i], true)
+  local count = table.getn(release)
+  if count == 0 then return end
+  -- Empty the list before releasing, so a re-entrant call starts clean.
+  local pending = {}
+  for i = count, 1, -1 do
+    pending[i] = release[i]
+    table.remove(release, i)
+  end
+  for i = 1, count do
+    advanced.SetEntryContent(pending[i], true)
   end
 end
 
@@ -2815,10 +3235,11 @@ function advanced.AddRow(group)
   row = U.CreateCheckbox(advanced.panel, {
     name = "UnrealUIAdvancedAnchorToggle" .. index,
     text = U.L(group.labelKey, group.labelArg),
+    size = editChrome.CheckboxSize(),
     textWidth = 132,
     rowHover = true,
     rowWidth = advanced.columnWidth - 10,
-    rowHeight = 18,
+    rowHeight = editChrome.CheckboxSize(),
     value = true,
     onEnter = function() advanced.SetGroupHighlighted(group, true) end,
     onLeave = function() advanced.SetGroupHighlighted(group, false) end,
@@ -2827,8 +3248,10 @@ function advanced.AddRow(group)
     end,
   })
   row.uuiAdvancedGroup = group
+  editChrome.StyleControls({ row })
   row.SetPoint("TOPLEFT", advanced.panel, "TOPLEFT",
-               28 + column * advanced.columnWidth, -40 - line * 20)
+               28 + column * advanced.columnWidth,
+               -40 - line * advanced.rowSpacing)
   table.insert(advanced.rows, row)
   advanced.RefreshRow(row)
   SetControlShown(row, advanced.open)
@@ -2842,7 +3265,8 @@ function advanced.Build()
     width = advanced.closedWidth,
     height = advanced.height,
   })
-  advanced.panel:SetPoint("TOPLEFT", editPanel, "TOPRIGHT", -1, 0)
+  advanced.panel:SetPoint("TOPLEFT", editPanel, "TOPRIGHT",
+                          M.editModeChrome.drawerGap, 0)
   pcall(advanced.panel.SetFrameStrata, advanced.panel, "HIGH")
 
   advanced.title = U.CreateLabel(advanced.panel, {
@@ -2873,6 +3297,7 @@ function advanced.Build()
   })
   advanced.arrow:SetPoint("TOP", editPanel, "TOP", 0, -168)
   pcall(advanced.arrow.SetFrameStrata, advanced.arrow, "HIGH")
+  editChrome.StyleControls({ advanced.arrow })
   local levelOk, level = pcall(editPanel.GetFrameLevel, editPanel)
   if levelOk and tonumber(level) then
     pcall(advanced.panel.SetFrameLevel, advanced.panel, level + 1)
@@ -3169,7 +3594,9 @@ end
 -- options  { label = "Player", default = { point, relativePoint, x, y },
 --            visible = function() return true end,
 --            setEditShown = function(falseOrNil) end,
---            inputStrata = "HIGH" }
+--            inputStrata = "HIGH",
+--            scalable = true,   -- edit mode offers a Scale (%) slider
+--            onScale = function(factor) end }  -- extra frames to follow it
 function U.RegisterMover(id, frame, options)
   if type(id) ~= "string" or not frame then
     U.Error("RegisterMover requires an id and a frame")
@@ -3206,6 +3633,19 @@ function U.RegisterMover(id, frame, options)
   table.insert(moverOrder, id)
 
   pcall(frame.SetMovable, frame, true)
+
+  -- Scale before position: the stored offsets are in the scaled frame's units.
+  if options.scalable then
+    entry.scalable = true
+    entry.onScale = options.onScale
+    entry.baseScale = scaling.FrameScale(frame) or 1
+    scaling.byFrame[frame] = entry
+    -- Also at 100%: a child of a scaled anchor divides that scale out.
+    if scaling.Percent(entry) ~= 100 or U.MoverAncestorScale(frame) ~= 1 then
+      scaling.Apply(entry)
+    end
+  end
+
   -- Position is applied immediately, not deferred to a tick.
   ApplyStoredPosition(entry)
 
@@ -3385,10 +3825,14 @@ end
 -- module-supplied default.
 function U.ResetPositions()
   U.ClearAllPositions()
+  -- The defaults were authored at the owner's own size, so scales reset too.
+  MoverConfig().scales = {}
+  scaling.preview = nil
 
   local i, restored = nil, 0
   for i = 1, table.getn(moverOrder) do
     local entry = movers[moverOrder[i]]
+    if entry.scalable then scaling.Apply(entry) end
     if ApplyStoredPosition(entry) then restored = restored + 1 end
   end
 

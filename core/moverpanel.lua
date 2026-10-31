@@ -41,16 +41,53 @@ local SCREEN_MARGIN = 8
 local PAD = 12
 local CONTENT_TOP = -44
 
--- Close button, the same 17-unit square and inset the skinned stock windows
--- carry in their top-right corner (U.StyleStockCloseButton), so the contextual
--- panel closes the way every other unrealUI window does.
-local CLOSE_SIZE = 17
-local CLOSE_INSET = 5
+-- Close button: the red X at the size and inset edit mode's metal-framed
+-- windows share (M.editModeChrome).
+local CLOSE_SIZE = M.editModeChrome.close.size
+local CLOSE_INSET = M.editModeChrome.close.right
 -- The header's rules stop clear of that corner on both sides, which keeps the
 -- title centred on the panel instead of shifting it away from the button.
 local HEADER_INSET = CLOSE_INSET + CLOSE_SIZE + 4
 
+-- Scale (%) row, added below a panel's own content for a scalable mover
+-- (core/mover.lua, `scalable = true`). A scalable mover with no panel of its
+-- own gets SCALE_ONLY, one shared frame retargeted on each show.
+-- The row's caption sits SCALE_CAPTION above the track's top edge (14 tall,
+-- 4 gap; U.CreateSlider), so the track is placed that far below where the row
+-- starts -- anchoring the track at the old panel bottom raised the caption
+-- into the panel's last row. Panels end 12 below their content, so the row
+-- starts 4 above the
+-- old bottom: an 8 gap. Added height: caption 18 + track 8 + 2 + value box
+-- 16 + PAD, less the 4 the row starts above the old bottom.
+local SCALE_CAPTION = 18
+local SCALE_ROW = SCALE_CAPTION + 8 + 2 + 16 + PAD - 4
+local SCALE_SLIDER_WIDTH = 150
+local SCALE_ONLY = {
+  name = "UnrealUIMoverScaleSettings",
+  width = 200 + PAD * 2,
+  -- Header only: the scale row then starts at CONTENT_TOP.
+  height = 48,
+  build = function() return {}, nil end,
+}
+
 function U.MoverPanelPad() return PAD end
+
+-- Edit mode's housing under every theme: the diamond-metal frame in place of the flat backdrop. Recomputed on each show,
+-- since a panel's height depends on the mover it is shown for.
+local function DrawChrome(frame, width, height)
+  if type(U.ModernWowMetalFrame) ~= "function" then return end
+  if U.ModernWowMetalFrame(frame, width, height, true) then
+    U.SetBackdropShown(frame, false)
+  end
+end
+
+-- The game settings window's control art on a panel's controls, leaving the
+-- layout each module built around the flat controls as it is.
+local function StyleControls(widgets)
+  if type(U.StyleGameSettingsWidgets) == "function" then
+    U.StyleGameSettingsWidgets(widgets, true)
+  end
+end
 function U.MoverPanelContentTop() return CONTENT_TOP end
 
 -- ---------------------------------------------------------------------------
@@ -87,6 +124,10 @@ end
 local function SetSpecShown(spec, shown)
   if not spec or not spec.frame then return end
   SetWidgetShown(spec.frame, shown)
+  -- Shown on demand by ShowMoverPanel, only for a scalable mover.
+  if not shown and spec.scaleSlider then
+    SetWidgetShown(spec.scaleSlider, false)
+  end
   local i
   for i = 1, table.getn(spec.widgets or {}) do
     SetWidgetShown(spec.widgets[i], shown)
@@ -97,6 +138,29 @@ local function PanelHeight(spec)
   local height = spec.height
   if type(height) == "function" then height = height() end
   return tonumber(height) or 200
+end
+
+local function Scalable(id)
+  return type(U.MoverScalable) == "function" and U.MoverScalable(id)
+end
+
+-- The panel's full height for one mover: its own content, plus the scale row.
+local function ShownHeight(spec, id)
+  local height = PanelHeight(spec)
+  if Scalable(id) then height = height + SCALE_ROW end
+  return height
+end
+
+-- The registered spec when it is available, else the shared scale-only panel
+-- for a scalable mover, else nil.
+local function SpecFor(id)
+  if type(id) ~= "string" then return nil end
+  local spec = panels[id]
+  if spec and (type(spec.available) ~= "function" or spec.available(id)) then
+    return spec
+  end
+  if Scalable(id) then return SCALE_ONLY end
+  return nil
 end
 
 -- ---------------------------------------------------------------------------
@@ -132,31 +196,67 @@ local function BuildSpec(spec)
   })
   table.insert(spec.widgets, spec.header)
 
-  -- Closing is deselecting: the panel exists because a handle is selected, so
-  -- the button goes through U.CloseMoverPanel rather than hiding the window and
-  -- leaving a selected anchor with nothing beside it.
-  spec.close = U.CreateButton(frame, {
+  -- Closing hides the panel only: the handle stays selected (U.CloseMoverPanel
+  -- -> U.DismissMoverPanel) and a plain click on it brings the panel back.
+  spec.close = U.CreateRedCloseButton(frame, {
     name = spec.name and (spec.name .. "Close") or nil,
-    text = "X",
-    width = CLOSE_SIZE,
-    height = CLOSE_SIZE,
-    size = M.fontSize.small,
-    textColor = M.color.closeGlyph,
-    hoverBorder = M.color.closeGlyph,
+    size = CLOSE_SIZE,
     onClick = function() U.CloseMoverPanel() end,
   })
-  spec.close:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -CLOSE_INSET, -CLOSE_INSET)
-  table.insert(spec.widgets, spec.close)
+  if spec.close then
+    spec.close:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -CLOSE_INSET,
+                        -M.editModeChrome.close.top)
+    table.insert(spec.widgets, spec.close)
+  end
 
   local widgets, refresh = spec.build(frame, CONTENT_TOP, contentWidth)
   local i
   for i = 1, table.getn(widgets or {}) do
     table.insert(spec.widgets, widgets[i])
   end
+  StyleControls(widgets)
   spec.refresh = refresh
 
   SetSpecShown(spec, false)
   return true
+end
+
+-- Built on the first scalable mover a spec is shown for. It always acts on
+-- the mover that is selected now (active.id), so a shared spec needs one row.
+local function ShowScaleRow(spec, id)
+  if not Scalable(id) then
+    if spec.scaleSlider then SetWidgetShown(spec.scaleSlider, false) end
+    return
+  end
+
+  if not spec.scaleSlider then
+    local min, max, step = U.MoverScaleRange()
+    spec.scaleSlider = U.CreateSlider(spec.frame, {
+      name = spec.name and (spec.name .. "Scale") or nil,
+      text = U.L("MOVER_SCALE"),
+      width = SCALE_SLIDER_WIDTH,
+      boxWidth = 60,
+      min = min,
+      max = max,
+      step = step,
+      value = 100,
+      -- Rescaling grows the anchor under the panel; hold the panel still.
+      onInputStart = function() U.FreezeMoverPanel() end,
+      onInput = function(v)
+        if active.id then U.PreviewMoverScale(active.id, v) end
+      end,
+      onChange = function(v)
+        if active.id then U.SetMoverScale(active.id, v) end
+      end,
+    })
+    StyleControls({ spec.scaleSlider })
+  end
+
+  -- Re-anchored on each show: a spec's own height can depend on the mover.
+  spec.scaleSlider.SetPoint("TOPLEFT", spec.frame, "TOPLEFT", PAD,
+                            4 - PanelHeight(spec) - SCALE_CAPTION)
+  spec.scaleSlider.SetValue(U.GetMoverScale(id))
+  SetWidgetShown(spec.scaleSlider, true)
 end
 
 -- The window is titled with the anchor's own label, so the panel names the
@@ -206,7 +306,7 @@ local function Place()
     return true
   end
 
-  local width, height = spec.width, PanelHeight(spec)
+  local width, height = spec.width, ShownHeight(spec, active.id)
   local roomRight = screenWidth - SCREEN_MARGIN - (right + ANCHOR_GAP)
   local roomLeft = (left - ANCHOR_GAP) - SCREEN_MARGIN
   local roomAbove = screenHeight - SCREEN_MARGIN - (top + ANCHOR_GAP)
@@ -305,12 +405,7 @@ function U.RegisterMoverPanel(id, spec)
 end
 
 function U.HasMoverPanel(id)
-  local spec = type(id) == "string" and panels[id] or nil
-  if not spec then return false end
-  if type(spec.available) == "function" and not spec.available(id) then
-    return false
-  end
-  return true
+  return SpecFor(id) ~= nil
 end
 
 function U.ActiveMoverPanelId()
@@ -319,9 +414,8 @@ end
 
 -- anchor is the selected mover: { id, frame, label }. core/mover.lua owns it.
 function U.ShowMoverPanel(id, anchor)
-  local spec = type(id) == "string" and panels[id] or nil
-  if not spec or type(anchor) ~= "table" or not anchor.frame or
-     not U.HasMoverPanel(id) then
+  local spec = SpecFor(id)
+  if not spec or type(anchor) ~= "table" or not anchor.frame then
     U.HideMoverPanel()
     return false
   end
@@ -337,20 +431,22 @@ function U.ShowMoverPanel(id, anchor)
 
   active.id, active.spec, active.anchor = id, spec, anchor
   active.pin, active.frozen = nil, false
-  spec.frame:SetHeight(PanelHeight(spec))
+  spec.frame:SetHeight(ShownHeight(spec, id))
+  DrawChrome(spec.frame, spec.width, ShownHeight(spec, id))
   if spec.header then spec.header.SetText(Title(spec, id, anchor)) end
   if type(spec.refresh) == "function" then spec.refresh(id, anchor) end
   Place()
   SetSpecShown(spec, true)
+  ShowScaleRow(spec, id)
   return true
 end
 
--- The close button's action. The panel is the selected anchor's, so this
--- deselects the anchor in core/mover.lua, which calls back into
--- U.HideMoverPanel. The direct hide is the fallback for a panel that is
--- somehow up with no selection behind it.
+-- The close button's action. It hides the panel but keeps the anchor selected
+-- in core/mover.lua, so the anchor can be moved without the panel in the way.
+-- The direct hide is the fallback for a panel that is somehow up with no
+-- selection behind it.
 function U.CloseMoverPanel()
-  if type(U.ClearMoverSelection) == "function" and U.ClearMoverSelection() then
+  if type(U.DismissMoverPanel) == "function" and U.DismissMoverPanel() then
     return true
   end
   U.HideMoverPanel()
@@ -392,6 +488,9 @@ end
 -- settings, so whichever one wrote a value tells the other to re-read it.
 function U.RefreshMoverPanel(id)
   if not active.spec or (id ~= nil and id ~= active.id) then return false end
+  if active.spec.scaleSlider and Scalable(active.id) then
+    active.spec.scaleSlider.SetValue(U.GetMoverScale(active.id))
+  end
   if type(active.spec.refresh) ~= "function" then return false end
   active.spec.refresh(active.id, active.anchor)
   return true

@@ -238,10 +238,10 @@ local function ClearNativeTextures(name)
 end
 
 local function ClearAddonEdges(frame)
-  if not frame then return end
+  if not frame or type(frame.uuiEdges) ~= "table" then return end
 
   local i
-  for i = 1, table.getn(frame.uuiEdges or {}) do
+  for i = 1, table.getn(frame.uuiEdges) do
     U.HideRegion(frame.uuiEdges[i])
   end
 end

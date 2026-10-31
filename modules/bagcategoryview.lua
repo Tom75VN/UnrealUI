@@ -73,6 +73,13 @@ function U.SetBagCategoryDropSource(source)
   CV.drop.source = source
 end
 
+-- The record for the item on the cursor, when an UnrealUI slot put it there
+-- (the custom category editor's item list, modules/bagcustomcategories.lua).
+function U.BagCategoryCursorSource()
+  if not U.CursorHasItem() then return nil end
+  return CV.drop.source
+end
+
 function CV.drop.AuctionSubclasses(classIndex)
   if CV.drop.subclasses[classIndex] then
     return CV.drop.subclasses[classIndex]
@@ -436,6 +443,11 @@ function CV.Collect(view)
      type(U.IsBagSlotFavorite) == "function" then
     favoriteKey = U.ItemCategoryFavorite()
   end
+  -- Resolved once per pass, like the favourite key; nil while the player has
+  -- no category of their own.
+  local customFor = type(U.CustomItemCategory) == "function" and
+                    type(U.HasCustomCategories) == "function" and
+                    U.HasCustomCategories() and U.CustomItemCategory or nil
 
   for i = 1, table.getn(bags) do
     local bag = bags[i]
@@ -478,6 +490,15 @@ function CV.Collect(view)
                        U.IsBagSlotFavorite(bag, slot)
       if favorite then
         key = favoriteKey
+      elseif key ~= "empty" and customFor then
+        -- modules/bagcustomcategories.lua: the player's own categories come
+        -- before the built-in one, and lift an item out of a specialty bag
+        -- the same way a favourite mark does.
+        local custom = customFor(U.ContainerSlotLink(bag, slot), bag, slot, true)
+        if custom then
+          key = custom
+          favorite = true
+        end
       end
       if key ~= "empty" then
         used = used + 1
@@ -665,6 +686,12 @@ function CV.Layout(view)
   local collapsed = host.collapsed()
   local buckets, special, empty, usedSlots, totalSlots = CV.Collect(view)
   local order = U.ItemCategoryOrder()
+  -- Custom categories follow Favourites, in their own priority order.
+  if type(U.CustomCategoryOrder) == "function" then
+    local custom = U.CustomCategoryOrder()
+    local at = (order[1] == U.ItemCategoryFavorite()) and 2 or 1
+    for i = table.getn(custom), 1, -1 do table.insert(order, at, custom[i]) end
+  end
   local live = {}    -- every (bag, slot) this pass actually placed
   local drawn = {}   -- every category this pass actually drew
   local visible = {} -- ordered categories with at least one item

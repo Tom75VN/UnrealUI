@@ -263,7 +263,9 @@ end
 
 local function ApplyFontRecord(record)
   local fontstring = record.fontstring
-  local choice = U.GetFontChoice(record.role)
+  -- A pinned face (U.SetFontFace) ignores the global choice: the font
+  -- dropdown draws each row in the face it names.
+  local choice = record.fixedFontId or U.GetFontChoice(record.role)
   local media = choice ~= "original" and M.fontById[choice] or nil
   local color = ReadTextColor(fontstring)
   local applied = false
@@ -317,6 +319,18 @@ local function ApplyFontRecord(record)
     RestoreTextColor(fontstring, color)
   end
 
+  -- exactSize: the client's own face, at the requested size. The inherited
+  -- FontObject drops a size (fonts.setfont_silent_failure), so the face the
+  -- label reported when first styled is set again at this size through the
+  -- same FontString:SetFont route SetBundledFont uses.
+  local face = record.originalFace
+  if choice == "original" and record.exactSize and face and fontstring.SetFont then
+    if pcall(fontstring.SetFont, fontstring, face[1], record.size,
+             record.flags or face[3]) then
+      applied = true
+    end
+  end
+
   return applied
 end
 
@@ -330,6 +344,25 @@ function U.ApplyFontChoice(role)
       if not record.shadowFree then U.SetTextShadow(fontstring) end
     end
   end
+end
+
+-- Pins one styled FontString to a font id ("original" or an M.fonts id),
+-- whatever the global choice. nil unpins it. Returns whether it applied.
+function U.SetFontFace(fontstring, fontId)
+  if not fontstring then return false end
+  if fontId ~= nil and fontId ~= "original" and not M.fontById[fontId] then
+    return false
+  end
+  local record = styledFonts[fontstring]
+  if not record then
+    U.SetFont(fontstring, M.fontSize.normal)
+    record = styledFonts[fontstring]
+    if not record then return false end
+  end
+  record.fixedFontId = fontId
+  local applied = ApplyFontRecord(record)
+  if not record.shadowFree then U.SetTextShadow(fontstring) end
+  return applied
 end
 
 function U.SetFontChoice(role, value)
@@ -472,7 +505,9 @@ end
 -- FontString:SetFont (see SetBundledFont); the client's own face is the
 -- inherited FontObject, retained for the "Original" option and as the safe
 -- fallback whenever a bundled face is not confirmed by readback.
-function U.SetFont(fontstring, size, flags, role, shadowFree)
+-- exactSize: honour `size` under the "original" font choice too; otherwise
+-- that choice keeps the inherited size.
+function U.SetFont(fontstring, size, flags, role, shadowFree, exactSize)
   if not fontstring then return false end
 
   local record = styledFonts[fontstring]
@@ -498,6 +533,7 @@ function U.SetFont(fontstring, size, flags, role, shadowFree)
   record.flags = flags
   record.role = NormaliseFontRole(role)
   if shadowFree ~= nil then record.shadowFree = shadowFree and true or false end
+  if exactSize ~= nil then record.exactSize = exactSize and true or false end
   local applied = ApplyFontRecord(record)
   if not record.shadowFree then U.SetTextShadow(fontstring) end
   return applied
@@ -678,16 +714,12 @@ end
 -- ---------------------------------------------------------------------------
 function U.HideRegion(region)
   if not region then return false end
+  -- Called every frame from the tooltip updater: no closures (garbage).
+  if type(region) ~= "table" then return true end
 
-  pcall(function()
-    if region.SetTexture then region:SetTexture(nil) end
-  end)
-  pcall(function()
-    if region.SetAlpha then region:SetAlpha(0) end
-  end)
-  pcall(function()
-    if region.Hide then region:Hide() end
-  end)
+  if region.SetTexture then pcall(region.SetTexture, region, nil) end
+  if region.SetAlpha then pcall(region.SetAlpha, region, 0) end
+  if region.Hide then pcall(region.Hide, region) end
   return true
 end
 

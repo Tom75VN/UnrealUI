@@ -10,7 +10,7 @@ local M = U.media
 
 local SA = U.RegisterModule("screenalerts")
 
-local PAGE_WIDTH = 484
+local PAGE_WIDTH = U.SETTINGS_PAGE_WIDTH
 local LOW_HEALTH_START = 0.35
 local PULSE_HALF = 0.5236
 

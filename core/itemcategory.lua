@@ -278,6 +278,12 @@ function U.ItemCategoryFavorite()
 end
 
 function U.ItemCategoryLabel(key)
+  -- A player-made category (modules/bagcustomcategories.lua) carries its own
+  -- name instead of a locale key.
+  local custom = type(U.CustomCategoryLabel) == "function" and
+                 U.CustomCategoryLabel(key)
+  if custom then return custom end
+
   local locale = IC.label[key]
   if not locale then return key or "" end
   return U.L(locale)

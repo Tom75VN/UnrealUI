@@ -11,9 +11,10 @@
 -- is tracked, in the order it was first seen this session. Kept from Retail:
 --   * CooldownViewerBuffBarItemTemplate's item (geometry in M.trackedBars);
 --   * the settings EditModeCooldownViewerSystemMixin:ShouldShowSetting leaves
---     the BuffBar system -- Size, Padding, Bar Width, Opacity, Visibility, Bar
+--     the BuffBar system -- Padding, Bar Width, Opacity, Visibility, Bar
 --     Content, Hide When Inactive, Show Timer, Show Tooltips -- with Retail's
---     ranges and Mainline defaults;
+--     ranges and Mainline defaults. Retail's Size is the anchor's shared
+--     Scale (%) row (core/mover.lua `scalable`, user request 2026-10-26);
 --   * edit mode shows every tracked bar, inactive ones too, padded to
 --     CooldownViewerMixin:GetItemCount's minimum of two with paused
 --     placeholders.
@@ -62,7 +63,6 @@ function tb.Config()
   if not tb.config then
     local limit = M.trackedBars.limit
     tb.config = U.ModuleConfig("trackedbars", {
-      size = limit.size.default,
       padding = limit.padding.default,
       width = limit.width.default,
       opacity = limit.opacity.default,
@@ -356,18 +356,17 @@ function tb.CreateItem()
   return item
 end
 
+-- At the template's own size: the player's Scale (%) scales the anchor frame.
 function tb.Metrics()
   local t = M.trackedBars
-  local s = tb.Setting("size") / 100
   return {
-    scale = s,
-    width = t.width * (tb.Setting("width") / 100) * s,
-    height = t.height * s,
-    icon = (t.bar.height + t.iconExtra) * s,
-    barHeight = t.bar.height * s,
-    gap = t.bar.gap * s,
-    spacing = (tb.Setting("padding") + t.paddingOffset) * s,
-    font = math.max(6, math.floor(t.fontSize * s + 0.5)),
+    width = t.width * (tb.Setting("width") / 100),
+    height = t.height,
+    icon = t.bar.height + t.iconExtra,
+    barHeight = t.bar.height,
+    gap = t.bar.gap,
+    spacing = tb.Setting("padding") + t.paddingOffset,
+    font = t.fontSize,
   }
 end
 
@@ -380,7 +379,6 @@ end
 
 function tb.PlaceItem(item, index, mt, content)
   local t = M.trackedBars
-  local s = mt.scale
 
   item:SetWidth(mt.width)
   item:SetHeight(mt.height)
@@ -408,23 +406,22 @@ function tb.PlaceItem(item, index, mt, content)
 
   if item.name then
     item.name:ClearAllPoints()
-    item.name:SetPoint("LEFT", item.bar, "LEFT", t.name.left * s,
-                       -t.name.down * s)
+    item.name:SetPoint("LEFT", item.bar, "LEFT", t.name.left, -t.name.down)
     pcall(item.name.SetWidth, item.name,
-          math.max(item.barWidth - (t.name.left + t.name.right) * s, 1))
+          math.max(item.barWidth - (t.name.left + t.name.right), 1))
     pcall(item.name.SetHeight, item.name, mt.barHeight)
     if content == "icon" then item.name:Hide() else item.name:Show() end
   end
   if item.duration then
     item.duration:ClearAllPoints()
-    item.duration:SetPoint("RIGHT", item.bar, "RIGHT", -t.duration.right * s,
-                           -t.duration.down * s)
+    item.duration:SetPoint("RIGHT", item.bar, "RIGHT", -t.duration.right,
+                           -t.duration.down)
     pcall(item.duration.SetHeight, item.duration, mt.barHeight)
   end
   if item.count then
     item.count:ClearAllPoints()
     item.count:SetPoint("BOTTOMRIGHT", item.iconFrame, "BOTTOMRIGHT",
-                        -t.count.right * s, t.count.bottom * s)
+                        -t.count.right, t.count.bottom)
   end
 
   item.pip:ClearAllPoints()
@@ -432,17 +429,16 @@ function tb.PlaceItem(item, index, mt, content)
     local art = M.modernWow.trackedBars
     local bg, ov = art.barBGInset, art.overlayInset
     item.barBG:ClearAllPoints()
-    item.barBG:SetPoint("TOPLEFT", item.bar, "TOPLEFT", bg.left * s, bg.top * s)
+    item.barBG:SetPoint("TOPLEFT", item.bar, "TOPLEFT", bg.left, bg.top)
     item.barBG:SetPoint("BOTTOMRIGHT", item.bar, "BOTTOMRIGHT",
-                        bg.right * s, bg.bottom * s)
+                        bg.right, bg.bottom)
     item.overlay:ClearAllPoints()
-    item.overlay:SetPoint("TOPLEFT", item.iconFrame, "TOPLEFT",
-                          ov.left * s, ov.top * s)
+    item.overlay:SetPoint("TOPLEFT", item.iconFrame, "TOPLEFT", ov.left, ov.top)
     item.overlay:SetPoint("BOTTOMRIGHT", item.iconFrame, "BOTTOMRIGHT",
-                          ov.right * s, ov.bottom * s)
-    item.pip:SetWidth(art.pipSize[1] * s)
-    item.pip:SetHeight(art.pipSize[2] * s)
-    item.pip:SetPoint("CENTER", item.fill, "RIGHT", 0, art.pipY * s)
+                          ov.right, ov.bottom)
+    item.pip:SetWidth(art.pipSize[1])
+    item.pip:SetHeight(art.pipSize[2])
+    item.pip:SetPoint("CENTER", item.fill, "RIGHT", 0, art.pipY)
   else
     item.pip:SetWidth(M.trackedBars.flat.pipWidth)
     item.pip:SetHeight(math.max(mt.barHeight - 2 * item.inset, 1))
@@ -773,20 +769,20 @@ function tb.BuildPanel(frame, contentTop)
   Check("hideInactive", "TRACKEDBARS_HIDE_INACTIVE", 1, 0)
   Check("showTimer", "TRACKEDBARS_SHOW_TIMER", 0, -22)
   Check("showTooltips", "TRACKEDBARS_SHOW_TOOLTIPS", 1, -22)
-  Slider("size", "TRACKEDBARS_SIZE", 0, -64)
-  Slider("width", "TRACKEDBARS_WIDTH", 1, -64)
-  Slider("padding", "TRACKEDBARS_PADDING", 0, -122)
-  Slider("opacity", "TRACKEDBARS_OPACITY", 1, -122)
+  Slider("width", "TRACKEDBARS_WIDTH", 0, -64)
+  Slider("padding", "TRACKEDBARS_PADDING", 1, -64)
   Dropdown("visibility", "TRACKEDBARS_VISIBILITY", {
     { value = "always", text = U.L("TRACKEDBARS_VISIBLE_ALWAYS") },
     { value = "combat", text = U.L("TRACKEDBARS_VISIBLE_COMBAT") },
     { value = "hidden", text = U.L("TRACKEDBARS_VISIBLE_HIDDEN") },
-  }, 0, -180)
+  }, 0, -122)
   Dropdown("content", "TRACKEDBARS_CONTENT", {
     { value = "iconName", text = U.L("TRACKEDBARS_CONTENT_ICON_NAME") },
     { value = "icon", text = U.L("TRACKEDBARS_CONTENT_ICON") },
     { value = "name", text = U.L("TRACKEDBARS_CONTENT_NAME") },
-  }, 1, -180)
+  }, 1, -122)
+  -- The mover panel adds the Scale (%) row under this one.
+  Slider("opacity", "TRACKEDBARS_OPACITY", 0, -180)
 
   local function Refresh()
     local key, control
@@ -805,6 +801,18 @@ end
 -- Retail art path was chosen.
 function U.TrackedBarsModernWowActive()
   return tb.anchor ~= nil and tb.modernWow
+end
+
+-- The removed Size setting (percent, 50-200) becomes the anchor's Scale (%),
+-- once. U.SetMoverScale converts the offsets, so the bars stay where they were.
+function tb.MigrateSize()
+  local cfg = tb.Config()
+  local size = tonumber(cfg.size)
+  cfg.size = nil
+  if not size or size == 100 or type(U.SetMoverScale) ~= "function" then
+    return
+  end
+  if U.GetMoverScale(MOVER_ID) == 100 then U.SetMoverScale(MOVER_ID, size) end
 end
 
 function TB:OnInit()
@@ -851,11 +859,14 @@ function TB:OnEnable()
   U.RegisterMover(MOVER_ID, anchor, {
     label = U.L("MOVER_LABEL_TRACKED_BARS"),
     default = { point = "BOTTOM", relativePoint = "BOTTOM", x = 420, y = 430 },
+    scalable = true,
     setEditShown = function(shown)
       tb.contentHidden = shown == false
       tb.Layout(false)
     end,
   })
+
+  tb.MigrateSize()
 
   if type(U.RegisterMoverSample) == "function" then
     U.RegisterMoverSample(MOVER_ID, {

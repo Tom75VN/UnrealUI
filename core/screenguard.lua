@@ -116,6 +116,12 @@ local function LayoutRatio(frame)
   return EffectiveScale(frame) / uiScale
 end
 
+-- UIParent units per unit of `frame`, for code that converts between a
+-- window's own units and the screen's (the bag-family resize grip).
+function U.FrameUIRatio(frame)
+  return LayoutRatio(frame)
+end
+
 -- Restores a window's authored height before any fit or clamp measurement.
 -- Since client UI scaling moved onto the frame hierarchy, GetHeight and
 -- SetHeight both use the frame's own units; effective scale maps them to screen.

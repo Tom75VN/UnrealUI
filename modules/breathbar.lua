@@ -158,6 +158,7 @@ local function RegisterMover(frame)
     label = U.L("MOVER_LABEL_BREATH_BAR"),
     default = { point = "TOP", relativePoint = "TOP", x = 0, y = -120 },
     visible = function() return breathActive end,
+    scalable = true,
   })
 end
 

@@ -567,6 +567,20 @@ function D.EnsureMenuSkin()
   end
 end
 
+-- Marks a native popup owner without restyling its closed control. Unit popup
+-- menus are invisible owner frames, not dropdown widgets, so running
+-- StyleStock on them would strip globals that do not exist and invent a
+-- clickable control. The shared popup hook only needs these two flags to draw
+-- the list with the authored Modern WoW background and row treatment.
+function D.StylePopupOwner(dropdown, options)
+  if not dropdown then return false end
+  options = options or {}
+  D.EnsureMenuSkin()
+  dropdown.uuiDropdownModernWowRows = options.modernWow and true or false
+  dropdown.uuiDropdownModernWowStyled = options.modernWow and true or false
+  return true
+end
+
 function D.EnsureTextLayout()
   -- WORKING_SOURCE: the client uses UIDropDownMenu_SetText(text, frame), not
   -- the modern frame-first signature. Its selection path can also update the

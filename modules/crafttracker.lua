@@ -516,6 +516,7 @@ function CT:OnEnable()
   U.RegisterMover(ct.MOVER_ID, frame, {
     label = U.L("MOVER_LABEL_CRAFT_TRACKER"),
     default = { point = "TOPRIGHT", relativePoint = "TOPRIGHT", x = -240, y = -320 },
+    scalable = true,
   })
   -- The list grows downwards as reagents are tracked. Clamp only: a HUD is
   -- never rescaled, and Move UI owns it while unlocked.

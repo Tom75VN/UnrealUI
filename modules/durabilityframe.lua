@@ -80,6 +80,7 @@ function DF:OnEnable()
   U.RegisterMover("durability", anchor, {
     label = U.L("MOVER_LABEL_DURABILITY"),
     default = default,
+    scalable = true,
   })
 
   -- The paper doll only appears once something is actually damaged, so the
@@ -97,6 +98,9 @@ function DF:OnEnable()
   -- The client may rebuild the paper doll when equipment durability changes.
   -- This is an accelerator; the low-frequency pass also repairs a replaced or
   -- re-anchored native root without taking over its visibility lifecycle.
+  -- UPDATE_INVENTORY_ALERTS is the 1.12 event; UPDATE_INVENTORY_DURABILITY is
+  -- kept in case this client also sends the later one.
+  U.RegisterEvent("UPDATE_INVENTORY_ALERTS", BindNative)
   U.RegisterEvent("UPDATE_INVENTORY_DURABILITY", BindNative)
   U.RegisterUpdate("durabilityframe.anchor", 1.0, BindNative)
 end

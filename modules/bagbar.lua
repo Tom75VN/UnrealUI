@@ -940,6 +940,7 @@ function bb.Build()
     -- no anchor to drag, but a bar the player has merely switched off keeps
     -- one -- its contextual panel is where it is switched back on.
     visible = function() return bb.Available() end,
+    scalable = true,
   })
 
   bb.built = true

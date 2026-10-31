@@ -618,6 +618,11 @@ function Apply()
   if type(U.ApplyHealPrediction) == "function" then
     pcall(U.ApplyHealPrediction)
   end
+  -- The raid-style party column paints its own cells (modules/raidframes.lua);
+  -- without this it would only pick a heal up on its next sweep.
+  if type(U.ApplyRaidHealPrediction) == "function" then
+    pcall(U.ApplyRaidHealPrediction)
+  end
 end
 
 -- Starts (or restarts) the preview. Returns the seconds it will run for so the
@@ -726,7 +731,7 @@ function U.BuildHealPredictSettings(parent, y, width)
 
   local header = U.CreateSectionHeader(parent, {
     text = U.L("HEALPREDICT_HEADER"),
-    width = width or 484,
+    width = width or U.SETTINGS_PAGE_WIDTH,
     y = y,
   })
   table.insert(widgets, header)
@@ -734,7 +739,7 @@ function U.BuildHealPredictSettings(parent, y, width)
   local enable = U.CreateCheckbox(parent, {
     name = "UnrealUISettingsHealPredictEnabled",
     text = U.L("HEALPREDICT_ENABLED"),
-    textWidth = 232,
+    textWidth = U.SETTINGS_COLUMN_X - 26,
     value = U.GetHealPredictSetting("enabled"),
     onChange = function(value) U.SetHealPredictSetting("enabled", value) end,
   })
@@ -749,7 +754,7 @@ function U.BuildHealPredictSettings(parent, y, width)
     color = M.color.textDim,
     inherits = "GameFontNormalSmall",
     justify = "LEFT",
-    width = width or 484,
+    width = width or U.SETTINGS_PAGE_WIDTH,
   })
   if hint then
     U.AnchorSettingsDescription(hint, enable.box)

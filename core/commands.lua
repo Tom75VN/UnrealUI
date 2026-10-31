@@ -152,6 +152,10 @@ local DIAGNOSTIC_HELP = {
   "  |cffffff00/uui sb trace|r - record what the mark does as a spell goes on/off a bar",
   "  |cffffff00/uui sb ranks|r - dump the spell list layout the highest-rank filter reads",
   "  |cffffff00/uui fakeparty [off]|r - fake full party with auras, for screenshots",
+  "  |cffffff00/uui party test [states]|r - fake party with auras, HoTs and " ..
+    "incoming heals; |cffffff00/uui party|r stops",
+  "  |cffffff00/uui raid [test|titles|border]|r - preview the raid frames " ..
+    "(test: 40 random members); |cffffff00/uui raid|r again stops",
   "  |cffffff00/uui aura|r - dump the aura rows and why a timer is missing",
   "  |cffffff00/uui hot|r - dump the HoT indicators: resolved spells, live stamps, party buffs",
   "  |cffffff00/uui heal|r - dump incoming-heal prediction: templates, learned " ..
@@ -2122,6 +2126,23 @@ end
 -- Native Classic mode has no UnrealUI settings window by design.  Keep theme
 -- selection available through the existing native chat input so a player can
 -- return to Modern without editing SavedVariables by hand.
+-- Forty-member preview of the raid frames (modules/raidframes.lua), so they
+-- can be checked outside a raid. Run again to stop.
+handlers["raid"] = function(rest)
+  if type(U.RaidFramesCommand) ~= "function" then
+    U.Print(U.L("RAID_UNAVAILABLE"))
+    return
+  end
+  U.RaidFramesCommand(rest)
+end
+-- Fake four-member party for screenshots (modules/partytest.lua).
+handlers["party"] = function(rest)
+  if type(U.PartyTestCommand) ~= "function" then
+    U.Print("party test unavailable - modules/partytest.lua did not load")
+    return
+  end
+  U.PartyTestCommand(rest)
+end
 handlers["fakeparty"] = function(rest)
   if not U.FakeParty then return end
   local arg = string.lower(Trim(rest))
@@ -2292,7 +2313,7 @@ handlers["portrait3d"] = function(rest)
     for i = 1, table.getn(PORTRAIT3D_LEVELS) do
       U.Print("  |cffffff00/uui portrait3d " .. PORTRAIT3D_LEVELS[i])
     end
-    U.Print("  player, target, target-of-target and party switches apply within this ceiling")
+    U.Print("  player, pet, target, target-of-target and party switches apply within this ceiling")
     U.Print("  units the level excludes, or that are out of sight, keep the 2D portrait")
     return
   end

@@ -35,6 +35,14 @@ local POSITION_ID = "minimapbutton"
 
 local modernWowMinimap = { dressed = false }
 
+local function MinimapConfig()
+  return U.ModuleConfig("minimap", {
+    enabled = true,
+    showZone = true,
+    showZoom = true,
+  })
+end
+
 local function ModernWow()
   return type(U.ModernWowModuleEnabled) == "function" and
          U.ModernWowModuleEnabled("minimap")
@@ -255,9 +263,39 @@ local function DressModernWowMinimap()
   modernWowMinimap.border = border
   modernWowMinimap.shadow = shadow
   modernWowMinimap.topPanel = panel
+  modernWowMinimap.panelArt = panelArt
+  modernWowMinimap.zoomIn = zoomIn
+  modernWowMinimap.zoomOut = zoomOut
   U.Debug("modern-wow minimap chrome applied")
   return true
 end
+
+-- Only addon-authored chrome is optional. The map surface, tracking, ping and
+-- every other native minimap behavior remain owned by the client.
+local function ApplyChromeSettings()
+  if not modernWowMinimap.dressed then return false end
+  local cfg = MinimapConfig()
+  local showZone = cfg.showZone and true or false
+  local showZoom = cfg.showZoom and true or false
+
+  local panel = modernWowMinimap.topPanel
+  local panelArt = modernWowMinimap.panelArt
+  local zone = modernWowMinimap.zoneLabel
+  if panel then pcall(showZone and panel.Show or panel.Hide, panel) end
+  if panelArt then pcall(showZone and panelArt.Show or panelArt.Hide, panelArt) end
+  if zone then pcall(showZone and zone.Show or zone.Hide, zone) end
+
+  local button
+  for _, button in pairs({ modernWowMinimap.zoomIn,
+                           modernWowMinimap.zoomOut }) do
+    if button then
+      pcall(showZoom and button.Show or button.Hide, button)
+      pcall(button.EnableMouse, button, showZoom)
+    end
+  end
+  return true
+end
+U.ApplyMinimapChromeSettings = ApplyChromeSettings
 
 -- ---------------------------------------------------------------------------
 -- The pending-mail letter
@@ -459,7 +497,11 @@ local function RegisterMinimapMover()
     return
   end
 
-  U.RegisterMover("minimap", target, { label = U.L("MOVER_LABEL_MINIMAP"), default = default })
+  U.RegisterMover("minimap", target, {
+    label = U.L("MOVER_LABEL_MINIMAP"),
+    default = default,
+    scalable = true,
+  })
   U.Debug("minimap mover registered on " .. name)
 end
 
@@ -665,7 +707,7 @@ local function Apply()
   local button = MM.button
   if not button then return end
 
-  if U.ModuleConfig("minimap", { enabled = true }).enabled then
+  if MinimapConfig().enabled then
     button:Show()
     if button.label then button.label:Show() end
   else
@@ -674,10 +716,107 @@ local function Apply()
 end
 U.ApplyMinimapButton = Apply
 
+local function BuildSettingsPage(parent)
+  local widgets = {}
+  local cfg = MinimapConfig()
+  local header = U.CreateSectionHeader(parent, {
+    text = U.L("SETTINGS_PAGE_MINIMAP"),
+    width = U.SETTINGS_PAGE_WIDTH,
+    y = -4,
+  })
+  table.insert(widgets, header)
+
+  local button = U.CreateCheckbox(parent, {
+    name = "UnrealUISettingsMinimapButton",
+    text = U.L("SETTINGS_MINIMAP_BUTTON"),
+    value = cfg.enabled,
+    onChange = function(value)
+      cfg.enabled = value and true or false
+      Apply()
+    end,
+  })
+  button.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -34)
+  table.insert(widgets, button)
+
+  -- The same range and stored value as the minimap anchor's edit-mode slider.
+  local scaleMin, scaleMax, scaleStep = U.MoverScaleRange()
+  local scale = U.CreateSlider(parent, {
+    name = "UnrealUISettingsMinimapScale",
+    text = U.L("SETTINGS_MINIMAP_SCALE"),
+    width = 220,
+    min = scaleMin,
+    max = scaleMax,
+    step = scaleStep,
+    value = U.GetMoverScale("minimap"),
+    onInput = function(value) U.PreviewMoverScale("minimap", value) end,
+    onChange = function(value) U.SetMoverScale("minimap", value) end,
+  })
+  scale.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -94)
+  table.insert(widgets, scale)
+
+  local zone = U.CreateCheckbox(parent, {
+    name = "UnrealUISettingsMinimapZone",
+    text = U.L("SETTINGS_MINIMAP_ZONE"),
+    value = cfg.showZone,
+    onChange = function(value)
+      cfg.showZone = value and true or false
+      ApplyChromeSettings()
+    end,
+  })
+  zone.SetPoint("TOPLEFT", scale.track, "BOTTOMLEFT", 0, -54)
+  zone.SetEnabled(modernWowMinimap.dressed)
+  table.insert(widgets, zone)
+
+  local zoom = U.CreateCheckbox(parent, {
+    name = "UnrealUISettingsMinimapZoom",
+    text = U.L("SETTINGS_MINIMAP_ZOOM_BUTTONS"),
+    value = cfg.showZoom,
+    onChange = function(value)
+      cfg.showZoom = value and true or false
+      ApplyChromeSettings()
+    end,
+  })
+  zoom.SetPoint("TOPLEFT", zone.box, "BOTTOMLEFT", 0, -18)
+  zoom.SetEnabled(modernWowMinimap.dressed)
+  table.insert(widgets, zoom)
+
+  local hint = U.CreateSettingsLabel(parent, {
+    size = M.fontSize.small,
+    color = M.color.textDim,
+    inherits = "GameFontNormalSmall",
+    justify = "LEFT",
+    width = U.SETTINGS_PAGE_WIDTH,
+  })
+  if hint then
+    U.AnchorSettingsDescription(hint, zoom.box)
+    hint:SetText(U.L("SETTINGS_MINIMAP_CHROME_HINT"))
+    table.insert(widgets, hint)
+  end
+
+  local function Refresh()
+    cfg = MinimapConfig()
+    button.SetValue(cfg.enabled)
+    scale.SetValue(U.GetMoverScale("minimap"))
+    zone.SetValue(cfg.showZone)
+    zoom.SetValue(cfg.showZoom)
+    zone.SetEnabled(modernWowMinimap.dressed)
+    zoom.SetEnabled(modernWowMinimap.dressed)
+  end
+  return widgets, Refresh
+end
+
+function MM:OnInit()
+  if type(U.RegisterSettingsTab) == "function" then
+    U.RegisterSettingsTab("minimap", U.L("SETTINGS_PAGE_MINIMAP"),
+                          BuildSettingsPage, { after = "general" })
+  end
+end
+
 function MM:OnEnable()
   if self.button then return end
 
   DressModernWowMinimap()
+  ApplyChromeSettings()
 
   local button = U.CreateButton(UIParent, {
     name = "UnrealUISettingsButton",

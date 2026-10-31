@@ -16,9 +16,9 @@ local M = U.media
 
 local nps = {
   GROUP = "nameplates",
-  PAGE_WIDTH = 484,
-  COL2 = 250,       -- second column, x
-  HALF_TEXT = 220,  -- label width of a two-column checkbox
+  PAGE_WIDTH = U.SETTINGS_PAGE_WIDTH,
+  COL2 = U.SETTINGS_COLUMN_X,       -- second column, x
+  HALF_TEXT = U.SETTINGS_COLUMN_WIDTH - 26,  -- label width of a two-column checkbox
   SLIDER_WIDTH = 200,
   HINT_LINE = 13,   -- reserve per wrapped description line
 }
@@ -46,6 +46,12 @@ nps.ITEMS = {
     { value = "TOP",   key = "NP_POS_TOP" },
     { value = "RIGHT", key = "NP_POS_RIGHT" },
   },
+  auraPosition = {
+    { value = "TOPLEFT",     key = "NP_POS_TOP_LEFT" },
+    { value = "TOPRIGHT",    key = "NP_POS_TOP_RIGHT" },
+    { value = "BOTTOMLEFT",  key = "NP_POS_BOTTOM_LEFT" },
+    { value = "BOTTOMRIGHT", key = "NP_POS_BOTTOM_RIGHT" },
+  },
 }
 
 -- Page specs. type: header | check | slider | dropdown | color | note.
@@ -65,6 +71,9 @@ nps.PAGES = {
     { type = "check", key = "showFriendly", text = "NP_SHOW_FRIENDLY", col = 2 },
     { type = "note", text = "NP_VISIBILITY_HINT", lines = 2 },
     { type = "check", key = "showAuras", text = "SETTINGS_NAMEPLATE_AURAS" },
+    { type = "dropdown", key = "auraPosition", text = "NP_AURA_POSITION" },
+    { type = "slider", key = "auraGap", text = "NP_AURA_GAP",
+      min = 0, max = 60, step = 1, col = 2 },
     { type = "check", key = "attachTargetCast",
       text = "SETTINGS_NAMEPLATE_CASTBAR" },
     { type = "check", key = "showName", text = "NP_SHOW_NAME" },

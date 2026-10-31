@@ -99,15 +99,18 @@ function L.Contains(value, query)
   return string.find(U.SearchFold(value), U.SearchFold(query), 1, true) ~= nil
 end
 
+-- L.scopeHit (set by L.Layout): the open category or sub-row matches by name,
+-- so all of its rows are shown.
 function L.Matches(section, control)
   local query = L.filter or ""
-  return query == "" or L.Contains(section and section.title, query) or
+  return query == "" or L.scopeHit or L.Contains(section and section.title, query) or
          L.Contains(control and control.label, query)
 end
 
 function L.SetFilter(text)
   L.filter = L.FilterValue(text)
   L.offset = 0
+  if L.filter ~= "" then L.EnsureIndexed() end
   -- Deferred so a page this call selects has attached before it is filtered.
   if type(L.SyncBindingFilter) == "function" then
     U.DeferOnce("gamesettings:bindingsearch", L.SyncBindingFilter)
@@ -128,10 +131,13 @@ function L.SetFilter(text)
     if page and (not gs.active or gs.active.id ~= page.id) and
        type(gs.SelectPage) == "function" then
       gs.SelectPage(page.id)
+      L.RevealHit()
       return
     end
   end
 
+  -- Within the category: open the first sub-row with a hit.
+  L.RevealHit()
   if L.active then
     L.Layout(L.active)
   elseif type(gs.RenderList) == "function" then
@@ -739,18 +745,131 @@ function L.InvalidateSearch(page)
   if page then L.searchIndex[page.id] = nil end
 end
 
-function L.PageMatches(page, query)
-  if type(gs.PageAvailable) == "function" and not gs.PageAvailable(page) then
-    return false
-  end
-  query = L.FilterValue(query or L.filter)
-  if query == "" then return true end
+function L.ValuesMatch(page, query)
   local values = L.SearchValues(page)
   local i
   for i = 1, table.getn(values) do
     if L.Contains(values[i], query) then return true end
   end
   return false
+end
+
+function L.PageMatches(page, query)
+  if type(gs.PageAvailable) == "function" and not gs.PageAvailable(page) then
+    return false
+  end
+  query = L.FilterValue(query or L.filter)
+  if query == "" then return true end
+  -- Another query than the window's own: the page-wide scan only.
+  if query ~= L.FilterValue(L.filter) then return L.ValuesMatch(page, query) end
+  if L.Hit(L.PageLabel(page)) then return true end
+  local tabs = L.MatchingTabs(page)
+  if tabs then return table.getn(tabs) > 0 end
+  return L.ValuesMatch(page, query)
+end
+
+-- ---------------------------------------------------------------------------
+-- Per-category hits for the addon settings categories
+--
+-- While a query is active, an addon category (Unreal UI and each sibling that
+-- registers pages through modules/settings.lua) lists only the pages holding
+-- a hit. Every page is built once, hidden, on the first query and matched on
+-- the text its widgets show (U.IndexIntegratedSettings). The client's own
+-- pages keep their page-wide scan.
+-- ---------------------------------------------------------------------------
+L.memo = {}          -- [text] = whether it holds the current query
+
+-- The current query's verdict on one text, cached until the query changes:
+-- the category list asks the same questions on every render.
+function L.Hit(value)
+  local query = L.FilterValue(L.filter)
+  if L.memoQuery ~= query then
+    L.memo = {}
+    L.memoQuery = query
+  end
+  if type(value) ~= "string" then return query == "" end
+  local hit = L.memo[value]
+  if hit == nil then
+    hit = L.Contains(L.Plain(value), query) and true or false
+    L.memo[value] = hit
+  end
+  return hit
+end
+
+function L.Plain(text)
+  if type(text) ~= "string" then return text end
+  text = string.gsub(text, "|c%x%x%x%x%x%x%x%x", "")
+  text = string.gsub(text, "|r", "")
+  return text
+end
+
+-- The category's name as its row shows it.
+function L.PageLabel(page)
+  if not page then return nil end
+  if page.addonCategory then return page.label end
+  return U.L(page.label)
+end
+
+-- Everything the first query needs indexed; does nothing once done.
+function L.EnsureIndexed()
+  if type(U.IndexIntegratedSettings) == "function" then
+    pcall(U.IndexIntegratedSettings, gs.host)
+  end
+end
+
+-- The sub-rows of an addon category holding a hit for the current query, or
+-- nil for a page with no per-row index (the client's own pages).
+function L.MatchingTabs(page)
+  if not page or not page.settings then return nil end
+  if type(U.GetIntegratedSettingsMatches) ~= "function" then return nil end
+  if type(gs.PageAvailable) == "function" and not gs.PageAvailable(page) then
+    return {}
+  end
+  return U.GetIntegratedSettingsMatches(page.settingsScope, L.Hit)
+end
+
+-- The sub-rows gs.RenderList draws: all of them without a query, or when the
+-- category's own name matches; otherwise only those with a hit.
+function L.VisibleTabs(page)
+  if L.FilterValue(L.filter) == "" or L.Hit(L.PageLabel(page)) then
+    return gs.PageTabs(page)
+  end
+  return L.MatchingTabs(page) or gs.PageTabs(page)
+end
+
+-- Whether the open category or sub-row matches by name, in which case every
+-- row of it is shown rather than only the rows that match themselves.
+function L.ScopeHit()
+  local page = gs.active
+  if not page or L.FilterValue(L.filter) == "" then return false end
+  if L.Hit(L.PageLabel(page)) then return true end
+  local tabs = gs.PageTabs(page)
+  local i
+  for i = 1, table.getn(tabs) do
+    if tabs[i].selected and L.Hit(tabs[i].label) then return true end
+  end
+  return false
+end
+
+-- Opens the first sub-row with a hit when the open one has none. Runs once
+-- per query change, so it never fights the player's own clicks.
+function L.RevealHit()
+  local page = gs.active
+  if not page or L.FilterValue(L.filter) == "" then return end
+  if L.Hit(L.PageLabel(page)) then return end
+  local tabs = L.MatchingTabs(page)
+  if not tabs or table.getn(tabs) == 0 then return end
+  local first
+  local i
+  for i = 1, table.getn(tabs) do
+    if tabs[i].selected then return end
+    if not first and not tabs[i].settingsHeader and not tabs[i].unavailable then
+      first = tabs[i]
+    end
+  end
+  if first and type(gs.ClickTab) == "function" then
+    gs.ClickTab(first.name, true)
+  end
 end
 
 function L.FirstMatchingPage(query)
@@ -1268,35 +1387,7 @@ function L.SliderInput(row, name, level)
       end
     end
 
-    local updateId = "gamesettings.slider." .. tostring(row)
-
-    local function FinishDrag()
-      if not input.dragging then return end
-      input.dragging = false
-      U.UnregisterUpdate(updateId)
-      pcall(thumb.StopMovingOrSizing, thumb)
-      local slider = Slider()
-      if slider then Apply(slider, L.SliderValueAt(row, slider, input.dragGrab)) end
-      input.dragGrab = nil
-      L.SaveDragTrace()
-      L.PaintThumb(row.uuiSliderName)
-    end
-
-    -- IsMouseButtonDown does not exist on this client (the drag trace read
-    -- nil), so this only ends a drag where it does; OnDragStop is the path.
-    local function StillDown()
-      local down = U.G("IsMouseButtonDown")
-      if type(down) ~= "function" then return true end
-      local ok, held = pcall(down, "LeftButton")
-      if not ok then return true end
-      return held and true or false
-    end
-
     local function Follow()
-      if not StillDown() then
-        FinishDrag()
-        return
-      end
       local slider = Slider()
       if not slider then return end
       local before = gs.Number(slider, "GetValue")
@@ -1310,33 +1401,27 @@ function L.SliderInput(row, name, level)
       L.TraceDrag(row, slider, before, value)
     end
 
-    -- The press, not the drag start, fixes the held point: OnDragStart only
-    -- fires once the cursor has already travelled the drag threshold.
-    -- GetCursorPosition in OnMouseDown is the colour picker's verified read
-    -- (api.getcursorposition_usable_for_hit_testing).
-    thumb:SetScript("OnMouseDown", function()
-      local slider = Slider()
-      input.grab = slider and L.SliderGrab(row, slider) or nil
-    end)
-
-    thumb:SetScript("OnDragStart", function()
-      local slider = Slider()
-      if not slider then return end
-      -- Consumed here so a later release cannot read a stale press; without a
-      -- press read, the held point is taken now, clamped onto the knob.
-      input.dragGrab = input.grab or L.SliderGrab(row, slider)
-      input.grab = nil
-      if not pcall(thumb.SetMovable, thumb, true) then return end
-      if pcall(thumb.StartMoving, thumb) then
-        pcall(thumb.StopMovingOrSizing, thumb)
-      end
-      if not pcall(thumb.StartMoving, thumb) then return end
-      input.dragging = true
-      U.RegisterUpdate(updateId, 0, Follow)
-      Follow()
-    end)
-    thumb:SetScript("OnDragStop", FinishDrag)
-    thumb:SetScript("OnHide", FinishDrag)
+    -- The shared mechanism (core/widgets.lua U.AttachThumbDrag): the press
+    -- fixes the held point and starts the follow at once, instead of waiting
+    -- for OnDragStart's drag threshold.
+    input.drag = U.AttachThumbDrag(thumb, {
+      ticker = "gamesettings.slider." .. tostring(row),
+      onPress = function()
+        local slider = Slider()
+        if not slider then return false end
+        input.dragGrab = L.SliderGrab(row, slider)
+        input.dragging = true
+      end,
+      onMove = Follow,
+      onRelease = function()
+        input.dragging = false
+        local slider = Slider()
+        if slider then Apply(slider, L.SliderValueAt(row, slider, input.dragGrab)) end
+        input.dragGrab = nil
+        L.SaveDragTrace()
+        L.PaintThumb(row.uuiSliderName)
+      end,
+    })
 
     track:SetScript("OnMouseDown", function()
       local slider = Slider()
@@ -2625,6 +2710,7 @@ function L.Layout(page)
   local model = L.model[page.id]
   local state = L.saved[page.id]
   if not model or not state or not L.child then return end
+  L.scopeHit = L.ScopeHit()
   local list = M.foreverWow.list
 
   local width = gs.Number(L.scroll, "GetWidth") or 0
@@ -2912,18 +2998,24 @@ end
 -- pane's right edge. The existing cursor hit test has already converted its
 -- screen coordinates through the list scale, so the geometry below stays in
 -- those same UI units.
-function L.HoverRight(row)
+-- The scrollbar's left edge when it shows, else the list pane's right edge.
+-- The same for every row, so the hover tick reads it once per pass.
+function L.HoverEdge()
+  if L.bar and gs.Read(L.bar, "IsShown") then
+    return gs.Number(L.bar, "GetLeft")
+  elseif L.scroll then
+    return gs.Number(L.scroll, "GetRight")
+  end
+  return nil
+end
+
+function L.HoverRight(row, edge)
   local hover = M.foreverWow.list.hover
   local right = hover.right
   local rowRight = gs.Number(row, "GetRight")
   if not rowRight then return right end
 
-  local edge
-  if L.bar and gs.Read(L.bar, "IsShown") then
-    edge = gs.Number(L.bar, "GetLeft")
-  elseif L.scroll then
-    edge = gs.Number(L.scroll, "GetRight")
-  end
+  if edge == nil then edge = L.HoverEdge() end
   if edge then
     local scrollbarRight = edge - rowRight + hover.right
     if scrollbarRight > right then right = scrollbarRight end
@@ -2953,6 +3045,11 @@ end
 
 function L.HoverTick()
   if not L.active or not L.child then return L.StopHover() end
+  -- Paused while the window is dragged by its header (FPS report,
+  -- 2026-10-31): the cursor is on the header, so no row can be hovered, and
+  -- every row rect read below is stale each frame of the move, so each read
+  -- made the client lay the moving window out again.
+  if U.IsWindowDragging and U.IsWindowDragging(gs.panel) then return end
   local cursor = U.G("GetCursorPosition")
   if type(cursor) ~= "function" then return end
   local ok, x, y = pcall(cursor)
@@ -2962,14 +3059,21 @@ function L.HoverTick()
   x, y = x / scale, y / scale
 
   local over
+  local hover = M.foreverWow.list.hover
+  -- Same result as L.HoverRight per row, without re-reading the row's right
+  -- edge and the scrollbar for each one.
+  local edge = L.HoverEdge()
+  local edgeRight = edge and edge + hover.right
   local name, row
   for name, row in pairs(L.rows) do
     if gs.Read(row, "IsVisible") then
       local left, right = gs.Number(row, "GetLeft"), gs.Number(row, "GetRight")
       local top, bottom = gs.Number(row, "GetTop"), gs.Number(row, "GetBottom")
-      local hover = M.foreverWow.list.hover
       local hoverLeft = left and left + hover.left
-      local hoverRight = right and right + L.HoverRight(row)
+      local hoverRight = right and right + hover.right
+      if hoverRight and edgeRight and edgeRight > hoverRight then
+        hoverRight = edgeRight
+      end
       if hoverLeft and hoverRight and top and bottom and x >= hoverLeft and x <= hoverRight and
           y >= bottom and y <= top then
         over = row

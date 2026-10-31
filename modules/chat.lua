@@ -507,12 +507,12 @@ end
 
 -- WORKING_SOURCE: UnrealPfUI/modules/chat.lua addresses ChatFrameNBackground
 -- directly. No native region discovery or cached native texture references.
--- The background is held at 25% while idle and 50% while the cursor is over
--- that chat frame. Unlike the earlier floor-only treatment this overrides the
--- native hover fade in both directions, so the two states stay the ones
--- configured here. Chat text and frame alpha stay intact.
+-- The background is held at the configured idle and hover opacity. Unlike the
+-- earlier floor-only treatment this overrides the native hover fade in both
+-- directions, so the two states stay the ones configured here. Chat text and
+-- frame alpha stay intact.
 function chatBackground.Tick()
-  if not config or not config.noTextShadow then return end
+  if not config or not config.backgroundEnabled then return end
   local cursorX, cursorY = CursorPoint()
   local i
   for i = 1, 2 do
@@ -559,6 +559,10 @@ end
 
 function chatBackground.Apply(enabled)
   if enabled then
+    chatBackground.alpha = Clamp((tonumber(config.backgroundAlpha) or 25) / 100,
+                                 0, 1)
+    chatBackground.hoverAlpha = Clamp(
+      (tonumber(config.backgroundHoverAlpha) or 50) / 100, 0, 1)
     chatBackground.Tick()
     U.RegisterUpdate(chatBackground.update, 0, chatBackground.Tick)
     return
@@ -581,7 +585,6 @@ end
 
 function U.ApplyChatTextShadow()
   local remove = config and config.noTextShadow and true or false
-  chatBackground.Apply(remove)
   if not remove then
     shadowReport.applied = false
     -- Return whether settings must display the reload notice. No guessed
@@ -608,6 +611,140 @@ function U.ApplyChatTextShadow()
   return false
 end
 
+function U.ApplyChatAppearance()
+  chatBackground.Apply(config and config.backgroundEnabled and true or false)
+  return U.ApplyChatTextShadow()
+end
+
+local function BuildSettingsPage(parent)
+  local widgets = {}
+  local header = U.CreateSectionHeader(parent, {
+    text = U.L("SETTINGS_PAGE_CHAT"),
+    width = U.SETTINGS_PAGE_WIDTH,
+    y = -4,
+  })
+  table.insert(widgets, header)
+
+  local backgroundAlpha, backgroundHoverAlpha
+  local background = U.CreateCheckbox(parent, {
+    name = "UnrealUISettingsChatBackground",
+    text = U.L("SETTINGS_CHAT_BACKGROUND"),
+    value = config.backgroundEnabled,
+    onChange = function(value)
+      config.backgroundEnabled = value and true or false
+      backgroundAlpha.SetEnabled(config.backgroundEnabled)
+      backgroundHoverAlpha.SetEnabled(config.backgroundEnabled)
+      chatBackground.Apply(config.backgroundEnabled)
+    end,
+  })
+  background.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -34)
+  table.insert(widgets, background)
+
+  local backgroundHint = U.CreateSettingsLabel(parent, {
+    size = M.fontSize.small,
+    color = M.color.textDim,
+    inherits = "GameFontNormalSmall",
+    justify = "LEFT",
+    width = U.SETTINGS_PAGE_WIDTH,
+  })
+  if backgroundHint then
+    U.AnchorSettingsDescription(backgroundHint, background.box)
+    backgroundHint:SetText(U.L("SETTINGS_CHAT_BACKGROUND_HINT"))
+    table.insert(widgets, backgroundHint)
+  end
+
+  backgroundAlpha = U.CreateSlider(parent, {
+    name = "UnrealUISettingsChatBackgroundAlpha",
+    text = U.L("SETTINGS_CHAT_BACKGROUND_ALPHA"),
+    width = 220,
+    min = 0,
+    max = 100,
+    step = 5,
+    value = config.backgroundAlpha,
+    onInput = function(value)
+      config.backgroundAlpha = value
+      chatBackground.Apply(config.backgroundEnabled)
+    end,
+    onChange = function(value)
+      config.backgroundAlpha = value
+      chatBackground.Apply(config.backgroundEnabled)
+    end,
+  })
+  if backgroundHint then
+    backgroundAlpha.SetPoint("TOPLEFT", backgroundHint, "BOTTOMLEFT", 0, -30)
+  else
+    backgroundAlpha.SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -100)
+  end
+  backgroundAlpha.SetEnabled(config.backgroundEnabled)
+  table.insert(widgets, backgroundAlpha)
+
+  backgroundHoverAlpha = U.CreateSlider(parent, {
+    name = "UnrealUISettingsChatBackgroundHoverAlpha",
+    text = U.L("SETTINGS_CHAT_BACKGROUND_HOVER_ALPHA"),
+    width = 220,
+    min = 0,
+    max = 100,
+    step = 5,
+    value = config.backgroundHoverAlpha,
+    onInput = function(value)
+      config.backgroundHoverAlpha = value
+      chatBackground.Apply(config.backgroundEnabled)
+    end,
+    onChange = function(value)
+      config.backgroundHoverAlpha = value
+      chatBackground.Apply(config.backgroundEnabled)
+    end,
+  })
+  backgroundHoverAlpha.SetPoint("TOPLEFT", backgroundAlpha.track,
+                                "BOTTOMLEFT", 0, -54)
+  backgroundHoverAlpha.SetEnabled(config.backgroundEnabled)
+  table.insert(widgets, backgroundHoverAlpha)
+
+  local shadow = U.CreateCheckbox(parent, {
+    name = "UnrealUISettingsChatTextShadow",
+    text = U.L("SETTINGS_CHAT_SHADOW"),
+    value = config.noTextShadow,
+    onChange = function(value)
+      config.noTextShadow = value and true or false
+      if U.ApplyChatTextShadow() then
+        U.ShowConfirm({
+          owner = "settings.chat-shadow-reload",
+          centered = true,
+          text = U.L("SETTINGS_CHAT_SHADOW"),
+          detail = U.L("SETTINGS_CHAT_SHADOW_RELOAD"),
+          acceptText = U.L("COMMON_OK_SHORT"),
+          cancelText = U.L("COMMON_CLOSE"),
+        })
+      end
+    end,
+  })
+  shadow.SetPoint("TOPLEFT", backgroundHoverAlpha.track, "BOTTOMLEFT", 0, -48)
+  table.insert(widgets, shadow)
+
+  local shadowHint = U.CreateSettingsLabel(parent, {
+    size = M.fontSize.small,
+    color = M.color.textDim,
+    inherits = "GameFontNormalSmall",
+    justify = "LEFT",
+    width = U.SETTINGS_PAGE_WIDTH,
+  })
+  if shadowHint then
+    U.AnchorSettingsDescription(shadowHint, shadow.box)
+    shadowHint:SetText(U.L("SETTINGS_CHAT_SHADOW_HINT"))
+    table.insert(widgets, shadowHint)
+  end
+
+  local function Refresh()
+    background.SetValue(config.backgroundEnabled)
+    backgroundAlpha.SetValue(config.backgroundAlpha)
+    backgroundHoverAlpha.SetValue(config.backgroundHoverAlpha)
+    backgroundAlpha.SetEnabled(config.backgroundEnabled)
+    backgroundHoverAlpha.SetEnabled(config.backgroundEnabled)
+    shadow.SetValue(config.noTextShadow)
+  end
+  return widgets, Refresh
+end
+
 function Chat:OnInit()
   config = U.ModuleConfig("chat", {
     resized = false,
@@ -617,11 +754,22 @@ function Chat:OnInit()
     bottom = 0,
     noTextShadow = false,
   })
+  -- Before this page existed the background treatment was coupled to the text
+  -- shadow switch. Saved profiles that used it keep the same appearance.
+  if type(config.backgroundEnabled) ~= "boolean" then
+    config.backgroundEnabled = config.noTextShadow and true or false
+  end
+  config.backgroundAlpha = tonumber(config.backgroundAlpha) or 25
+  config.backgroundHoverAlpha = tonumber(config.backgroundHoverAlpha) or 50
   if config and config.resized then
     lastSavedWidth = tonumber(config.width)
     lastSavedHeight = tonumber(config.height)
     lastSavedLeft = tonumber(config.left)
     lastSavedBottom = tonumber(config.bottom)
+  end
+  if type(U.RegisterSettingsTab) == "function" then
+    U.RegisterSettingsTab("chat", U.L("SETTINGS_PAGE_CHAT"),
+                          BuildSettingsPage, { after = "general" })
   end
 end
 
@@ -633,7 +781,7 @@ function Chat:OnEnable()
   end
 
   CreateGrip()
-  U.ApplyChatTextShadow()
+  U.ApplyChatAppearance()
   RestoreSavedGeometry()
   restorePasses = config and config.resized and RESTORE_PASSES or 0
   positionWasUnlocked = not ChatIsLocked()

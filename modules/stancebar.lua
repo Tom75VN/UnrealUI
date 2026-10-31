@@ -549,6 +549,7 @@ local function CreateBar()
   U.RegisterMover("stancebar", frame, {
     label = U.L("MOVER_LABEL_STANCE_BAR"),
     default = { point = "BOTTOM", relativePoint = "BOTTOM", x = -120, y = 64 },
+    scalable = true,
   })
 end
 

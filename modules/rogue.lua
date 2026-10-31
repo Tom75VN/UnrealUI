@@ -216,7 +216,7 @@ function rogue.BuildSettingsPage(parent)
 
   local header = U.CreateSectionHeader(parent, {
     text = U.L("ROGUE_SETTINGS_HEADER"),
-    width = 484,
+    width = U.SETTINGS_PAGE_WIDTH,
     y = -4,
   })
   table.insert(widgets, header)
@@ -237,7 +237,7 @@ function rogue.BuildSettingsPage(parent)
     color = M.color.textDim,
     inherits = "GameFontNormalSmall",
     justify = "LEFT",
-    width = 484,
+    width = U.SETTINGS_PAGE_WIDTH,
   })
   if hint then
     U.AnchorSettingsDescription(hint, poison.box)
@@ -247,7 +247,7 @@ function rogue.BuildSettingsPage(parent)
 
   local comboHeader = U.CreateSectionHeader(parent, {
     text = U.L("UF_COMBO_POINTS_HEADER"),
-    width = 484,
+    width = U.SETTINGS_PAGE_WIDTH,
     y = -94,
   })
   table.insert(widgets, comboHeader)

@@ -77,7 +77,9 @@ local defaults = {
   verticalOffset = 0,
   showHealthText = true,
   showName       = true,   -- the unit's name above the bar
-  showAuras      = true,
+  showAuras      = true,   -- target debuffs at the configured plate corner
+  auraPosition   = "TOPLEFT", -- TOPLEFT | TOPRIGHT | BOTTOMLEFT | BOTTOMRIGHT
+  auraGap        = 24,     -- health-bar edge to the nearest aura-icon edge
   attachTargetCast = true,
   fadeOthers     = true,   -- dim plates that are not the current target
   otherAlpha     = 0.75,
@@ -1102,13 +1104,15 @@ function style.Layout(overlay)
 
   if overlay.name then
     overlay.name:SetWidth(plateWidth - 28)
-    U.SetFont(overlay.name, cfg.nameSize)
+    -- exactSize: under the Original font choice the inherited FontObject keeps
+    -- its own size, so the Name font size slider needs the exact-size route.
+    U.SetFont(overlay.name, cfg.nameSize, nil, nil, nil, true)
   end
   if overlay.level then U.SetFont(overlay.level, cfg.levelSize) end
 
   local text = overlay.healthText
   if text then
-    U.SetFont(text, cfg.healthTextSize)
+    U.SetFont(text, cfg.healthTextSize, nil, nil, nil, true)
     text:ClearAllPoints()
     if cfg.healthTextPos == "LEFT" then
       text:SetPoint("LEFT", health, "LEFT", 3, 0)

@@ -560,7 +560,10 @@ function mw.DressActionButton(button)
     pcall(right.SetPoint, right, "TOPRIGHT", button, "TOPRIGHT", 0, 0)
     pcall(right.SetPoint, right, "BOTTOMRIGHT", button, "BOTTOMRIGHT", 0, 0)
     pcall(middle.SetPoint, middle, "TOPLEFT", left, "TOPRIGHT", 0, 0)
-    pcall(middle.SetPoint, middle, "BOTTOMRIGHT", right, "BOTTOMLEFT", 0, 0)
+    -- The middle runs 1 unit under the right end (drawn above it): the two
+    -- slices met on a fractional edge and let the window show through as a
+    -- 1px line (reported in game, game menu rows).
+    pcall(middle.SetPoint, middle, "BOTTOMRIGHT", right, "BOTTOMLEFT", 1, 0)
 
     state.glow = mw.RedButtonGlow(button, token, path)
 
@@ -669,7 +672,10 @@ function U.ModernWowRedButtonFace(owner, height, gold)
     pcall(right.SetPoint, right, "TOPRIGHT", owner, "TOPRIGHT", 0, 0)
     pcall(right.SetPoint, right, "BOTTOMRIGHT", owner, "BOTTOMRIGHT", 0, 0)
     pcall(middle.SetPoint, middle, "TOPLEFT", left, "TOPRIGHT", 0, 0)
-    pcall(middle.SetPoint, middle, "BOTTOMRIGHT", right, "BOTTOMLEFT", 0, 0)
+    -- The middle runs 1 unit under the right end (drawn above it): the two
+    -- slices met on a fractional edge and let the window show through as a
+    -- 1px line (reported in game, game menu rows).
+    pcall(middle.SetPoint, middle, "BOTTOMRIGHT", right, "BOTTOMLEFT", 1, 0)
   end
 
   height = tonumber(height) or mw.Dimension(owner, "GetHeight")
@@ -841,7 +847,9 @@ end
 -- (modules/gamesettings.lua, user request 2026-09-22), which already takes its
 -- buttons' 128RedButton face and its MinimalScrollBar from this family. It
 -- adds that one window and no surface, the way mw.MediaAllowed does for the
--- Classic talent window; every other caller keeps the gate.
+-- Classic talent window. Edit mode's windows (core/mover.lua,
+-- core/moverpanel.lua) take the same exception (user request, 2026-10-25);
+-- every other caller keeps the gate.
 function U.ModernWowMetalFrame(frame, width, height, force)
   if not force and not mw.MediaAllowed() then return false end
   if not frame then return false end
@@ -1112,9 +1120,15 @@ mw.units = {
   -- The pet mirrors the target housing into portrait-left reading order, so
   -- its unmirrored bed must be the player file. The target bed extends beneath
   -- the left-hand ring and shows through as two dark horizontal bands.
+  -- Smaller text so each row stays inside the pet's bars, which are 2/3 of
+  -- the player's (health 20, power 8).
   { id = "pet",          art = "targetFrame", bg = "playerFrameBg",
     power = "totPowerFill", mirror = true, powerX = -2, healthValueX = -2,
-    alignPowerPercent = true, powerPercentY = 2,
+    headerSize = M.fontSize.small - 1,
+    healthLabelSize = M.fontSize.small - 2,
+    powerTextSize = M.fontSize.small - 3,
+    healthLabelY = 1,
+    alignPowerPercent = true, powerPercentY = 3,
     header = { name = 2, level = -4 } },
 }
 
@@ -1532,7 +1546,17 @@ function mw.ApplyFrameScale(frame, entry)
   local extra = entry and tonumber(entry.scale)
   if extra and extra > 0 then scale = scale * extra end
 
-  pcall(frame.SetScale, frame, scale)
+  -- The pixel scale cancels the whole parent chain, a scaled anchor included,
+  -- so the edit-mode scale of any ancestor is put back; a frame that is itself
+  -- a scalable mover keeps its own through SetMoverBaseScale.
+  if type(U.MoverAncestorScale) == "function" then
+    scale = scale * U.MoverAncestorScale(frame)
+  end
+  if type(U.SetMoverBaseScale) == "function" then
+    U.SetMoverBaseScale(frame, scale)
+  else
+    pcall(frame.SetScale, frame, scale)
+  end
 end
 
 -- The frame scale that makes one texel cover exactly one screen pixel.
@@ -1685,7 +1709,8 @@ function mw.BuildHousing(frame, entry)
   -- The pet's happiness badge and numeric readouts were built before this
   -- housing and normally sit only ten levels above their boxes. Promote them
   -- past the art overlay so the gold rim cannot cover the badge or either
-  -- value. Kept pet-only because the request is specific to this frame.
+  -- value. The badge and health text stay pet-only because that request was
+  -- specific to this frame.
   if entry.id == "pet" and level > 0 then
     if frame.happiness then
       pcall(frame.happiness.SetFrameLevel, frame.happiness, level + 21)
@@ -1694,10 +1719,13 @@ function mw.BuildHousing(frame, entry)
       pcall(frame.health.textLayer.SetFrameLevel, frame.health.textLayer,
             level + 21)
     end
-    if frame.power and frame.power.textLayer then
-      pcall(frame.power.textLayer.SetFrameLevel, frame.power.textLayer,
-            level + 21)
-    end
+  end
+
+  -- The power bar's text sits on every frame's bar box, which the rim above
+  -- would otherwise cover, so it clears the art overlay on all of them.
+  if level > 0 and frame.power and frame.power.textLayer then
+    pcall(frame.power.textLayer.SetFrameLevel, frame.power.textLayer,
+          level + 21)
   end
 
   -- One whole canvas, drawn mirrored for a player-orientation frame:
@@ -2124,7 +2152,10 @@ end
 -- (knowledge.json / fonts.pfui_path_and_measure.v1), so nothing here touches
 -- SetFont on the widget itself.
 function mw.ApplyPowerTextSize(frame, explicitSize)
-  local size = tonumber(explicitSize) or mw.PowerTextSize()
+  -- A size chosen with /uui mw powertext beats a frame's authored default, so
+  -- it survives the rebuild after /reload.
+  local size = mw.PowerTextSize()
+  if size <= 0 then size = tonumber(explicitSize) or 0 end
   if size <= 0 or not frame or not frame.power then return end
 
   local labels = { frame.power.leftLabel, frame.power.rightLabel }
@@ -3149,7 +3180,7 @@ function mw.BuildCastBar(name)
   -- in the bar's own units and simply drawn smaller.
   local scale = mw.CastScale()
   if scale ~= 1 then
-    pcall(widget.SetScale, widget, scale)
+    U.SetMoverBaseScale(widget, scale)
     -- The mover placed this bar at scale 1 during castbar's OnEnable; replay
     -- its point under the new scale or it drifts on every reload.
     U.ReapplyMoverPosition(widget)
@@ -3365,7 +3396,7 @@ function U.ModernWowSetCastScale(value)
   for i = 1, table.getn(mw.castBars) do
     local widget = U.G(mw.castBars[i])
     if widget and widget.uuiModernWow then
-      if pcall(widget.SetScale, widget, value) then
+      if U.SetMoverBaseScale(widget, value) then
         U.ReapplyMoverPosition(widget)
         dressed = dressed + 1
       end
