@@ -522,6 +522,7 @@ UF_TEXT_ON_HOVER         = "仅在鼠标悬停时显示生命值和能量文字"
 UF_ABBREV_NUMBERS        = "缩写数字 (4200 -> 4.2k)",
 UF_TARGET_TARGET_HEADER     = "目标的目标",
 UF_TARGET_TARGET_ENABLED    = "启用目标的目标框体",
+UF_HEALTH_TEXT_DEFAULT    = "默认",
 UF_HEALTH_TEXT_HIDDEN     = "隐藏",
 UF_HEALTH_TEXT_PERCENT    = "百分比",
 UF_HEALTH_TEXT_VALUE      = "生命值",

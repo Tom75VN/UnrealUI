@@ -529,6 +529,7 @@ UF_TEXT_ON_HOVER         = "Текст здоровья и ресурса тол
 UF_ABBREV_NUMBERS        = "Сокращать числа (4200 -> 4.2k)",
 UF_TARGET_TARGET_HEADER     = "Цель цели",
 UF_TARGET_TARGET_ENABLED    = "Включить цель цели",
+UF_HEALTH_TEXT_DEFAULT    = "По умолчанию",
 UF_HEALTH_TEXT_HIDDEN     = "Скрыто",
 UF_HEALTH_TEXT_PERCENT    = "Проценты",
 UF_HEALTH_TEXT_VALUE      = "Значение здоровья",
