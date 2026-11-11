@@ -6148,6 +6148,7 @@ local function BuildUnitFrameGeneralSettings(parent, y, width)
     rowHeight = 20,
     value = U.GetUnitFrameHealthTextSetting("left"),
     items = {
+      { value = "default", text = U.L("UF_HEALTH_TEXT_DEFAULT") },
       { value = "hidden", text = U.L("UF_HEALTH_TEXT_HIDDEN") },
       { value = "percent", text = U.L("UF_HEALTH_TEXT_PERCENT") },
       { value = "number", text = U.L("UF_HEALTH_TEXT_VALUE") },
@@ -6166,6 +6167,7 @@ local function BuildUnitFrameGeneralSettings(parent, y, width)
     rowHeight = 20,
     value = U.GetUnitFrameHealthTextSetting("right"),
     items = {
+      { value = "default", text = U.L("UF_HEALTH_TEXT_DEFAULT") },
       { value = "hidden", text = U.L("UF_HEALTH_TEXT_HIDDEN") },
       { value = "percent", text = U.L("UF_HEALTH_TEXT_PERCENT") },
       { value = "number", text = U.L("UF_HEALTH_TEXT_VALUE") },

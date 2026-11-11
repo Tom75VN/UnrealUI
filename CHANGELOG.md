@@ -6,7 +6,7 @@ Player-visible UnrealUI changes, newest first. Keep every bullet short, clear an
 
 ### Fixed
 
-- Unit frames show their authored health readout again until a side is changed: the 0.12.0 defaults had forced a bare percentage everywhere, hiding the target frame's exact value. Untouched settings migrate automatically; the health text dropdowns gain a "Default" choice.
+- Unit frames show their authored health readout again until a side is changed: the 0.12.0 defaults had forced a bare percentage everywhere, hiding the target frame's exact value. Untouched settings migrate automatically; the health text dropdowns gain a "Default" choice on the Unit Frames settings page and in edit mode.
 - Unit frame health and power text set to "value" or "percentage" now updates with every health/power event instead of once a second.
 
 ## [0.12.0] - 2026-10-31
