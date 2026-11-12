@@ -917,14 +917,15 @@ local dirtyUnits = {}   -- unit token -> health | power | vitals | full
 local unitMouse = {}
 
 -- Independent health readouts for both ends of every UnrealUI unit frame. Each
--- side can be hidden, percentage or value; when only one health side is used,
--- the frame's identity text takes the other end. The cached module table keeps
--- this out of the per-health-event validation path.
+-- side can follow the frame's authored layout ("default"), be hidden, or show
+-- percentage or value; when only one health side is used, the frame's identity
+-- text takes the other end. The cached module table keeps this out of the
+-- per-health-event validation path.
 UF.healthText = {
   defaults = {
-    healthTextLeft = "hidden",
-    healthTextRight = "percent",
-    healthTextVersion = 0,
+    healthTextLeft = "default",
+    healthTextRight = "default",
+    healthTextVersion = 2,
   },
   cfg = nil,
 }
@@ -951,13 +952,26 @@ function UF.healthText.Config()
     cfg.healthTextVersion = 1
   end
 
-  if cfg.healthTextLeft ~= "percent" and
-     cfg.healthTextLeft ~= "number" then
-    cfg.healthTextLeft = "hidden"
+  -- Version 1 shipped with hidden+percent as the out-of-box values, which
+  -- replaced every frame's authored readout with a bare percentage: the
+  -- target frame lost its exact value ("1121 / 1536" from unitvitals) and
+  -- modern-wow's percentage-and-value pair. A config still holding exactly
+  -- those values was never touched, so it moves to the authored layout; any
+  -- other combination is a real choice and stays.
+  if tonumber(cfg.healthTextVersion) < 2 then
+    if cfg.healthTextLeft == "hidden" and cfg.healthTextRight == "percent" then
+      cfg.healthTextLeft, cfg.healthTextRight = "default", "default"
+    end
+    cfg.healthTextVersion = 2
   end
-  if cfg.healthTextRight ~= "percent" and
-     cfg.healthTextRight ~= "number" then
-    cfg.healthTextRight = "hidden"
+
+  local side
+  for _, key in ipairs({ "healthTextLeft", "healthTextRight" }) do
+    side = cfg[key]
+    if side ~= "default" and side ~= "hidden" and
+       side ~= "percent" and side ~= "number" then
+      cfg[key] = "default"
+    end
   end
   if U.db then UF.healthText.cfg = cfg end
   return cfg
@@ -1061,11 +1075,14 @@ end
 
 -- Returns the effective left and right tokens without allocating a table on
 -- every health update. A layout's non-health token (name or level) is retained
--- on the side opposite the selected readout.
-function UF.healthText.Token(value)
+-- on the side opposite the selected readout. "default" keeps the side's
+-- authored health token, so an untouched install looks exactly as the frame
+-- (or its theme override) was laid out.
+function UF.healthText.Token(value, authored)
   if value == "percent" then return "healthpct" end
   if value == "number" then return "healthval" end
-  return nil
+  if value == "hidden" then return nil end
+  return authored
 end
 
 function UF.healthText.Labels(labels)
@@ -1076,8 +1093,10 @@ function UF.healthText.Labels(labels)
 
   if not UF.healthText.IsHealthToken(left) then identity = left end
   if not identity and not UF.healthText.IsHealthToken(right) then identity = right end
-  local leftHealth = UF.healthText.Token(cfg.healthTextLeft)
-  local rightHealth = UF.healthText.Token(cfg.healthTextRight)
+  local leftHealth = UF.healthText.Token(cfg.healthTextLeft,
+    UF.healthText.IsHealthToken(left) and left or nil)
+  local rightHealth = UF.healthText.Token(cfg.healthTextRight,
+    UF.healthText.IsHealthToken(right) and right or nil)
 
   if leftHealth and rightHealth then return leftHealth, rightHealth end
   if leftHealth then return leftHealth, identity end
@@ -4103,10 +4122,13 @@ end
 
 local function TokenNeedsRefresh(token, mode)
   if mode == "full" then return true end
-  if token == "healthdyn" then
+  -- Every health token moves with the health events: ReadHealth's exactHealth
+  -- comparison exists precisely so the value readout does not freeze between
+  -- percentage steps, which skipping healthval/healthpct here defeated.
+  if UF.healthText.IsHealthToken(token) then
     return mode == "health" or mode == "vitals"
   end
-  if token == "powerdyn" then
+  if token == "powerdyn" or token == "powerpct" or token == "powerval" then
     return mode == "power" or mode == "vitals"
   end
   return false
@@ -4681,7 +4703,8 @@ function U.SetUnitFrameHealthTextSetting(key, value)
   if key == "left" then store = "healthTextLeft"
   elseif key == "right" then store = "healthTextRight"
   else return false end
-  if value ~= "percent" and value ~= "number" then value = "hidden" end
+  if value ~= "default" and value ~= "percent" and value ~= "number" and
+     value ~= "hidden" then value = "default" end
   if cfg[store] == value then return true end
   cfg[store] = value
   RefreshAll()
@@ -6125,6 +6148,7 @@ local function BuildUnitFrameGeneralSettings(parent, y, width)
     rowHeight = 20,
     value = U.GetUnitFrameHealthTextSetting("left"),
     items = {
+      { value = "default", text = U.L("UF_HEALTH_TEXT_DEFAULT") },
       { value = "hidden", text = U.L("UF_HEALTH_TEXT_HIDDEN") },
       { value = "percent", text = U.L("UF_HEALTH_TEXT_PERCENT") },
       { value = "number", text = U.L("UF_HEALTH_TEXT_VALUE") },
@@ -6143,6 +6167,7 @@ local function BuildUnitFrameGeneralSettings(parent, y, width)
     rowHeight = 20,
     value = U.GetUnitFrameHealthTextSetting("right"),
     items = {
+      { value = "default", text = U.L("UF_HEALTH_TEXT_DEFAULT") },
       { value = "hidden", text = U.L("UF_HEALTH_TEXT_HIDDEN") },
       { value = "percent", text = U.L("UF_HEALTH_TEXT_PERCENT") },
       { value = "number", text = U.L("UF_HEALTH_TEXT_VALUE") },
