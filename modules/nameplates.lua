@@ -794,7 +794,12 @@ style.FRIENDLY_TYPE = { FRIENDLY_UNIT = true, FRIENDLY_NPC = true }
 -- option is on, else the reaction colour; a friendly player's name takes it
 -- with classColorFriendlyName. Cached per plate on the resolved key.
 function style.RefreshColors(overlay, unitType, name)
-  local class = name and style.ClassOf(name)
+  local class
+  if overlay.preview then
+    class = overlay.preview.class
+  elseif name then
+    class = style.ClassOf(name)
+  end
   local friendly = style.FRIENDLY_TYPE[unitType] and true or false
   local barClass = class and ((friendly and cfg.classColorFriendly) or
                               (not friendly and cfg.classColorEnemy)) and
@@ -979,7 +984,13 @@ function style.HideHealth(overlay, unitType, name, damaged)
   if cfg.hideCritterHealth and style.IsCritter(name) then return true end
   local keys = style.HIDE_KEY[unitType]
   if not keys then return false end
-  return cfg[style.IsPlayer(name) and keys.player or keys.npc] and true or false
+  local player
+  if overlay.preview then
+    player = overlay.preview.player
+  else
+    player = style.IsPlayer(name)
+  end
+  return cfg[player and keys.player or keys.npc] and true or false
 end
 
 function style.Number(value)
@@ -1044,28 +1055,50 @@ end
 -- out and stays where the unzoomed one was.
 function style.Anchor(overlay)
   overlay:ClearAllPoints()
+  -- A preview plate stands on its host's baseline (style.RefreshPreview).
+  if overlay.preview then
+    overlay:SetPoint("BOTTOM", overlay.plate, "BOTTOM", 0, 0)
+    return
+  end
   overlay:SetPoint("TOP", overlay.plate, "TOP", 0,
                    (PLATE_LIFT + cfg.verticalOffset) / (overlay.zoom or 1))
 end
 
 -- Modern WoW: the bar's rect is the window inside the frame's rim, so the fill
 -- (drawn above the frame, ARTWORK over BACKGROUND) meets the rim on every
--- side. Units per texel on each axis, then the frame's margins around it.
+-- side. Both frames are nine-slices at one fixed scale each -- the one the
+-- authored bar height gives -- so resizing the bar stretches only their edges
+-- and middles, never the rounded corners.
 function style.LayoutArt(overlay, plateWidth, healthHeight)
   local art = overlay.art
+  local artScale = overlay.artScale or 1
   local health = overlay.health
   local background = art.background
   local window = art.backgroundWindow
-  local sx = plateWidth / (window.right - window.left)
-  local sy = healthHeight / (window.bottom - window.top)
-  health.uuiBackground:ClearAllPoints()
-  health.uuiBackground:SetPoint(
-    "TOPLEFT", health, "TOPLEFT",
-    -window.left * sx, window.top * sy)
-  health.uuiBackground:SetPoint(
-    "BOTTOMRIGHT", health, "BOTTOMRIGHT",
-    (background[3] - background[1] - window.right) * sx,
-    -(background[4] - background[2] - window.bottom) * sy)
+  if overlay.frameSlices then
+    U.LayoutNineSlice(overlay.frameSlices, health,
+      art.healthHeight * artScale / (window.bottom - window.top),
+      plateWidth, healthHeight, {
+        left = window.left,
+        top = window.top,
+        right = background[3] - background[1] - window.right,
+        bottom = background[4] - background[2] - window.bottom,
+      })
+  end
+  if overlay.selectedBorder then
+    -- selectedInset is in plate units at the authored height; as texels of
+    -- the selected file at that height's scale.
+    local inset = art.selectedInset
+    local scale = (art.healthHeight + inset.top - inset.bottom) * artScale /
+                  art.selectedSheet[2]
+    U.LayoutNineSlice(overlay.selectedBorder, health, scale,
+      plateWidth, healthHeight, {
+        left = -inset.left * artScale / scale,
+        top = inset.top * artScale / scale,
+        right = inset.right * artScale / scale,
+        bottom = -inset.bottom * artScale / scale,
+      })
+  end
 end
 
 function style.LayoutRaidIcon(overlay)
@@ -1216,7 +1249,9 @@ function style.RefreshGuild(overlay, name)
   local label = overlay.guild
   if not label then return end
   local guild
-  if cfg.showGuild and name and reaction.player[name] ~= false and
+  if cfg.showGuild and overlay.preview then
+    guild = overlay.preview.guild
+  elseif cfg.showGuild and name and reaction.player[name] ~= false and
      type(U.PlayerInfo) == "function" then
     local _, known = U.PlayerInfo(name)
     guild = known
@@ -1246,7 +1281,9 @@ function style.RefreshCombo(overlay)
   local combo = overlay.combo
   if not combo then return end
   local count = 0
-  if cfg.comboPoints and overlay.isTarget then
+  if cfg.comboPoints and overlay.isTarget and overlay.preview then
+    count = overlay.preview.combo or 0
+  elseif cfg.comboPoints and overlay.isTarget then
     local get = ResolveApiFn("GetComboPoints")
     if get then
       local ok, value = pcall(get, "target")
@@ -1278,7 +1315,10 @@ function style.RefreshZoom(overlay)
   end
   if zoom == overlay.zoom then return end
   overlay.zoom = zoom
-  pcall(function() overlay:SetScale(UIParent:GetScale() * zoom) end)
+  local preview = overlay.preview
+  pcall(function()
+    overlay:SetScale((preview and 1 or UIParent:GetScale()) * zoom)
+  end)
   style.Anchor(overlay)
 end
 
@@ -1344,6 +1384,7 @@ end
 -- client gives that region on this build is unmeasured (WORKING_SOURCE:
 -- Vanilla's 4x4 UI-RaidTargetingIcons sheet); a cell outside 1..8 shows none.
 function style.RaidIndex(overlay)
+  if overlay.preview then return overlay.preview.raid end
   if overlay.isTarget then
     local index = ApiNumber("GetRaidTargetIndex", "target")
     if index and index >= 1 and index <= 8 then return index end
@@ -1389,10 +1430,18 @@ end
 -- ---------------------------------------------------------------------------
 -- Overlay construction
 -- ---------------------------------------------------------------------------
-local function BuildOverlay(frame, parts)
-  plateCount = plateCount + 1
-
-  local overlay = CreateFrame("Frame", "UnrealUINamePlate" .. plateCount, frame)
+-- preview: the settings page's placeholder role (style.BuildPreview). A preview
+-- plate is a plain child of a settings frame: no global name, no plate count,
+-- an unregistered placeholder aura row on the target role only, and the
+-- strata and scale it inherits from the page rather than the world's.
+local function BuildOverlay(frame, parts, preview)
+  local overlay
+  if preview then
+    overlay = CreateFrame("Frame", nil, frame)
+  else
+    plateCount = plateCount + 1
+    overlay = CreateFrame("Frame", "UnrealUINamePlate" .. plateCount, frame)
+  end
   local themeStyle = U.GetActiveThemeStyle()
   local modern = themeStyle == "modern"
   local modernWow = themeStyle == "modern-wow"
@@ -1400,19 +1449,23 @@ local function BuildOverlay(frame, parts)
   local classic = themeStyle == "classic-wow"
   local nativeTexture = classic and M.texture.classicStatusBar or nil
   local nameplateArt = modernWow and M.modernWow.nameplate or nil
-  overlay.id = plateCount
+  overlay.id = preview and "preview" or plateCount
   overlay.plate = frame
   overlay.parts = parts
   overlay.cache = {}
   overlay.modernWow = modernWow
   overlay.zoom = 1
+  overlay.preview = preview
 
-  -- Non-target strata until the first refresh says otherwise (style.RefreshStrata).
-  pcall(overlay.SetFrameStrata, overlay, "BACKGROUND")
+  if not preview then
+    -- Non-target strata until the first refresh says otherwise
+    -- (style.RefreshStrata).
+    pcall(overlay.SetFrameStrata, overlay, "BACKGROUND")
 
-  -- WORKING_SOURCE (UnrealPfUI): a WorldFrame-child overlay is scaled to the UI
-  -- scale so plate sizes read in the same units as the rest of the addon.
-  pcall(function() overlay:SetScale(UIParent:GetScale()) end)
+    -- WORKING_SOURCE (UnrealPfUI): a WorldFrame-child overlay is scaled to the
+    -- UI scale so plate sizes read in the same units as the rest of the addon.
+    pcall(function() overlay:SetScale(UIParent:GetScale()) end)
+  end
 
   local artScale = nameplateArt and nameplateArt.scale or 1
   local plateWidth = cfg.width * artScale
@@ -1439,20 +1492,29 @@ local function BuildOverlay(frame, parts)
     health.uuiFillTexture:SetTexCoord(
       fill[1] / sheet[1], fill[3] / sheet[1],
       fill[2] / sheet[2], fill[4] / sheet[2])
-    health.uuiBackground:SetTexture(nameplateArt.texture)
-    health.uuiBackground:SetTexCoord(
-      background[1] / sheet[1], background[3] / sheet[1],
-      background[2] / sheet[2], background[4] / sheet[2])
-    -- Its anchors inside the rim are style.LayoutArt's, run by style.Layout.
+    -- The frame is a nine-slice rather than the bar's own background, so a
+    -- taller or wider bar keeps its rim at the authored size (user request,
+    -- 2026-11-26). The bar's flat background is not drawn. Placed by
+    -- style.LayoutArt, run by style.Layout.
+    health.uuiBackground:Hide()
+    overlay.frameSlices = U.CreateNineSlice(health, {
+      texture = nameplateArt.texture,
+      sheet = sheet,
+      cell = background,
+      cuts = nameplateArt.backgroundSlices,
+      layer = "BACKGROUND",
+    })
 
-    local selected = health:CreateTexture(nil, "OVERLAY")
-    selected:SetTexture(nameplateArt.selectedTexture)
-    local inset = nameplateArt.selectedInset
-    selected:SetPoint("TOPLEFT", health, "TOPLEFT",
-                      inset.left * artScale, inset.top * artScale)
-    selected:SetPoint(
-      "BOTTOMRIGHT", health, "BOTTOMRIGHT",
-      inset.right * artScale, inset.bottom * artScale)
+    -- The selected frame, the same way; style.RefreshOutline tints and shows
+    -- it through the group's SetVertexColor / Show / Hide.
+    local selected = U.CreateNineSlice(health, {
+      texture = nameplateArt.selectedTexture,
+      sheet = nameplateArt.selectedSheet,
+      cell = { 0, 0, nameplateArt.selectedSheet[1],
+               nameplateArt.selectedSheet[2] },
+      cuts = nameplateArt.selectedSlices,
+      layer = "OVERLAY",
+    })
     selected:Hide()
     overlay.selectedBorder = selected
   else
@@ -1575,7 +1637,10 @@ local function BuildOverlay(frame, parts)
     overlay.castTime:SetPoint("RIGHT", cast, "RIGHT", castTimeX, 0)
   end
 
-  if type(U.CreateNameplateAuraRows) == "function" then
+  -- A preview builds its row only for the target role, unregistered, so the
+  -- aura scan never draws the real target's debuffs on it.
+  if (not preview or preview.target) and
+     type(U.CreateNameplateAuraRows) == "function" then
     local auraArt = modernWow and M.modernWow.nameplateAura or nil
     -- Both clear the name row above the bar.
     local auraOffset = auraArt and
@@ -1583,7 +1648,7 @@ local function BuildOverlay(frame, parts)
                         auraArt.overlayInset.bottom + cfg.nameSize + 4) or
                        cfg.nameSize + 30
     overlay.auraRows = U.CreateNameplateAuraRows(
-      health, overlay, overlay.id, auraOffset)
+      health, overlay, overlay.id, auraOffset, preview and true or nil)
   end
 
   -- Raid mark. On the overlay rather than the bar, so hiding the health bar
@@ -1651,7 +1716,15 @@ end
 local function RefreshTargetCast(overlay)
   local spell, elapsed, duration, iconTexture
   local now = GetTime()
-  if castPreview.stop and now < castPreview.stop then
+  if overlay.preview then
+    -- The settings preview: a looping cast on the target only, advanced by
+    -- style.TickPreviewCasts while the preview is on screen.
+    if cfg.attachTargetCast and overlay.isTarget then
+      spell, duration, iconTexture =
+        castPreview.SPELL, castPreview.CAST, castPreview.ICON
+      elapsed = math.mod(now, duration)
+    end
+  elseif castPreview.stop and now < castPreview.stop then
     spell, duration, iconTexture =
       castPreview.SPELL, castPreview.CAST, castPreview.ICON
     elapsed = math.mod(now - castPreview.start, duration)
@@ -1710,6 +1783,276 @@ end
 
 function U.RefreshNameplateTargetCast()
   if targetOverlay then RefreshTargetCast(targetOverlay) end
+end
+
+-- Modern WoW: the fill art is cropped to the health fraction rather than
+-- squeezed, since its shape is baked into it.
+function style.CropFill(overlay, fraction)
+  if fraction < 0 then fraction = 0 end
+  if fraction > 1 then fraction = 1 end
+  if fraction == overlay.cache.fillFraction then return end
+  overlay.cache.fillFraction = fraction
+  local art = M.modernWow.nameplate
+  local cell = art.fill
+  local u1 = cell[1] / art.sheet[1]
+  local u2 = cell[3] / art.sheet[1]
+  overlay.health.uuiFillTexture:SetTexCoord(
+    u1, u1 + (u2 - u1) * fraction,
+    cell[2] / art.sheet[2], cell[4] / art.sheet[2])
+end
+
+-- ---------------------------------------------------------------------------
+-- Settings preview (modules/nameplatesettings.lua)
+--
+-- Two placeholder plates drawn by the live builder and the live option
+-- functions, so the preview cannot drift from the world: the current target
+-- (a hostile NPC with a cast, combo points and a skull) and another plate
+-- (a Paladin, friendly while friendly plates are on, else hostile). The
+-- placeholder role on overlay.preview stands in for everything a real plate
+-- reads from the client. Redrawn by style.Invalidate on every option change.
+-- ---------------------------------------------------------------------------
+style.previews = {}
+style.PREVIEW_GAP = 24   -- between the two plates
+style.PREVIEW_PAD = 8    -- box edge to the fitted stage
+
+function style.RefreshPreviewPlate(overlay)
+  local p = overlay.preview
+  overlay.isTarget = p.target
+  local name = p.name
+
+  if overlay.name then overlay.name:SetText(style.Name(name) or "") end
+  if overlay.level then
+    overlay.level:SetText(tostring(p.level))
+    local r, g, b = DifficultyColor(p.level)
+    pcall(overlay.level.SetTextColor, overlay.level, r, g, b, 1)
+  end
+
+  style.RefreshColors(overlay, p.unitType, name)
+  style.RefreshTotem(overlay, name)
+
+  local perc = p.health
+  if style.HideHealth(overlay, p.unitType, name, perc < 100) then
+    overlay.health:Hide()
+    if overlay.healthText then overlay.healthText:SetText("") end
+  else
+    overlay.health:Show()
+    overlay.health:SetMinMaxValues(0, 100)
+    overlay.health:SetValue(perc)
+    if overlay.modernWow then style.CropFill(overlay, perc / 100) end
+    if overlay.healthText then
+      local text = ""
+      if cfg.showHealthText then
+        local current = p.total and p.total * perc / 100 or nil
+        text = style.HealthText(current, p.total, perc)
+      end
+      overlay.healthText:SetText(text)
+    end
+  end
+
+  local alpha = 1
+  if cfg.fadeOthers and not overlay.isTarget then alpha = cfg.otherAlpha end
+  pcall(overlay.SetAlpha, overlay, alpha)
+
+  style.RefreshOutline(overlay, p.unitType)
+  style.RefreshZoom(overlay)
+  style.RefreshRaidIcon(overlay)
+  RefreshTargetCast(overlay)
+  style.RefreshGuild(overlay, name)
+  style.RefreshCombo(overlay)
+
+  -- The target's debuffs, as RefreshTargetAuras gates the live ones.
+  p.auraWidth, p.auraHeight = 0, 0
+  if overlay.auraRows and type(U.RefreshNameplateAuraPreview) == "function" then
+    p.auraWidth, p.auraHeight = U.RefreshNameplateAuraPreview(
+      overlay.auraRows, cfg.showAuras and overlay.isTarget)
+  end
+end
+
+-- Redraws both plates, then fits them side by side on one baseline (the
+-- bars' bottom edge) inside the box, scaling the stage down only when the
+-- configured sizes would not fit.
+function style.RefreshPreview(preview)
+  local other, target = preview.other, preview.target
+  local friendly = cfg.showFriendly and true or false
+  other.preview.unitType = friendly and "FRIENDLY_UNIT" or "ENEMY"
+
+  local i
+  for i = 1, 2 do
+    local overlay = i == 1 and other or target
+    overlay.cache = {}
+    overlay.zoom = nil
+    pcall(style.Layout, overlay)
+    pcall(style.RefreshPreviewPlate, overlay)
+  end
+
+  local zoom = target.zoom or 1
+  local function Bar(overlay)
+    local artScale = overlay.artScale or 1
+    return cfg.width * artScale,
+           (overlay.art and cfg.artHealthHeight or cfg.healthHeight) * artScale
+  end
+  local otherW, otherH = Bar(other)
+  local barW, barH = Bar(target)
+
+  local raidLeft, raidRight, raidTop = 0, 0, 0
+  if cfg.raidIcon then
+    local reach = cfg.raidIconSize + 4
+    if cfg.raidIconPos == "LEFT" then
+      raidLeft = math.max(0, reach - cfg.raidIconX)
+    elseif cfg.raidIconPos == "RIGHT" then
+      raidRight = math.max(0, reach + cfg.raidIconX)
+    else
+      raidTop = cfg.raidIconSize + cfg.nameSize + 4 + cfg.raidIconY
+    end
+  end
+
+  local nameRow = cfg.nameSize + 4
+  local targetBelow = 0
+  if target.cast:IsShown() then
+    targetBelow = target.castGap + (tonumber(target.cast:GetHeight()) or 0)
+  end
+  if target.combo and target.combo.layer:IsShown() then
+    targetBelow = targetBelow + cfg.comboSize + style.COMBO_GAP
+  end
+  -- The debuff row: auraGap off the bar's top or bottom edge at its corner,
+  -- growing away from the bar and inward along it, so a row wider than the
+  -- bar reaches past the opposite edge.
+  local auraTop = 0
+  local auraWidth = tonumber(target.preview.auraWidth) or 0
+  local auraHeight = tonumber(target.preview.auraHeight) or 0
+  if auraHeight > 0 then
+    local corner = cfg.auraPosition
+    local reach = math.max(0, cfg.auraGap) + auraHeight
+    if corner == "BOTTOMLEFT" or corner == "BOTTOMRIGHT" then
+      targetBelow = math.max(targetBelow, reach)
+    else
+      auraTop = reach
+    end
+    local overflow = math.max(0, auraWidth - barW)
+    if corner == "TOPRIGHT" or corner == "BOTTOMRIGHT" then
+      raidLeft = math.max(raidLeft, overflow)
+    else
+      raidRight = math.max(raidRight, overflow)
+    end
+  end
+
+  local otherBelow = 0
+  if other.guild and other.guild:IsShown() then
+    otherBelow = 2 + math.max(tonumber(other.guild:GetHeight()) or 0,
+                              M.fontSize.small + 2)
+  end
+
+  local width = otherW + style.PREVIEW_GAP +
+                (raidLeft + barW + raidRight) * zoom
+  local above = math.max(otherH + nameRow,
+                         (barH + math.max(nameRow, raidTop, auraTop)) * zoom)
+  local below = math.max(otherBelow, targetBelow * zoom)
+  local height = above + below
+
+  local box = preview.box
+  local pad = style.PREVIEW_PAD
+  local scale = math.min(1,
+    ((tonumber(box:GetWidth()) or width) - 2 * pad) / width,
+    ((tonumber(box:GetHeight()) or height) - 2 * pad) / height)
+  if scale <= 0 then scale = 1 end
+
+  local stage = preview.stage
+  pcall(stage.SetScale, stage, scale)
+  stage:SetWidth(width)
+  stage:SetHeight(height)
+  stage:ClearAllPoints()
+  stage:SetPoint("CENTER", box, "CENTER", 0, 0)
+
+  preview.otherHost:ClearAllPoints()
+  preview.otherHost:SetPoint("BOTTOM", stage, "BOTTOMLEFT", otherW / 2, below)
+  preview.targetHost:ClearAllPoints()
+  preview.targetHost:SetPoint(
+    "BOTTOM", stage, "BOTTOMLEFT",
+    otherW + style.PREVIEW_GAP + (raidLeft + barW / 2) * zoom, below)
+end
+
+-- Every render tick while a preview is on screen, through the shared driver
+-- (scripts.child_onupdate_unreliable: no OnUpdate of its own). Only the cast
+-- bar moves; it unregisters itself once no preview is visible.
+style.PREVIEW_TICK = "nameplates:preview-cast"
+
+function style.TickPreviewCasts()
+  local any = false
+  local i
+  for i = 1, table.getn(style.previews) do
+    local preview = style.previews[i]
+    if preview.target and Call(preview.box, "IsVisible") then
+      any = true
+      pcall(RefreshTargetCast, preview.target)
+    end
+  end
+  if not any then U.UnregisterUpdate(style.PREVIEW_TICK) end
+end
+
+function style.RefreshPreviews()
+  local i
+  for i = 1, table.getn(style.previews) do
+    -- A hidden page's preview is redrawn when it is shown (uuiSetShown).
+    local preview = style.previews[i]
+    if Call(preview.box, "IsVisible") then
+      local ok, err = pcall(style.RefreshPreview, preview)
+      if not ok then U.Debug("nameplate preview: " .. tostring(err)) end
+    end
+  end
+end
+
+-- A settings widget: { frame, uuiSetShown } (modules/settings.lua toggles it
+-- through uuiSetShown, and its search skips a plain table, so the placeholder
+-- names are never matched as settings text).
+function U.CreateNameplatePreview(parent, width, height)
+  local box = U.CreatePanel(parent, { width = width, height = height })
+  local stage = CreateFrame("Frame", nil, box)
+  stage:SetWidth(1)
+  stage:SetHeight(1)
+
+  local level = ApiNumber("UnitLevel", "player") or 60
+  local preview = { box = box, stage = stage }
+
+  local function Plate(role)
+    local host = CreateFrame("Frame", nil, stage)
+    host:SetWidth(1)
+    host:SetHeight(1)
+    local ok, overlay = pcall(BuildOverlay, host, {}, role)
+    if not ok then
+      U.Debug("nameplate preview build: " .. tostring(overlay))
+      return host, nil
+    end
+    return host, overlay
+  end
+
+  preview.otherHost, preview.other = Plate({
+    name = U.L("NP_PREVIEW_PLAYER_NAME"), guild = U.L("NP_PREVIEW_GUILD"),
+    level = level, class = "PALADIN", player = true, health = 100,
+  })
+  preview.targetHost, preview.target = Plate({
+    name = U.L("NP_PREVIEW_TARGET_NAME"), target = true, unitType = "ENEMY",
+    level = level + 3, player = false, health = 62, total = 3200,
+    combo = 3, raid = 8,
+  })
+  if not preview.other or not preview.target then return nil end
+
+  table.insert(style.previews, preview)
+  pcall(style.RefreshPreview, preview)
+
+  -- Field names stay clear of the ones gs.StyleIntegratedWidget keys controls
+  -- by (box, button, track, swatch + preview, rows).
+  return {
+    frame = box,
+    uuiSetShown = function(show)
+      if show then
+        box:Show()
+        pcall(style.RefreshPreview, preview)
+        U.RegisterUpdate(style.PREVIEW_TICK, 0, style.TickPreviewCasts)
+      else
+        box:Hide()
+      end
+    end,
+  }
 end
 
 local function AdoptPlate(frame)
@@ -1939,19 +2282,7 @@ local function RefreshPlate(overlay)
     overlay.health:SetValue(value)
 
     if overlay.modernWow and maximum > minimum then
-      local fraction = (value - minimum) / (maximum - minimum)
-      if fraction < 0 then fraction = 0 end
-      if fraction > 1 then fraction = 1 end
-      if fraction ~= overlay.cache.fillFraction then
-        overlay.cache.fillFraction = fraction
-        local art = M.modernWow.nameplate
-        local cell = art.fill
-        local u1 = cell[1] / art.sheet[1]
-        local u2 = cell[3] / art.sheet[1]
-        overlay.health.uuiFillTexture:SetTexCoord(
-          u1, u1 + (u2 - u1) * fraction,
-          cell[2] / art.sheet[2], cell[4] / art.sheet[2])
-      end
+      style.CropFill(overlay, (value - minimum) / (maximum - minimum))
     end
 
     if overlay.healthText then
@@ -1987,6 +2318,13 @@ local function RefreshPlate(overlay)
   local wantAlpha = 1
   if cfg.fadeOthers and hasTarget and not overlay.isTarget then
     wantAlpha = cfg.otherAlpha
+  end
+  -- A critter with its bar hidden draws no plate at all (user request,
+  -- 2026-11-26). Alpha, not Hide: WatchPlates reads cache.visible as the
+  -- native plate's visibility, and the overlay takes no mouse input.
+  if cfg.hideCritterHealth and not overlay.health:IsShown() and
+     style.IsCritter(name) then
+    wantAlpha = 0
   end
   if wantAlpha ~= overlay.cache.alpha then
     overlay.cache.alpha = wantAlpha
@@ -2032,6 +2370,7 @@ end
 -- colours, outlines and text are re-applied, re-run the layout, and redraw now
 -- rather than on the next 0.1s tick.
 function style.Invalidate()
+  style.RefreshPreviews()
   if not cfg.enabled then return end
   local i
   for i = 1, table.getn(plateOrder) do

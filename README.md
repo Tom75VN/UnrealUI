@@ -103,7 +103,7 @@ Use `/uui` to open the settings, `/uui unlock` to arrange supported elements, an
 
 ## Version
 
-Current release: **0.12.0**
+Current release: **0.13.0**
 
 [See what changed](CHANGELOG.md).
 

@@ -8,8 +8,10 @@ local U = UnrealUI
 local M = U.media
 local TAB_TEXT_Y_OFFSET = -1
 
--- Append a handler without replacing the native behavior. Explicit arguments
--- preserve both direct handler shapes used by this client and legacy globals.
+-- Append a handler without replacing the native behavior. Arguments are
+-- forwarded as received, so handlers with long payloads keep every argument.
+-- Frame:HookScript would behave the same here (knowledge.json /
+-- frame.hookscript_getscript_setscript_semantics), so chaining is kept.
 function U.PostHookScript(frame, script, callback)
   if not frame or not frame.GetScript or not frame.SetScript or
      type(script) ~= "string" or type(callback) ~= "function" then
@@ -18,79 +20,42 @@ function U.PostHookScript(frame, script, callback)
 
   local ok, previous = pcall(frame.GetScript, frame, script)
   if not ok then return false end
+  if not previous then return pcall(frame.SetScript, frame, script, callback) end
 
-  return pcall(frame.SetScript, frame, script,
-    function(a1, a2, a3, a4, a5, a6, a7, a8, a9)
-      if previous then previous(a1, a2, a3, a4, a5, a6, a7, a8, a9) end
-      callback(a1, a2, a3, a4, a5, a6, a7, a8, a9)
-    end)
+  return pcall(frame.SetScript, frame, script, function(...)
+    previous(...)
+    callback(...)
+  end)
 end
 
--- Post-hooks a native global function.
---
--- The previous implementation resolved a global `hooksecurefunc` and failed
--- closed when it was absent. Nothing in the compact evidence records that
--- global on this client, and the installed UnrealPfUI does not rely on one
--- either: compat/vanilla.lua defines its own wrapper because the Vanilla-shaped
--- client does not ship one. So every unrealUI reapply hook -- the Quest Log
--- font/strip passes and the Spellbook refresh -- was silently never installed,
--- which is why native updates were free to repaint quest text after unrealUI's
--- one-time pass. WORKING_SOURCE (UnrealPfUI), not runtime-verified.
---
--- unrealUI therefore owns the wrapper. The original is always called first and
--- its returns are passed through, so this appends behaviour rather than
--- replacing a client function, and the write is read back before any callback
--- is registered so an ignored global assignment still fails closed.
---
--- LIMIT -- USER_CONFIRMED_INGAME: never point this at a native function that
--- reads `...`/arg.n. The wrapper has fixed arity and always forwards ten
--- arguments, so a vararg original sees arg.n == 10 and iterates over the
--- padding nils. Hooking this client's GossipFrameOptionsUpdate that way built
--- an option row per nil and threw "attempt to concatenate field '?' (a nil
--- value)" out of GossipFrame.lua. Fixed-signature natives (the QuestFrame
--- *_Update functions) are fine; for a vararg one, drive the reapply from an
--- event or an OnShow/OnEvent script hook instead.
-local hookedGlobals = {}   -- global name -> array of unrealUI callbacks
+-- Post-hooks a native global function through the client's 3.3.5a
+-- hooksecurefunc (knowledge.json / hooks.no_global_hooksecurefunc): the
+-- original runs first with its real argument count and keeps its returns, so
+-- vararg FrameXML functions are safe to hook. Each callback is isolated in
+-- pcall so one failing hook cannot break the caller.
+local hookedGlobals = {}   -- global name -> number of unrealUI callbacks
 
 function U.PostHookGlobal(name, callback)
   if type(name) ~= "string" or type(callback) ~= "function" then return false end
-
-  local callbacks = hookedGlobals[name]
-  if not callbacks then
-    local original = U.G(name)
-    if type(original) ~= "function" then return false end
-
-    callbacks = {}
-    local wrapper = function(a1, a2, a3, a4, a5, a6, a7, a8, a9, a10)
-      local r1, r2, r3, r4, r5 =
-        original(a1, a2, a3, a4, a5, a6, a7, a8, a9, a10)
-
-      local i
-      for i = 1, table.getn(callbacks) do
-        local ok, err = pcall(callbacks[i],
-                              a1, a2, a3, a4, a5, a6, a7, a8, a9, a10)
-        if not ok then U.Error(name .. " hook: " .. tostring(err)) end
-      end
-
-      return r1, r2, r3, r4, r5
-    end
-
-    U.SetG(name, wrapper)
-    if U.G(name) ~= wrapper then
-      U.Debug("PostHookGlobal could not replace " .. name)
-      return false
-    end
-    hookedGlobals[name] = callbacks
+  local original, hook = U.G(name), U.G("hooksecurefunc")
+  if type(original) ~= "function" or type(hook) ~= "function" then
+    return false
   end
 
-  table.insert(callbacks, callback)
+  local ok = pcall(hook, name, function(...)
+    local hookOk, err = pcall(callback, ...)
+    if not hookOk then U.Error(name .. " hook: " .. tostring(err)) end
+  end)
+  if not ok or U.G(name) == original then
+    U.Debug("PostHookGlobal could not hook " .. name)
+    return false
+  end
+
+  hookedGlobals[name] = (hookedGlobals[name] or 0) + 1
   return true
 end
 
--- Measured readout for /uui check: whether this client provides its own
--- hooksecurefunc, and which globals unrealUI's wrapper actually replaced. The
--- absence of that global is currently WORKING_SOURCE inference from
--- UnrealPfUI, so this is what turns it into an observation.
+-- Readout for /uui check: the hooksecurefunc type and the hooked globals.
 function U.PostHookReport()
   local names, name = {}, nil
   for name in pairs(hookedGlobals) do table.insert(names, name) end

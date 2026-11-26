@@ -41,6 +41,12 @@
 --     numbers read off CharacterHeadSlot, CharacterHandsSlot and
 --     CharacterMainHandSlot (rules/unreal-ui.md: no addon frame anchors to a
 --     native one). Its drag catcher is SetAllPoints on it and follows.
+--   * CharacterFrameTransmogButton, the client's own Transmog button (name
+--     USER_CONFIRMED_INGAME, 2026-11-26: GetMouseFocus over it, child of
+--     CharacterFrame, no Lua source), moves to the bottom of this pane while
+--     it shows (user request) and back to its stock anchor when it hides.
+--     It is anchored to CharacterFrame only; its stock relative is kept by
+--     name, never as a widget (rules/unreal-ui.md, ownership boundaries).
 --
 -- One top-level table (rules/unreal-ui.md, Lua local budget).
 
@@ -50,6 +56,9 @@ local M = U.media
 local SP = {
   NAME = "UnrealUICharacterStatsPanel",
   SCROLL = "UnrealUICharacterStatsScrollBar",
+  TRANSMOG = "CharacterFrameTransmogButton",
+  transmogSpot = nil,
+  transmogStock = nil,
   UPDATE = "characterstats.refresh",
   panel = nil,
   list = nil,
@@ -585,6 +594,7 @@ end
 function SP.SetExpanded(expanded)
   if not SP.frame or not SP.panel then return end
   local placed = SP.Housing(expanded)
+  SP.PlaceTransmog(placed and expanded)
   if U.CharacterSidebar then U.CharacterSidebar.SetExpanded(placed and expanded) end
   if not (placed and expanded) and U.CharacterEquipmentPane then
     U.CharacterEquipmentPane.Deactivate()
@@ -611,6 +621,70 @@ function SP.PaneRect()
   local right = w.left + w.expandedWidth - w.insetRight.right - p.right
   local bottom = w.top + w.height - w.insetRight.bottom - p.bottom
   return left, top, right - left, bottom - top
+end
+
+-- ---------------------------------------------------------------------------
+-- The Transmog button
+-- ---------------------------------------------------------------------------
+-- The space the pane gives up for the button, from its height read once at
+-- build (a bounded number); 0 when the client has no button.
+function SP.TransmogReserve()
+  local button = U.G(SP.TRANSMOG)
+  if not button then return 0 end
+  local t = SP.Token().transmog
+  local height = SP.Dimension(button, "GetHeight")
+  if height <= 0 then height = t.fallbackHeight end
+  return t.gap + height + t.bottom
+end
+
+-- The stock anchors with each relative kept by name. False when a relative
+-- has no name: the button could not be put back, so it is never moved.
+function SP.CaptureTransmogStock(button)
+  local stock = {}
+  local okCount, count = pcall(button.GetNumPoints, button)
+  local p
+  for p = 1, (okCount and tonumber(count)) or 0 do
+    local ok, point, relative, relPoint, x, y = pcall(button.GetPoint, button, p)
+    if ok and point then
+      local relName
+      if relative then
+        local okName, name = pcall(relative.GetName, relative)
+        if not (okName and type(name) == "string" and name ~= "") then
+          return false
+        end
+        relName = name
+      end
+      table.insert(stock, { point, relName, relPoint or point,
+                            tonumber(x) or 0, tonumber(y) or 0 })
+    end
+  end
+  if table.getn(stock) == 0 then return false end
+  return stock
+end
+
+-- Centred under the pane while it shows (true); its stock anchors otherwise.
+function SP.PlaceTransmog(shown)
+  local button = U.G(SP.TRANSMOG)
+  local spot = SP.transmogSpot
+  if not button or not spot or not SP.frame then return end
+  if SP.transmogStock == nil then
+    SP.transmogStock = SP.CaptureTransmogStock(button)
+  end
+  local stock = SP.transmogStock
+  if not stock then return end
+  pcall(function()
+    button:ClearAllPoints()
+    if shown then
+      button:SetPoint("BOTTOM", SP.frame, "TOPLEFT", spot.x, -spot.y)
+      return
+    end
+    local i
+    for i = 1, table.getn(stock) do
+      local s = stock[i]
+      local relative = s[2] and U.G(s[2]) or SP.frame
+      button:SetPoint(s[1], relative, s[3], s[4], s[5])
+    end
+  end)
 end
 
 -- ---------------------------------------------------------------------------
@@ -718,6 +792,14 @@ function SP.Build(frame)
           "Retail Character housing unavailable")
   end
   local paneLeft, paneTop, paneWidth, paneHeight = SP.PaneRect()
+  -- The Transmog button takes the pane's bottom; the list, the Equipment
+  -- Manager and the flat backdrop all end above it.
+  local reserve = SP.TransmogReserve()
+  if reserve > 0 then
+    SP.transmogSpot = { x = paneLeft + paneWidth / 2,
+                        y = paneTop + paneHeight - t.transmog.bottom }
+    paneHeight = paneHeight - reserve
+  end
 
   -- Takes the mouse over the housing past the native window's own hit rect,
   -- from the paper doll's inset edge, so a click there does not fall through

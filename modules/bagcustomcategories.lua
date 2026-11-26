@@ -879,6 +879,24 @@ function CC.BuildRuleRow(body, index)
   return row
 end
 
+-- Rule rows are built the first time a category needs that many: every row
+-- built is re-resolved on each move of the settings window, shown or not
+-- (settingsdrill, 2026-11-26). Styled on its own, as the editor's first
+-- controls were by U.BuildBagCustomCategoryEditor.
+function CC.RuleRow(index)
+  local ui = CC.ui
+  if ui.rows[index] then return ui.rows[index] end
+  local first = table.getn(ui.styled) + 1
+  ui.rows[index] = CC.BuildRuleRow(ui.body, index)
+  if type(U.StyleGameSettingsWidgets) == "function" then
+    local added = {}
+    local i
+    for i = first, table.getn(ui.styled) do table.insert(added, ui.styled[i]) end
+    U.StyleGameSettingsWidgets(added, true)
+  end
+  return ui.rows[index]
+end
+
 function CC.LayoutRuleRow(row, y)
   local ui = CC.ui
   local rule = row.Rule()
@@ -1026,8 +1044,6 @@ function CC.BuildBody(parent)
 
   ui.rulesLabel = CC.Label(body, "CUSTOMCAT_RULES", M.color.accent)
   ui.rulesHelp = CC.HelpMark(body, "CUSTOMCAT_RULES", "CUSTOMCAT_RULES_TIP")
-  local i
-  for i = 1, CC.MAX_RULES do ui.rows[i] = CC.BuildRuleRow(body, i) end
   ui.addRule = CC.Button(body, "CUSTOMCAT_ADD_RULE", 110, function()
     CC.Edit(function(cat)
       if table.getn(cat.rules) < CC.MAX_RULES then
@@ -1124,8 +1140,12 @@ function CC.LayoutBody(cat)
   y = y - 20
   local i
   for i = 1, CC.MAX_RULES do
-    CC.LayoutRuleRow(ui.rows[i], y)
-    if cat.rules[i] then y = y - 30 end
+    if cat.rules[i] then
+      CC.LayoutRuleRow(CC.RuleRow(i), y)
+      y = y - 30
+    elseif ui.rows[i] then
+      CC.LayoutRuleRow(ui.rows[i], y)
+    end
   end
   ui.addRule:ClearAllPoints()
   ui.addRule:SetPoint("TOPLEFT", body, "TOPLEFT", 48, y - 2)

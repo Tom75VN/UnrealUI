@@ -19,19 +19,18 @@
 -- chrome (zone text, etc.) and defaults to TOPRIGHT UIParent TOPRIGHT 0,0 with
 -- no pfUI involvement, so moving the cluster keeps that chrome attached and
 -- the registration's own default matches where the client already puts it.
--- The settings button stays anchored to Minimap itself, so it keeps tracking
--- correctly without any extra work when the cluster moves -- until the user
--- drags the button somewhere else, after which its own saved position wins.
+-- The settings button sits on the minimap's rim (user request, 2026-11-26):
+-- dragging it slides it around the edge, and only its angle is stored, so it
+-- follows the map wherever the cluster is moved or scaled.
 
 local U = UnrealUI
 local M = U.media
 
 local MM = U.RegisterModule("minimap")
 
-local BUTTON_SIZE = 24
--- Stored through the shared position store (core/config.lua). Not a mover id:
--- the button is dragged directly rather than through edit mode.
-local POSITION_ID = "minimapbutton"
+-- The free position the button used to store before it was tied to the rim.
+-- Read only to drop it once; nothing writes it any more.
+local LEGACY_POSITION_ID = "minimapbutton"
 
 local modernWowMinimap = { dressed = false }
 
@@ -40,7 +39,26 @@ local function MinimapConfig()
     enabled = true,
     showZone = true,
     showZoom = true,
+    shape = "circle",
+    buttonAngle = M.minimapButton.defaultAngle,
   })
+end
+
+-- Circle or square (user request, 2026-11-26, as PandaUI). Only the dressed
+-- Modern / Modern WoW minimap takes the square: the native ring is round.
+local function SquareMinimap()
+  return modernWowMinimap.dressed and not modernWowMinimap.squareFailed and
+         MinimapConfig().shape == "square"
+end
+U.MinimapIsSquare = SquareMinimap
+
+-- How far a point at `cos`, `sin` of an angle is pushed out so a circle's
+-- radius lands on the square's edge instead: 1 on a round map.
+local function SquareStretch(cos, sin)
+  if not SquareMinimap() then return 1 end
+  local edge = math.max(math.abs(cos), math.abs(sin))
+  if edge <= 0 then return 1 end
+  return 1 / edge
 end
 
 local function ModernWow()
@@ -149,6 +167,21 @@ local function DressModernWowMinimap()
       -layout.borderOffset, layout.borderOffset)
     border:SetPoint("BOTTOMRIGHT", minimap, "BOTTOMRIGHT",
       layout.borderOffset, -layout.borderOffset)
+  end
+
+  -- DF-main's square frame, shown instead of the round border on a square
+  -- map. Modern draws no border on either shape.
+  local squareBorder
+  if withBorder and art.minimapSquareFrame then
+    squareBorder = minimap:CreateTexture(nil, "ARTWORK")
+    squareBorder:SetTexture(art.minimapSquareFrame)
+    squareBorder:SetPoint("TOPLEFT", minimap, "TOPLEFT",
+      -layout.squareBorderOffset,
+      layout.squareBorderOffset + layout.squareBorderYOffset)
+    squareBorder:SetPoint("BOTTOMRIGHT", minimap, "BOTTOMRIGHT",
+      layout.squareBorderOffset,
+      -layout.squareBorderOffset + layout.squareBorderYOffset)
+    squareBorder:Hide()
   end
 
   local shadow = minimap:CreateTexture(nil, "BORDER")
@@ -261,6 +294,7 @@ local function DressModernWowMinimap()
 
   modernWowMinimap.dressed = true
   modernWowMinimap.border = border
+  modernWowMinimap.squareBorder = squareBorder
   modernWowMinimap.shadow = shadow
   modernWowMinimap.topPanel = panel
   modernWowMinimap.panelArt = panelArt
@@ -296,6 +330,89 @@ local function ApplyChromeSettings()
   return true
 end
 U.ApplyMinimapChromeSettings = ApplyChromeSettings
+
+-- ---------------------------------------------------------------------------
+-- Minimap shape (ported from PandaUI)
+--
+-- Minimap:SetMaskTexture is DOCUMENTED_NOT_RUNTIME_VERIFIED here; the square
+-- mask is Retail's SquareMask as PandaUI ships it. A failed call keeps the
+-- round map. The client keeps a mask across /reload, so a map that is not
+-- square always has the stock round mask set back explicitly.
+-- ---------------------------------------------------------------------------
+local shape = {}
+
+function shape.SetMask(path)
+  local minimap = U.G("Minimap")
+  if not minimap or type(minimap.SetMaskTexture) ~= "function" or not path then
+    return false
+  end
+  return pcall(minimap.SetMaskTexture, minimap, path) and true or false
+end
+
+function shape.Show(region, visible)
+  if not region then return end
+  pcall(visible and region.Show or region.Hide, region)
+end
+
+-- A round map keeps the zoom buttons on its lower-right rim; a square one
+-- groups them side by side under its bottom-right corner.
+function shape.PlaceZoom(square)
+  local minimap = U.G("Minimap")
+  local layout = M.modernWow and M.modernWow.minimap
+  local zoomIn, zoomOut = modernWowMinimap.zoomIn, modernWowMinimap.zoomOut
+  if not minimap or not layout then return end
+  if zoomIn then pcall(zoomIn.ClearAllPoints, zoomIn) end
+  if zoomOut then pcall(zoomOut.ClearAllPoints, zoomOut) end
+
+  if square then
+    local right = layout.squareZoomRightInset / layout.zoomScale
+    local below = layout.squareZoomBottomGap / layout.zoomScale
+    local gap = layout.squareZoomGap / layout.zoomScale
+    if zoomIn then
+      pcall(zoomIn.SetPoint, zoomIn, "TOPRIGHT", minimap, "BOTTOMRIGHT",
+        -right, -below)
+    end
+    if zoomOut and zoomIn then
+      pcall(zoomOut.SetPoint, zoomOut, "TOPRIGHT", zoomIn, "TOPLEFT", -gap, 0)
+    elseif zoomOut then
+      pcall(zoomOut.SetPoint, zoomOut, "TOPRIGHT", minimap, "BOTTOMRIGHT",
+        -right, -below)
+    end
+    return
+  end
+
+  if zoomIn then
+    pcall(zoomIn.SetPoint, zoomIn, "TOPLEFT", minimap, "BOTTOMRIGHT",
+      layout.zoomX, layout.zoomY)
+  end
+  if zoomOut and zoomIn then
+    pcall(zoomOut.SetPoint, zoomOut, "TOPRIGHT", zoomIn, "BOTTOMLEFT", 0, 0)
+  elseif zoomOut then
+    pcall(zoomOut.SetPoint, zoomOut, "TOPLEFT", minimap, "BOTTOMRIGHT",
+      layout.zoomX, layout.zoomY - 42.6)
+  end
+end
+
+-- Mask, ring art and zoom buttons. The settings button and corpse arrow read
+-- SquareMinimap() when they are next placed.
+function shape.Apply()
+  local art = M.modernWow and M.modernWow.texture
+  local square = SquareMinimap()
+  if square and not (art and shape.SetMask(art.minimapSquareMask)) then
+    U.Debug("minimap: square mask failed; map kept round")
+    modernWowMinimap.squareFailed = true
+    square = false
+  end
+  if not square then shape.SetMask(M.minimapRoundMask) end
+  if not modernWowMinimap.dressed then return square end
+
+  shape.Show(modernWowMinimap.border, not square)
+  shape.Show(modernWowMinimap.shadow, not square)
+  shape.Show(modernWowMinimap.squareBorder, square)
+  shape.PlaceZoom(square)
+  U.Debug("minimap shape: " .. (square and "square" or "circle"))
+  return square
+end
 
 -- ---------------------------------------------------------------------------
 -- The pending-mail letter
@@ -438,26 +555,111 @@ local function DressMailIcon()
   return true
 end
 
--- Anchored to the map's left edge so it never lands on the map surface or on
--- the stock chrome hanging off the right side -- unless the user has dragged
--- the button, in which case the position they dropped it on is used instead.
--- Also runs after /uui reset, so it clears the old anchor first rather than
--- stacking a second point on top of the one already there.
-local function AnchorButton(button)
-  pcall(button.ClearAllPoints, button)
+-- ---------------------------------------------------------------------------
+-- The settings button on the minimap rim
+--
+-- The button's centre is anchored to Minimap's centre, rimOffset units outside
+-- the map's edge, at the stored angle. It is parented to MinimapCluster, so the
+-- edit-mode move and scale of the minimap carry it along; offsets are converted
+-- from minimap units into the button's own through the two effective scales,
+-- so a Minimap scaled apart from its cluster still lands on the rim.
+--
+-- Dragging reads the cursor's angle around the map centre every tick and
+-- re-anchors the button there: the same GetCursorPosition / GetCenter /
+-- GetEffectiveScale arithmetic the ping correction below relies on
+-- (knowledge.json / api.getcursorposition_usable_for_hit_testing), and the
+-- same Minimap CENTER anchoring as the corpse arrow (modules/playerarrow.lua).
+-- Only the drag input below runs StartMoving; the visible button never does.
+-- ---------------------------------------------------------------------------
+local rim = { dragging = false, gesture = nil, angle = nil,
+              updateId = "minimap.buttonrim", placeId = "minimap.buttonplace" }
 
-  local saved = U.GetPosition(POSITION_ID)
-  if saved and U.ApplyFramePoint(button, saved) then
-    return "its saved position"
+-- Same quadrant handling as modules/playerarrow.lua: only math.atan is relied on.
+function rim.Atan2(y, x)
+  if x > 0 then return math.atan(y / x) end
+  if x < 0 then
+    if y >= 0 then return math.atan(y / x) + math.pi end
+    return math.atan(y / x) - math.pi
   end
+  if y > 0 then return math.pi / 2 end
+  if y < 0 then return -math.pi / 2 end
+  return 0
+end
 
+-- Minimap units -> the button's own units.
+function rim.Ratio(button, minimap)
+  local okMap, mapScale = pcall(minimap.GetEffectiveScale, minimap)
+  local okButton, buttonScale = pcall(button.GetEffectiveScale, button)
+  if not okMap or not okButton or type(mapScale) ~= "number" or
+     type(buttonScale) ~= "number" or buttonScale == 0 then
+    return 1
+  end
+  return mapScale / buttonScale
+end
+
+-- Puts the button on the rim at `angle` degrees (counter-clockwise from the
+-- right). Returns what it was anchored to, or nil when the map is unreadable.
+function rim.Place(button, angle)
+  local minimap = U.G("Minimap")
+  if not minimap then return nil end
+  local ok, width = pcall(minimap.GetWidth, minimap)
+  if not ok or type(width) ~= "number" or width <= 0 then return nil end
+
+  local radians = angle * math.pi / 180
+  local cos, sin = math.cos(radians), math.sin(radians)
+  -- A square map's edge is the square, not the inscribed circle.
+  local radius = (width / 2 + M.minimapButton.rimOffset) *
+                 SquareStretch(cos, sin) * rim.Ratio(button, minimap)
+  pcall(button.ClearAllPoints, button)
+  button:SetPoint("CENTER", minimap, "CENTER", cos * radius, sin * radius)
+  return "the minimap rim"
+end
+-- The grouped-icons launcher (modules/minimapgroup.lua) sits on the same rim.
+U.MinimapRimPlace = rim.Place
+
+-- The cursor's angle around the map centre in degrees, 0..360, or nil.
+function rim.CursorAngle(minimap)
+  if type(GetCursorPosition) ~= "function" then return nil end
+  local ok, cursorX, cursorY = pcall(GetCursorPosition)
+  if not ok or type(cursorX) ~= "number" or type(cursorY) ~= "number" then return nil end
+
+  local scaleOk, scale = pcall(minimap.GetEffectiveScale, minimap)
+  if not scaleOk or type(scale) ~= "number" or scale == 0 then return nil end
+
+  local centerOk, centerX, centerY = pcall(minimap.GetCenter, minimap)
+  if not centerOk or type(centerX) ~= "number" or type(centerY) ~= "number" then return nil end
+
+  local dx = cursorX / scale - centerX
+  local dy = cursorY / scale - centerY
+  if dx == 0 and dy == 0 then return nil end
+  local degrees = rim.Atan2(dy, dx) * 180 / math.pi
+  if degrees < 0 then degrees = degrees + 360 end
+  return degrees
+end
+
+function rim.Track()
+  local button = MM.button
+  local minimap = U.G("Minimap")
+  if not button or not minimap then return end
+  local angle = rim.CursorAngle(minimap)
+  if not angle then return end
+  rim.angle = angle
+  rim.Place(button, angle)
+end
+
+-- Places the button at its stored angle. Also runs after /uui reset, which
+-- has already put the angle back to its default. Falls back to the map's side,
+-- then the cluster, then the screen corner, rather than not existing.
+local function AnchorButton(button)
+  -- Inside the grouped icons (modules/minimapgroup.lua) the flyout lays it out.
+  if rim.grouped then return "the grouped minimap icons" end
+  local placed = rim.Place(button, MinimapConfig().buttonAngle)
+  if placed then return placed end
+
+  pcall(button.ClearAllPoints, button)
   local minimap = U.G("Minimap")
   if minimap then
-    local gap = 6
-    if modernWowMinimap.border then
-      gap = gap + M.modernWow.minimap.borderOffset
-    end
-    button:SetPoint("TOPRIGHT", minimap, "TOPLEFT", -gap, 0)
+    button:SetPoint("TOPRIGHT", minimap, "TOPLEFT", -6, 0)
     return "Minimap"
   end
 
@@ -506,97 +708,337 @@ local function RegisterMinimapMover()
 end
 
 -- ---------------------------------------------------------------------------
--- Dragging the settings button
+-- The round settings button and its drag around the rim
 --
--- The button is its own drag handle. knowledge.json /
--- frames.movable_drag_requires_button_handle's verified recipe needs the
--- widget that receives the drag to be a Button, with SetMovable applied
--- immediately before each drag and a throwaway StartMoving/StopMovingOrSizing
--- pair to collapse the anchor down to the single point the client will move.
--- U.CreateButton already builds a real Button, so no separate handle is
--- created: an overlay covering this 24px button would take the mouse away from
--- it and cost both the click and the hover state.
+-- Two layers, the same split edit mode's anchors use (core/mover.lua):
 --
--- A drop re-anchors the button to UIParent, so it stops tracking the minimap.
--- That is the point of moving it, and it is recoverable -- /uui reset drops the
--- stored position and puts the button back beside the map.
+-- * `button` is the visible part: the addon logo, which is round with
+--   transparent corners, plus an additive copy of it as the hover glow. It
+--   takes no mouse. It lives on the rim and is re-anchored every tick while
+--   dragged.
+-- * `input` is a transparent Button parented to UIParent that covers it and
+--   owns click, hover and drag. A frame re-anchored while it is the dragged
+--   widget loses its release on this client -- the button kept following the
+--   cursor after the click was let go (user report, 2026-11-26; knowledge.json /
+--   widgets.thumb_reposition_during_drag_breaks_drag). So the input is cut loose
+--   in UIParent space when the drag starts, runs the verified StartMoving
+--   recipe (frames.movable_drag_requires_button_handle) and is never touched
+--   until the drop, while only `button` follows the cursor. The drop arrives
+--   through OnDragStop, with OnMouseUp as the second path because this client
+--   documents no IsMouseButtonDown to poll a missed release.
 -- ---------------------------------------------------------------------------
-local dragState = { dragging = false, stoppedAt = nil }
 
-local function StartButtonDrag(button)
-  if not pcall(button.SetMovable, button, true) then
-    U.Error("minimap button: SetMovable failed; the button cannot be moved")
+-- Re-points the input over the visible button, so the next press lands on it.
+function rim.AttachInput(button, input)
+  pcall(input.ClearAllPoints, input)
+  pcall(input.SetAllPoints, input, button)
+end
+
+-- Gives the input the button's current rect in UIParent space, once.
+function rim.DetachInput(button, input)
+  local widthOk, width = pcall(button.GetWidth, button)
+  local centreOk, centreX, centreY = pcall(button.GetCenter, button)
+  if not widthOk or not centreOk or type(width) ~= "number" or
+     type(centreX) ~= "number" or type(centreY) ~= "number" then
+    U.Debug("minimap button: drag input keeps its button anchor")
     return false
   end
-
-  if pcall(button.StartMoving, button) then
-    pcall(button.StopMovingOrSizing, button)
-  end
-
-  if not pcall(button.StartMoving, button) then
-    U.Error("minimap button: StartMoving failed; the button will not drag")
-    return false
-  end
-
-  dragState.dragging = true
+  local ratio = rim.Ratio(input, button)  -- button units -> UIParent units
+  pcall(input.ClearAllPoints, input)
+  input:SetWidth(width * ratio)
+  input:SetHeight(width * ratio)
+  input:SetPoint("CENTER", UIParent, "BOTTOMLEFT", centreX * ratio, centreY * ratio)
   return true
 end
 
--- The dropped anchor is captured and stored, and the button is left exactly
--- where it was released: knowledge.json / frames.getpoint_relative_name_y_
--- inverted lists recapturing and immediately re-applying a point as a failed
--- approach, which is why nothing is re-anchored here. The offsets are read
--- through U.ReadFramePoint (edges, sign-safe): U.GetFramePoint negated the Y
--- the client writes after StartMoving (frames.getpoint_y_same_sign_as_setpoint),
--- so a dropped button reloaded mirrored across its anchor.
-local function StopButtonDrag(button)
-  if not dragState.dragging then return false end
-  dragState.dragging = false
-  dragState.stoppedAt = GetTime()
-  pcall(button.StopMovingOrSizing, button)
+function rim.StartDrag(button, input)
+  if rim.dragging then return true end
+  -- No rim to slide along while the button sits in the grouped icons.
+  if rim.grouped then return false end
+  rim.DetachInput(button, input)
 
-  local point, relative, relativePoint, x, y = U.ReadFramePoint(button)
-  if not point then
-    U.Debug("minimap button: no readable anchor after drag")
+  if not pcall(input.SetMovable, input, true) then
+    U.Error("minimap button: SetMovable failed; the button cannot be moved")
+    rim.AttachInput(button, input)
+    return false
+  end
+  if pcall(input.StartMoving, input) then
+    pcall(input.StopMovingOrSizing, input)
+  end
+  if not pcall(input.StartMoving, input) then
+    U.Error("minimap button: StartMoving failed; the button will not drag")
+    rim.AttachInput(button, input)
     return false
   end
 
-  -- Stored positions are re-applied against UIParent. The drag is expected to
-  -- leave the button screen-anchored, so this says what happened instead of
-  -- silently storing an offset measured from a different origin.
-  if relative and relative ~= UIParent then
-    U.Debug("minimap button: anchored to a non-UIParent frame after drag; storing anyway")
+  rim.dragging = true
+  rim.angle = nil
+  U.RegisterUpdate(rim.updateId, 0, rim.Track)
+  return true
+end
+
+-- Idempotent: OnDragStop and OnMouseUp may both arrive.
+function rim.StopDrag(button, input)
+  if not rim.dragging then return false end
+  rim.dragging = false
+  U.UnregisterUpdate(rim.updateId)
+  pcall(input.StopMovingOrSizing, input)
+  rim.Track()
+  rim.AttachInput(button, input)
+
+  if not rim.angle then
+    U.Debug("minimap button: cursor angle unreadable on drop; angle kept")
+    AnchorButton(button)
+    return false
+  end
+  MinimapConfig().buttonAngle = math.floor(rim.angle * 10 + 0.5) / 10
+  return true
+end
+
+function rim.SetHover(button, on)
+  if button.glow then
+    if on then button.glow:Show() else button.glow:Hide() end
+  end
+end
+
+function rim.SetPressed(button, on)
+  if button.logo then
+    local shade = on and 0.75 or 1
+    pcall(button.logo.SetVertexColor, button.logo, shade, shade, shade, 1)
+  end
+end
+
+function rim.BuildButton(parent)
+  local size = M.minimapButton.size
+  local button = CreateFrame("Frame", "UnrealUISettingsButton", parent)
+  button:SetWidth(size)
+  button:SetHeight(size)
+  pcall(button.EnableMouse, button, false)
+
+  local logo = button:CreateTexture(nil, "ARTWORK")
+  logo:SetAllPoints(button)
+  logo:SetTexture(M.texture.addonLogo)
+  button.logo = logo
+
+  local glow = button:CreateTexture(nil, "OVERLAY")
+  glow:SetAllPoints(button)
+  glow:SetTexture(M.texture.addonLogo)
+  pcall(glow.SetBlendMode, glow, "ADD")
+  pcall(glow.SetAlpha, glow, M.minimapButton.hoverGlow)
+  glow:Hide()
+  button.glow = glow
+
+  local input = CreateFrame("Button", "UnrealUISettingsButtonInput", UIParent)
+  rim.AttachInput(button, input)
+  pcall(input.EnableMouse, input, true)
+  pcall(input.RegisterForDrag, input, "LeftButton")
+  button.input = input
+
+  -- knowledge.json / scripts.handler_arguments_direct: every handler closes
+  -- over its frames instead of reading callback arguments.
+  input:SetScript("OnEnter", function() rim.SetHover(button, true) end)
+  input:SetScript("OnLeave", function()
+    if not rim.dragging then rim.SetHover(button, false) end
+  end)
+  input:SetScript("OnMouseDown", function()
+    rim.gesture = nil
+    rim.SetPressed(button, true)
+  end)
+  input:SetScript("OnDragStart", function()
+    rim.gesture = true
+    rim.StartDrag(button, input)
+  end)
+  input:SetScript("OnDragStop", function() rim.StopDrag(button, input) end)
+  input:SetScript("OnMouseUp", function()
+    rim.SetPressed(button, false)
+    rim.StopDrag(button, input)
+  end)
+  input:SetScript("OnClick", function()
+    -- Releasing a drag must not also open the window.
+    if rim.gesture then
+      rim.gesture = nil
+      return
+    end
+    if type(U.OpenSettings) == "function" then U.OpenSettings() end
+  end)
+
+  -- The input is a UIParent child, so it follows the visible button's shown
+  -- state explicitly: hidden with the minimap cluster, hidden by the option.
+  button:SetScript("OnShow", function() input:Show() end)
+  button:SetScript("OnHide", function()
+    rim.StopDrag(button, input)
+    rim.SetHover(button, false)
+    input:Hide()
+  end)
+  return button
+end
+
+-- Places the button once the map has a size. Minimap can still read 0 wide
+-- when the module enables -- the button then appeared beside the map instead
+-- of on it (user report, 2026-11-26) -- so a short retry follows the fallback.
+function rim.PlaceWhenReady(button)
+  local anchor = AnchorButton(button)
+  if anchor == "the minimap rim" then return anchor end
+
+  local tries = 0
+  U.RegisterUpdate(rim.placeId, 0.1, function()
+    tries = tries + 1
+    if rim.dragging or rim.grouped or
+       rim.Place(button, MinimapConfig().buttonAngle) or tries >= 100 then
+      U.UnregisterUpdate(rim.placeId)
+    end
+  end)
+  return anchor
+end
+
+-- The same rim drag for another icon on the rim: the grouped-icons launcher
+-- (modules/minimapgroup.lua, user request 2026-11-26). Same two-layer split
+-- as the settings button above -- `button` is visible and takes no mouse, the
+-- returned input is a UIParent Button that owns click, hover and drag -- with
+-- its own state, so the two icons never share a drag.
+--
+-- opts: name, updateId, getAngle(), setAngle(degrees), onClick(),
+-- onHover(on), onPress(on), onDragStart(); all optional but the first three.
+function rim.MakeDraggable(button, opts)
+  local state = { dragging = false, gesture = nil, angle = nil }
+  local input = CreateFrame("Button", opts.name, UIParent)
+  rim.AttachInput(button, input)
+  pcall(input.EnableMouse, input, true)
+  pcall(input.RegisterForDrag, input, "LeftButton")
+
+  local function Call(fn, value)
+    if type(fn) == "function" then fn(value) end
   end
 
-  return U.SavePosition(POSITION_ID, point, relativePoint, x, y)
-end
+  local function Track()
+    local minimap = U.G("Minimap")
+    if not minimap then return end
+    local angle = rim.CursorAngle(minimap)
+    if not angle then return end
+    state.angle = angle
+    rim.Place(button, angle)
+  end
 
--- Whether the click that is arriving now is really the end of a drag. GetTime
--- is updated once per UI draw (api.json / core.time.v1), so a click released in
--- the same frame as the drop reads an identical stamp, while the user's next
--- real click is at least one frame later.
-local function ClickEndedADrag()
-  if dragState.dragging then return true end
-  if not dragState.stoppedAt then return false end
-  return (GetTime() - dragState.stoppedAt) < 0.02
+  local function Start()
+    if state.dragging then return end
+    rim.DetachInput(button, input)
+    if not pcall(input.SetMovable, input, true) then
+      rim.AttachInput(button, input)
+      return
+    end
+    if pcall(input.StartMoving, input) then
+      pcall(input.StopMovingOrSizing, input)
+    end
+    if not pcall(input.StartMoving, input) then
+      rim.AttachInput(button, input)
+      return
+    end
+    state.dragging = true
+    state.angle = nil
+    Call(opts.onDragStart)
+    U.RegisterUpdate(opts.updateId, 0, Track)
+  end
+
+  -- Idempotent: OnDragStop and OnMouseUp may both arrive.
+  local function Stop()
+    if not state.dragging then return end
+    state.dragging = false
+    U.UnregisterUpdate(opts.updateId)
+    pcall(input.StopMovingOrSizing, input)
+    Track()
+    rim.AttachInput(button, input)
+    if state.angle then
+      opts.setAngle(math.floor(state.angle * 10 + 0.5) / 10)
+    else
+      rim.Place(button, opts.getAngle())
+    end
+  end
+
+  input:SetScript("OnEnter", function() Call(opts.onHover, true) end)
+  input:SetScript("OnLeave", function()
+    if not state.dragging then Call(opts.onHover, false) end
+  end)
+  input:SetScript("OnMouseDown", function()
+    state.gesture = nil
+    Call(opts.onPress, true)
+  end)
+  input:SetScript("OnDragStart", function()
+    state.gesture = true
+    Start()
+  end)
+  input:SetScript("OnDragStop", Stop)
+  input:SetScript("OnMouseUp", function()
+    Call(opts.onPress, false)
+    Stop()
+  end)
+  input:SetScript("OnClick", function()
+    -- Releasing a drag must not also click the icon.
+    if state.gesture then
+      state.gesture = nil
+      return
+    end
+    Call(opts.onClick)
+  end)
+
+  -- The input is a UIParent child: it follows the button's visibility.
+  button:SetScript("OnShow", function() input:Show() end)
+  button:SetScript("OnHide", function()
+    Stop()
+    Call(opts.onHover, false)
+    input:Hide()
+  end)
+  local visibleOk, visible = pcall(button.IsVisible, button)
+  if visibleOk and visible then input:Show() else input:Hide() end
+
+  function state.IsDragging() return state.dragging end
+  return input, state
 end
+U.MinimapRimDraggable = rim.MakeDraggable
+
+-- Called by modules/minimapgroup.lua when the settings button joins or leaves
+-- the grouped icons. Its visible frame is reparented there; the input that
+-- owns its click follows it through SetAllPoints, but is a UIParent child and
+-- would stay under the DIALOG flyout, so it is raised over the flyout while
+-- grouped and put back, with the button on the rim, when released.
+function rim.SetGrouped(grouped)
+  local button = MM.button
+  local input = button and button.input
+  if grouped then
+    if input and rim.dragging then rim.StopDrag(button, input) end
+    rim.grouped = true
+    if not input then return end
+    if not rim.inputStrata then
+      local ok, strata = pcall(input.GetFrameStrata, input)
+      rim.inputStrata = ok and strata or "MEDIUM"
+    end
+    pcall(input.SetFrameStrata, input, "DIALOG")
+    local parentOk, parent = pcall(button.GetParent, button)
+    local level
+    if parentOk and parent then
+      local levelOk, value = pcall(parent.GetFrameLevel, parent)
+      if levelOk and type(value) == "number" then level = value end
+    end
+    pcall(input.SetFrameLevel, input, (level or 0) + 6)
+    rim.AttachInput(button, input)
+    return
+  end
+
+  rim.grouped = false
+  if not button then return end
+  if input then
+    pcall(input.SetFrameStrata, input, rim.inputStrata or "MEDIUM")
+    rim.AttachInput(button, input)
+  end
+  AnchorButton(button)
+end
+U.MinimapSettingsButtonGrouped = rim.SetGrouped
 
 local function EnableButtonDrag(button)
-  pcall(button.SetMovable, button, true)
-  -- Documented (Frame:SetClampedToScreen) but not runtime-verified here, so it
-  -- is a bonus rather than the only thing keeping the button reachable: a
-  -- button dragged off-screen is still recoverable through /uui reset.
-  pcall(button.SetClampedToScreen, button, true)
-
-  if not pcall(button.RegisterForDrag, button, "LeftButton") then
-    U.Error("minimap button: RegisterForDrag failed; the button will not drag")
-    return false
-  end
-
-  button:SetScript("OnDragStart", function() StartButtonDrag(button) end)
-  button:SetScript("OnDragStop", function() StopButtonDrag(button) end)
-
-  U.OnPositionReset(function() return AnchorButton(button) and true end)
+  -- /uui reset puts the button back at its default angle.
+  U.OnPositionReset(function()
+    MinimapConfig().buttonAngle = M.minimapButton.defaultAngle
+    return AnchorButton(button) and true
+  end)
   return true
 end
 
@@ -650,13 +1092,15 @@ local function CursorOffset(minimap)
   local offsetX = cursorX / scale - centerX
   local offsetY = cursorY / scale - centerY
   local radius = width / 2
-  if (offsetX * offsetX + offsetY * offsetY) > (radius * radius) then return nil end
+  if SquareMinimap() then
+    if math.abs(offsetX) > radius or math.abs(offsetY) > radius then return nil end
+  elseif (offsetX * offsetX + offsetY * offsetY) > (radius * radius) then
+    return nil
+  end
   return offsetX, offsetY
 end
 
--- Runs after the client has placed the ping. Minimap_SetPing has the fixed
--- (x, y, playSound) signature PostHookGlobal requires -- it is not a vararg
--- native, so the wrapper's fixed arity is safe here.
+-- Runs after the client has placed the ping: Minimap_SetPing(x, y, playSound).
 local function CorrectPingPlacement(x, y)
   local minimap = U.G("Minimap")
   local model = U.G("MiniMapPing")
@@ -709,12 +1153,116 @@ local function Apply()
 
   if MinimapConfig().enabled then
     button:Show()
-    if button.label then button.label:Show() end
+    if button.input and button:IsVisible() then button.input:Show() end
   else
     button:Hide()
+    if button.input then button.input:Hide() end
   end
 end
 U.ApplyMinimapButton = Apply
+
+-- Stores and applies the shape, then re-seats the settings button on the new
+-- edge. The corpse arrow reads U.MinimapIsSquare on its next tick. The
+-- settings page and the minimap's edit-mode panel both show the shape, so
+-- whichever changed it tells the other to re-read it.
+local function SetShape(value)
+  MinimapConfig().shape = value == "square" and "square" or "circle"
+  shape.Apply()
+  if MM.button and not rim.dragging then AnchorButton(MM.button) end
+  if U.MinimapGroup then U.MinimapGroup.PlaceLauncher() end
+  if type(U.RefreshSettingsPage) == "function" then U.RefreshSettingsPage("minimap") end
+  if type(U.RefreshMoverPanel) == "function" then U.RefreshMoverPanel("minimap") end
+end
+
+function shape.Items()
+  return {
+    { value = "circle", text = U.L("SETTINGS_MINIMAP_SHAPE_CIRCLE") },
+    { value = "square", text = U.L("SETTINGS_MINIMAP_SHAPE_SQUARE") },
+  }
+end
+
+function shape.Current()
+  return MinimapConfig().shape == "square" and "square" or "circle"
+end
+
+-- The minimap anchor's edit-mode panel: the shape dropdown where the shape
+-- applies (the dressed minimap), then the grouped-icons switch and the icons
+-- to keep on the map (modules/minimapgroup.lua), over the shared scale row.
+shape.PANEL_WIDTH = 220
+-- Caption 16 + dropdown 24 + a 12 gap before the group switch.
+shape.SHAPE_HEIGHT = 52
+
+-- Panel height before the scale row: header, content, and the 12 bottom pad.
+function shape.PanelHeight()
+  local height = 44 + 12
+  if modernWowMinimap.dressed then height = height + shape.SHAPE_HEIGHT end
+  if U.MinimapGroup then
+    height = height + (shape.groupHeight or U.MinimapGroup.ControlsHeight())
+  end
+  return height
+end
+
+function shape.BuildMoverPanel(frame, contentTop)
+  local widgets = {}
+  local refreshers = {}
+  local pad = U.MoverPanelPad()
+  local function Refresh()
+    local i
+    for i = 1, table.getn(refreshers) do refreshers[i]() end
+  end
+
+  local groupTop = contentTop
+  if modernWowMinimap.dressed then
+    shape.BuildShapeRow(frame, contentTop, pad, widgets, refreshers)
+    groupTop = contentTop - shape.SHAPE_HEIGHT
+  end
+
+  if U.MinimapGroup then
+    local groupWidgets, groupRefresh, height = U.MinimapGroup.BuildControls(
+      frame, frame, groupTop, shape.PANEL_WIDTH, "UnrealUIMinimapMoverGroup", false)
+    shape.groupHeight = height
+    local i
+    for i = 1, table.getn(groupWidgets) do
+      local widget = groupWidgets[i]
+      -- BuildControls anchors to the frame's left edge; inset by the pad.
+      if i == 1 and widget.SetPoint then
+        widget.SetPoint("TOPLEFT", frame, "TOPLEFT", pad, groupTop)
+      end
+      table.insert(widgets, widget)
+    end
+    table.insert(refreshers, groupRefresh)
+  end
+
+  return widgets, Refresh
+end
+
+function shape.BuildShapeRow(frame, contentTop, pad, widgets, refreshers)
+  local caption = U.CreateSettingsLabel(frame, {
+    size = M.fontSize.small,
+    color = M.color.accent,
+    inherits = "GameFontNormalSmall",
+    justify = "LEFT",
+    width = shape.PANEL_WIDTH,
+  })
+  if caption then
+    caption:SetPoint("TOPLEFT", frame, "TOPLEFT", pad, contentTop)
+    caption:SetText(U.L("SETTINGS_MINIMAP_SHAPE"))
+    table.insert(widgets, caption)
+  end
+
+  local drop = U.CreateDropdown(frame, {
+    name = "UnrealUIMinimapMoverShape",
+    width = shape.PANEL_WIDTH,
+    height = 24,
+    rowHeight = 20,
+    value = shape.Current(),
+    items = shape.Items(),
+    onChange = function(value) SetShape(value) end,
+  })
+  drop.SetPoint("TOPLEFT", frame, "TOPLEFT", pad, contentTop - 16)
+  table.insert(widgets, drop)
+  table.insert(refreshers, function() drop.SetValue(shape.Current(), false) end)
+end
 
 local function BuildSettingsPage(parent)
   local widgets = {}
@@ -780,6 +1328,34 @@ local function BuildSettingsPage(parent)
   zoom.SetEnabled(modernWowMinimap.dressed)
   table.insert(widgets, zoom)
 
+  -- Circle or square, as PandaUI's Minimap shape dropdown.
+  local shapeLabel = U.CreateSettingsLabel(parent, {
+    size = M.fontSize.small,
+    color = M.color.accent,
+    inherits = "GameFontNormalSmall",
+    width = 220,
+    height = 14,
+    justify = "LEFT",
+  })
+  if shapeLabel then
+    shapeLabel:SetPoint("TOPLEFT", zoom.box, "BOTTOMLEFT", 0, -18)
+    shapeLabel:SetText(U.L("SETTINGS_MINIMAP_SHAPE"))
+    table.insert(widgets, shapeLabel)
+  end
+
+  local shapeDrop = U.CreateDropdown(parent, {
+    name = "UnrealUISettingsMinimapShape",
+    width = 220,
+    height = 24,
+    rowHeight = 20,
+    value = shape.Current(),
+    items = shape.Items(),
+    onChange = function(value) SetShape(value) end,
+  })
+  shapeDrop.SetPoint("TOPLEFT", zoom.box, "BOTTOMLEFT", 0, -36)
+  shapeDrop.SetEnabled(modernWowMinimap.dressed)
+  table.insert(widgets, shapeDrop)
+
   local hint = U.CreateSettingsLabel(parent, {
     size = M.fontSize.small,
     color = M.color.textDim,
@@ -788,9 +1364,22 @@ local function BuildSettingsPage(parent)
     width = U.SETTINGS_PAGE_WIDTH,
   })
   if hint then
-    U.AnchorSettingsDescription(hint, zoom.box)
+    U.AnchorSettingsDescription(hint, shapeDrop.button)
     hint:SetText(U.L("SETTINGS_MINIMAP_CHROME_HINT"))
     table.insert(widgets, hint)
+  end
+
+  -- Grouped icons (modules/minimapgroup.lua), under the chrome hint: they
+  -- apply on every theme. Anchored to the dropdown, never to the hint.
+  local groupRefresh
+  if U.MinimapGroup then
+    local groupY = -(24 + U.SettingsDescriptionDrop(hint, 24) + 18)
+    local groupWidgets
+    groupWidgets, groupRefresh = U.MinimapGroup.BuildControls(
+      parent, shapeDrop.button, groupY, U.SETTINGS_PAGE_WIDTH,
+      "UnrealUISettingsMinimapGroup", true)
+    local i
+    for i = 1, table.getn(groupWidgets) do table.insert(widgets, groupWidgets[i]) end
   end
 
   local function Refresh()
@@ -801,6 +1390,9 @@ local function BuildSettingsPage(parent)
     zoom.SetValue(cfg.showZoom)
     zone.SetEnabled(modernWowMinimap.dressed)
     zoom.SetEnabled(modernWowMinimap.dressed)
+    shapeDrop.SetValue(shape.Current(), false)
+    shapeDrop.SetEnabled(modernWowMinimap.dressed)
+    if groupRefresh then groupRefresh() end
   end
   return widgets, Refresh
 end
@@ -810,6 +1402,15 @@ function MM:OnInit()
     U.RegisterSettingsTab("minimap", U.L("SETTINGS_PAGE_MINIMAP"),
                           BuildSettingsPage, { after = "general" })
   end
+  if type(U.RegisterMoverPanel) == "function" then
+    U.RegisterMoverPanel("minimap", {
+      name = "UnrealUIMinimapMoverSettings",
+      width = shape.PANEL_WIDTH + U.MoverPanelPad() * 2,
+      height = shape.PanelHeight,
+      build = shape.BuildMoverPanel,
+      title = function() return U.L("MOVER_LABEL_MINIMAP") end,
+    })
+  end
 end
 
 function MM:OnEnable()
@@ -817,37 +1418,28 @@ function MM:OnEnable()
 
   DressModernWowMinimap()
   ApplyChromeSettings()
+  shape.Apply()
 
-  local button = U.CreateButton(UIParent, {
-    name = "UnrealUISettingsButton",
-    width = BUTTON_SIZE,
-    height = BUTTON_SIZE,
-    text = "",
-    onClick = function()
-      -- Releasing a drag over the button must not also open the window.
-      if ClickEndedADrag() then return end
-      if type(U.OpenSettings) == "function" then U.OpenSettings() end
-    end,
-  })
-
-  local border = U.BorderSize()
-  local icon = button:CreateTexture(nil, "ARTWORK")
-  icon:SetPoint("TOPLEFT", button, "TOPLEFT", border, -border)
-  icon:SetPoint("BOTTOMRIGHT", button, "BOTTOMRIGHT", -border, border)
-
-  -- A stock icon path. Nothing in the compact DB covers Interface\ICONS on this
-  -- client, so if the call is rejected the button falls back to its own label
-  -- rather than showing an empty square.
-  local applied = pcall(icon.SetTexture, icon, "Interface\\ICONS\\INV_Misc_Gear_01")
-  if applied then
-    pcall(icon.SetTexCoord, icon, 0.08, 0.92, 0.08, 0.92)
-  else
-    icon:Hide()
-    if button.label then button.label:SetText("UI") end
+  -- The free position from before the button followed the rim is dropped
+  -- once; the button now lives on the rim at its stored angle.
+  if U.db and type(U.db.positions) == "table" then
+    U.db.positions[LEGACY_POSITION_ID] = nil
   end
-  button.icon = icon
 
-  local anchor = AnchorButton(button)
+  -- Parented to the cluster so the minimap's edit-mode move and scale carry
+  -- it, and raised over the map's own child frames (zone panel, ring art).
+  local minimap = U.G("Minimap")
+  local parent = U.G("MinimapCluster") or UIParent
+  local button = rim.BuildButton(parent)
+
+  if minimap then
+    local ok, level = pcall(minimap.GetFrameLevel, minimap)
+    if ok and type(level) == "number" then
+      pcall(button.SetFrameLevel, button, level + 10)
+    end
+  end
+
+  local anchor = rim.PlaceWhenReady(button)
   EnableButtonDrag(button)
 
   self.button = button
@@ -856,6 +1448,12 @@ function MM:OnEnable()
 
   RegisterMinimapMover()
   HookPingPlacement()
+
+  -- Grouped icons, in their own pcall so a failure cannot take the rest down.
+  if U.MinimapGroup then
+    local groupOk, groupErr = pcall(U.MinimapGroup.Enable)
+    if not groupOk then U.Error("minimap grouping: " .. tostring(groupErr)) end
+  end
 
   -- Last, and inside its own pcall. RunModulePhase already wraps OnEnable, so
   -- an error raised here would abort the whole method -- and everything above

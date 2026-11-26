@@ -863,7 +863,7 @@ local function StyleItemSlots()
             itemName:SetPoint("TOPLEFT", icon, "TOPRIGHT", 5, 0)
             itemName:SetPoint("BOTTOMRIGHT", button, "BOTTOMRIGHT", -5, 4)
             itemName:SetJustifyH("LEFT")
-            itemName:SetJustifyV("MIDDLE")
+            itemName:SetJustifyV("CENTER")
           end)
         end
 

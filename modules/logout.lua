@@ -68,6 +68,16 @@ function popup.ButtonLabel(button)
   return nil
 end
 
+-- The taller red buttons need their own label height: the shared button-label
+-- offset leaves the glyphs visibly low on them (positive y is up).
+function popup.CenterButtonLabel(label, button)
+  if not label or not button then return end
+  local token = M.modernWow and M.modernWow.corpsePopupButton
+  pcall(label.ClearAllPoints, label)
+  pcall(label.SetPoint, label, "CENTER", button, "CENTER", 0,
+    token and token.labelY or 0)
+end
+
 -- `alwaysRed` keeps the red face and neutral label whatever IsEnabled reports:
 -- the "Resurrect now?" button read as disabled at show and drew the grey cell,
 -- and the user asked for red (2026-09-14).
@@ -100,7 +110,7 @@ function popup.StyleWowButton(button, alwaysRed)
   if label then
     U.SetStockFont(label, M.fontSize.normal,
       enabled and M.color.text or M.color.textDim)
-    U.CenterButtonLabel(label, button)
+    popup.CenterButtonLabel(label, button)
   end
 end
 

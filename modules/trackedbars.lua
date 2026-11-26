@@ -157,6 +157,23 @@ function tb.ReadScanner(tip, setter, a1, a2)
   return text
 end
 
+-- UnitAura port (knowledge.json / api.unitaura_unitaura_v1): the name and the
+-- total duration, from slot `index` (then `order`) when its icon is this
+-- buff's. nil when the port is absent or neither slot matches.
+function tb.AuraInfo(index, order, texture)
+  if not U.UnitAuraReady() then return nil end
+  local want = U.IconKey(texture)
+  local tries = { index, order }
+  local i
+  for i = 1, 2 do
+    local name, icon, _, _, duration = U.ReadUnitAura("player", tries[i], false)
+    if name and U.IconKey(icon) == want then
+      return name, duration > 0 and duration or nil
+    end
+  end
+  return nil
+end
+
 function tb.ScanName(buffIndex, order)
   if not tb.scannerBuilt then
     tb.scannerBuilt = true
@@ -196,10 +213,12 @@ end
 -- remaining time as its total. One already running at the first scan takes
 -- core/auradata.lua's duration when that is longer, else starts full, as
 -- modules/auras.lua's native timers do.
-function tb.Track(buffIndex, order, texture, timeLeft, now)
+function tb.Track(buffIndex, index, order, texture, timeLeft, now)
   local cached = tb.names[buffIndex]
   if not cached or cached.texture ~= texture then
-    cached = { texture = texture, name = tb.ScanName(buffIndex, order) }
+    local name, total = tb.AuraInfo(index, order, texture)
+    cached = { texture = texture, total = total,
+               name = name or tb.ScanName(buffIndex, order) }
     tb.names[buffIndex] = cached
   end
   cached.pass = tb.pass
@@ -221,6 +240,8 @@ function tb.Track(buffIndex, order, texture, timeLeft, now)
   elseif timeLeft > (entry.expires or now) - now + 1 then
     entry.duration = timeLeft
   end
+  -- The client's own total, when UnitAura gave one, replaces the estimate.
+  if cached.total and cached.total >= timeLeft then entry.duration = cached.total end
   if timeLeft > (entry.duration or 0) then entry.duration = timeLeft end
 
   entry.name = cached.name
@@ -249,7 +270,7 @@ function tb.Scan()
       local timeLeft = tonumber(tb.Call("GetPlayerBuffTimeLeft", buffIndex)) or 0
       local texture = tb.Call("GetPlayerBuffTexture", buffIndex)
       if timeLeft > 0 and type(texture) == "string" and texture ~= "" then
-        tb.Track(buffIndex, order, texture, timeLeft, now)
+        tb.Track(buffIndex, i, order, texture, timeLeft, now)
       end
     end
   end

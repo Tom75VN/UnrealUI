@@ -356,6 +356,24 @@ function V.OnCombat(unit, action, modifier, amount)
   t.sawCombat = true
 end
 
+-- The percentage the frame is drawing always bounds the refined value. A
+-- UNIT_COMBAT amount that arrives after the last UNIT_HEALTH (or a maximum the
+-- realm has retuned) can push the tracked value outside it, and a fleeing mob
+-- takes no further hit to correct it -- it read 0 while still alive. A living
+-- unit (value > 0) never reads below 1.
+function V.ClampToPercent(current, maxHealth, value, maximum)
+  value, maximum = tonumber(value), tonumber(maximum)
+  if not value or not maximum or maximum <= 0 then return current end
+  if value >= maximum then return maxHealth end
+  if value <= 0 then return 0 end
+  local low = U.Round(maxHealth * (value - 1) / maximum)
+  local high = U.Round(maxHealth * (value + 1) / maximum)
+  if low < 1 then low = 1 end
+  if current < low then return low end
+  if current > high then return high end
+  return current
+end
+
 -- ---------------------------------------------------------------------------
 -- Public API
 -- ---------------------------------------------------------------------------
@@ -383,12 +401,15 @@ function U.UnitVitalsHealth(unit, name, level, value, maximum)
     local key = name .. ":" .. level
     if V.track.key ~= key then V.ResetTarget() end
     if V.track.key == key and V.track.current then
-      return V.track.current, maxHealth, maxMana
+      return V.ClampToPercent(V.track.current, maxHealth, value, maximum),
+             maxHealth, maxMana
     end
   end
 
   if not maximum or maximum <= 0 then return 0, maxHealth, maxMana end
-  return U.Round(maxHealth * value / maximum), maxHealth, maxMana
+  local current = U.Round(maxHealth * value / maximum)
+  if value > 0 and current < 1 then current = 1 end
+  return current, maxHealth, maxMana
 end
 
 -- Absolute mana, on the same contract. powerType is the client's own

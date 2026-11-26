@@ -91,6 +91,9 @@ function U.CreateBackdrop(frame, options)
 
   local background = options.background or M.color.background
   local border = options.border or M.color.border
+  -- Optional fill inset on all four sides, for a caller that draws its own
+  -- rim and must keep the fill inside it (modules/tooltip.lua).
+  local inset = tonumber(options.inset) or 0
 
   if frame.SetBackdrop then
     -- Only the fill is taken from the backdrop; edgeFile is deliberately
@@ -99,7 +102,7 @@ function U.CreateBackdrop(frame, options)
       bgFile = M.texture.plain,
       tile = false,
       tileSize = 0,
-      insets = { left = 0, right = 0, top = 0, bottom = 0 },
+      insets = { left = inset, right = inset, top = inset, bottom = inset },
     })
     if ok then
       pcall(frame.SetBackdropColor, frame, M.Unpack(background))
@@ -435,6 +438,106 @@ function U.CreateStatusBar(parent, options)
 
   UpdateStatusBarFill(bar)
   return bar
+end
+
+-- ---------------------------------------------------------------------------
+-- Nine-slice
+--
+-- One sheet cell drawn as nine textures: the corners keep a single uniform
+-- scale, the edges stretch along their own axis and the middle both ways, so
+-- framed art can grow in one direction without its rounded corners
+-- deforming. options: texture, sheet = { width, height } in pixels,
+-- cell = { left, top, right, bottom } in sheet pixels, cuts = { left, top,
+-- right, bottom } corner sizes in pixels from each cell edge, layer.
+-- Returns a group whose Show, Hide and SetVertexColor reach every piece;
+-- U.LayoutNineSlice places it.
+-- ---------------------------------------------------------------------------
+function U.CreateNineSlice(parent, options)
+  if not parent or type(options) ~= "table" then return nil end
+  local sheet, cell, cuts = options.sheet, options.cell, options.cuts
+  local xs = { cell[1], cell[1] + cuts.left, cell[3] - cuts.right, cell[3] }
+  local ys = { cell[2], cell[2] + cuts.top, cell[4] - cuts.bottom, cell[4] }
+  local group = { pieces = {}, cuts = cuts }
+  local row, col
+  for row = 1, 3 do
+    for col = 1, 3 do
+      local piece = parent:CreateTexture(nil, options.layer or "BACKGROUND")
+      piece:SetTexture(options.texture)
+      piece:SetTexCoord(xs[col] / sheet[1], xs[col + 1] / sheet[1],
+                        ys[row] / sheet[2], ys[row + 1] / sheet[2])
+      group.pieces[(row - 1) * 3 + col] = piece
+    end
+  end
+
+  function group:Show()
+    self.shown = true
+    local i
+    for i = 1, 9 do
+      if self.pieces[i].uuiEmpty then self.pieces[i]:Hide()
+      else self.pieces[i]:Show() end
+    end
+  end
+  function group:Hide()
+    self.shown = false
+    local i
+    for i = 1, 9 do self.pieces[i]:Hide() end
+  end
+  function group:SetVertexColor(r, g, b, a)
+    local i
+    for i = 1, 9 do self.pieces[i]:SetVertexColor(r, g, b, a) end
+  end
+  return group
+end
+
+-- Places a nine-slice around `frame` (width x height). scale: units per
+-- texel for the corners and edge thickness. outset: how many texels of the
+-- cell lie outside the frame on each side ({ left, top, right, bottom },
+-- default 0), so a frame's rect can map onto a window inside the art. The
+-- scale shrinks if the corners would otherwise meet.
+function U.LayoutNineSlice(group, frame, scale, width, height, outset)
+  if not group or not frame then return end
+  local c = group.cuts
+  outset = outset or {}
+  local oL, oT = outset.left or 0, outset.top or 0
+  local oR, oB = outset.right or 0, outset.bottom or 0
+  local k = tonumber(scale) or 1
+  local across = (c.left - oL) + (c.right - oR)
+  if across > 0 and across * k > width then k = width / across end
+  local down = (c.top - oT) + (c.bottom - oB)
+  if down > 0 and down * k > height then k = height / down end
+
+  -- Each piece takes ONE point, the frame's TOPLEFT, plus an explicit size.
+  -- Two-point anchoring was observed failing here (user screenshot,
+  -- 2026-11-26): the right-edge and bottom-edge pieces -- TOPLEFT on one of
+  -- the frame's points and BOTTOMRIGHT on its BOTTOMRIGHT -- never drew,
+  -- while every piece whose two points shared a corner did. Cause not
+  -- measured; one point and a size sidesteps it.
+  -- Column edges right of the frame's left, row edges down from its top.
+  local xs = { -oL * k, (c.left - oL) * k,
+               width - (c.right - oR) * k, width + oR * k }
+  local ys = { -oT * k, (c.top - oT) * k,
+               height - (c.bottom - oB) * k, height + oB * k }
+  local row, col
+  for row = 1, 3 do
+    for col = 1, 3 do
+      local piece = group.pieces[(row - 1) * 3 + col]
+      local w, h = xs[col + 1] - xs[col], ys[row + 1] - ys[row]
+      piece:ClearAllPoints()
+      piece:SetPoint("TOPLEFT", frame, "TOPLEFT", xs[col], -ys[row])
+      -- A texture asked for no size renders as a stray block on this client
+      -- (UpdateStatusBarFill above), so an empty middle is hidden instead.
+      piece.uuiEmpty = w < 0.01 or h < 0.01
+      if not piece.uuiEmpty then
+        piece:SetWidth(w)
+        piece:SetHeight(h)
+      end
+      if piece.uuiEmpty or group.shown == false then
+        piece:Hide()
+      else
+        piece:Show()
+      end
+    end
+  end
 end
 
 -- Re-measures the fill and prediction segments after a caller resizes the
@@ -1132,7 +1235,7 @@ function U.CreateButton(parent, options)
   local label = U.CreateLabel(button, {
     size = options.size or M.fontSize.normal,
     color = options.textColor or M.color.text,
-    inherits = "GameFontNormal",
+    inherits = options.inherits or "GameFontNormal",
     width = math.max(1, width - 8),
     height = math.max(1, height - 4),
     nonSpaceWrap = true,

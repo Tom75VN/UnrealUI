@@ -74,4 +74,11 @@ control draws (`common-dropdown-a/b-*`, the `-2` dropdown states, the large
 scrollbar thumb, `RedButton-Condense/Expand/MiniCondense`) come with the
 sheets, which are imported whole.
 
+## Tooltip rim (classic-wow)
+
+| File | Size | Source | Notes |
+| --- | --- | --- | --- |
+| `ui/tooltip-border.tga` | 16x64 | `wowdata-art-ui/interface/unlisted/4185447.png (SHA-256 2DFCEC1F0891E8290AC8CF59FB8585A63FB82B266944CC345C72633710728444)` | Forever FileDataID 4185447 (atlas 1825), whole sheet, pixels identical: `Tooltip-NineSlice` corners and top/bottom edges. The build also lists a c60 twin (8070606, atlas 3985) with the same rectangles, which is in no reachable art source. Drawn by modules/tooltip.lua under classic-wow. |
+| `ui/tooltip-border-vertical.tga` | 32x16 | `wowdata-art-ui/interface/unlisted/4185474.png (SHA-256 571B6CDC12B1CA80A419180CA30C49ABAD3501327E40ACFE3DF815885B348D04)` | Forever FileDataID 4185474 (atlas 1827), whole sheet: left/right edges. c60 twin 8070610 (atlas 3987) unavailable. |
+
 Keep this table accurate on any later import.

@@ -150,6 +150,7 @@ local SPECS = {
     id = "player", unit = "player", name = "Player",
     labelKey = "MOVER_LABEL_PLAYER",
     width = PRIMARY_WIDTH, health = 34, power = 10, gap = 0,
+    healthLabelOutline = true,
     healthLabels = { left = "level", right = "healthdyn" },
     powerLabels = { right = "powerdyn" },
     default = { point = "BOTTOMRIGHT", relativePoint = "BOTTOM", x = -75, y = 125 },
@@ -162,6 +163,7 @@ local SPECS = {
     width = PRIMARY_WIDTH, health = 34, power = 10, gap = 0,
     healthTexture = true,
     targetReactionName = true,
+    healthLabelOutline = true,
     healthLabels = { left = "healthdyn", right = "unitrev" },
     powerLabels = { left = "powerdyn" },
     default = { point = "BOTTOMLEFT", relativePoint = "BOTTOM", x = 75, y = 125 },
@@ -174,6 +176,9 @@ local SPECS = {
     -- on a raised child layer within the target-of-target frame.
     -- 18px is half the previous 35px height, rounded to an integer pixel.
     width = PRIMARY_WIDTH, health = 18, healthText = "nameplain", gap = 0,
+    -- 8px by request (2026-11-26). Exact, so it holds under "Original" font.
+    healthLabelSize = 8,
+    healthLabelOutline = true,
     anchorTo = "target",
     anchorPoint = "TOP", anchorRelativePoint = "BOTTOM",
     anchorOffsetX = 0, anchorOffsetY = 1,
@@ -1722,7 +1727,7 @@ local function CreateBarBox(parent, width, height, border, color, texture)
 end
 
 local function CreateBarLabel(parent, anchor, target, offset, yOffset,
-                              size, inherits)
+                              size, inherits, outlined)
   local label = U.CreateLabel(parent, {
     size = size or M.fontSize.normal,
     color = M.color.text,
@@ -1732,6 +1737,13 @@ local function CreateBarLabel(parent, anchor, target, offset, yOffset,
     shadowColor = M.color.shadowStrong,
   })
   if not label then return nil end
+
+  if outlined then
+    pcall(U.SetFont, label, size or M.fontSize.normal, "OUTLINE",
+          "unitframe", true)
+    pcall(U.ClearTextShadow, label)
+    label.uuiOutline = true
+  end
 
   -- Single-edge anchor, per fonts.stretched_justification_ignored.
   label:SetPoint(anchor, target, anchor, offset, yOffset or 0)
@@ -1757,7 +1769,8 @@ local NAME_LEVEL_GAP_TRUNCATED = NAME_LEVEL_GAP + 3
 -- or power), on the same raised-child-layer trick as the targettarget name:
 -- the fill is a sibling texture whose width changes every refresh, and text
 -- on the same layer can end up behind it.
-local function BuildBarLabels(box, labels, yOffset, size, inherits)
+local function BuildBarLabels(box, labels, yOffset, size, inherits,
+                              outlineIdentity)
   if not labels then return end
   yOffset = yOffset or BAR_LABEL_Y_OFFSET
 
@@ -1770,11 +1783,13 @@ local function BuildBarLabels(box, labels, yOffset, size, inherits)
 
   if labels.left then
     box.leftLabel = CreateBarLabel(box.textLayer, "LEFT", box.textLayer,
-                                    BAR_LABEL_MARGIN, yOffset, size, inherits)
+                                    BAR_LABEL_MARGIN, yOffset, size, inherits,
+                                    outlineIdentity and labels.left == "level")
   end
   if labels.right then
     box.rightLabel = CreateBarLabel(box.textLayer, "RIGHT", box.textLayer,
-                                     -BAR_LABEL_MARGIN, yOffset, size, inherits)
+                                     -BAR_LABEL_MARGIN, yOffset, size, inherits,
+                                     outlineIdentity and labels.right == "unitrev")
 
     -- "unitrev" (target frame) draws name+level as two labels instead of one
     -- string, so the gap between them can widen by a real pixel amount when
@@ -1789,6 +1804,12 @@ local function BuildBarLabels(box, labels, yOffset, size, inherits)
         shadowColor = M.color.shadowStrong,
       })
       if box.rightNameLabel then
+        if outlineIdentity then
+          pcall(U.SetFont, box.rightNameLabel, size or M.fontSize.normal,
+                "OUTLINE", "unitframe", true)
+          pcall(U.ClearTextShadow, box.rightNameLabel)
+          box.rightNameLabel.uuiOutline = true
+        end
         box.rightNameLabel:SetPoint("RIGHT", box.rightLabel, "LEFT",
                                      -NAME_LEVEL_GAP, 0)
       end
@@ -3197,10 +3218,27 @@ local function BuildFrame(spec, parent)
     if levelOk and tonumber(level) then
       pcall(health.textLayer.SetFrameLevel, health.textLayer, level + 10)
     end
-    health.label = CreateBarLabel(health.textLayer, "CENTER", health.textLayer, 0)
+    health.label = CreateBarLabel(health.textLayer, "CENTER", health.textLayer, 0,
+                                  nil, spec.healthLabelSize,
+                                  spec.healthLabelInherits)
+    -- The "Original" font choice keeps the inherited size unless the size is
+    -- marked exact, as the health/power value size option does
+    -- (UF.powerText.ApplySize).
+    if health.label and spec.healthLabelSize then
+      local outlined = spec.healthLabelOutline == true
+      pcall(U.SetFont, health.label, spec.healthLabelSize,
+            outlined and "OUTLINE" or nil, "unitframe", outlined or nil, true)
+      if outlined then
+        pcall(U.ClearTextShadow, health.label)
+      else
+        pcall(U.SetTextShadow, health.label, M.compactTextShadowOffset,
+              M.color.shadowStrong)
+      end
+    end
   elseif spec.healthLabels then
     BuildBarLabels(health, spec.healthLabels, nil,
-                   spec.healthLabelSize, spec.healthLabelInherits)
+                   spec.healthLabelSize, spec.healthLabelInherits,
+                   spec.healthLabelOutline)
   end
 
   BuildClassificationIcon(frame, health)
@@ -5301,6 +5339,40 @@ local function ResolveClickButton(a, b)
   return U.G("arg1")
 end
 
+-- Unit-frame tooltip keep-alive. The client hides a SetUnit("player"/
+-- "target") tooltip on its own about 1.0s after the call while the cursor is
+-- still on the frame (/uui ttblink, 2026-11-26: shown 1.096 -> native OnHide
+-- 2.102 and 3.611 -> 4.615, no Lua Hide, GetMouseFocus still the unit frame,
+-- seen on a player unit). Moving the mouse re-fired OnEnter, hence the blink.
+-- Stock FrameXML's UnitFrame_OnUpdate re-calls SetUnit every
+-- TOOLTIP_UPDATE_TIME (0.2s) while it owns the tooltip; this does the same.
+unitMouse.TOOLTIP_REFRESH_ID = "unitframes.tooltipRefresh"
+unitMouse.TOOLTIP_REFRESH_INTERVAL = 0.2
+
+function unitMouse.StopTooltipRefresh()
+  U.UnregisterUpdate(unitMouse.TOOLTIP_REFRESH_ID)
+end
+
+function unitMouse.StartTooltipRefresh(frame, unit)
+  U.RegisterUpdate(unitMouse.TOOLTIP_REFRESH_ID,
+                   unitMouse.TOOLTIP_REFRESH_INTERVAL, function()
+    local tooltip = U.G("GameTooltip")
+    local visibleOk, visible = pcall(frame.IsVisible, frame)
+    if not tooltip or not visibleOk or not visible or
+       not ApiTruth("UnitExists", unit) then
+      unitMouse.StopTooltipRefresh()
+      return
+    end
+    -- Another frame took the tooltip over: stop rather than steal it back.
+    local ownedOk, owned = pcall(tooltip.IsOwned, tooltip, frame)
+    if ownedOk and not owned then
+      unitMouse.StopTooltipRefresh()
+      return
+    end
+    pcall(tooltip.SetUnit, tooltip, unit)
+  end)
+end
+
 function unitMouse.Enable(frame, unit)
   unit = unit or frame.unit
   pcall(frame.EnableMouse, frame, true)
@@ -5333,10 +5405,12 @@ function unitMouse.Enable(frame, unit)
 
     if pcall(tooltip.SetUnit, tooltip, unit) then
       pcall(tooltip.Show, tooltip)
+      unitMouse.StartTooltipRefresh(frame, unit)
     end
   end)
 
   frame:SetScript("OnLeave", function()
+    unitMouse.StopTooltipRefresh()
     if frame.uuiHover then
       frame.uuiHover = nil
       RefreshFrame(frame, "full")

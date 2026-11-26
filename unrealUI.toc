@@ -2,7 +2,7 @@
 ## Title: |cffffffffUnreal |cfff5ae0aUI
 ## Notes: Unreal Azeroth native UI addon.
 ## Author: Thomas
-## Version: 0.12.0
+## Version: 0.13.0
 ## X-License: MIT
 ## SavedVariables: UnrealUIDB, UnrealUIProfiles, UnrealUIDiagDB, UnrealUIPriceDB, UnrealUICategoryDB
 ## SavedVariablesPerCharacter: UnrealUIProfileDB, UnrealUIFavoriteDB, UnrealUIBankCountDB, UnrealUIBankCacheDB, UnrealUIEquipmentSetDB
@@ -112,7 +112,10 @@ modules\gamesettings.lua
 # U.gameSettings from the line above.
 modules\gamesettingslist.lua
 modules\logout.lua
+# One-time login reminder to like UnrealUI in the launcher.
+modules\supportpopup.lua
 modules\minimap.lua
+modules\minimapgroup.lua
 modules\durabilityframe.lua
 modules\worldmap.lua
 modules\playerarrow.lua
@@ -136,6 +139,8 @@ modules\raidframesettings.lua
 modules\nameplates.lua
 modules\nameplatesettings.lua
 modules\tooltip.lua
+# Fade-out copy of a tooltip closed with Hide(); reads U.TooltipFadeInfo above.
+modules\tooltipfade.lua
 modules\itemprice.lua
 modules\loot.lua
 modules\lootdesign.lua

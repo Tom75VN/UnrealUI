@@ -23,14 +23,19 @@
 -- WORKING_SOURCE evidence per .claude/rules/unreal-pfui.md, not runtime
 -- verification. What is taken is the idea and the spell data; what is not taken
 -- is its HealComm/CTRA addon channel, its heal prediction, its resurrection
--- tracking and its hooksecurefunc-based cast queue -- this client ships no
--- global hooksecurefunc at all (knowledge.json / hooks.no_global_hooksecurefunc)
--- and the addon's own wrapper must not be pointed at vararg natives
--- (knowledge.json / lua.posthook_global_fixed_arity_breaks_vararg_frameXML).
+-- tracking and its hooksecurefunc-based cast queue; the native UNIT_SPELLCAST_*
+-- port below identifies casts without hooking any cast function.
 --
 -- ---------------------------------------------------------------------------
--- How a cast is identified without hooks
+-- How a cast is identified
 -- ---------------------------------------------------------------------------
+--
+-- With the client's 3.3.5a cast port (knowledge.json /
+-- castbar.player_cast_query_stale_after_end, wotlkports.v1),
+-- UNIT_SPELLCAST_SENT("player", spell, rank) arms the pending spell for every
+-- cast route -- macro, keybind, any action bar, another addon -- and
+-- UNIT_SPELLCAST_SUCCEEDED commits it; FAILED/INTERRUPTED drop it. The rest of
+-- this section is the fallback for a client without that port.
 --
 -- Two sources feed one "pending spell", and SPELLCAST_STOP commits it:
 --
@@ -53,9 +58,8 @@
 --
 -- Known gaps, stated rather than papered over:
 --
---   * A cast from a macro, from the client's own action bar, or from another
---     addon is not seen. CastSpell/CastSpellByName are documented protected on
---     this client (modules/rogue.lua), and there is no hook to place on them.
+--   * Fallback only: a cast from a macro, from the client's own action bar,
+--     or from another addon is not seen.
 --   * A HoT already running at login or after /reload has no stamp, so it does
 --     not draw until it is refreshed.
 --   * Rank is not recoverable, so a low-rank HoT reads at max-rank duration --
@@ -473,8 +477,6 @@ local function OnActionUsed(slot)
   end
 end
 
-U.RegisterActionUsed(OnActionUsed)
-
 local RefreshAll
 
 -- SPELLCAST_STOP path: the cast completed, so the HoT starts now. This is the
@@ -490,6 +492,65 @@ local function CommitPending()
   stats.stopCommits = stats.stopCommits + 1
   Stamp(entry.target, entry.entry)
   RefreshAll()
+end
+
+-- The player's cast events. `native` is the 3.3.5a UNIT_SPELLCAST_* path;
+-- the fallback is the 1.12 SPELLCAST_* events plus unrealUI action presses.
+local castEvents = { native = false }
+
+function castEvents.Matches(spell)
+  return pending and type(spell) == "string" and pending.entry.name == spell
+end
+
+function castEvents.Drop()
+  if pending then stats.failed = stats.failed + 1 end
+  pending = nil
+end
+
+function castEvents.Register()
+  castEvents.native = true
+  U.RegisterEvent("UNIT_SPELLCAST_SENT", function(event, unit, spell)
+    if unit ~= "player" then return end
+    OpenAdoptWindow()
+    stats.named = stats.named + 1
+    stats.lastName = tostring(spell)
+    SetPending(spell)
+  end)
+  -- Also fires for each channel tick; only the armed HoT's name commits.
+  U.RegisterEvent("UNIT_SPELLCAST_SUCCEEDED", function(event, unit, spell)
+    if unit ~= "player" then return end
+    OpenAdoptWindow()
+    if not castEvents.Matches(spell) then SetPending(spell) end
+    if castEvents.Matches(spell) then CommitPending() end
+    RefreshAll()
+  end)
+  local cancelled = { "UNIT_SPELLCAST_FAILED", "UNIT_SPELLCAST_INTERRUPTED" }
+  local i
+  for i = 1, table.getn(cancelled) do
+    U.RegisterEvent(cancelled[i], function(event, unit, spell)
+      if unit == "player" and castEvents.Matches(spell) then castEvents.Drop() end
+    end)
+  end
+end
+
+function castEvents.RegisterFallback()
+  U.RegisterActionUsed(OnActionUsed)
+  U.RegisterEvent("SPELLCAST_START", function(event, name)
+    OpenAdoptWindow()
+    SetPending(name)
+  end)
+  U.RegisterEvent("SPELLCAST_STOP", function()
+    OpenAdoptWindow()
+    CommitPending()
+    -- Straight away rather than on the next tick: for an instant cast the aura
+    -- is already on the unit by the time this fires.
+    RefreshAll()
+  end)
+  local cancelled = { "SPELLCAST_FAILED", "SPELLCAST_INTERRUPTED" }
+  local i
+  for i = 1, table.getn(cancelled) do
+    U.RegisterEvent(cancelled[i], castEvents.Drop)
+  end
 end
 
 -- ---------------------------------------------------------------------------
@@ -780,16 +841,46 @@ end
 -- is per-scan scratch, never state.
 local present = {}
 
+-- UnitAura port (knowledge.json / api.unitaura_unitaura_v1): icon key ->
+-- { start, duration } for a copy whose unitCaster is "player" (start nil when
+-- untimed). `proven` turns on once "player" has been seen on another unit:
+-- from then on a tracked HoT with no own copy is someone else's. Until then a
+-- nil caster proves nothing and the stamp rules below decide.
+local ownAuras = { byKey = {}, proven = false }
+
 local function ReadBuffs(unit)
   local key
   for key in pairs(present) do present[key] = nil end
+  local own = ownAuras.byKey
+  for key in pairs(own) do own[key] = nil end
 
+  local native = U.UnitAuraReady()
+  local now = native and Now() or 0
   local i
   for i = 1, MAX_BUFF_SLOTS do
     -- knowledge.json / auras.unit_aura_slots_may_be_sparse: an occupied slot
     -- can sit behind empty ones, so the whole range is walked rather than
     -- stopping at the first nil.
-    local texture, count = Call("UnitBuff", unit, i)
+    local texture, count, mine, duration, expires
+    if native then
+      local name, dispel
+      name, texture, count, dispel, duration, expires, mine =
+        U.ReadUnitAura(unit, i, false)
+    else
+      texture, count = Call("UnitBuff", unit, i)
+    end
+    if mine then
+      local iconKey = U.IconKey(texture)
+      if iconKey then
+        local left = U.UnitAuraTimeLeft(duration, expires, now)
+        own[iconKey] = left and { start = now - (duration - left), duration = duration }
+                       or {}
+        if not ownAuras.proven and unit ~= "player" and
+           not Call("UnitIsUnit", unit, "player") then
+          ownAuras.proven = true
+        end
+      end
+    end
     if texture then
       local iconKey = U.IconKey(texture)
       -- First occurrence wins. Two ranks of the same HoT cannot both be on a
@@ -943,8 +1034,10 @@ hotLive.Collect = function(unit, out)
       -- seeing the cast that placed it. Dated from the cast rather than from
       -- this tick, so a HoT found half a second late is not shown half a
       -- second long.
-      if present[entry.key] ~= nil and not (store and store[entry.id]) then
-        Stamp(name, entry, lastCast)
+      local own = ownAuras.byKey[entry.key]
+      if present[entry.key] ~= nil and not (store and store[entry.id]) and
+         (own or not ownAuras.proven) then
+        Stamp(name, entry, own and own.start or lastCast)
         stats.adopted = stats.adopted + 1
         stats.lastAdopted = entry.id .. "@" .. tostring(name)
         store = type(name) == "string" and stamps[name] or store
@@ -959,9 +1052,20 @@ hotLive.Collect = function(unit, out)
     local live = store[entry.id]
     if live then
       local count = present[entry.key]
+      local own = ownAuras.byKey[entry.key]
       if count == nil then
         -- Dispelled, overwritten, expired or never landed. One rule covers all
         -- four, and none of them needs an event of its own.
+        store[entry.id] = nil
+      elseif own and own.start then
+        -- The client's own timer for our copy: rank, talents and set bonuses
+        -- included, so neither restart rule below applies.
+        live.start = own.start
+        live.duration = own.duration
+        n = n + 1
+        out[n] = { entry = entry, live = live, count = count }
+      elseif not own and ownAuras.proven then
+        -- The caster is readable and this copy is not ours.
         store[entry.id] = nil
       elseif now - live.start >= live.duration and live.extended then
         -- A second overrun is no longer explained by a set bonus. What it looks
@@ -1043,6 +1147,7 @@ local function CommitByPresence()
 
   ReadBuffs(unit)
   if present[pending.entry.key] == nil then return end
+  if ownAuras.proven and not ownAuras.byKey[pending.entry.key] then return end
 
   stats.presenceCommits = stats.presenceCommits + 1
   Stamp(pending.target, pending.entry, pending.at)
@@ -1140,6 +1245,11 @@ function U.HotDebugDump()
   -- those whose slot the tooltip scan could identify; armed counts those that
   -- were a HoT this character has. Zero presses means the cast is not coming
   -- through modules/actionbar.lua at all.
+  U.Print("  cast source: " .. (castEvents.native and "spell events" or
+          "action presses (fallback)"))
+  U.Print("  aura caster: " .. (not U.UnitAuraReady() and "none (UnitBuff)" or
+          (ownAuras.proven and "UnitAura, proven on another unit" or
+           "UnitAura, not yet seen on another unit")))
   U.Print("  casts: presses=" .. stats.presses ..
           " named=" .. stats.named ..
           " armed=" .. stats.armed ..
@@ -1335,25 +1445,11 @@ end
 -- Module
 -- ---------------------------------------------------------------------------
 function H:OnEnable()
-  U.RegisterEvent("SPELLCAST_START", function(event, name)
-    OpenAdoptWindow()
-    SetPending(name)
-  end)
-  U.RegisterEvent("SPELLCAST_STOP", function()
-    OpenAdoptWindow()
-    CommitPending()
-    -- Straight away rather than on the next tick: for an instant cast the aura
-    -- is already on the unit by the time this fires.
-    RefreshAll()
-  end)
-
-  local cancelled = { "SPELLCAST_FAILED", "SPELLCAST_INTERRUPTED" }
   local i
-  for i = 1, table.getn(cancelled) do
-    U.RegisterEvent(cancelled[i], function()
-      if pending then stats.failed = stats.failed + 1 end
-      pending = nil
-    end)
+  if type(U.G("UnitCastingInfo")) == "function" then
+    castEvents.Register()
+  else
+    castEvents.RegisterFallback()
   end
 
   -- The spellbook decides which HoTs exist for this character, and an action

@@ -439,12 +439,15 @@ function U.LoadConfig()
   -- a layout decision and must not change what language the interface is in.
   -- It therefore has to survive this wholesale rebuild of the store.
   local storedLanguage = UnrealUIProfiles.language
+  -- Same for the support popup's "Don't show again" (modules/supportpopup.lua).
+  local storedSupportDismissed = UnrealUIProfiles.supportPopupDismissed == true
 
   UnrealUIProfiles = {
     version = PROFILE_STORE_VERSION,
     profiles = profiles,
     assignments = assignments,
     language = IsSafeLanguage(storedLanguage) and storedLanguage or nil,
+    supportPopupDismissed = storedSupportDismissed or nil,
   }
   SetActiveProfile(active)
   return U.db
@@ -471,6 +474,22 @@ function U.StoreLanguage(code)
   if type(UnrealUIProfiles) ~= "table" then UnrealUIProfiles = {} end
   UnrealUIProfiles.language = code
   return true
+end
+
+-- ---------------------------------------------------------------------------
+-- Support popup
+--
+-- "Don't show again" on the login like-reminder (modules/supportpopup.lua).
+-- Account-wide like the language: one tick covers every character.
+-- ---------------------------------------------------------------------------
+function U.SupportPopupDismissed()
+  return type(UnrealUIProfiles) == "table" and
+         UnrealUIProfiles.supportPopupDismissed == true
+end
+
+function U.SetSupportPopupDismissed(value)
+  if type(UnrealUIProfiles) ~= "table" then UnrealUIProfiles = {} end
+  UnrealUIProfiles.supportPopupDismissed = value and true or nil
 end
 
 -- ---------------------------------------------------------------------------

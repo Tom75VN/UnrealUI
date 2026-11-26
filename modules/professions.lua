@@ -2539,8 +2539,6 @@ function pw.Build(kind)
     pw.HideTip()
     pw.ResetSearch(win)
   end)
-  -- Fixed-signature native update: safe for U.PostHookGlobal
-  -- (knowledge.json / lua.posthook_global_fixed_arity_breaks_vararg_frameXML).
   -- Deferred, never inline, so nothing runs inside the native update chain.
   if type(U.G(kind.update)) == "function" then
     U.PostHookGlobal(kind.update, function() pw.Queue(win) end)

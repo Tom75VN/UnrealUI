@@ -602,8 +602,13 @@ end
 function modernWowAction.SetBarOrnamentsShown(entry, shown)
   local state = entry and entry.modernWowOrnaments
   if not state then return end
-  modernWowAction.SetShown(state.backgroundLeft, shown)
-  modernWowAction.SetShown(state.backgroundRight, shown)
+  -- The bar 1 "Show Bar Background" option; missing means shown.
+  local housingShown = shown
+  if housingShown and cfg and cfg.bar1BarBackground == false then
+    housingShown = false
+  end
+  modernWowAction.SetShown(state.backgroundLeft, housingShown)
+  modernWowAction.SetShown(state.backgroundRight, housingShown)
   -- The bar 1 "Gryphons" option; missing (older saved data) means shown.
   -- Literal key: Key() is declared further down this file.
   local ornamentsShown = shown
@@ -952,6 +957,8 @@ local function BuildDefaults()
     defaults[Key(i, "SlotBackground")] = (i == 1)
     -- modern-wow gryphon/wyvern ornaments; only bar 1 draws them.
     if i == 1 then defaults[Key(i, "Gryphons")] = true end
+    -- modern-wow bar housing behind bar 1; only bar 1 draws it.
+    if i == 1 then defaults[Key(i, "BarBackground")] = true end
     defaults[Key(i, "Buttons")] = 12
     defaults[Key(i, "PerRow")]  = 12
     defaults[Key(i, "Size")]    = 30
@@ -3034,6 +3041,7 @@ function U.GetActionBarSetting(bar, name)
   if name == "Enabled" then return IsEnabled(bar) end
   if name == "HideBackground" then return HidesBackground(bar) end
   if name == "Gryphons" then return Get(bar, "Gryphons") ~= false end
+  if name == "BarBackground" then return Get(bar, "BarBackground") ~= false end
   if name == "SlotBackground" then return modernWowAction.SlotBackground(bar) end
   return Number(bar, name)
 end
@@ -3083,6 +3091,9 @@ function U.SetActionBarSetting(bar, name, value)
   elseif name == "Gryphons" then
     if bar ~= 1 then return nil end
     cfg[Key(bar, "Gryphons")] = value and true or false
+  elseif name == "BarBackground" then
+    if bar ~= 1 then return nil end
+    cfg[Key(bar, "BarBackground")] = value and true or false
   elseif name == "SlotBackground" then
     cfg[Key(bar, "SlotBackground")] = value and true or false
   else

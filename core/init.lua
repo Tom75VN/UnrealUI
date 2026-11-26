@@ -9,10 +9,12 @@ UnrealUI = {}
 local U = UnrealUI
 
 U.name      = "unrealUI"
-U.version   = "0.12.0"
+U.version   = "0.13.0"
 U.modules   = {}       -- name -> module table
 U.moduleOrder = {}     -- load/enable order, registration order
 U.ready     = false    -- set once PLAYER_LOGIN work has run
+-- Rollback switch: true restores the previous settle/loading process.
+U.startupSettleEnabled = false
 
 -- ---------------------------------------------------------------------------
 -- Globals access
@@ -541,11 +543,16 @@ local function Enable()
   if U.ready then return end
   U.ready = true
 
-  -- Show the startup surface before module construction begins. The
-  -- compatibility layer calls this again when native suppression is armed;
-  -- ShowStartupLoading is idempotent, so that second call is only a fallback.
-  if type(U.ShowStartupLoading) == "function" then U.ShowStartupLoading() end
+  if U.startupSettleEnabled and type(U.ShowStartupLoading) == "function" then
+    U.ShowStartupLoading()
+  end
   RunModulePhase("OnEnable")
+  -- Test path matching PandaUI: suppress after every module has registered
+  -- its stock widgets, in this same bootstrap pass.
+  if not U.startupSettleEnabled and
+     type(U.ReapplyNativeSuppression) == "function" then
+    U.ReapplyNativeSuppression()
+  end
   U.Debug("modules enabled (handler shape: " .. U.handlerShape .. ")")
   U.PrintLoaded(U.L("BOOT_LOADED", U.version))
 end

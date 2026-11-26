@@ -285,7 +285,8 @@ local function ShowUnitFrameCheck()
       U.Print(label .. " castbar: casting " .. tostring(tracker.casting) ..
               ", starts " .. tostring(tracker.starts) ..
               ", unknown " .. tostring(tracker.unknown) ..
-              ", patterns " .. tostring(tracker.patterns))
+              ", patterns " .. tostring(tracker.patterns) ..
+              ", source " .. tostring(tracker.source))
       if tracker.casting then
         U.Print("  " .. tostring(tracker.caster) .. ": " ..
                 tostring(tracker.spell) .. ", " ..
@@ -2366,6 +2367,19 @@ if type(SlashCmdList) == "table" then
     if type(message) ~= "string" then message = U.G("arg1") end
     if type(message) ~= "string" then message = "" end
     HandleCommand(message)
+  end
+  -- /rl shortcut for /reload, only when no other addon already owns it.
+  -- ReloadUI is documented as protected on this client (documentation.json
+  -- System:ReloadUI, DOCUMENTED_NOT_RUNTIME_VERIFIED), so the call is guarded
+  -- and a refusal points the player at the client's own /reload.
+  if not SlashCmdList["RELOAD"] and not SlashCmdList["RL"] then
+    SLASH_UNREALUIRELOAD1 = "/rl"
+    SlashCmdList["UNREALUIRELOAD"] = function()
+      local reload = U.G("ReloadUI")
+      if type(reload) ~= "function" or not pcall(reload) then
+        U.Print(U.L("CMD_RELOAD_BLOCKED"))
+      end
+    end
   end
 else
   U.Error("SlashCmdList is unavailable; /uui not registered")

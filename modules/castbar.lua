@@ -5,49 +5,17 @@
 -- spell name, remaining time, and any accumulated spell-pushback penalty drawn
 -- directly on top of the fill.
 --
--- knowledge.json / castbar.player_events_partial (RUNTIME_PLUS_WORKING_SOURCE):
--- SPELLCAST_START and SPELLCAST_STOP are the two cast events observed firing on
--- this client (events.json, 6 captures each). The captured SPELLCAST_START
--- argument shape is *not* Vanilla's own (spell, rank, castTime) tuple: it
--- arrived as arg1="Fireball" (string, spell name), arg2=1500 (number,
--- milliseconds) -- no rank argument at all. This module reads exactly that
--- shape and nothing more. It does not call UnitCastingInfo or UnitChannelInfo,
--- which are confirmed missing on this client. Target casts use the independent
--- combat-text reconstruction described below.
+-- The player bar reads the client's 3.3.5a cast query (UnitCastingInfo /
+-- UnitChannelInfo, driven by UNIT_SPELLCAST_* for "player"; knowledge.json /
+-- castbar.target_polling_contract_unverified, wotlkports.v1). It supplies the
+-- spell name, icon, length and pushback for casts and channels alike; see
+-- nativeCast.PlayerStart.
 --
--- Channelled casts (fishing among them) are handled the same way, but on
--- WORKING_SOURCE evidence rather than a runtime capture: query_compat.py has
--- no record at all of SPELLCAST_CHANNEL_START firing on this client (an
--- evidence gap, not a contradiction), so per .claude/rules/unreal-pfui.md this
--- defaults to what UnrealPfUI's libs/libcast.lua demonstrably does with it
--- (libcast.lua:219) -- arg1=castTimeMs, arg2=name, the reverse order from
--- SPELLCAST_START. That reversal lines up with this client's already-confirmed
--- non-standard SPELLCAST_START shape, which is why it's taken as the default
--- rather than the vanilla (duration-only, no name) contract. Unconfirmed until
--- tested against an actual channelled cast (e.g. fishing) in game.
---
--- Two pieces of this bar rest on WORKING_SOURCE evidence, not on measured
--- runtime evidence, because query_compat.py returns no match at all for either
--- (api.json only covers the `core` and `actionbars` groups):
---
---   * The spell icon. SPELLCAST_START carries a name and a duration and no
---     texture, so the name is resolved to an icon by walking the spellbook with
---     GetNumSpellTabs / GetSpellTabInfo / GetSpellName / GetSpellTexture --
---     the same four calls UnrealPfUI's libs/libspell.lua uses on this same
---     client (GetSpellMaxRank / GetSpellIndex / GetSpellInfo). Every call goes
---     through Call() so a missing or differently-shaped API degrades to the
---     question-mark placeholder instead of erroring. See knowledge.json /
---     castbar.spell_icon_spellbook_lookup_unverified.
---   * Cast pushback. Getting hit mid-cast is reported by SPELLCAST_DELAYED in
---     Vanilla, and UnrealPfUI's libs/libcast.lua handles it as
---     `start = start + arg1/1000` -- i.e. the cast's start is pushed forward,
---     which rolls the fill backwards and grows the remaining time, exactly the
---     native behaviour. This module does the same. The event has *no* capture
---     in events.json, so whether this client emits it is unconfirmed; if it
---     never fires, the bar simply runs to its original duration as before. The
---     /uui check readout counts the delays actually received so this can be
---     settled from a real fight. See knowledge.json /
---     castbar.pushback_delay_event_unconfirmed.
+-- A client without that query falls back to the 1.12 events (knowledge.json /
+-- castbar.player_events_partial): SPELLCAST_START arrives as (name, ms), the
+-- channel start is matched by type because its order is WORKING_SOURCE, the
+-- icon comes from a spellbook walk or the action just pressed, and pushback
+-- comes from SPELLCAST_DELAYED.
 --
 -- Themes with native chrome (themes/classic-wow.lua) do not get the modern
 -- widget: the player bar is built from the Classic static skin in
@@ -89,9 +57,10 @@
 -- relationship to what the player sees. It stays a modern-mode feature until
 -- there is a measured anchor to hang it from.
 --
--- Target casts use the client path verified by TargetedProbes 1.37.0. Native
--- UnitCastingInfo("target") and UnitChannelInfo("target") were both nil on all
--- 221 samples, so the bar never polls them. The same probe observed
+-- Target casts read UnitCastingInfo/UnitChannelInfo and UNIT_SPELLCAST_* when
+-- the client has them (3.3.5a port, measured by wotlkports.target.v1; see
+-- nativeCast). The combat-text path below remains the fallback for a client
+-- without them, and the pet's only path. TargetedProbes 1.37.0 observed
 -- CHAT_MSG_SPELL_CREATURE_VS_CREATURE_DAMAGE carrying the localized combat
 -- text "Defias Cutpurse begins to perform Backstab.". This module parses the
 -- client's SPELLCASTOTHERSTART / SPELLPERFORMOTHERSTART templates, matches the
@@ -363,10 +332,9 @@ end
 --
 -- UnrealPfUI's libs/libcast.lua fills that gap with a `lastcasttex` remembered
 -- from hooked CastSpell / UseContainerItem calls and used whenever its own
--- spell data has no icon (WORKING_SOURCE). The hook route it uses does not
--- exist here -- knowledge.json / hooks.no_global_hooksecurefunc -- but
--- UnrealUI's own action-press fan-out does, and it is already how
--- modules/hots.lua and modules/healpredict.lua identify an instant cast.
+-- spell data has no icon (WORKING_SOURCE). This module uses UnrealUI's own
+-- action-press fan-out instead, as modules/hots.lua and
+-- modules/healpredict.lua do; it only matters on the fallback event path.
 --
 -- Only the slot and the time are kept. Resolving the slot costs a tooltip scan
 -- (U.ActionSlotSpellName), so it is done on demand, in the one case that needs
@@ -566,11 +534,11 @@ end
 -- empty box either. FALLBACK_ICON is still used for the idle placeholder
 -- (ApplyIdlePlaceholder), which is a different case -- there's no cast at all
 -- to have an icon for.
-local function ApplyIcon(name)
+local function ApplyIcon(name, preferred)
   if not bar.icon then return end
 
-  local texture = SpellIcon(name)
-  lastIconSource = texture and "spellbook" or "none"
+  local texture = preferred or SpellIcon(name)
+  lastIconSource = preferred and "native" or (texture and "spellbook" or "none")
 
   -- Nothing in the book: an item, a trinket proc, or a cast whose event
   -- carried no name to look up. The action just pressed carries the art the
@@ -962,6 +930,7 @@ end
 local function StopUnitCast(tracker, kind)
   if not tracker or not tracker.casting then return end
   tracker.casting = false
+  tracker.channel = nil
   tracker.caster = nil
   tracker.spell = nil
   tracker.startTime = nil
@@ -1030,7 +999,113 @@ local function OnUnitCombatMessage(eventName, message)
 
   local i
   for i = 1, table.getn(trackerOrder) do
-    StartUnitCast(trackerOrder[i], eventName, caster, spell)
+    if not trackerOrder[i].native then
+      StartUnitCast(trackerOrder[i], eventName, caster, spell)
+    end
+  end
+end
+
+-- knowledge.json / castbar.target_polling_contract_unverified: the client's
+-- 3.3.5a port returns UnitCastingInfo/UnitChannelInfo for the target and fires
+-- UNIT_SPELLCAST_* with the unit token (wotlkports.target.v1). A tracker marked
+-- native reads its cast from there instead of combat text. The pet is not
+-- measured: its tracker listens too (`unproven`) but keeps combat text until
+-- UnitCastingInfo("pet") first returns a cast, and only then turns native.
+local nativeCast = {
+  STOP = { UNIT_SPELLCAST_STOP = "stop", UNIT_SPELLCAST_CHANNEL_STOP = "stop",
+    UNIT_SPELLCAST_FAILED = "failed", UNIT_SPELLCAST_INTERRUPTED = "interrupted" },
+  START = { "UNIT_SPELLCAST_START", "UNIT_SPELLCAST_DELAYED",
+    "UNIT_SPELLCAST_CHANNEL_START", "UNIT_SPELLCAST_CHANNEL_UPDATE" },
+}
+
+function nativeCast.Available()
+  return type(U.G("UnitCastingInfo")) == "function" and
+         type(U.G("UnitChannelInfo")) == "function"
+end
+
+function nativeCast.Query(fname, unit)
+  local ok, name, _, _, texture, startMs, endMs = pcall(U.G(fname), unit)
+  startMs, endMs = tonumber(startMs), tonumber(endMs)
+  if ok and type(name) == "string" and name ~= "" and
+     startMs and endMs and endMs > startMs then
+    return name, texture, startMs, endMs
+  end
+  return nil
+end
+
+-- Reads the unit's current cast or channel and draws it, or stops the bar
+-- when the unit is not casting. `kind` names the finish for a stop.
+function nativeCast.Refresh(tracker, kind)
+  if not tracker or not tracker.bar then return end
+  local channel = false
+  local name, texture, startMs, endMs = nativeCast.Query("UnitCastingInfo", tracker.unit)
+  if not name then
+    name, texture, startMs, endMs = nativeCast.Query("UnitChannelInfo", tracker.unit)
+    channel = name ~= nil
+  end
+  if not name then
+    StopUnitCast(tracker, kind)
+    return
+  end
+
+  local now = GetTime()
+  local duration = (endMs - startMs) / 1000
+  local started = startMs / 1000
+  -- Times are expected on the GetTime clock (3.3.5a); a value off that clock
+  -- starts the bar now rather than drawing a bogus elapsed time.
+  if math.abs(started - now) > duration + 5 then started = now end
+
+  local fresh = not tracker.casting or tracker.spell ~= name or tracker.channel ~= channel
+  if fresh then CancelFinish(tracker.bar) end
+  tracker.casting = true
+  tracker.channel = channel
+  tracker.caster = Call("UnitName", tracker.unit)
+  tracker.spell = name
+  tracker.startTime = started
+  tracker.duration = duration
+  tracker.lastTimeText = nil
+  if fresh then
+    tracker.starts = tracker.starts + 1
+    ApplyCastKind(tracker.bar, channel and "channel" or "cast")
+    ApplyUnitBarTint(tracker.bar)
+    if tracker.bar.name then tracker.bar.name:SetText(name) end
+    ApplyUnitIcon(tracker, TARGET_CASTS[name], type(texture) == "string" and texture ~= "" and texture or nil)
+  end
+  pcall(tracker.bar.bar.SetMinMaxValues, tracker.bar.bar, 0, duration)
+  UpdateUnitVisibility(tracker)
+  UpdateTickRate()
+end
+
+-- `unproven`: the unit's cast query is unmeasured, so the tracker keeps its
+-- combat-text path until a start event finds a cast in the query.
+function nativeCast.Register(tracker, unproven)
+  if not tracker or not nativeCast.Available() then return end
+  tracker.native = not unproven
+  local function onStart(event, unit)
+    if unit ~= tracker.unit then return end
+    if not tracker.native then
+      if not nativeCast.Query("UnitCastingInfo", unit) and
+         not nativeCast.Query("UnitChannelInfo", unit) then return end
+      -- Proven: drop any combat-text bar and read the query from now on.
+      StopUnitCast(tracker)
+      tracker.native = true
+    end
+    tracker.lastEvent = event
+    nativeCast.Refresh(tracker)
+  end
+  local function onStop(event, unit)
+    if unit == tracker.unit and tracker.native then
+      tracker.lastEvent = event
+      StopUnitCast(tracker, nativeCast.STOP[event])
+    end
+  end
+  local i
+  for i = 1, table.getn(nativeCast.START) do
+    U.RegisterEvent(nativeCast.START[i], onStart)
+  end
+  local event
+  for event in pairs(nativeCast.STOP) do
+    U.RegisterEvent(event, onStop)
   end
 end
 
@@ -1172,9 +1247,10 @@ local function ApplyPlayerProgress(elapsed)
   if bar.uuiUpdateSpark then bar.uuiUpdateSpark(bar) end
 end
 
--- `kind` is "channel" from SPELLCAST_CHANNEL_START and nil otherwise; a nil
--- kind is a craft when the name is a known recipe, else a plain cast.
-local function StartCast(name, castTimeMs, kind)
+-- `kind` is "channel" for a channel and nil otherwise; a nil kind is a craft
+-- when the name is a known recipe, else a plain cast. `texture` is the icon
+-- the client's cast query returned, when there was one.
+local function StartCast(name, castTimeMs, kind, texture)
   CancelFinish(bar)
 
   -- A channel can arrive with a duration and no name (see the press note
@@ -1204,7 +1280,7 @@ local function StartCast(name, castTimeMs, kind)
   end
   ApplyPlayerProgress(0)
   if bar.name then bar.name:SetText(tostring(name or "")) end
-  ApplyIcon(name)
+  ApplyIcon(name, texture)
   lastTimeText = nil
   ApplyTimer(duration)
 
@@ -1246,6 +1322,98 @@ local function StopCast(eventName)
   UpdateTickRate()
 end
 
+-- Player casts from the 3.3.5a port (knowledge.json /
+-- castbar.target_polling_contract_unverified, wotlkports.v1): UNIT_SPELLCAST_*
+-- fire for "player" and the query returns name, icon and millisecond times.
+-- The query keeps returning a cast for a moment after it ends, so it is read on
+-- start and update events only; a stop never re-queries. The times are used as
+-- a length and a difference, never compared with GetTime().
+nativeCast.player = { native = false }
+
+nativeCast.PLAYER_STOP = {
+  UNIT_SPELLCAST_STOP = "SPELLCAST_STOP",
+  UNIT_SPELLCAST_CHANNEL_STOP = "SPELLCAST_CHANNEL_STOP",
+  UNIT_SPELLCAST_FAILED = "SPELLCAST_FAILED",
+  UNIT_SPELLCAST_INTERRUPTED = "SPELLCAST_INTERRUPTED",
+}
+
+function nativeCast.PlayerQuery(channel)
+  return nativeCast.Query(channel and "UnitChannelInfo" or "UnitCastingInfo",
+                          "player")
+end
+
+-- Each UNIT_SPELLCAST_* can reach a handler more than once for one cast; the
+-- start time identifies the cast so a repeat is a no-op.
+function nativeCast.PlayerStart(event, unit)
+  if unit ~= "player" then return end
+  local channel = event == "UNIT_SPELLCAST_CHANNEL_START"
+  local name, texture, startMs, endMs = nativeCast.PlayerQuery(channel)
+  if not name then return end
+
+  local state = nativeCast.player
+  if casting and state.name == name and state.startMs == startMs then return end
+  state.name, state.startMs, state.endMs = name, startMs, endMs
+
+  if type(texture) ~= "string" or texture == "" then texture = nil end
+  StartCast(name, endMs - startMs, channel and "channel" or nil, texture)
+  if not channel then RememberTargetSpell(name, endMs - startMs) end
+end
+
+-- Pushback: a cast's end moves later, a channel's moves earlier.
+function nativeCast.PlayerUpdate(event, unit)
+  if unit ~= "player" or not casting then return end
+  local channel = event == "UNIT_SPELLCAST_CHANNEL_UPDATE"
+  if channel ~= (castKind == "channel") then return end
+
+  local state = nativeCast.player
+  local name, _, _, endMs = nativeCast.PlayerQuery(channel)
+  if not name or name ~= state.name or not state.endMs then return end
+
+  local shift = endMs - state.endMs
+  state.endMs = endMs
+  if shift == 0 then return end
+  if not channel then
+    if shift > 0 then DelayCast(shift) end
+    return
+  end
+  duration = duration + shift / 1000
+  if duration < 0.01 then duration = 0.01 end
+  pcall(bar.bar.SetMinMaxValues, bar.bar, 0, duration)
+end
+
+-- A stop for another spell (a late channel stop, a failed key press) leaves the
+-- running cast alone. A FAILED for the same spell is a repeated press while it
+-- is still casting when the query still returns the same cast.
+function nativeCast.PlayerStop(event, unit, spellName)
+  if unit ~= "player" or not casting then return end
+  local state = nativeCast.player
+  if type(spellName) == "string" and state.name and spellName ~= state.name then
+    return
+  end
+  if event == "UNIT_SPELLCAST_STOP" and castKind == "channel" then return end
+  if event == "UNIT_SPELLCAST_CHANNEL_STOP" and castKind ~= "channel" then return end
+  if event == "UNIT_SPELLCAST_FAILED" then
+    local _, _, startMs = nativeCast.PlayerQuery(castKind == "channel")
+    if startMs and startMs == state.startMs then return end
+  end
+  StopCast(nativeCast.PLAYER_STOP[event])
+end
+
+-- SPELLCAST_INTERRUPTED stays registered: it is the measured interrupt signal,
+-- and UNIT_SPELLCAST_INTERRUPTED has no player capture yet.
+function nativeCast.RegisterPlayer()
+  nativeCast.player.native = true
+  U.RegisterEvent("UNIT_SPELLCAST_START", nativeCast.PlayerStart)
+  U.RegisterEvent("UNIT_SPELLCAST_CHANNEL_START", nativeCast.PlayerStart)
+  U.RegisterEvent("UNIT_SPELLCAST_DELAYED", nativeCast.PlayerUpdate)
+  U.RegisterEvent("UNIT_SPELLCAST_CHANNEL_UPDATE", nativeCast.PlayerUpdate)
+  local event
+  for event in pairs(nativeCast.PLAYER_STOP) do
+    U.RegisterEvent(event, nativeCast.PlayerStop)
+  end
+  U.RegisterEvent("SPELLCAST_INTERRUPTED", StopCast)
+end
+
 Tick = function()
   if U.PerfDisabled and U.PerfDisabled("castbar") then return end
 
@@ -1269,7 +1437,8 @@ Tick = function()
           StopUnitCast(tracker, "stop")
         else
           if unitElapsed < 0 then unitElapsed = 0 end
-          SetUnitBarValue(tracker.bar, unitElapsed)
+          SetUnitBarValue(tracker.bar, tracker.channel and
+                          (tracker.duration - unitElapsed) or unitElapsed)
           ApplyUnitTimer(tracker, tracker.duration - unitElapsed)
         end
       end
@@ -1718,8 +1887,14 @@ local function BuildClassicPlayerBar()
 end
 
 -- Player cast events. Shared by both themes: the Classic bar is the same
--- widget contract and the same timing state, only a different skin.
+-- widget contract and the same timing state, only a different skin. The
+-- SPELLCAST_* path below is the fallback for a client without the cast query.
 local function RegisterPlayerCastEvents()
+  if nativeCast.Available() then
+    nativeCast.RegisterPlayer()
+    return
+  end
+
   U.RegisterEvent("SPELLCAST_START", function(event, name, castTimeMs)
     StartCast(name, castTimeMs)
     RememberTargetSpell(name, castTimeMs)
@@ -2613,8 +2788,13 @@ local function RegisterUnitCastEvents()
     U.RegisterEvent(TARGET_COMBAT_EVENTS[i], OnUnitCombatMessage)
   end
 
+  nativeCast.Register(trackers.target)
+  nativeCast.Register(trackers.pet, true)
   U.RegisterEvent("PLAYER_TARGET_CHANGED", function()
     StopUnitCast(trackers.target)
+    if trackers.target and trackers.target.native then
+      nativeCast.Refresh(trackers.target)
+    end
   end)
 end
 
@@ -2703,6 +2883,7 @@ local function TrackerReport(tracker)
     lastUnknown = tracker.lastUnknown,
     lastEvent = tracker.lastEvent,
     iconSource = tracker.iconSource,
+    source = tracker.native and "native" or "combat text",
     patterns = table.getn(targetStartPatterns),
     built = tracker.bar and true or false,
   }
@@ -2739,6 +2920,7 @@ function U.CastbarReport()
     shown = shownOk and shown or "?",
     duration = duration,
     remaining = casting and (duration - (GetTime() - startTime)) or nil,
+    source = nativeCast.player.native and "native" or "legacy",
     iconSource = lastIconSource,
     channelShape = lastChannelShape,
     delays = delayCount,

@@ -169,6 +169,7 @@ local fontSample = "MMMMMMMM"
 local fontProbe, resolvedFont
 local fontChecked = {}
 local styledFonts = {}
+local textTrim = {}  -- explicit per-label overrides (U.SetSettingsTextTrim)
 local customFontSerial = 0
 
 local FONT_DB_KEYS = {
@@ -237,8 +238,8 @@ end
 local function SetBundledFont(record, media)
   local fontstring = record.fontstring
   if not fontstring.SetFont then return false end
-  if not pcall(fontstring.SetFont, fontstring, media.path, record.size,
-               record.flags) then
+  if not pcall(fontstring.SetFont, fontstring, media.path,
+               record.size - (record.trim or 0), record.flags) then
     return false
   end
 
@@ -284,7 +285,15 @@ local function ApplyFontRecord(record)
   end
 
   if record.shadowFree then
-    local size = record.originalSize or record.size
+    local size = (record.originalSize or record.size) - (record.trim or 0)
+    -- FontString owns outline flags; a shared Font object does not.
+    if record.flags and record.originalFace and fontstring.SetFont then
+      local face = record.originalFace
+      if pcall(fontstring.SetFont, fontstring, face[1], size, record.flags) then
+        U.ClearTextShadow(fontstring)
+        return true
+      end
+    end
     local font = EnsureCustomFont(record)
     if font then
       local ok = pcall(function()
@@ -312,6 +321,7 @@ local function ApplyFontRecord(record)
   end
 
   if media then applied = SetBundledFont(record, media) end
+  local bundled = applied
 
   -- A missing or rejected font file must never make text disappear.
   if not applied then
@@ -323,15 +333,48 @@ local function ApplyFontRecord(record)
   -- FontObject drops a size (fonts.setfont_silent_failure), so the face the
   -- label reported when first styled is set again at this size through the
   -- same FontString:SetFont route SetBundledFont uses.
+  -- A trimmed label on that face takes the same route, measured down from the
+  -- size it inherited.
   local face = record.originalFace
-  if choice == "original" and record.exactSize and face and fontstring.SetFont then
-    if pcall(fontstring.SetFont, fontstring, face[1], record.size,
+  local trim = record.trim or 0
+  local size
+  if choice == "original" and record.exactSize then
+    size = record.size - trim
+  elseif trim > 0 and not bundled and face then
+    size = face[2] - trim
+  end
+  if size and face and fontstring.SetFont then
+    if pcall(fontstring.SetFont, fontstring, face[1], size,
              record.flags or face[3]) then
       applied = true
     end
   end
 
   return applied
+end
+
+-- Whether a region or any of its ancestors is a settings window
+-- (M.settingsTextRoots). Names, not identity: wrappers are not comparable.
+function U.InSettingsWindow(object)
+  local depth
+  for depth = 1, 24 do
+    if not object then return false end
+    local ok, name = pcall(function() return object:GetName() end)
+    if ok and name and M.settingsTextRoots[name] then return true end
+    local parentOk, parent = pcall(function() return object:GetParent() end)
+    if not parentOk then return false end
+    object = parent
+  end
+  return false
+end
+
+-- For dropdown text, whose own ancestors do not always say which window it
+-- serves (the native list rows are shared). Call BEFORE U.SetFont /
+-- U.SetStockFont, so the label is sized once, straight after its FontObject.
+function U.SetSettingsTextTrim(fontstring, trimmed)
+  if fontstring then
+    textTrim[fontstring] = trimmed and M.settingsTextTrim or 0
+  end
 end
 
 function U.ApplyFontChoice(role)
@@ -526,9 +569,11 @@ function U.SetFont(fontstring, size, flags, role, shadowFree, exactSize)
       local ok, _, height = pcall(function() return fontstring:GetFont() end)
       if ok and type(height) == "number" and height > 0 then record.originalSize = height end
     end
+    record.trim = U.InSettingsWindow(fontstring) and M.settingsTextTrim or 0
     styledFonts[fontstring] = record
   end
 
+  record.trim = textTrim[fontstring] or record.trim
   record.size = tonumber(size) or M.fontSize.normal
   record.flags = flags
   record.role = NormaliseFontRole(role)
@@ -672,6 +717,47 @@ function U.IconKey(texture)
   key = string.gsub(key, "_tex$", "")
   if key == "" then return nil end
   return key
+end
+
+-- ---------------------------------------------------------------------------
+-- UnitAura (3.3.5a port)
+--
+-- knowledge.json / api.unitaura_unitaura_v1 (probe unitaura.v1): index i is
+-- the same aura as UnitBuff/UnitDebuff index i, the name equals the tooltip
+-- name, and an aura whose unitCaster is "player" has a GetTime-based
+-- expirationTime matching GetPlayerBuffTimeLeft. unitCaster nil (someone
+-- else's aura) and its timer were not observed, so callers keep their own
+-- estimate for those. expirationTime jitters by sub-milliseconds between
+-- reads: never compare it for equality.
+--
+-- Off while a fake party is active: those fakes answer UnitBuff/UnitDebuff
+-- only (core/fakeparty.lua, modules/partytest.lua).
+-- ---------------------------------------------------------------------------
+function U.UnitAuraReady()
+  if U.gOverride or (U.FakeParty and U.FakeParty.active) then return false end
+  return type(U.G("UnitAura")) == "function"
+end
+
+-- name, texture, count, debuffType, duration, expirationTime, mine -- or nil
+-- for an empty slot. duration/expirationTime are 0 when the client has none.
+function U.ReadUnitAura(unit, index, harmful)
+  local fn = U.G("UnitAura")
+  if type(fn) ~= "function" then return nil end
+  local ok, name, _, texture, count, debuffType, duration, expires, caster =
+    pcall(fn, unit, index, harmful and "HARMFUL" or "HELPFUL")
+  if not ok or type(name) ~= "string" or name == "" then return nil end
+  if type(texture) ~= "string" or texture == "" then return nil end
+  if type(debuffType) ~= "string" or debuffType == "" then debuffType = nil end
+  return name, texture, tonumber(count) or 0, debuffType,
+         tonumber(duration) or 0, tonumber(expires) or 0, caster == "player"
+end
+
+-- Remaining seconds of an own aura, or nil when the pair is not a live timer.
+function U.UnitAuraTimeLeft(duration, expires, now)
+  if not duration or duration <= 0 or not expires or expires <= 0 then return nil end
+  local left = expires - now
+  if left <= 0 or left > duration + 1 then return nil end
+  return left
 end
 
 -- ---------------------------------------------------------------------------
@@ -1459,7 +1545,7 @@ local SETTLE_MIN_SECONDS = 3  -- never upgrade before this
 local SETTLE_MAX_SECONDS = 20 -- ...and never wait longer than this
 local SETTLE_QUIET_FRAMES = 90
 local SETTLE_QUIET_MS = 20    -- a frame longer than this means "still busy"
-local settled = false
+local settled = not U.startupSettleEnabled
 
 -- 0..4; see core/config.lua's suppressLevel. Read once per call rather than
 -- cached, so /uui suppress takes effect on the next sweep without a reload for
@@ -1974,7 +2060,10 @@ function U.SuppressNativeFrame(names, group)
     -- measured runtime evidence shows that applying the same recipe during
     -- startup damages target-change performance for the whole session. Show a
     -- compact explanation while the measured settle gate below does its work.
-    if type(U.ShowStartupLoading) == "function" then U.ShowStartupLoading() end
+    if U.startupSettleEnabled and
+       type(U.ShowStartupLoading) == "function" then
+      U.ShowStartupLoading()
+    end
 
     -- PLAYER_TARGET_CHANGED is the one of these observed firing on this client
     -- (events.json, 7 captures); the others are registered but unobserved, so
@@ -2045,6 +2134,13 @@ function U.SuppressNativeFrame(names, group)
     end)
     U.RegisterUpdate("compat.native-suppression", 0.05,
                      ApplyNativeSuppressionBatch)
+
+    -- Test path: core/init.lua applies the complete registered list after all
+    -- modules enable. Changing its single switch restores this settle path.
+    if not U.startupSettleEnabled then
+      targetLevelRetryPasses = TARGET_LEVEL_RETRY_PASSES
+      return
+    end
 
     -- Waits for the client to actually be idle rather than for a guessed
     -- number of seconds. A fixed 2s delay measurably was not enough, and the

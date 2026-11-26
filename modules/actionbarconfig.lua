@@ -223,6 +223,25 @@ local function BuildBarPage(parent, bar)
     })
     gryphons.SetPoint("TOPLEFT", parent, "TOPLEFT", COLUMN_X, extraY)
     table.insert(widgets, gryphons)
+    extraY = extraY - 22
+  end
+
+  -- modern-wow only, same gate as the gryphons: the housing behind bar 1.
+  -- Its row reaches the first slider row, so the sliders move down one row.
+  local barBackground = nil
+  local rowShift = 0
+  if type(U.ActionBarHasGryphons) == "function" and U.ActionBarHasGryphons(bar) then
+    barBackground = U.CreateCheckbox(parent, {
+      name = "UnrealUIActionBarConfigBarBackground" .. bar,
+      text = U.L("ABC_SHOW_BAR_BACKGROUND"),
+      value = U.GetActionBarSetting(bar, "BarBackground"),
+      onChange = function(value)
+        U.SetActionBarSetting(bar, "BarBackground", value)
+      end,
+    })
+    barBackground.SetPoint("TOPLEFT", parent, "TOPLEFT", COLUMN_X, extraY)
+    table.insert(widgets, barBackground)
+    rowShift = -22
   end
 
   -- Kept to the left column: the right column carries checkboxes at this
@@ -258,7 +277,7 @@ local function BuildBarPage(parent, bar)
       end,
     })
     slider.SetPoint("TOPLEFT", parent, "TOPLEFT",
-                    spec.column * COLUMN_X, ROW_Y[spec.row + 1])
+                    spec.column * COLUMN_X, ROW_Y[spec.row + 1] + rowShift)
 
     controls[spec.key] = slider
     table.insert(widgets, slider)
@@ -267,7 +286,7 @@ local function BuildBarPage(parent, bar)
   local classicActionOnly = nil
   if bar == 1 and classicMode.Available() then
     classicActionOnly = classicMode.AddControl(
-      parent, widgets, "UnrealUIActionBarConfigClassicActionOnly", 0, -250,
+      parent, widgets, "UnrealUIActionBarConfigClassicActionOnly", 0, -250 + rowShift,
       PAGE_WIDTH)
   end
 
@@ -278,6 +297,9 @@ local function BuildBarPage(parent, bar)
       slotBackground.SetValue(U.GetActionBarSetting(bar, "SlotBackground"))
     end
     if gryphons then gryphons.SetValue(U.GetActionBarSetting(bar, "Gryphons")) end
+    if barBackground then
+      barBackground.SetValue(U.GetActionBarSetting(bar, "BarBackground"))
+    end
 
     local j
     for j = 1, table.getn(SLIDERS) do
@@ -391,6 +413,32 @@ local function BuildMoverPanel(frame, contentTop, contentWidth, includeClassicMo
   controls.slotBackground = slotBackground
   table.insert(widgets, slotBackground)
 
+  -- Under Slot background; bar 1 under modern-wow only, the gryphon filter.
+  local barBackground = U.CreateCheckbox(frame, {
+    name = "UnrealUIActionBarMoverBarBackground",
+    text = U.L("ABC_SHOW_BAR_BACKGROUND"),
+    textWidth = MOVER_SLIDER_WIDTH - 20,
+    value = true,
+    onChange = function(value)
+      U.SetActionBarSetting(moverBar, "BarBackground", value)
+    end,
+  })
+  barBackground.SetPoint("TOPLEFT", frame, "TOPLEFT", pad + MOVER_COLUMN_X,
+                         contentTop - 44)
+  local barBackgroundParts = barBackground.uuiParts
+  barBackground.uuiParts = nil
+  barBackground.uuiSetShown = function(shown)
+    shown = shown and type(U.ActionBarHasGryphons) == "function" and
+            U.ActionBarHasGryphons(moverBar)
+    local k
+    for k = 1, table.getn(barBackgroundParts or {}) do
+      local part = barBackgroundParts[k]
+      if shown then part:Show() else part:Hide() end
+    end
+  end
+  controls.barBackground = barBackground
+  table.insert(widgets, barBackground)
+
   local i
   for i = 1, table.getn(SLIDERS) do
     local spec = SLIDERS[i]
@@ -440,11 +488,13 @@ local function BuildMoverPanel(frame, contentTop, contentWidth, includeClassicMo
     controls.hideBackground.SetValue(not U.GetActionBarSetting(bar, "HideBackground"))
     controls.gryphons.uuiSetShown(true)
     controls.slotBackground.uuiSetShown(true)
+    controls.barBackground.uuiSetShown(true)
     if U.ActionBarHasSlotBackground and U.ActionBarHasSlotBackground(bar) then
       controls.slotBackground.SetValue(U.GetActionBarSetting(bar, "SlotBackground"))
     end
     if U.ActionBarHasGryphons and U.ActionBarHasGryphons(bar) then
       controls.gryphons.SetValue(U.GetActionBarSetting(bar, "Gryphons"))
+      controls.barBackground.SetValue(U.GetActionBarSetting(bar, "BarBackground"))
     end
 
     local j

@@ -63,6 +63,20 @@ M.fontSize = {
   large  = 13,
 }
 
+-- Text inside the settings windows draws this much below its normal size (user
+-- request, 2026-11-26): the unified game settings window, the /uui window and
+-- the client's own option panels hosted there. U.SetFont matches a FontString
+-- to these by its ancestors' frame names.
+M.settingsTextTrim = 2
+M.settingsTextRoots = {
+  UnrealUIGameSettings = true,
+  UnrealUISettings = true,
+  OptionsFrame = true,
+  SoundOptionsFrame = true,
+  UIOptionsFrame = true,
+  KeyBindingFrame = true,
+}
+
 -- Desired physical-pixel offset for every UnrealUI-styled FontString. The
 -- compatibility layer converts this into UIParent units before applying it,
 -- since one UI unit is wider than one screen pixel on this client.
@@ -245,8 +259,49 @@ M.minimapMail = {
   interval = 0.05,
 }
 
+-- Tooltip nine-slice rim (modules/tooltip.lua), drawn under `modern-wow` and
+-- `classic-wow` only; `modern` keeps the flat borderless tooltip (user
+-- request, 2026-11-26). Blizzard's TooltipDefaultLayout
+-- (Blizzard_SharedXML/Mainline/NineSliceLayouts.lua:257-268): four 7x7
+-- corners and four 7-unit edges. Rectangles are the Forever DB2 members
+-- (atlases 1825/1827 and their c60 twins 3985/3987, identical geometry), and
+-- they match both shipped sheets pixel for pixel. Each theme names its own
+-- files: M.modernWow.tooltipBorder and M.classicWow.tooltipBorder.
+--
+-- The art's 1-unit grey line sits 2 units in from the piece's outer side, with
+-- a faint shadow outside it and a 4-unit inner shade. `outset` pushes every
+-- piece out by those 2 units so the line lands on the tooltip's own edge and
+-- the flat fill, which covers the whole frame, never shows outside the rim.
+M.tooltipBorder = {
+  size = 7,
+  outset = 2,
+  -- How far the flat fill stays inside the tooltip's edge while the rim is
+  -- drawn, so it never reaches the line (user report, 2026-11-26: the fill
+  -- washed over it). Measured on the corner member: the rounded line runs
+  -- through units 0-2 from the frame edge at the corner, and unit 3 is the
+  -- first one wholly inside it. The rim's own inner shade covers the gap.
+  fillInset = 3,
+  -- 16x64 sheet.
+  topLeft     = { 1 / 16, 8 / 16, 37 / 64, 44 / 64 },
+  topRight    = { 1 / 16, 8 / 16, 46 / 64, 53 / 64 },
+  bottomLeft  = { 1 / 16, 8 / 16, 19 / 64, 26 / 64 },
+  bottomRight = { 1 / 16, 8 / 16, 28 / 64, 35 / 64 },
+  top         = { 0, 1, 10 / 64, 17 / 64 },
+  bottom      = { 0, 1,  1 / 64,  8 / 64 },
+  -- 32x16 sheet.
+  left        = {  1 / 32,  8 / 32, 0, 1 },
+  right       = { 10 / 32, 17 / 32, 0, 1 },
+}
+
 M.classicWow = {}
 M.classicWow.path = "Interface\\AddOns\\unrealUI\\media\\Textures\\classic-wow\\questLog\\"
+
+-- The client's own tooltip atlas: Forever FileDataIDs 4185447 / 4185474
+-- (media/Textures/forever-wow/ATTRIBUTION.md). Geometry: M.tooltipBorder.
+M.classicWow.tooltipBorder = {
+  sheet    = "Interface\\AddOns\\unrealUI\\media\\Textures\\forever-wow\\ui\\tooltip-border",
+  vertical = "Interface\\AddOns\\unrealUI\\media\\Textures\\forever-wow\\ui\\tooltip-border-vertical",
+}
 
 -- Classic Pet tab (modules/character.lua, petSummary). All are UnrealUI's
 -- choice, set by eye from user screenshots (2026-10-20), not art
@@ -343,6 +398,13 @@ M.modernWow.unitFrame = {
   healthFillInset = { top = 5 / 32, bottom = 7 / 32 },
 }
 M.modernWow.path = "Interface\\AddOns\\unrealUI\\media\\Textures\\modern-wow\\"
+
+-- Retail's tooltip atlas: UIFrameTooltip / UIFrameTooltipVertical
+-- (modern-wow/ATTRIBUTION.md). Geometry: M.tooltipBorder.
+M.modernWow.tooltipBorder = {
+  sheet    = M.modernWow.path .. "ui\\tooltip\\tooltip-border",
+  vertical = M.modernWow.path .. "ui\\tooltip\\tooltip-border-vertical",
+}
 
 M.modernWow.texture = {
   playerFrame     = M.modernWow.path .. "unitframes\\player-frame-large",
@@ -506,6 +568,9 @@ M.modernWow.texture = {
 
   minimapBorder      = M.modernWow.path .. "minimap\\uiminimapborder",
   minimapShadow      = M.modernWow.path .. "minimap\\uiminimapshadow",
+  -- The square minimap shape (Minimap > Minimap shape, ported from PandaUI).
+  minimapSquareMask  = M.modernWow.path .. "minimap\\square-mask",
+  minimapSquareFrame = M.modernWow.path .. "minimap\\square-frame",
   minimapTopPanel    = M.modernWow.path .. "minimap\\uiminimap_toppanel",
   minimapCorpseArrow = M.modernWow.path ..
                        "minimap\\uiminimap-corpse-arrow-frames",
@@ -895,6 +960,14 @@ M.modernWow.scrollbar = {
 M.modernWow.minimap = {
   borderOffset = 10,
   shadowAlpha = 0.3,
+  -- The square frame's rim around a square map (PandaUI's measured values).
+  squareBorderOffset = 13,
+  squareBorderYOffset = 1,
+  -- A square map groups the zoom buttons below its bottom-right edge. Screen
+  -- units; the placement divides them by zoomScale.
+  squareZoomRightInset = 3,
+  squareZoomBottomGap = 3,
+  squareZoomGap = 2,
   topPanelHeight = 12,
   topPanelGap = 18,
   topPanelRightOverhang = 5,
@@ -932,6 +1005,50 @@ M.modernWow.minimap = {
   -- No mail size here any more: the letter is the shared flipbook
   -- (M.minimapMail), which every theme draws at one size. This theme only
   -- still decides where the native mail frame sits.
+}
+
+-- The settings button on the minimap rim (modules/minimap.lua). Its centre
+-- sits rimOffset units outside the map's edge: on the Modern WoW ring
+-- (borderOffset 10) and on the stock ring alike. Angle is in degrees,
+-- counter-clockwise from the right; 135 is the upper left, beside where the
+-- button sat before it followed the rim.
+-- The stock 1.12 round minimap mask. The client keeps a minimap mask across
+-- /reload, so the round one is set explicitly whenever the map is not square.
+M.minimapRoundMask = "Textures\\MinimapMask"
+
+M.minimapButton = {
+  -- The addon logo (M.texture.addonLogo), round with transparent corners.
+  -- Matched to the native round minimap buttons beside it (in-game
+  -- screenshot, 2026-11-26: their ring measured 31 px against 36 px at 28).
+  size = 24,
+  rimOffset = 10,
+  defaultAngle = 135,
+  -- Alpha of the additive logo copy drawn on hover.
+  hoverGlow = 0.35,
+}
+
+-- Grouped minimap icons (modules/minimapgroup.lua, user request 2026-11-26,
+-- as PandaUI). The launcher is built like the client's own round minimap
+-- icons it stands for -- the stock 33-unit button, a 20-unit face under the
+-- 52-unit tracking ring at the template's 7/-5 inset -- so it reads as one of
+-- them on every theme. Angle as M.minimapButton: 180 is the map's left side.
+M.minimapGroup = {
+  size = 33,
+  faceSize = 20,
+  faceX = 7,
+  faceY = -5,
+  ringSize = 52,
+  face = "Interface\\Icons\\INV_Misc_Bag_08",
+  ring = "Interface\\Minimap\\MiniMap-TrackingBorder",
+  highlight = "Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight",
+  defaultAngle = 180,
+  -- Flyout grid: one stock icon per cell, PandaUI's padding and gap.
+  cell = 33,
+  columns = 6,
+  pad = 6,
+  gap = 4,
+  -- Addon buttons are told apart from map pins by size, as pfUI does.
+  maxButtonSize = 40,
 }
 
 -- Retail's UI-HUD-Minimap-Arrow-Player, shared by both maps under every theme
@@ -3543,6 +3660,11 @@ M.modernWow.characterStats = {
            rightInset = 5, x = -4 },
   rowHeight = 16,
   list = { left = 8, right = 8, top = 8, bottom = 8 },
+  -- The client's Transmog button, moved under the pane (user request,
+  -- 2026-11-26): the pane gives up `gap` + the button's height + `bottom`,
+  -- and the button sits `bottom` above the pane's old bottom edge.
+  -- `fallbackHeight` when its height cannot be read.
+  transmog = { gap = 4, bottom = 4, fallbackHeight = 22 },
   labelX = 8,
   valueX = -6,
   -- Vertical text offsets (user requests, 2026-09-28): a category title sits
@@ -4008,6 +4130,9 @@ M.modernWow.metalFrame = {
 M.editModeChrome = {
   close = { size = 17, right = 9, top = 9 },
   drawerGap = 4,
+  -- Label height on the red button face: a 2026-11-26 screenshot measured the
+  -- caps ~1.5 units below the face's centre at U.BUTTON_LABEL_OFFSET_Y (-2).
+  buttonLabelY = -0.5,
 }
 
 -- The Game Settings housing keeps Forever's ButtonFrameTemplateNoPortrait
@@ -4074,7 +4199,9 @@ M.modernWow.gameMenu = {
   spacing = -0.5,
   groupSpacing = 5,
   titleColor = { 1, 0.82, 0, 1 },
-  labelY = -2,
+  -- Was -2: a 2026-11-26 screenshot measured the cap height ~2.6 units below
+  -- the red face's centre, so the label now sits that much higher.
+  labelY = 0.5,
 }
 
 -- Red-button size on the Modern WoW "Resurrect now?" popup, also used by the
@@ -4088,6 +4215,9 @@ M.modernWow.corpsePopupButton = {
   height = 30,
   sideInset = 18,
   pairGap = 19,
+  -- Label height on the logout/quit/resurrect buttons, from the face's centre:
+  -- a 2026-11-26 screenshot measured the text ~4.5 units low at -4.
+  labelY = 0.5,
 }
 
 -- The shared confirm dialog's Modern WoW instance (core/widgets.lua,
@@ -4228,6 +4358,13 @@ M.modernWow.nameplate = {
   -- opaque fill. The health bar's rect is mapped onto this window and the
   -- frame is placed around it from these numbers (modules/nameplates.lua).
   backgroundWindow = { left = 4, top = 5, right = 252, bottom = 24 },
+  -- Nine-slice cuts of that cell, in texels from each cell edge, measured by
+  -- alpha: the rim's rounded ends span x 2-9 / 244-253 and y 3-9 / 19-25, and
+  -- its drop shadow fills the cell's right and bottom margins. Corners and
+  -- edges keep one scale -- the one the authored `healthHeight` gives -- so a
+  -- taller or wider bar stretches only the edges and middle (user request,
+  -- 2026-11-26: the rim deformed when the bar height grew).
+  backgroundSlices = { left = 10, top = 10, right = 20, bottom = 19 },
   -- The target cast bar under the plate (user request, 2026-10-20), Retail's
   -- NamePlateCastingBarTemplate with the spell name inside the bar:
   -- NamePlateSetupOptions castBarHeight 16, castBarToHealthBarSpacing 2,
@@ -4242,6 +4379,11 @@ M.modernWow.nameplate = {
   scale = 0.7,
   selectedTexture = M.modernWow.path .. "ui\\nameplate-selected",
   selectedInset = { left = -3, top = 4, right = 3, bottom = -3 },
+  -- The selected frame's file size and nine-slice cuts (rounded corners span
+  -- x 2-5 / 210-213 and y 1-5 / 12-16, measured by alpha), drawn the same way
+  -- as the background above.
+  selectedSheet = { 216, 18 },
+  selectedSlices = { left = 6, top = 6, right = 6, bottom = 6 },
   healthHeight = 20,
 }
 
@@ -4834,13 +4976,10 @@ M.modernWow.parchmentInk = {
 }
 
 M.modernWow.ring = {
-  -- 68 and 65: six pixels over DragonflightUI's player size of 62 and five
-  -- over the target's proportional 60. The portrait draws UNDER the ring
-  -- overlay, so
-  -- what this changes is not the visible circle -- the rim crops that to the
-  -- 51-pixel opening either way -- but how much of the portrait image falls
-  -- inside it. A larger portrait fills the opening with a slightly closer
-  -- crop.
+  -- `size` keeps each portrait box on its measured ring geometry. The player
+  -- ring's open bar-side join cannot crop a full-box 2D portrait, so its
+  -- iconGrow reduces only that icon from 68 to 60 units.
+  -- Other rings keep their portraits tucked under an opaque rim.
   --
   -- `model` is the side of the experimental 3D portrait (/uui portrait3d).
   -- A Model viewport is a rectangle and this client has no mask for it, so
@@ -4854,6 +4993,7 @@ M.modernWow.ring = {
   -- the player rim's bottom edge; backgroundY then raises it that many pixels
   -- so the bottom clears the rim without cropping the top.
   playerFrame    = { size = 68, x = 74, y = 43.0, model = 43,
+                     iconGrow = -8,
                      backgroundTrim = 5, backgroundY = 1 },
   targetFrame    = { size = 65, x = 71, y = 43.5, model = 43,
                      backgroundTrim = 4 },
@@ -5154,7 +5294,8 @@ M.color = {
 
   grid       = { 0.45, 0.45, 0.45, 0.30 },
   gridAxis   = { 0.96, 0.68, 0.04, 0.55 },
-  moverGuide = { 1.00, 0.20, 0.20, 0.90 },
+  -- Forever's MagnetismPreviewLineTemplate colour (EditModeTemplates.xml).
+  moverGuide = { 1.00, 0.00, 0.00, 1.00 },
 }
 
 M.trainer = {
@@ -5236,6 +5377,8 @@ M.characterModern = {
     line = { height = 20, alpha = 0.08, rightInset = 0, x = 0 },
     rowHeight = 20,
     list = { left = 8, right = 8, top = 40, bottom = 8 },
+    -- See M.modernWow.characterStats.transmog.
+    transmog = { gap = 6, bottom = 0, fallbackHeight = 22 },
     labelX = 8, valueX = -6, titleY = -2, textY = -1, valueY = -2,
     mark = { width = 10, gap = 2, hit = 14 },
     scroll = { column = 16, arrowPad = 19, x = 0 },
@@ -6512,6 +6655,8 @@ M.foreverWow.panel = {
   listHeaderHeight = 50,  -- SettingsList.Header
   listTitleInset = { x = 7, y = -22 },
   rowHeight = 20,         -- SettingsCategoryListButtonTemplate, 175x20
+  -- Centres a row or header label in its box (user request, 2026-11-26).
+  textY = -0.5,
   rowWidth = 175,
   -- Label anchors TOPLEFT 36,1 / BOTTOMRIGHT 0,1 and justifies LEFT. The 36
   -- leaves room for the expand toggle, which sits at LEFT 9 and is 22x22 --
@@ -6621,6 +6766,9 @@ M.foreverWow.search = {
     buttonSize = 17,
   },
   textInset = { left = 16, right = 20 },
+  -- Text, placeholder and caret height: centred, then 1 lower (user requests,
+  -- 2026-11-26).
+  textY = -1.5,
 }
 
 -- The settings LIST a page is rebuilt into (user request, 2026-09-21), from

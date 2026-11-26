@@ -1056,10 +1056,9 @@ end
 -- unflipped -- the authored orientation, and one less transform -- while the
 -- player is flipped here.
 mw.units = {
-  -- `header` nudges the name and level labels horizontally, in UI units, with
-  -- positive meaning rightward on screen whichever side the label sits on.
-  -- Per frame rather than derived from the mirroring: the two frames want
-  -- different amounts on their right-hand label.
+  -- `header` nudges the name and level labels in UI units. Horizontal values
+  -- are positive rightward on screen whichever side the label sits on; `y`
+  -- is positive upward. Per frame rather than derived from the mirroring.
   { id = "player",       art = "playerFrame", bg = "playerFrameBg",
     power = "powerFill", mirror = true, shiftLabels = true,
     powerTextSize = 8,
@@ -1070,6 +1069,9 @@ mw.units = {
     healthRightInset = 2,
     -- Health box starts 2 units further right (and so is 2 narrower).
     healthLeftInset = 2,
+    -- Health readouts up 2 units: a 2026-11-26 screenshot showed them 2.5px
+    -- below the bar's centre.
+    healthLabelY = 2,
     -- percentX nudges BOTH percentage readouts -- health and power -- at the
     -- inner end of this frame's bars. Per frame, because the target's sit
     -- against a mirrored housing and do not want the same inset.
@@ -1078,14 +1080,15 @@ mw.units = {
     -- percentage is pulled back by that difference to share the health one's
     -- screen x. Player only: the target's insets are left as they read today.
     alignPowerPercent = true,
-    -- Extra upward nudge for the power bar's percentage only.
-    powerPercentY = 2,
+    -- Extra upward nudge for the power bar's percentage only. 3.5 (was 2):
+    -- a 2026-11-26 screenshot still showed it 2px below the value.
+    powerPercentY = 3.5,
     -- Horizontal nudge for this frame's aura rows only, in screen units with
     -- positive meaning rightward whichever way the housing is mirrored. The
     -- player's bar opening reads 3 units left of where its auras should line
     -- up; the target's does not, so this is per frame rather than shared.
     auraX = 3,
-    header = { name = 3, level = -7 } },
+    header = { name = 3, level = -7, y = 1 } },
   -- The Retail target frame (core/media.lua M.modernWow.retailTarget): its own
   -- 2x housing with no separate bed, a ring-only copy above the bars, and the
   -- classification dragon (M.modernWow.targetTier). Its bars fill the Retail
@@ -1099,8 +1102,9 @@ mw.units = {
     -- right where the wider mana opening ends (user request, 2026-09-27); its
     -- percentage already shares the health one's x (same left edge).
     alignPowerValue = true,
-    -- Extra upward nudge for the power bar's percentage only.
-    powerPercentY = 2,
+    -- Extra upward nudge for the power bar's percentage only. 3.5 (was 2):
+    -- a 2026-11-26 screenshot still showed it 2px below the value.
+    powerPercentY = 3.5,
     -- The name is anchored by its RIGHT edge only (no width), so its last
     -- letter always ends here, just left of the portrait ring.
     header = { name = -9, level = 6 } },
@@ -1922,11 +1926,9 @@ function mw.BuildHousing(frame, entry)
 
     -- BELOW the rim overlay, so the gold ring draws over the portrait's edge.
     --
-    -- The portrait is still built wider than the ring's opening -- 62 against
-    -- 51 -- so it fills the hole completely and the rim crops it rather than
-    -- leaving a gap. What shows is a 51-pixel circle inside the full-thickness
-    -- gold ring, with the portrait tucked under the metal the way a frame sits
-    -- over a picture.
+    -- The portrait box stays at the ring geometry's full size. Individual
+    -- rings may inset only their 2D icon with iconGrow; the player uses the
+    -- smallest inset that keeps it beneath the rim's open side.
     --
     -- Stacking is now: bars, then portrait, then the frame art over both.
     --
@@ -2009,13 +2011,17 @@ function mw.BuildHousing(frame, entry)
       size = headerSize,
       color = nameColor or M.color.text,
       inherits = "GameFontNormalSmall",
+      flags = "OUTLINE",
       fontRole = "unitframe",
+      privateFont = true,
+      shadow = false,
       justify = outer,
     })
     local offsets = entry.header or {}
+    local rowY = headerY + (tonumber(offsets.y) or 0)
     if name then
       name:SetPoint("BOTTOM" .. outer, frame.health, "TOP" .. outer,
-                    tonumber(offsets.name) or 0, headerY)
+                    tonumber(offsets.name) or 0, rowY)
     end
 
     -- levelText, not `level`: the numeric frame level is still in scope here
@@ -2026,12 +2032,15 @@ function mw.BuildHousing(frame, entry)
       size = headerSize,
       color = M.color.textAccent,
       inherits = "GameFontNormalSmall",
+      flags = "OUTLINE",
       fontRole = "unitframe",
+      privateFont = true,
+      shadow = false,
       justify = inner,
     })
     if levelText then
       levelText:SetPoint("BOTTOM" .. inner, frame.health, "TOP" .. inner,
-                         tonumber(offsets.level) or 0, headerY)
+                         tonumber(offsets.level) or 0, rowY)
     end
 
     -- How much width the name may use before it reaches the level at the other
@@ -2320,9 +2329,8 @@ end
 -- Switches a header row with a ring tint between its two colour modes
 -- (user request, 2026-09-29). Off, the default: the name and level carry the
 -- difficulty colour as they always have. On: both are written in
--- M.modernWow.text.targetInk with no shadow and the colour moves to the ring.
--- The shadow follows through U.SetFont's shadowFree flag, which the font
--- record keeps, so a later font-choice re-apply cannot bring it back.
+-- M.modernWow.text.targetInk and the colour moves to the ring. The thin
+-- outline remains in both modes.
 -- A row already in the wanted mode costs one comparison.
 function mw.ApplyHeaderInk(text)
   if not text or not text.ringTint then return end
@@ -2335,8 +2343,8 @@ function mw.ApplyHeaderInk(text)
   for i = 1, 2 do
     local label = labels[i]
     if label then
-      pcall(U.SetFont, label, text.size, nil, "unitframe", on)
-      if on then U.ClearTextShadow(label) end
+      pcall(U.SetFont, label, text.size, "OUTLINE", "unitframe", true)
+      U.ClearTextShadow(label)
     end
   end
 
@@ -5793,7 +5801,9 @@ function U.ModernWowSocialFooterPlate(plate, edge)
     if plate.uuiSocialFooterWash then
       mw.SocialFooterGrain(plate, plate.uuiSocialFooterWash)
     end
-    if plate.uuiSocialFooterRule then
+    -- A rule the Social footer has fitted to the window recess keeps its
+    -- own width (modules/friends.lua FooterPlate).
+    if plate.uuiSocialFooterRule and not plate.uuiSocialFooterRuleFitted then
       pcall(plate.uuiSocialFooterRule.SetWidth,
             plate.uuiSocialFooterRule, mw.Dimension(plate, "GetWidth"))
     end

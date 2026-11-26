@@ -166,9 +166,13 @@ end
 --          widgets is the array of regions shown with the page; refresh, when
 --          returned, runs every time the page is opened.
 -- options  { parent = "<group id>", after = "<entry id>", muted = true,
---            tooltip = "...", icon = "<extensionless texture path>" }.
+--            tooltip = "...", icon = "<extensionless texture path>",
+--            pinned = { height = <units>, build = function(parent) -> widgets } }.
 --          Muted pages remain selectable so they can explain why their normal
 --          controls are unavailable; only their sidebar presentation changes.
+--          pinned: a band of that height above the page that stays put while
+--          the page scrolls beneath it (the Game Settings canvas only; the
+--          standalone fallback window does not scroll and does not draw it).
 function U.RegisterSettingsTab(id, label, build, options)
   if type(id) ~= "string" or type(build) ~= "function" then
     U.Error("RegisterSettingsTab requires an id and a build function")
@@ -190,6 +194,8 @@ function U.RegisterSettingsTab(id, label, build, options)
     muted = options.muted and true or false,
     tooltip = options.tooltip,
     icon = options.icon,
+    pinned = type(options.pinned) == "table" and
+             type(options.pinned.build) == "function" and options.pinned or nil,
   }
   local afterIndex
   if options.after then
@@ -1004,7 +1010,10 @@ end
 -- only the canvas's own applied scale (the sheet's, its parent, already
 -- applied this pass by the time this runs) needs dividing back out.
 local function IntegratedContentHeight(scale)
-  local canvas = integrated.canvas
+  -- A page's widgets are children of its own container (integrated.Mount),
+  -- which sits at the canvas's top-left, so the measure reads that container.
+  local canvas = integrated.mounted and integrated.mounted.pageFrame or
+                 integrated.canvas
   if not canvas or type(canvas.GetTop) ~= "function" then
     return integrated.height
   end
@@ -1045,11 +1054,6 @@ local function LayoutIntegratedCanvas()
   pcall(function() height = integrated.root:GetHeight() end)
   width, height = tonumber(width) or 0, tonumber(height) or 0
   if width < 1 or height < 1 then return end
-  if integrated.holder then
-    pcall(integrated.holder.SetWidth, integrated.holder,
-          math.max(1, width - 22 - (integrated.shiftX or 0)))
-    pcall(integrated.holder.SetHeight, integrated.holder, height)
-  end
 
   -- The view is the scroll frame: the box less the bar's 22-unit column,
   -- widened by the leftward shift.
@@ -1057,9 +1061,50 @@ local function LayoutIntegratedCanvas()
   local contentWidth = integrated.width + (integrated.leftPad or 0)
   pcall(integrated.sheet.SetWidth, integrated.sheet, contentWidth)
   pcall(integrated.canvas.SetWidth, integrated.canvas, integrated.width)
+  local page = integrated.mounted and integrated.mounted.pageFrame
+  if page then pcall(page.SetWidth, page, integrated.width) end
   local scale = math.min(1, viewportWidth / contentWidth)
   integrated.scale = scale
   pcall(integrated.sheet.SetScale, integrated.sheet, scale)
+
+  -- The selected page's pinned band (RegisterSettingsTab options.pinned):
+  -- the scroll frame starts under it, so the page scrolls beneath the band
+  -- and is clipped at its edge. The band takes the sheet's scale and sits
+  -- where the canvas's left edge does.
+  local pinned = (integrated.pinHeight or 0) * scale
+  if pinned >= height then pinned = 0 end
+  height = height - pinned
+  integrated.pinned = pinned
+  -- One point and an explicit size each, the same extent the old
+  -- TOPLEFT/BOTTOMRIGHT pairs gave (see Page parking: a two-point link
+  -- doubles the walk of every page object below it).
+  pcall(integrated.scroll.ClearAllPoints, integrated.scroll)
+  pcall(integrated.scroll.SetPoint, integrated.scroll, "TOPLEFT",
+        integrated.root, "TOPLEFT", integrated.shiftX, -pinned)
+  pcall(integrated.scroll.SetWidth, integrated.scroll, viewportWidth)
+  pcall(integrated.scroll.SetHeight, integrated.scroll, math.max(1, height))
+  if integrated.bar then
+    pcall(integrated.bar.ClearAllPoints, integrated.bar)
+    pcall(integrated.bar.SetPoint, integrated.bar, "TOPRIGHT",
+          integrated.root, "TOPRIGHT", 0, -16 - pinned)
+    pcall(integrated.bar.SetHeight, integrated.bar, math.max(1, height - 32))
+  end
+  if integrated.pin then
+    pcall(integrated.pin.SetScale, integrated.pin, scale)
+    pcall(integrated.pin.ClearAllPoints, integrated.pin)
+    pcall(integrated.pin.SetPoint, integrated.pin, "TOPLEFT",
+          integrated.root, "TOPLEFT",
+          ((integrated.shiftX or 0) + (integrated.leftPad or 0) * scale) / scale,
+          0)
+    pcall(integrated.pin.SetWidth, integrated.pin, integrated.width)
+    pcall(integrated.pin.SetHeight, integrated.pin,
+          math.max(1, integrated.pinHeight or 0))
+  end
+
+  if integrated.holder then
+    pcall(integrated.holder.SetWidth, integrated.holder, viewportWidth)
+    pcall(integrated.holder.SetHeight, integrated.holder, height)
+  end
 
   -- What a page may fill without scrolling, in the page's own units: the
   -- visible box divided back out of the width fit above. The canvas frame is
@@ -1103,14 +1148,14 @@ local function BuildIntegratedCanvas(parent)
   if integrated.root then return end
 
   integrated.root = CreateFrame("Frame", "UnrealUIGameSettingsUI", parent)
-  integrated.root:SetAllPoints(parent)
+  integrated.Fill(integrated.root, parent)
   pcall(integrated.root.EnableMouse, integrated.root, false)
 
   integrated.scroll = CreateFrame("ScrollFrame", "UnrealUIGameSettingsUIScroll",
                                   integrated.root)
   integrated.scroll:SetPoint("TOPLEFT", integrated.root, "TOPLEFT",
                              integrated.shiftX, 0)
-  integrated.scroll:SetPoint("BOTTOMRIGHT", integrated.root, "BOTTOMRIGHT", -22, 0)
+  -- Sized by LayoutIntegratedCanvas; one point only (see Page parking).
   pcall(integrated.scroll.EnableMouseWheel, integrated.scroll, true)
 
   -- The scroll child proper: unscaled, never scrolled, sized to the view in
@@ -1135,12 +1180,20 @@ local function BuildIntegratedCanvas(parent)
   integrated.PlaceSheet(0)
   pcall(integrated.scroll.SetScrollChild, integrated.scroll, integrated.holder)
 
+  -- Pinned bands are built here, outside the scroll frame, and placed by
+  -- LayoutIntegratedCanvas.
+  integrated.pin = CreateFrame("Frame", "UnrealUIGameSettingsUIPin",
+                               integrated.root)
+  integrated.pin:SetWidth(integrated.width)
+  integrated.pin:SetHeight(1)
+  integrated.pinHeight = 0
+
   integrated.bar = CreateFrame("Slider", "UnrealUIGameSettingsUIBar",
                                integrated.root)
   pcall(integrated.bar.SetOrientation, integrated.bar, "VERTICAL")
   integrated.bar:SetWidth(16)
   integrated.bar:SetPoint("TOPRIGHT", integrated.root, "TOPRIGHT", 0, -16)
-  integrated.bar:SetPoint("BOTTOMRIGHT", integrated.root, "BOTTOMRIGHT", 0, 16)
+  integrated.bar:SetHeight(1)
   pcall(integrated.bar.SetValueStep, integrated.bar, 12)
   integrated.bar:SetScript("OnValueChanged", function()
     local value = 0
@@ -1175,6 +1228,79 @@ local function BuildIntegratedCanvas(parent)
   end)
 end
 
+-- ---------------------------------------------------------------------------
+-- Page parking
+--
+-- knowledge.json / frames.anchor_chain_layout_cost: moving a frame
+-- re-resolves every descendant each frame, and a HIDDEN descendant costs the
+-- same as a shown one; only a subtree reparented out of the window stops
+-- costing (settingsbisect: page root moved out, 1305ms -> 21ms a frame).
+-- Pages used to be built straight into the canvas and only hidden, and the
+-- first search query builds every page of every addon category, so dragging
+-- the window by its header dragged all of them. Each page now has its own
+-- container; every container not on screen -- and the whole Unreal UI root
+-- while a client page is shown -- waits under one hidden frame outside the
+-- window, anchored to nothing inside it.
+-- ---------------------------------------------------------------------------
+-- Covers `parent` with one point and its explicit size instead of
+-- SetAllPoints. The Game Settings host is sized explicitly
+-- (modules/gamesettings.lua gs.Build), so its size reads back without a
+-- layout pass; an unsized parent keeps the two-point form.
+function integrated.Fill(frame, parent)
+  local okW, width = pcall(parent.GetWidth, parent)
+  local okH, height = pcall(parent.GetHeight, parent)
+  width = okW and tonumber(width) or 0
+  height = okH and tonumber(height) or 0
+  if width < 1 or height < 1 then
+    pcall(frame.SetAllPoints, frame, parent)
+    return
+  end
+  pcall(frame.SetPoint, frame, "TOPLEFT", parent, "TOPLEFT", 0, 0)
+  pcall(frame.SetWidth, frame, width)
+  pcall(frame.SetHeight, frame, height)
+end
+
+-- The shared parking frame (core/widgets.lua U.ParkFrame).
+function integrated.Park(frame)
+  U.ParkFrame(frame)
+end
+
+-- True for the frame a page is built into. Builders that only add their
+-- window-specific parts inside this window test it instead of the canvas.
+function integrated.IsPage(parent)
+  return parent and (parent == integrated.canvas or parent.uuiIntegratedPage)
+         and true or false
+end
+
+function integrated.PageFrame(entry)
+  if not entry.pageFrame then
+    local frame = CreateFrame("Frame", nil, integrated.canvas)
+    frame.uuiIntegratedPage = true
+    pcall(frame.EnableMouse, frame, false)
+    entry.pageFrame = frame
+  end
+  return entry.pageFrame
+end
+
+-- Into the canvas at its top-left with one point and an explicit size, not
+-- SetAllPoints: a two-point link doubles the walk of everything below it.
+function integrated.Place(entry)
+  local frame = integrated.PageFrame(entry)
+  pcall(frame.SetParent, frame, integrated.canvas)
+  pcall(frame.ClearAllPoints, frame)
+  pcall(frame.SetPoint, frame, "TOPLEFT", integrated.canvas, "TOPLEFT", 0, 0)
+  pcall(frame.SetWidth, frame, integrated.width)
+  pcall(frame.SetHeight, frame, integrated.height)
+  pcall(frame.Show, frame)
+  return frame
+end
+
+function integrated.Mount(entry)
+  local frame = integrated.Place(entry)
+  integrated.mounted = entry
+  return frame
+end
+
 -- Unreal UI's pages draw unscaled at U.SETTINGS_PAGE_WIDTH; a sibling addon's
 -- page keeps the legacy width and the fit scale that comes with it.
 local function IntegratedWidthFor(entry)
@@ -1203,18 +1329,32 @@ function U.SelectIntegratedSettingsPage(id, scope)
 
   local i
   for i = 1, table.getn(entries) do
-    if entries[i] ~= entry then SetListShown(entries[i].widgets, false) end
+    if entries[i] ~= entry then
+      SetListShown(entries[i].widgets, false)
+      SetListShown(entries[i].pinnedWidgets, false)
+      integrated.Park(entries[i].pageFrame)
+    end
   end
 
+  local page = integrated.Mount(entry)
   if not entry.widgets then
-    local widgets, refresh = entry.build(integrated.canvas)
+    local widgets, refresh = entry.build(page)
     entry.widgets = widgets or {}
     entry.refresh = refresh
   end
+  if entry.pinned and not entry.pinnedWidgets and integrated.pin then
+    entry.pinnedWidgets = entry.pinned.build(integrated.pin) or {}
+  end
+  integrated.pinHeight = entry.pinned and
+                         (tonumber(entry.pinned.height) or 0) or 0
   if U.gameSettings and type(U.gameSettings.StyleIntegratedWidgets) == "function" then
     U.gameSettings.StyleIntegratedWidgets(entry.widgets)
+    if entry.pinnedWidgets then
+      U.gameSettings.StyleIntegratedWidgets(entry.pinnedWidgets)
+    end
   end
   SetListShown(entry.widgets, true)
+  SetListShown(entry.pinnedWidgets, true)
   if type(entry.refresh) == "function" then entry.refresh() end
   -- Its refresh may have rewritten labels; the next query reads them again.
   if type(U.ForgetIntegratedSettingsText) == "function" then
@@ -1237,12 +1377,13 @@ function U.ShowIntegratedSettings(parent, id, scope)
   BuildIntegratedCanvas(parent)
   pcall(integrated.root.SetParent, integrated.root, parent)
   pcall(integrated.root.ClearAllPoints, integrated.root)
-  pcall(integrated.root.SetAllPoints, integrated.root, parent)
+  integrated.Fill(integrated.root, parent)
   pcall(integrated.root.Show, integrated.root)
   pcall(integrated.scroll.Show, integrated.scroll)
   pcall(integrated.holder.Show, integrated.holder)
   pcall(integrated.sheet.Show, integrated.sheet)
   pcall(integrated.canvas.Show, integrated.canvas)
+  pcall(integrated.pin.Show, integrated.pin)
   pcall(integrated.bar.Show, integrated.bar)
   local up = U.G("UnrealUIGameSettingsUIBarScrollUpButton")
   local down = U.G("UnrealUIGameSettingsUIBarScrollDownButton")
@@ -1254,7 +1395,11 @@ end
 
 function U.HideIntegratedSettings()
   local i
-  for i = 1, table.getn(entries) do SetListShown(entries[i].widgets, false) end
+  for i = 1, table.getn(entries) do
+    SetListShown(entries[i].widgets, false)
+    SetListShown(entries[i].pinnedWidgets, false)
+  end
+  if integrated.pin then pcall(integrated.pin.Hide, integrated.pin) end
   if integrated.scroll then pcall(integrated.scroll.Hide, integrated.scroll) end
   if integrated.sheet then pcall(integrated.sheet.Hide, integrated.sheet) end
   if integrated.holder then pcall(integrated.holder.Hide, integrated.holder) end
@@ -1264,7 +1409,12 @@ function U.HideIntegratedSettings()
   local down = U.G("UnrealUIGameSettingsUIBarScrollDownButton")
   if up then pcall(up.Hide, up) end
   if down then pcall(down.Hide, down) end
-  if integrated.root then pcall(integrated.root.Hide, integrated.root) end
+  if integrated.root then
+    pcall(integrated.root.Hide, integrated.root)
+    -- Out of the window while a client page (or nothing) is shown; see Page
+    -- parking. U.ShowIntegratedSettings reparents and re-anchors it.
+    integrated.Park(integrated.root)
+  end
 end
 
 -- ---------------------------------------------------------------------------
@@ -1348,16 +1498,22 @@ function search.Build(entry)
   local width = integrated.width
   integrated.width = IntegratedWidthFor(entry)
   pcall(integrated.canvas.SetWidth, integrated.canvas, integrated.width)
-  local ok, widgets, refresh = pcall(entry.build, integrated.canvas)
+  -- Placed in the canvas for the build, so it measures as it does when shown.
+  local page = integrated.Place(entry)
+  local ok, widgets, refresh = pcall(entry.build, page)
   integrated.width = width
   pcall(integrated.canvas.SetWidth, integrated.canvas, width)
   if not ok then
     entry.searchFailed = true
+    integrated.Park(page)
     return
   end
   entry.widgets = widgets or {}
   entry.refresh = refresh
-  if entry ~= activePage then SetListShown(entry.widgets, false) end
+  if entry ~= activePage then
+    SetListShown(entry.widgets, false)
+    integrated.Park(page)
+  end
 end
 
 -- Builds every page not built yet. parent is the window's page box, needed
@@ -1699,7 +1855,7 @@ local function BuildGeneralPage(parent)
   })
   table.insert(widgets, header)
 
-  if parent == integrated.canvas then
+  if integrated.IsPage(parent) then
     -- In the game settings window the flags sit in the page header band, on
     -- the Unreal UI title's line and flush with the page's right edge (user
     -- request, 2026-09-29). They are children of the canvas root rather than
@@ -1791,7 +1947,7 @@ local function BuildGeneralPage(parent)
   -- rows under it drop by `shift` to make room.
   local shift = 0
   local gs = U.gameSettings
-  if parent == integrated.canvas and themeHint and gs and
+  if integrated.IsPage(parent) and themeHint and gs and
      type(gs.CreateDivider) == "function" then
     local divider = gs.CreateDivider(parent)
     if divider then
@@ -2006,7 +2162,7 @@ local function BuildGeneralPage(parent)
     name = "UnrealUISettingsTooltipFadeHold",
     text = U.L("SETTINGS_TOOLTIP_FADE_HOLD"),
     width = 220,
-    min = 0.25,
+    min = 0.05,
     max = 1,
     step = 0.05,
     value = tooltipConfig.fadeHold,

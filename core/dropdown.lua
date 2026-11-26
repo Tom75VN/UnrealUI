@@ -31,6 +31,7 @@ local ROW_FOREVER_TEXT_Y = -3
 
 local StyleList        -- defined below; rows re-run it when a tick changes.
 local activeDropdown   -- last dropdown whose button we saw opened.
+local OwningDropdown   -- defined below; rows size their text by the owner.
 
 local function RemoveButtonArt(button)
   if not button then return end
@@ -78,6 +79,7 @@ local function LayoutText(dropdown, button)
   -- button's edge.
   local arrow = button and button.uuiDropdownArrow
   local bedStyle = dropdown.uuiDropdownBed
+  U.SetSettingsTextTrim(text, U.InSettingsWindow(dropdown))
   U.SetStockFont(text, bedStyle and bedStyle.textSize or M.fontSize.small,
                  bedStyle and bedStyle.textColor or M.color.text)
   pcall(function()
@@ -305,6 +307,10 @@ local function StyleListRow(name, index, checkboxes, forever)
     end
   end
 
+  -- The row pool is shared: smaller when a settings window owns the menu, or
+  -- while the game settings window is up (the open-menu owner can be stale).
+  U.SetSettingsTextTrim(text, U.InSettingsWindow(OwningDropdown()) or
+    (type(U.IsGameSettingsShown) == "function" and U.IsGameSettingsShown()))
   U.SetStockFont(text, M.fontSize.small, selected and M.color.accent or M.color.text)
   -- Both anchors carry the same y, or the two points pull the label apart.
   local textY = (checkboxes and box and forever) and ROW_FOREVER_TEXT_Y or 0
@@ -374,7 +380,7 @@ end
 -- correct); activeDropdown is the fallback, set from our own button hook.
 -- The global's shape is not in the compact evidence, so both the frame and the
 -- Vanilla-style frame-name string are accepted.
-local function OwningDropdown()
+OwningDropdown = function()
   local open = U.G("UIDROPDOWNMENU_OPEN_MENU")
   if type(open) == "string" then open = U.G(open) end
   if type(open) ~= "table" then open = activeDropdown end

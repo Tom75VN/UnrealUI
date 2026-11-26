@@ -31,6 +31,11 @@
 -- GameTooltip wrapper rather than from raw UnitDebuff. UnitBuff is the same
 -- shape minus the dispel type.
 --
+-- Clients with the UnitAura port (knowledge.json / api.unitaura_unitaura_v1)
+-- give the name in the same read, so no tooltip is scanned, and the player's
+-- own auras on any unit carry the client's timer. Other players' auras still
+-- use the reconstruction below; the 1.12 path remains the fallback.
+--
 -- Two consequences drive the design:
 --
 --   * Names come from a tooltip, not from the aura call. knowledge.json /
@@ -255,6 +260,24 @@ local function PassesFilter(debuffType)
   return U.GetAuraSetting(key) and true or false
 end
 
+-- The nameplate settings preview's placeholder debuffs
+-- (U.RefreshNameplateAuraPreview): a stacked physical one and one per common
+-- dispel school, so the colours and type filters all show. Literal icon
+-- paths, as the /uui npcast preview already draws.
+local previewAuras = {
+  count = 0,
+  list = {
+    { texture = "Interface\\Icons\\Ability_Warrior_Sunder", count = 3,
+      elapsed = 12, duration = 30 },
+    { texture = "Interface\\Icons\\Spell_Shadow_CurseOfSargeras",
+      type = "Curse", elapsed = 6, duration = 24 },
+    { texture = "Interface\\Icons\\Spell_Nature_FaerieFire",
+      type = "Magic", elapsed = 10, duration = 40 },
+    { texture = "Interface\\Icons\\Ability_Hunter_Quickshot",
+      type = "Poison", elapsed = 9, duration = 15 },
+  },
+}
+
 -- ---------------------------------------------------------------------------
 -- API access
 --
@@ -309,7 +332,18 @@ local function ReadBuff(unit, index)
   return texture, tonumber(count) or 0, nil
 end
 
+-- With the UnitAura port (U.ReadUnitAura) the same slot also carries its name,
+-- so no tooltip is armed, plus duration/expirationTime and whether the aura is
+-- the player's own. Returns texture, count, debuffType, name, duration,
+-- expirationTime, mine; the last four are nil on the 1.12 path.
 local function ReadAura(unit, index, harmful)
+  if U.UnitAuraReady() then
+    local name, texture, count, debuffType, duration, expires, mine =
+      U.ReadUnitAura(unit, index, harmful)
+    if not name then return nil end
+    return texture, count, harmful and debuffType or nil, name, duration,
+           expires, mine
+  end
   if harmful then return ReadDebuff(unit, index) end
   return ReadBuff(unit, index)
 end
@@ -530,7 +564,7 @@ end
 -- RefreshRow -- and the two ways an entry can earn a duration later are a
 -- stack going up (a reapplication, seen happening) and the aura falling off
 -- and coming back.
-local function TrackAura(bucket, key, count, pass, timeLeft, witnessed)
+local function TrackAura(bucket, key, count, pass, timeLeft, witnessed, total)
   if not bucket or not key then return nil end
 
   local entry = bucket[key]
@@ -546,8 +580,9 @@ local function TrackAura(bucket, key, count, pass, timeLeft, witnessed)
     -- largest remaining ever seen for this entry is that total: exact once the
     -- aura has been watched from its application, and merely "starts full" for
     -- one that was already running when the row first saw it. A refresh pushes
-    -- the remaining back up and the total follows it.
-    local duration = entry.duration or 0
+    -- the remaining back up and the total follows it. UnitAura's own duration
+    -- (`total`) replaces that estimate when the client gave one.
+    local duration = total or entry.duration or 0
     if timeLeft > duration then duration = timeLeft end
 
     entry.duration = duration
@@ -700,17 +735,12 @@ function U.AuraStats()
   }
 end
 
--- The timer font scales off the icon the way the action button's countdown
--- scales off the button, but at a shallower ratio: a 24-unit aura icon carries
--- both a timer and a stack count in its corner, so the timer stays small
--- enough to leave the icon's own art readable underneath it. Capped at 10 by
--- request, one below M.fontSize.tiny's 9-unit floor stated elsewhere for the
--- action bar -- this is a smaller, denser label than that one, so it is
--- allowed to sit under that floor; watch it in game for legibility.
+-- Aura timers stay smaller than action-bar countdowns so their icon art and
+-- stack count remain readable.
 local function TimerFontSize(size)
-  local value = math.floor(size * 0.3)
-  if value < 8 then value = 8 end
-  if value > 10 then value = 10 end
+  local value = math.floor(size * 0.25)
+  if value < 7 then value = 7 end
+  if value > 8 then value = 8 end
   return value
 end
 
@@ -845,6 +875,9 @@ local function CreateIcon(row, index)
     inherits = "GameFontNormal",
   })
   if icon.timer then
+    U.SetFont(icon.timer, TimerFontSize(size), "OUTLINE", "unitframe", true,
+              true)
+    U.ClearTextShadow(icon.timer)
     -- Nudged down half a unit by request, off the icon's true centre.
     icon.timer:SetPoint("CENTER", overlay, "CENTER", 0, -0.5)
     icon.timer:Hide()
@@ -1101,8 +1134,7 @@ local function RefreshTimer(icon, now, enabled)
   end
   if icon.uuiTimerTier ~= tier then
     icon.uuiTimerTier = tier
-    local color = M.cooldownText[tier] or M.cooldownText.normal
-    pcall(icon.timer.SetTextColor, icon.timer, M.Unpack(color))
+    pcall(icon.timer.SetTextColor, icon.timer, M.Unpack(M.color.text))
   end
   if not icon.uuiTimerShown then
     icon.uuiTimerShown = true
@@ -1130,7 +1162,11 @@ local function ApplyIcon(icon, texture, count, borderColor, size, entry, now, ti
     icon:SetHeight(size)
     U.SizeRadialWipe(icon.wipe,
                      icon.modernWowAuraChrome and size or size - 2)
-    if icon.timer then U.SetFont(icon.timer, TimerFontSize(size)) end
+    if icon.timer then
+      U.SetFont(icon.timer, TimerFontSize(size), "OUTLINE", "unitframe", true,
+                true)
+      U.ClearTextShadow(icon.timer)
+    end
   end
 
   if icon.uuiTexture ~= texture then
@@ -1449,11 +1485,15 @@ local function RefreshRow(row, offset)
   for i = 1, ScanLimit(row.harmful) do
     statScans = statScans + 1
     local texture, count, debuffType, timeLeft, buffIndex
+    local name, duration, expires, mine
     if native then
       texture, count, debuffType, timeLeft, buffIndex =
         ReadPlayerAura(i, row.harmful)
     else
-      texture, count, debuffType = ReadAura(row.unit, i, row.harmful)
+      texture, count, debuffType, name, duration, expires, mine =
+        ReadAura(row.unit, i, row.harmful)
+      -- The player's own aura on another unit carries the client's timer.
+      if mine then timeLeft = U.UnitAuraTimeLeft(duration, expires, now) end
     end
 
     -- Read before the slot memory is overwritten below: this is the question
@@ -1479,13 +1519,18 @@ local function RefreshRow(row, offset)
       -- drew whichever timeLeft was read last and the wipe total took the
       -- larger of the two. The texture stays in the key so a slot reused by a
       -- different aura between passes starts a fresh entry.
+      -- An own aura gets its own key so another player's copy of the same
+      -- spell on this unit keeps its separate, reconstructed entry.
       local key
       if native then
         key = tostring(buffIndex) .. ":" .. texture
+      elseif name then
+        key = mine and (name .. "@player") or name
       else
         key = AuraName(row, i, texture)
       end
-      local entry = TrackAura(bucket, key, count, pass, timeLeft, witnessed)
+      local entry = TrackAura(bucket, key, count, pass, timeLeft, witnessed,
+                              timeLeft and duration or nil)
 
       if row.harmful and not PassesFilter(debuffType) then
         -- Tracked, not drawn.
@@ -1677,13 +1722,12 @@ end
 -- no remaining time. "/uui aura" says which, per row and per index, from the
 -- live state -- no reload, no probe run, no guessing between them.
 -- ---------------------------------------------------------------------------
--- Icon paths on this client are UAsset references with forward slashes
--- ("/Game/Interface/Icons/Spell_Fire_Immolation_TEX", measured in
--- auras.unitbuff_unitdebuff_contract_unverified), so the leaf is all a chat
--- line needs.
+-- Icon paths come with forward slashes or backslashes depending on the API,
+-- so the leaf is all a dump line needs. It also keeps backslashes out of
+-- SavedVariables (config.savedvariables_backslash_corruption).
 local function ShortTexture(texture)
   if type(texture) ~= "string" then return "-" end
-  local tail = string.gsub(texture, ".*/", "")
+  local tail = string.gsub(texture, "^.*[\\/]", "")
   if tail == "" then return texture end
   return tail
 end
@@ -1712,25 +1756,46 @@ local function LayerLine(row)
                        Read(native, "GetFrameLevel"))
 end
 
+-- Written to SavedVariables (UnrealUIDiagDB.aura) rather than chat: one line
+-- per row and aura floods the chat frame. Rows whose unit does not exist are
+-- only counted. Chat gets a single summary line.
 function U.AuraDebugDump()
-  U.Print("aura dump - duration table holds " .. U.AuraDurationCount() ..
-          " entries  (theme " .. tostring(U.GetActiveThemeStyle()) ..
-          ", below frame " .. tostring(U.GetAuraSetting("belowFrame")) .. ")")
+  local lines = {}
+  local auras, missing = 0, 0
+  local function Line(text)
+    text = string.gsub(text, "|c%x%x%x%x%x%x%x%x", "")
+    text = string.gsub(text, "|r", "")
+    table.insert(lines, text)
+  end
+
+  Line("aura dump - duration table holds " .. U.AuraDurationCount() ..
+       " entries  (theme " .. tostring(U.GetActiveThemeStyle()) ..
+       ", below frame " .. tostring(U.GetAuraSetting("belowFrame")) ..
+       ", UnitAura " .. tostring(U.UnitAuraReady()) ..
+       ", nameScans since load " .. statNames .. ")")
 
   local r
   for r = 1, table.getn(rowOrder) do
     local row = rowOrder[r]
     local native = IsPlayerUnit(row.unit)
     local exists = UnitExists(row.unit)
+    local via = "tooltip name + duration table"
+    if native then
+      via = "GetPlayerBuff (client time)"
+    elseif U.UnitAuraReady() then
+      via = "UnitAura name; own=client time, others=duration table"
+    end
 
-    U.Print(string.format("|cffffff00%s|r %s on %s - enabled=%s exists=%s via %s",
-                          row.id, row.harmful and "debuffs" or "buffs", row.unit,
-                          tostring(RowEnabled(row)), tostring(exists),
-                          native and "GetPlayerBuff (client time)"
-                                 or "tooltip name + duration table"))
+    if not exists then
+      missing = missing + 1
+    else
+      Line(string.format("%s %s on %s - enabled=%s via %s",
+                         row.id, row.harmful and "debuffs" or "buffs", row.unit,
+                         tostring(RowEnabled(row)), via))
+    end
 
-    local layer = LayerLine(row)
-    if layer then U.Print(layer) end
+    local layer = exists and LayerLine(row) or nil
+    if layer then Line(layer) end
 
     -- The row's own tracked entries, so the dump reports what is actually
     -- drawn rather than only what the duration table would answer. An aura the
@@ -1747,20 +1812,28 @@ function U.AuraDebugDump()
       -- the same here as it draws on the frame.
       for i = 1, ScanLimit(row.harmful) do
         local texture, count, debuffType, timeLeft, buffIndex
+        local name, duration, expires, mine
         if native then
           texture, count, debuffType, timeLeft, buffIndex =
             ReadPlayerAura(i, row.harmful)
         else
-          texture, count, debuffType = ReadAura(row.unit, i, row.harmful)
+          texture, count, debuffType, name, duration, expires, mine =
+            ReadAura(row.unit, i, row.harmful)
+          if mine then timeLeft = U.UnitAuraTimeLeft(duration, expires, Now()) end
         end
 
         if texture then
-          local name = nil
-          if not native then name = ScanName(row.unit, i, row.harmful) end
+          if not native and not name then
+            name = ScanName(row.unit, i, row.harmful)
+          end
 
           -- Same key RefreshRow tracks under.
           local dumpKey = name
-          if native then dumpKey = tostring(buffIndex) .. ":" .. texture end
+          if native then
+            dumpKey = tostring(buffIndex) .. ":" .. texture
+          elseif mine and name then
+            dumpKey = name .. "@player"
+          end
           local tracked = dumpBucket and dumpBucket[dumpKey] or nil
 
           local seconds = timeLeft
@@ -1776,18 +1849,30 @@ function U.AuraDebugDump()
             rank = U.SpellRankByName(name)
           end
 
-          U.Print(string.format("  %d %s name=%s stacks=%s type=%s %s=%s%s",
-                                i, ShortTexture(texture), tostring(name or "-"),
-                                tostring(count or 0), tostring(debuffType or "-"),
-                                native and "timeLeft" or "duration",
-                                (tracked and tracked.blind)
-                                  and "|cffff4040not seen land|r"
-                                  or (seconds and string.format("%.1f", seconds)
-                                              or "|cffff4040none|r"),
-                                rank and (" rank=" .. rank) or ""))
+          auras = auras + 1
+          Line(string.format("  %d %s name=%s stacks=%s type=%s mine=%s %s=%s%s",
+                             i, ShortTexture(texture), tostring(name or "-"),
+                             tostring(count or 0), tostring(debuffType or "-"),
+                             native and "player" or tostring(mine and true or false),
+                             (native or timeLeft) and "timeLeft" or "duration",
+                             (tracked and tracked.blind) and "not seen land"
+                               or (seconds and string.format("%.1f", seconds)
+                                           or "none"),
+                             rank and (" rank=" .. rank) or ""))
         end
       end
     end
+  end
+
+  if missing > 0 then Line(missing .. " rows skipped: unit does not exist") end
+  if type(U.SaveDiagnostic) == "function" then
+    U.SaveDiagnostic("aura", lines)
+    U.Print("aura dump: " .. auras .. " auras, UnitAura " ..
+            tostring(U.UnitAuraReady()) .. ", nameScans " .. statNames ..
+            "; saved on /reload to " .. U.SavedVariablesHint())
+  else
+    local i
+    for i = 1, table.getn(lines) do U.Print(lines[i]) end
   end
 end
 
@@ -1868,12 +1953,17 @@ local function BuildRow(id, unit, harmful, setting, options)
   row.names = {}
   row:Hide()
 
+  -- An unregistered row (the nameplate settings preview) is never scanned by
+  -- RefreshAll; its owner draws it.
+  if options and options.unregistered then return row end
   rows[id] = row
   table.insert(rowOrder, row)
   return row
 end
 
-function U.CreateNameplateAuraRows(anchor, parent, id, offsetY)
+-- preview: an unregistered row drawn from placeholder debuffs by
+-- U.RefreshNameplateAuraPreview (the nameplate settings preview).
+function U.CreateNameplateAuraRows(anchor, parent, id, offsetY, preview)
   if not anchor then return nil end
 
   local modernWow = U.GetActiveThemeStyle() == "modern-wow"
@@ -1891,9 +1981,14 @@ function U.CreateNameplateAuraRows(anchor, parent, id, offsetY)
     perRow = 8,
     maxIcons = 8,
     stopAtCap = true,
+    unregistered = preview and true or nil,
   }
 
   local prefix = "nameplate" .. tostring(id)
+  if preview then
+    previewAuras.count = previewAuras.count + 1
+    prefix = "nameplatepreview" .. previewAuras.count
+  end
   local debuffs = BuildRow(prefix, "target", true, nil, options)
   if not debuffs then return nil end
   debuffs.active = false
@@ -1904,6 +1999,54 @@ function U.RefreshNameplateAuraRows(pair, active)
   if not pair then return end
   pair.debuffs.active = active and true or false
   RefreshRow(pair.debuffs, 0)
+end
+
+-- The settings preview's debuffs: the live row's placement, geometry, chrome,
+-- dispel colours, type filters and timer display, fed placeholder auras
+-- frozen part-way through. Returns the row's width and height (0, 0 hidden).
+function U.RefreshNameplateAuraPreview(pair, active)
+  local row = pair and pair.debuffs
+  if not row then return 0, 0 end
+  local i
+  if not active then
+    for i = 1, table.getn(row.icons) do HideIcon(row.icons[i]) end
+    row:Hide()
+    return 0, 0
+  end
+
+  local size, spacing, perRow = RowGeometry(row)
+  local timers = U.GetAuraSetting("showTimers")
+  local now = Now()
+  PositionRow(row, false, 0)
+
+  local shown = 0
+  for i = 1, table.getn(previewAuras.list) do
+    local aura = previewAuras.list[i]
+    if PassesFilter(aura.type) then
+      shown = shown + 1
+      local icon = row.icons[shown] or CreateIcon(row, shown)
+      -- No tooltip: there is no real aura behind the icon.
+      pcall(icon.EnableMouse, icon, false)
+      icon.uuiIndex = nil
+      PlaceIcon(row, icon, shown, size, spacing, perRow, false)
+      ApplyIcon(icon, aura.texture, aura.count, TypeColor(aura.type), size,
+                { start = now - aura.elapsed, duration = aura.duration },
+                now, timers)
+    end
+  end
+  for i = shown + 1, table.getn(row.icons) do HideIcon(row.icons[i]) end
+
+  if shown == 0 then
+    row:Hide()
+    return 0, 0
+  end
+  local lines = math.floor((shown - 1) / perRow) + 1
+  local columns = shown < perRow and shown or perRow
+  local width, height = columns * (size + spacing), lines * (size + spacing)
+  row:SetWidth(width)
+  row:SetHeight(height)
+  row:Show()
+  return width, height
 end
 
 -- ---------------------------------------------------------------------------

@@ -510,6 +510,29 @@ end
 -- takes no mouse input (rules/unreal-ui-design.md layering).
 -- The plate is up on every tab; on the Who tab its top reaches `whoGrow`
 -- higher. Only the anchors change, so nothing is read back from the plate.
+-- The footer rule spans the window's recess (headerPlate.left..right, the
+-- same sides as the header bands), stopping just inside the side borders on
+-- every tab rather than at the button run's width (user request 2026-11-26).
+-- Its x is a bounded number read a tick after each placement from the shown
+-- plate and window; no anchor onto the native window is kept.
+local function FitFooterRule()
+  local plate = panel and panel.uuiSocialFooterPlate
+  local rule = plate and plate.uuiSocialFooterRule
+  local window = G("FriendsFrame")
+  if not rule or not window then return end
+  local okV, shown = pcall(plate.IsVisible, plate)
+  if not okV or not shown then return end
+  local t = M.modernWow.social.headerPlate
+  pcall(function()
+    local plateLeft, winLeft = plate:GetLeft(), window:GetLeft()
+    if not plateLeft or not winLeft then return end
+    rule:ClearAllPoints()
+    rule:SetWidth(t.right - t.left)
+    rule:SetPoint("LEFT", plate, "TOPLEFT", winLeft + t.left - plateLeft, 0)
+    plate.uuiSocialFooterRuleFitted = true
+  end)
+end
+
 local function PlaceFooterPlate()
   local plate = panel and panel.uuiSocialFooterPlate
   if not plate or not plate.uuiFirst or not plate.uuiLast then return end
@@ -572,7 +595,10 @@ local function PlaceFooterPlate()
                      token.padX, -token.padBottom -
                      (M.modernWow.social.footerButton.raise or 0))
     end)
-    if placed then return end
+    if placed then
+      DeferOnce("footer-rule", FitFooterRule)
+      return
+    end
   end
 
   -- The Friends buttons were raised by footerButton.raise; the plate does
@@ -585,6 +611,7 @@ local function PlaceFooterPlate()
     plate:SetPoint("BOTTOMRIGHT", plate.uuiLast, "BOTTOMRIGHT",
                    token.padX, -token.padBottom - raise)
   end)
+  DeferOnce("footer-rule", FitFooterRule)
 end
 
 local function FooterPlate(first, last)

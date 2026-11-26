@@ -186,10 +186,17 @@ local function UpdateCorpseArrow()
   end
 
   local inset = layout.visibleSize / 2
+  local dirX, dirY = -math.sin(angle), math.cos(angle)
+  -- A square minimap (modules/minimap.lua) puts the rim on the square's edge.
+  local stretch = 1
+  if type(U.MinimapIsSquare) == "function" and U.MinimapIsSquare() then
+    local edge = math.max(math.abs(dirX), math.abs(dirY))
+    if edge > 0 then stretch = 1 / edge end
+  end
   frame:ClearAllPoints()
   frame:SetPoint("CENTER", minimap, "CENTER",
-    -math.sin(angle) * (width / 2 - inset),
-    math.cos(angle) * (height / 2 - inset))
+    dirX * stretch * (width / 2 - inset),
+    dirY * stretch * (height / 2 - inset))
   frame:Show()
 end
 

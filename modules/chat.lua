@@ -459,6 +459,13 @@ local function ChatShadowFont(chat, index)
     local name = "UnrealUIChatNoShadowFont" .. index
     record.font = CreateFont(name)
     record.font:SetFont("Fonts\\FRIZQT__.TTF", size)
+    -- Messages printed without a colour (other addons, channel notices) take
+    -- the Font's own colour, which starts black. The proxy step below did not
+    -- reliably whiten it in game (2026-11-26), so set it on the Font itself
+    -- where the method exists; Font:SetTextColor is not documented here.
+    if type(record.font.SetTextColor) == "function" then
+      pcall(record.font.SetTextColor, record.font, 1, 1, 1)
+    end
     record.holder = CreateFrame("Frame", nil, UIParent)
     record.holder:Hide()
     record.proxy = record.holder:CreateFontString(nil, "OVERLAY", "GameFontNormal")

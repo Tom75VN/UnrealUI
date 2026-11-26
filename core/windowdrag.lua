@@ -373,6 +373,18 @@ function U.IsWindowDragging(frame)
   return state and state.dragging and true or false
 end
 
+-- True while ANY registered window is being dragged. For per-frame pollers
+-- that do not know which window holds them (a scrollbar): the cursor is on
+-- a header, so nothing else is being used, and a rect read inside the
+-- moving window makes the client lay it out again that frame.
+function U.IsAnyWindowDragging()
+  local i
+  for i = 1, table.getn(windowStates) do
+    if windowStates[i].dragging then return true end
+  end
+  return false
+end
+
 local function ReadDragPosition(frame)
   return U.GetFramePlacement(frame)
 end

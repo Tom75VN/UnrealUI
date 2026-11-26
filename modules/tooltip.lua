@@ -22,7 +22,9 @@
 -- stock tooltip left those features off in that theme entirely. Both themes
 -- therefore draw the same flat tooltip. The Classic palette leaves
 -- M.color.background/text/textDim at their shared values
--- (themes/classic-wow.lua), so nothing here needs a per-theme colour.
+-- (themes/classic-wow.lua), so nothing here needs a per-theme colour. The one
+-- per-theme piece is the rim (see "Theme rim" below): Retail's tooltip atlas
+-- under modern-wow, the client's under classic-wow, none under modern.
 --
 -- behavior.json / tooltip.native_read/regions/hide/backdrop/statusbar/child.v1
 -- (all SUPPORTED, BEHAVIOR_VERIFIED) confirm the calls used here: GameTooltip
@@ -105,11 +107,10 @@ end
 -- ---------------------------------------------------------------------------
 -- Item name rarity colour
 --
--- The tooltip cannot be asked what it is showing. This client's GameTooltip
--- has no GetItem -- documentation.json records 46 GameTooltip widget methods
--- and that is not one of them -- and GetItemInfo takes an item id or an item
--- string / hyperlink only, never a display name, so line 1's own text is not a
--- lookup key either.
+-- GameTooltip:GetItem is now available and verified by wotlkports.v1. The
+-- existing hover-surface path remains the authoritative colour source here:
+-- it supplies quality before late native line rewrites and preserves the
+-- guarded vendor/buyback subject checks below.
 --
 -- The item identity therefore arrives from the hover surface, exactly the way
 -- modules/itemprice.lua resolves its price, and the consequence is the one
@@ -252,18 +253,289 @@ local function ClearAllEdges(frame, name)
   if name then ClearNativeTextures(name) end
 end
 
+-- The client writes its own default fill back onto a tooltip's backdrop --
+-- a dark blue, the stock TOOLTIP_DEFAULT_BACKGROUND_COLOR -- without the
+-- subject changing (user report, 2026-11-26: the body sometimes turned blue
+-- instead of black). Only a full style pass used to set the flat fill, so the
+-- cheap pass between them now re-asserts it, and so does each tooltip's
+-- OnHide post-hook, which runs after the stock OnHide's reset. `alpha` keeps
+-- the cursor-mode fade's own vertex alpha (placement.SetCursorFadeAlpha).
+local function ReassertFill(frame, alpha)
+  if not frame then return end
+  local bg = M.color.background
+  U.SetBackgroundColor(frame, bg[1], bg[2], bg[3],
+    (bg[4] or 1) * (tonumber(alpha) or 1))
+end
+
+-- The two passes above still left a one-frame blue blink (user report,
+-- 2026-11-26): the reset can land while the tooltip stays shown, up to one
+-- 0.10s tick before the refresh pass. A post-hook on the frame's own
+-- SetBackdropColor undoes it in the same call. hooksecurefunc(table, method)
+-- is native on this client (knowledge.json / hooks.no_global_hooksecurefunc,
+-- BEHAVIOR_VERIFIED). Calls that already carry the flat colour -- every one
+-- this module makes, fade alpha included -- pass through untouched, and
+-- `busy` stops the re-assert from re-entering. A reset the engine makes
+-- without the Lua method would not reach this hook; the refresh pass still
+-- catches that one. Not yet confirmed in game which path the reset takes.
+local fillHook = {}
+
+function fillHook.Install(frame, alphaFn)
+  if not frame or frame.uuiFillHooked or type(hooksecurefunc) ~= "function" or
+     type(frame.SetBackdropColor) ~= "function" then
+    return
+  end
+  local ok = pcall(hooksecurefunc, frame, "SetBackdropColor",
+    function(_, r, g, b)
+      if fillHook.busy then return end
+      local bg = M.color.background
+      if r == bg[1] and g == bg[2] and b == bg[3] then return end
+      fillHook.busy = true
+      pcall(ReassertFill, frame, alphaFn and alphaFn() or 1)
+      fillHook.busy = false
+    end)
+  if ok then frame.uuiFillHooked = true end
+end
+
+-- ---------------------------------------------------------------------------
+-- Theme rim (user request, 2026-11-26)
+--
+-- `modern-wow` draws Retail's tooltip nine-slice around the flat body and
+-- `classic-wow` the client's own; `modern` stays borderless. The fill, the
+-- text treatment and every other part of this module are unchanged, so the
+-- rim is an addition only. Geometry is M.tooltipBorder, files are the
+-- theme's own table (core/media.lua). The theme cannot change without a
+-- reload, so the pieces are built once per frame and never re-stripped: they
+-- are addon textures on the frame (rules/unreal-ui.md, region walks).
+-- ---------------------------------------------------------------------------
+local rim = {}
+
+function rim.Files()
+  local style = type(U.GetActiveThemeStyle) == "function" and
+                U.GetActiveThemeStyle()
+  if style == "modern-wow" then return M.modernWow and M.modernWow.tooltipBorder end
+  if style == "classic-wow" then return M.classicWow and M.classicWow.tooltipBorder end
+  return nil
+end
+
+-- The rim lives on its own child frame, kept a few levels above the tooltip,
+-- not on the tooltip itself. A texture layer alone is not enough: something
+-- still painted the flat M.color.border grey over the top line in the same
+-- OVERLAY layer (user screenshot, 2026-11-26, action-bar spell tooltip), and
+-- draw order inside one layer is not defined. A higher frame level draws
+-- above every region of the tooltip, its backdrop and edge included. The
+-- inner shade is 4 units deep and tooltip text sits well inside it. A plain
+-- Frame parented to GameTooltip is verified on this client (header,
+-- tooltip.native_*.v1); its level is re-asserted by rim.Raise on every pass.
+rim.LEVEL_ABOVE = 3
+
+function rim.Raise(frame)
+  local holder = frame and frame.uuiTooltipRimHolder
+  if not holder then return end
+  local ok, level = pcall(frame.GetFrameLevel, frame)
+  if ok and type(level) == "number" then
+    pcall(holder.SetFrameLevel, holder, level + rim.LEVEL_ABOVE)
+  end
+end
+
+function rim.Build(frame)
+  if not frame or frame.uuiTooltipRim ~= nil then
+    return
+  end
+  local files, g = rim.Files(), M.tooltipBorder
+  if not files or not g then
+    frame.uuiTooltipRim = false
+    return
+  end
+  local holderOk, holder = pcall(CreateFrame, "Frame", nil, frame)
+  if not holderOk or not holder or not holder.CreateTexture then
+    frame.uuiTooltipRim = false
+    return
+  end
+  pcall(holder.SetAllPoints, holder, frame)
+  frame.uuiTooltipRimHolder = holder
+  rim.Raise(frame)
+
+  local pieces = {}
+  local function Piece(file, coords)
+    local ok, tex = pcall(holder.CreateTexture, holder, nil, "ARTWORK")
+    if not ok or not tex then return nil end
+    pcall(tex.SetTexture, tex, file)
+    pcall(tex.SetTexCoord, tex, coords[1], coords[2], coords[3], coords[4])
+    table.insert(pieces, tex)
+    return tex
+  end
+
+  local size, out = g.size, g.outset
+  local built = pcall(function()
+    local tl = Piece(files.sheet, g.topLeft)
+    local tr = Piece(files.sheet, g.topRight)
+    local bl = Piece(files.sheet, g.bottomLeft)
+    local br = Piece(files.sheet, g.bottomRight)
+    local corners = { { tl, "TOPLEFT", -out, out }, { tr, "TOPRIGHT", out, out },
+                      { bl, "BOTTOMLEFT", -out, -out }, { br, "BOTTOMRIGHT", out, -out } }
+    local i
+    for i = 1, 4 do
+      local c = corners[i]
+      c[1]:SetWidth(size)
+      c[1]:SetHeight(size)
+      c[1]:SetPoint(c[2], holder, c[2], c[3], c[4])
+    end
+
+    -- Each edge spans the gap between its two corners, so it takes the
+    -- frame's live size with no width or height of its own.
+    local edges = {
+      { files.sheet,    g.top,    tl, "TOPRIGHT",   tr, "BOTTOMLEFT" },
+      { files.sheet,    g.bottom, bl, "TOPRIGHT",   br, "BOTTOMLEFT" },
+      { files.vertical, g.left,   tl, "BOTTOMLEFT", bl, "TOPRIGHT" },
+      { files.vertical, g.right,  tr, "BOTTOMLEFT", br, "TOPRIGHT" },
+    }
+    for i = 1, 4 do
+      local e = edges[i]
+      local edge = Piece(e[1], e[2])
+      edge:SetPoint("TOPLEFT", e[3], e[4], 0, 0)
+      edge:SetPoint("BOTTOMRIGHT", e[5], e[6], 0, 0)
+    end
+  end)
+
+  if not built then
+    local i
+    for i = 1, table.getn(pieces) do U.HideRegion(pieces[i]) end
+    U.Debug("tooltip: theme rim could not be built")
+    frame.uuiTooltipRim = false
+    return
+  end
+  frame.uuiTooltipRim = pieces
+end
+
+-- The fill inset for the active theme: inside the rim when one is drawn,
+-- the whole frame under `modern`.
+function rim.FillInset()
+  if rim.Files() and M.tooltipBorder then return M.tooltipBorder.fillInset end
+  return 0
+end
+
+-- Host API for another addon's own tooltip frame that stands in for
+-- GameTooltip -- UnrealQuest's combined creature/object tooltip (user
+-- request, 2026-11-26). Builds the active theme's rim on `frame` and returns
+-- the inset the caller must keep its own fill and any cover inside, or nil
+-- under `modern`, where the tooltip stays flat. Safe to call repeatedly.
+function U.ApplyTooltipRim(frame)
+  if not frame or not rim.Files() then return nil end
+  rim.Build(frame)
+  rim.Raise(frame)
+  if type(frame.uuiTooltipRim) ~= "table" then return nil end
+  return M.tooltipBorder.fillInset
+end
+
+function rim.SetAlpha(frame, alpha)
+  local pieces = frame and frame.uuiTooltipRim
+  if type(pieces) ~= "table" then return end
+  local i
+  for i = 1, table.getn(pieces) do
+    pcall(pieces[i].SetAlpha, pieces[i], alpha)
+  end
+end
+
+-- ---------------------------------------------------------------------------
+-- Health-bar well (user report, 2026-11-26)
+--
+-- UnrealQuest's combined creature tooltip draws the health bar inside its
+-- body, PAD units in from the sides and bottom, under the same rim. A plain
+-- GameTooltip unit -- a hunter's pet, or any creature UnrealQuest has no
+-- record for -- left the bar hanging below the body instead, so hovering the
+-- two showed two styles. While the native bar is shown, the body is extended
+-- under it with an addon-owned fill and the rim is stretched to enclose both,
+-- on UnrealQuest's geometry (ENTITY_TOOLTIP_COVER_PAD 4, bar flush under the
+-- text body). The well is a plain Frame parented to GameTooltip, the same
+-- verified pattern as the rim holder; it hides with the bar.
+-- ---------------------------------------------------------------------------
+local well = { PAD = 4 }
+
+function well.Extent()
+  return BAR_HEIGHT + well.PAD
+end
+
+function well.Build(tooltip)
+  if tooltip.uuiBarWell ~= nil then return tooltip.uuiBarWell or nil end
+  local ok, frame = pcall(CreateFrame, "Frame", nil, tooltip)
+  if not ok or not frame then
+    tooltip.uuiBarWell = false
+    return nil
+  end
+  -- The backdrop insets every side by the fill inset, so the top is raised by
+  -- twice that: the well's fill then starts exactly where the body's ends.
+  local inset = rim.FillInset()
+  pcall(frame.SetPoint, frame, "TOPLEFT", tooltip, "BOTTOMLEFT", 0, 2 * inset)
+  pcall(frame.SetPoint, frame, "BOTTOMRIGHT", tooltip, "BOTTOMRIGHT",
+        0, -well.Extent())
+  U.CreateBackdrop(frame, {
+    background = M.color.background,
+    border = false,
+    inset = inset,
+  })
+  pcall(frame.Hide, frame)
+  tooltip.uuiBarWell = frame
+  return frame
+end
+
+-- Shows the well and stretches the rim while the bar is shown; puts both back
+-- otherwise. Cheap when nothing changed, so the per-frame placement pass can
+-- call it and catch the bar appearing or leaving within one frame.
+function well.Sync(tooltip, force)
+  if not tooltip then return end
+  local bar = U.G("GameTooltipStatusBar")
+  local extend = false
+  if bar and bar.IsShown then
+    local ok, shown = pcall(bar.IsShown, bar)
+    extend = ok and shown and true or false
+  end
+
+  local frame = well.Build(tooltip)
+  if frame and (force or frame.uuiExtend ~= extend) then
+    frame.uuiExtend = extend
+    -- At the tooltip's own level, under the bar and its owned fill.
+    local levelOk, level = pcall(tooltip.GetFrameLevel, tooltip)
+    if levelOk and type(level) == "number" then
+      pcall(frame.SetFrameLevel, frame, level)
+    end
+    if extend then pcall(frame.Show, frame) else pcall(frame.Hide, frame) end
+  end
+
+  local holder = tooltip.uuiTooltipRimHolder
+  if holder and (force or holder.uuiExtend ~= extend) then
+    holder.uuiExtend = extend
+    pcall(holder.ClearAllPoints, holder)
+    pcall(holder.SetPoint, holder, "TOPLEFT", tooltip, "TOPLEFT", 0, 0)
+    pcall(holder.SetPoint, holder, "BOTTOMRIGHT", tooltip, "BOTTOMRIGHT",
+          0, extend and -well.Extent() or 0)
+  end
+end
+
+function well.SetAlpha(tooltip, alpha)
+  local frame = tooltip and tooltip.uuiBarWell
+  if not frame then return end
+  pcall(frame.SetAlpha, frame, alpha)
+  U.SetBackgroundColor(frame, M.color.background[1], M.color.background[2],
+    M.color.background[3], (M.color.background[4] or 1) * alpha)
+end
+
+-- For modules/tooltipfade.lua: how far below the bar the body extends.
+function U.TooltipBarWellPad()
+  return well.PAD
+end
+
 local function StyleStatusBar()
   local bar = U.G("GameTooltipStatusBar")
   if not bar then return nil end
 
-  -- Flush against the body: no side inset, no vertical offset. The native
-  -- anchors are TOPLEFT/TOPRIGHT -> GameTooltip BOTTOMLEFT/BOTTOMRIGHT at
-  -- (2, 1) and (-2, 1), which is exactly the margin being removed.
+  -- Flush under the text body and PAD in from each side, inside the well
+  -- above. The native anchors are TOPLEFT/TOPRIGHT -> GameTooltip
+  -- BOTTOMLEFT/BOTTOMRIGHT at (2, 1) and (-2, 1).
   local tooltip = U.G("GameTooltip")
   if tooltip then
     pcall(bar.ClearAllPoints, bar)
-    pcall(bar.SetPoint, bar, "TOPLEFT", tooltip, "BOTTOMLEFT", 0, 0)
-    pcall(bar.SetPoint, bar, "TOPRIGHT", tooltip, "BOTTOMRIGHT", 0, 0)
+    pcall(bar.SetPoint, bar, "TOPLEFT", tooltip, "BOTTOMLEFT", well.PAD, 0)
+    pcall(bar.SetPoint, bar, "TOPRIGHT", tooltip, "BOTTOMRIGHT", -well.PAD, 0)
   end
   pcall(bar.SetHeight, bar, BAR_HEIGHT)
   pcall(bar.SetStatusBarTexture, bar, M.texture.statusBar)
@@ -293,7 +565,10 @@ local function StyleStatusBar()
       local textureOk, texture =
         pcall(fillHolder.CreateTexture, fillHolder, nil, "ARTWORK")
       if textureOk and texture then
-        pcall(texture.SetTexture, texture, M.texture.statusBar)
+        -- Flat, like UnrealQuest's creature tooltip bar (user report,
+        -- 2026-11-26): the gradient status-bar texture made a pet's bar look
+        -- different from a database creature's.
+        pcall(texture.SetTexture, texture, M.texture.plain)
         pcall(texture.SetPoint, texture, "TOPLEFT", fillHolder, "TOPLEFT", 0, 0)
         pcall(texture.SetPoint, texture, "BOTTOMLEFT", fillHolder,
               "BOTTOMLEFT", 0, 0)
@@ -512,6 +787,12 @@ function UpdateHealthFill(r, g, b)
   end
 end
 
+-- For modules/tooltipfade.lua's fade-out copy: the owned fill's colour (the
+-- native bar has no GetStatusBarColor here) and the health readout region.
+function U.TooltipHealthSnapshot()
+  return healthFillColor[1], healthFillColor[2], healthFillColor[3], healthLabel
+end
+
 local function StyleFrame()
   local tooltip = U.G("GameTooltip")
   if not tooltip then return end
@@ -531,12 +812,15 @@ local function StyleFrame()
   U.CreateBackdrop(tooltip, {
     background = M.color.background,
     border = false,
+    inset = rim.FillInset(),
   })
 
   -- GameTooltipTexture1-3 are the only Texture regions on this client's
   -- tooltip (the other 60 regions are the Left/Right fontstrings); they carry
   -- the remaining stock corner and item-divider art.
   ClearAllEdges(tooltip, "GameTooltip")
+  rim.Build(tooltip)
+  rim.Raise(tooltip)
 
   -- Tooltip text is populated into native FontStrings instead of passing
   -- through U.CreateLabel/U.SetStockFont. Bring every populated line onto the
@@ -550,6 +834,7 @@ local function StyleFrame()
   end
 
   StyleStatusBar()
+  well.Sync(tooltip, true)
 end
 
 -- ShoppingTooltip1/2 are native GameTooltip frames used by item comparison.
@@ -570,8 +855,11 @@ function U.StyleCompareTooltip(tooltip, name)
   U.CreateBackdrop(tooltip, {
     background = M.color.background,
     border = false,
+    inset = rim.FillInset(),
   })
   ClearAllEdges(tooltip, name)
+  rim.Build(tooltip)
+  rim.Raise(tooltip)
 
   local lineCount = 0
   local countOk, count = pcall(tooltip.NumLines, tooltip)
@@ -842,6 +1130,8 @@ local function RefreshCompareTooltip(index, force)
     -- Native population can restore edge/corner art without changing the
     -- visible subject. Keep the cheap suppression active between full passes.
     ClearAllEdges(tooltip, name)
+    ReassertFill(tooltip)
+    rim.Raise(tooltip)
   end
 end
 
@@ -1593,7 +1883,12 @@ local placement = {
   margin = 4,
   -- Clearance kept between the cursor-follow box and the loot window.
   avoidGap = 8,
+  -- Fallback only. The cursor-mode fade takes the "Tooltip mouse-out delay"
+  -- setting (placement.FadeDuration); this fixed value used to be the whole
+  -- fade, so the slider changed nothing here (user report, 2026-11-26).
   fadeDuration = 0.30,
+  fadeMin = 0.05,
+  fadeMax = 1,
   nativeButtonPrefixes = { "ActionButton", "BonusActionButton" },
 }
 
@@ -1983,6 +2278,8 @@ function placement.SetCursorFadeAlpha(tooltip, alpha)
   for i = 1, table.getn(tooltip.uuiEdges or {}) do
     pcall(tooltip.uuiEdges[i].SetAlpha, tooltip.uuiEdges[i], alpha)
   end
+  rim.SetAlpha(tooltip, alpha)
+  well.SetAlpha(tooltip, alpha)
 
   local bar = U.G("GameTooltipStatusBar")
   if bar then
@@ -2005,59 +2302,269 @@ function placement.SetCursorFadeAlpha(tooltip, alpha)
   if healthLabel then pcall(healthLabel.SetAlpha, healthLabel, alpha) end
 end
 
+-- A freshly shown tooltip is fully opaque: the client's own fade can leave
+-- the frame's alpha part-way down when it is hidden, and nothing else resets
+-- it before the next show.
 function placement.ResetCursorFade(tooltip)
-  placement.fadeStartedAt = nil
-  placement.fadeHidePending = nil
+  placement.unitLastSeenAt = nil
+  placement.unitHoverActive = nil
+  placement.staleFadeFixed = nil
+  placement.worldFade = nil
   placement.ResetOverflowAllowance()
   if tooltip then placement.SetCursorFadeAlpha(tooltip, 1) end
 end
 
-function placement.AccelerateCursorFade(tooltip)
-  if not placement.config or not placement.config.followCursor then
-    if placement.fadeStartedAt then placement.ResetCursorFade(tooltip) end
-    return
-  end
+-- The saved mouse-out delay, read live so the slider applies at once. The
+-- same value drives UnrealQuest's creature tooltip, which reads it from here.
+function placement.FadeDuration()
+  local value = placement.config and tonumber(placement.config.fadeHold)
+  if not value then return placement.fadeDuration end
+  if value < placement.fadeMin then return placement.fadeMin end
+  if value > placement.fadeMax then return placement.fadeMax end
+  return value
+end
 
-  -- Only the default world tooltip is moved onto this guide. Explicitly
-  -- owner-anchored item and button tooltips keep the native fade unchanged.
-  local _, relative = U.GetFramePoint(tooltip)
+-- Fades the theme rim U.ApplyTooltipRim built on another addon's frame.
+function U.SetTooltipRimAlpha(frame, alpha)
+  if type(alpha) == "number" then rim.SetAlpha(frame, alpha) end
+end
+
+-- Mouse-out of the cursor-follow world tooltip.
+--
+-- The client's own mouse-out fade is left to run and end by itself: the real
+-- tooltip is never hidden or cleared while it fades. It is only made fully
+-- transparent, every frame, while modules/tooltipfade.lua fades an owned copy
+-- of it -- held for the mouse-out delay, then ramped out.
+--
+-- Hiding it mid-fade breaks the client's world hover. `/uui ttblink`
+-- (2026-11-26 22:48, user capture): after ClearLines + Hide on mouse-out, the
+-- mouseover unit changed five times over five seconds and the client never
+-- called SetOwner or showed GameTooltip again, for any creature. With Hide
+-- alone (the old deadline hide, and the previous build) the same refusal
+-- lasted until the client's fade would have ended, which is the "new
+-- creature hovered at the end of the fade shows no tooltip" report. So
+-- nothing here hides, clears or repopulates GameTooltip during that fade.
+--
+-- `startedAt` is when the cursor left (GetTime), so the hold is measured
+-- from the mouse-out rather than from the frame it was noticed in.
+function placement.FadeOutWorld(tooltip, startedAt, reason)
+  placement.unitHoverActive = nil
+  placement.unitLastSeenAt = nil
+  placement.staleFadeFixed = nil
+  local now = Call("GetTime")
+  local _, title = LineText(1)
+  local copied = type(U.FadeOutWorldTooltip) == "function" and
+                 U.FadeOutWorldTooltip(placement.FadeDuration(), startedAt)
+  placement.worldFade = {
+    at = type(now) == "number" and now or 0,
+    title = title,
+    -- Without a copy the client's fade simply stays visible.
+    transparent = copied and true or false,
+  }
+  if copied then placement.SetCursorFadeAlpha(tooltip, 0) end
+end
+
+-- Ends the world fade early: something new is in the tooltip. The copy goes
+-- at once, so it never overlaps the new text, and the frame is opaque again.
+function placement.EndWorldFade(tooltip, why)
+  if not placement.worldFade then return end
+  placement.worldFade = nil
+  if type(U.CancelWorldTooltipFade) == "function" then U.CancelWorldTooltipFade() end
+  placement.SetCursorFadeAlpha(tooltip, 1)
+end
+
+-- Longer than the client's documented one-second fade. A tooltip still shown
+-- after this is not fading any more, so closing it cannot interrupt a fade.
+placement.WORLD_FADE_LIMIT = 2
+
+-- One frame of a running world fade. True while it continues (the caller
+-- stops there); false once it ended because something new was hovered.
+function placement.WorldFadeStep(tooltip, relative, unitOk, unit)
+  local wf = placement.worldFade
+
+  -- Anything new in the frame ends it: a hovered unit again, another owner
+  -- (an item, a button), a different first line, or the client putting the
+  -- opacity back to full -- this pass only ever writes 0, and the client's
+  -- own ramp only goes down.
+  local why
   if relative ~= placement.cursor then
-    if placement.fadeStartedAt then placement.ResetCursorFade(tooltip) end
-    return
+    why = "owner"
+  elseif unitOk and unit == "mouseover" then
+    why = "unit"
+  else
+    local _, title = LineText(1)
+    if title ~= wf.title then
+      why = "content"
+    else
+      local ok, alpha = pcall(tooltip.GetAlpha, tooltip)
+      if ok and type(alpha) == "number" and alpha >= 0.999 and wf.wrote then
+        why = "alpha"
+      end
+    end
+  end
+  if why then
+    placement.EndWorldFade(tooltip, why)
+    return false
   end
 
-  local ok, alpha = pcall(tooltip.GetAlpha, tooltip)
-  if not ok or type(alpha) ~= "number" then return end
-  if alpha >= 0.999 then
-    if placement.fadeStartedAt then placement.ResetCursorFade(tooltip) end
-    return
-  end
-
-  -- The prior frame was rendered fully transparent. Hiding now cannot cut
-  -- short a still-visible portion of the animation.
-  if placement.fadeHidePending then
+  local now = Call("GetTime")
+  if type(now) == "number" and now - wf.at >= placement.WORLD_FADE_LIMIT then
+    placement.worldFade = nil
     pcall(tooltip.Hide, tooltip)
-    placement.fadeStartedAt = nil
-    placement.fadeHidePending = nil
+    return true
+  end
+
+  if wf.transparent then
+    placement.SetCursorFadeAlpha(tooltip, 0)
+    wf.wrote = true
+  end
+  return true
+end
+
+-- Recovery for a hovered creature whose tooltip is still being faded by the
+-- client: GameTooltip never fades on its own while the "mouseover" unit is
+-- under the cursor, and a world fade that ends on re-hover restores alpha 1,
+-- so alpha under 1 here can only be a leftover mouse-out fade. A content
+-- setter is documented to cancel it (documentation.json / widgets/GameTooltip,
+-- DOCUMENTED_NOT_RUNTIME_VERIFIED), so the hovered unit is set again -- once
+-- per hover, so a client that ignored it can never turn this into a
+-- per-frame repopulate. Traced as fade.staleOnHover.
+function placement.CancelStaleFade(tooltip)
+  if placement.staleFadeFixed then return end
+  local ok, alpha = pcall(tooltip.GetAlpha, tooltip)
+  if not ok or type(alpha) ~= "number" or alpha >= 0.999 then return end
+  placement.staleFadeFixed = true
+  if tooltip.SetUnit then pcall(tooltip.SetUnit, tooltip, "mouseover") end
+  placement.SetCursorFadeAlpha(tooltip, 1)
+end
+
+-- Missed world hover (knowledge.json / tooltip.nameplate_hover_skips_world_show,
+-- BEHAVIOR_VERIFIED; traced 2026-11-26 with a since-removed trace): when
+-- the cursor reaches a unit over its native nameplate (GetMouseFocus name ""),
+-- the client sets "mouseover" but never calls SetOwner/shows GameTooltip, and
+-- shows nothing until "mouseover" changes -- with or without a fade running.
+-- After a short grace (the client's own show lands in the same frame), show
+-- the hovered unit ourselves, once per hover. Traced as fade.recover.
+placement.MISS_GRACE = 0.06
+
+function placement.RecoverMissedHover(tooltip)
+  if not tooltip or not placement.config or not placement.config.followCursor then
+    placement.miss = nil
+    return
+  end
+  local name = Call("UnitName", "mouseover")
+  if type(name) ~= "string" or name == "" then
+    placement.miss = nil
+    return
+  end
+
+  -- A named focus is a unit frame, button or panel with its own tooltip.
+  local focus = Call("GetMouseFocus")
+  if focus and type(focus.GetName) == "function" then
+    local ok, focusName = pcall(focus.GetName, focus)
+    if ok and type(focusName) == "string" and focusName ~= "" then
+      placement.miss = nil
+      return
+    end
+  end
+
+  local shownOk, shown = pcall(tooltip.IsShown, tooltip)
+  local _, unit
+  if type(tooltip.GetUnit) == "function" then
+    local unitOk, _, token = pcall(tooltip.GetUnit, tooltip)
+    if unitOk then unit = token end
+  end
+  if shownOk and shown and unit == "mouseover" and not placement.worldFade then
+    placement.miss = nil
+    return
+  end
+  -- Another tooltip (item, unit frame, quest log) shown without a fade is
+  -- left alone.
+  local _, relative = U.GetFramePoint(tooltip)
+  if shownOk and shown and not placement.worldFade and
+     (unit ~= nil or relative ~= placement.cursor) then
     return
   end
 
   local now = Call("GetTime")
   if type(now) ~= "number" then return end
-  if not placement.fadeStartedAt then
-    -- Account for the small part of the native one-second fade that elapsed
-    -- before this per-frame updater first observed it.
-    placement.fadeStartedAt = now - math.max(0, 1 - alpha)
-  end
-
-  local fadeAlpha = 1 -
-    ((now - placement.fadeStartedAt) / placement.fadeDuration)
-  if fadeAlpha <= 0 then
-    placement.SetCursorFadeAlpha(tooltip, 0)
-    placement.fadeHidePending = true
+  local miss = placement.miss
+  if not miss or miss.name ~= name then
+    placement.miss = { name = name, at = now }
     return
   end
-  placement.SetCursorFadeAlpha(tooltip, fadeAlpha)
+  if miss.done or now - miss.at < placement.MISS_GRACE then return end
+  miss.done = true
+
+  placement.EndWorldFade(tooltip, "recover")
+  local setDefault = U.G("GameTooltip_SetDefaultAnchor")
+  if type(setDefault) == "function" then
+    pcall(setDefault, tooltip, UIParent)
+  else
+    pcall(tooltip.SetOwner, tooltip, UIParent, "ANCHOR_NONE")
+    pcall(tooltip.ClearAllPoints, tooltip)
+    pcall(tooltip.SetPoint, tooltip, "BOTTOMRIGHT", UIParent, "BOTTOMRIGHT", -13, 64)
+  end
+  if tooltip.SetUnit then pcall(tooltip.SetUnit, tooltip, "mouseover") end
+  pcall(tooltip.Show, tooltip)
+  placement.ResetCursorFade(tooltip)
+  placement.Apply(tooltip)
+end
+
+function placement.AccelerateCursorFade(tooltip)
+  if not placement.config or not placement.config.followCursor then
+    placement.unitHoverActive = nil
+    placement.EndWorldFade(tooltip, "mode")
+    return
+  end
+
+  local _, relative = U.GetFramePoint(tooltip)
+  local unitOk, unitName, unit = false, nil, nil
+  if type(tooltip.GetUnit) == "function" then
+    unitOk, unitName, unit = pcall(tooltip.GetUnit, tooltip)
+  end
+
+  if placement.worldFade and
+     placement.WorldFadeStep(tooltip, relative, unitOk, unit) then
+    return
+  end
+
+  -- Only the default world tooltip is moved onto this guide. Explicitly
+  -- owner-anchored item and button tooltips are faded by tooltipfade.lua
+  -- when they hide.
+  if relative ~= placement.cursor then
+    placement.unitHoverActive = nil
+    return
+  end
+
+  -- wotlkports.v1 verified GameTooltip:GetUnit on this client. Its documented
+  -- mouse-out contract is the important part here: a world-unit tooltip keeps
+  -- returning the name during FadeOut, but drops the "mouseover" unit token as
+  -- soon as the cursor leaves. That transition is the mouse-out.
+  if unitOk and unit == "mouseover" then
+    placement.unitHoverActive = true
+    local now = Call("GetTime")
+    if type(now) == "number" then placement.unitLastSeenAt = now end
+    placement.CancelStaleFade(tooltip)
+    return
+  elseif unitOk and placement.unitHoverActive and
+         type(unitName) == "string" and unitName ~= "" then
+    -- The cursor left between the previous sample and this one.
+    placement.FadeOutWorld(tooltip, placement.unitLastSeenAt, unit)
+    return
+  elseif unitOk and not unitName then
+    placement.unitHoverActive = nil
+  end
+
+  -- World objects (no unit): the client starting its fade is the mouse-out.
+  local ok, alpha = pcall(tooltip.GetAlpha, tooltip)
+  if not ok or type(alpha) ~= "number" or alpha >= 0.999 then return end
+  local now = Call("GetTime")
+  if type(now) ~= "number" then now = nil end
+  -- The client fade runs about one second from 1 to 0; back-date the start by
+  -- the part that elapsed before this per-frame pass saw it.
+  if now then now = now - math.max(0, 1 - alpha) end
+  placement.FadeOutWorld(tooltip, now, "alpha")
 end
 
 function placement.Tick()
@@ -2070,6 +2577,7 @@ function placement.Tick()
   -- can render the unwanted line.
   ClearAllEdges(tooltip, "GameTooltip")
   ClearAllEdges(U.G("GameTooltipStatusBar"))
+  well.Sync(tooltip)
   local edgeIndex
   for edgeIndex = 1, 2 do
     local name = "ShoppingTooltip" .. edgeIndex
@@ -2081,6 +2589,9 @@ function placement.Tick()
     placement.NoteOverflow(tooltip)
     placement.AccelerateCursorFade(tooltip)
   end
+  -- Also while hidden: the client can hide it at its fade end and then never
+  -- show the still-hovered unit.
+  placement.RecoverMissedHover(tooltip)
 end
 
 -- Focused tooltipanchor probe calls the exact production placement sequence.
@@ -2146,6 +2657,8 @@ local function RefreshTooltip(force)
     -- style passes so that late refresh cannot leave one visible.
     ClearAllEdges(tooltip, "GameTooltip")
     ClearAllEdges(U.G("GameTooltipStatusBar"))
+    ReassertFill(tooltip, healthFillAlpha)
+    rim.Raise(tooltip)
   end
 
   -- Ahead of the player-only gate below: the bar is shown for any hovered
@@ -2167,6 +2680,11 @@ local function RefreshTooltip(force)
      not string.find(tooltipName, unitName, 1, true) then
     return
   end
+
+  -- A world fade keeps the old text at alpha 0; SetTextColor restores the
+  -- line's colour alpha, so the name blinked every tick when the same unit
+  -- was hovered again (`/uui ttblink` 2026-11-26 23:36 and 23:39).
+  if placement.worldFade then return end
 
   -- The title line carries the standing towards the hovered unit, for players
   -- and creatures alike: hostile red, neutral orange, friendly green, through
@@ -2278,9 +2796,12 @@ local function InstallTriggers()
   -- window before the 0.10s backstop pass notices the frame went away.
   U.PostHookScript(tooltip, "OnHide", function()
     U.ClearTooltipItemName()
-    placement.fadeStartedAt = nil
-    placement.fadeHidePending = nil
+    placement.unitLastSeenAt = nil
+    placement.unitHoverActive = nil
+    -- The client's fade ended (or anything else closed the tooltip).
+    placement.worldFade = nil
     healthFillAlpha = 1
+    ReassertFill(tooltip)
   end)
 
   return installed
@@ -2323,6 +2844,7 @@ local function InstallCompareTrigger(index)
   if U.PostHookScript(tooltip, "OnShow", RestyleCompare) then
     installed = true
   end
+  U.PostHookScript(tooltip, "OnHide", function() ReassertFill(tooltip) end)
   return installed
 end
 
@@ -2340,6 +2862,10 @@ function TT.OnEnable()
   if not InstallTriggers() then
     U.Debug("tooltip: no show hook installed, styling is poll-driven only")
   end
+
+  fillHook.Install(U.G("GameTooltip"), function() return healthFillAlpha end)
+  fillHook.Install(U.G("ShoppingTooltip1"))
+  fillHook.Install(U.G("ShoppingTooltip2"))
 
   local compareInstalled = false
   local i

@@ -21,6 +21,7 @@ local nps = {
   HALF_TEXT = U.SETTINGS_COLUMN_WIDTH - 26,  -- label width of a two-column checkbox
   SLIDER_WIDTH = 200,
   HINT_LINE = 13,   -- reserve per wrapped description line
+  PREVIEW_HEIGHT = 104,  -- the placeholder-plate box atop every page
 }
 
 -- Vertical space each control type takes from its own top to the next one's.
@@ -290,6 +291,37 @@ function nps.AnchorOf(control)
   return control.box or control.button or control.swatch
 end
 
+-- The live preview (U.CreateNameplatePreview, modules/nameplates.lua), built
+-- into the page's pinned band (RegisterSettingsTab options.pinned) so it stays
+-- in view while the page scrolls beneath it. Its title sits inside the box's
+-- top-left corner rather than on a header row above it (user request,
+-- 2026-11-26), so the box takes the band from its top.
+nps.PIN_HEIGHT = 4 + nps.PREVIEW_HEIGHT + 8
+
+function nps.BuildPreview(parent)
+  local widgets = {}
+  if type(U.CreateNameplatePreview) ~= "function" then return widgets end
+  local preview = U.CreateNameplatePreview(parent, nps.PAGE_WIDTH,
+                                           nps.PREVIEW_HEIGHT)
+  if not preview then return widgets end
+  preview.frame:SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -4)
+
+  -- A region of the box, so it shows and hides with the preview.
+  local title = U.CreateSettingsLabel(preview.frame, {
+    size = M.fontSize.normal,
+    color = M.color.text,
+    inherits = "GameFontNormal",
+    justify = "LEFT",
+    width = 200,
+  })
+  if title then
+    title:SetText(U.L("NP_HEADER_PREVIEW"))
+    title:SetPoint("TOPLEFT", preview.frame, "TOPLEFT", 8, -6)
+  end
+  table.insert(widgets, preview)
+  return widgets
+end
+
 function nps.BuildPage(parent, page)
   local widgets, refreshers = {}, {}
   local modernWow = U.GetActiveThemeStyle and
@@ -387,7 +419,9 @@ function U.RegisterNameplateSettings()
     local id = nps.GROUP .. "." .. page.id
     U.RegisterSettingsTab(id, U.L(page.label),
                           function(parent) return nps.BuildPage(parent, page) end,
-                          { parent = nps.GROUP, after = previous })
+                          { parent = nps.GROUP, after = previous,
+                            pinned = { height = nps.PIN_HEIGHT,
+                                       build = nps.BuildPreview } })
     previous = id
   end
 end

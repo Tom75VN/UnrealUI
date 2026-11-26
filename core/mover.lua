@@ -147,9 +147,12 @@ local resetHooks = {}
 -- Edit-mode grid. Sized in UIParent units, which is the only space layout may
 -- be driven from (frames.json context: GetScreenWidth and UIParent:GetWidth are
 -- not the same unit space on this client).
-local DEFAULT_GRID_SIZE = 20
+-- Forever's Constants.EditModeConsts: default 100, 20 to 300 in steps of 10
+-- (EditModeManager.lua, EditModeGridSpacingSliderMixin).
+local DEFAULT_GRID_SIZE = 100
 local MIN_GRID_SIZE = 5
-local MAX_GRID_SIZE = 50
+local MAX_GRID_SIZE = 300
+local GRID_SIZE_STEP = 5
 local MAGNET_DISTANCE = 8
 local ALIGNMENT_EPSILON = 0.01
 
@@ -162,10 +165,11 @@ local function MoverConfig()
      type(saved.gridSize) == type(DEFAULT_GRID_SIZE) and
      type(saved.magnet) == "boolean" and
      type(saved.groupTouching) == "boolean" and
-     type(saved.anchorEnabled) == "table" and type(saved.scales) == "table" then
+     type(saved.anchorEnabled) == "table" and type(saved.scales) == "table" and
+     saved.gridMagnetic == true then
     return saved
   end
-  return U.ModuleConfig("mover", {
+  local config = U.ModuleConfig("mover", {
     gridShown = true,
     gridSize = DEFAULT_GRID_SIZE,
     magnet = true,
@@ -177,11 +181,18 @@ local function MoverConfig()
     -- Player scale per scalable mover id, in percent; absent means 100.
     scales = {},
   })
+  -- A size chosen for the old stepped grid (5 to 50) is meaningless as a
+  -- magnetic line spacing, so it is reset once to Forever's default.
+  if type(config) == "table" and config.gridMagnetic ~= true then
+    config.gridSize = DEFAULT_GRID_SIZE
+    config.gridMagnetic = true
+  end
+  return config
 end
 
 local function GridSize()
   local size = tonumber(MoverConfig().gridSize) or DEFAULT_GRID_SIZE
-  size = math.floor(size + 0.5)
+  size = math.floor(size / GRID_SIZE_STEP + 0.5) * GRID_SIZE_STEP
   if size < MIN_GRID_SIZE then size = MIN_GRID_SIZE end
   if size > MAX_GRID_SIZE then size = MAX_GRID_SIZE end
   return size
@@ -339,10 +350,28 @@ end
 -- calculated cursor-relative point rather than replaying a raw GetPoint tuple.
 local pendingSnap
 
-local function SnapValue(value)
-  value = tonumber(value) or 0
+-- The nearest grid line to any of an axis's three lines (low edge, centre,
+-- high edge), as the delta onto it, or nil out of MAGNET_DISTANCE. Lines are
+-- measured from `center`, the origin LayoutGrid draws from: knowledge.json /
+-- mover.gridalign_top_left_edge_snap measured that an edge lands on a drawn
+-- line exactly only against that origin. With `exact` it returns the line an
+-- edge or centre already sits on, for the red guide.
+local function GridLineDelta(low, high, center, exact)
   local size = GridSize()
-  return math.floor(value / size + 0.5) * size
+  local best, bestDistance = nil, MAGNET_DISTANCE + ALIGNMENT_EPSILON
+  local values = { low, (low + high) / 2, high }
+  local i
+  for i = 1, 3 do
+    local value = values[i]
+    local line = center + math.floor((value - center) / size + 0.5) * size
+    local distance = math.abs(line - value)
+    if exact then
+      if distance <= ALIGNMENT_EPSILON then return line end
+    elseif distance < bestDistance then
+      best, bestDistance = line - value, distance
+    end
+  end
+  return best
 end
 
 -- Magnetic snapping uses the stored UIParent-relative positions and frame
@@ -426,6 +455,22 @@ local function AlignDelta(low, high, otherLow, otherHigh,
   return same, sameDistance, cross, crossDistance
 end
 
+-- The screen as a magnet, per Forever's EditModeMagnetismManager
+-- GetTopLevelParentCheckPoints (Blizzard_EditMode/Shared/EditModeUtil.lua):
+-- each edge onto the same screen edge and centre onto centre, then either
+-- edge onto the centre line. Not AlignDelta's nine pairs, whose remaining
+-- cross pairs would pull a narrow anchor off screen against the clamp.
+local function ScreenAlignDelta(low, high, extent,
+                                same, sameDistance, cross, crossDistance)
+  local mid = extent / 2
+  same, sameDistance = ClosestDelta(0 - low, same, sameDistance)
+  same, sameDistance = ClosestDelta(mid - (low + high) / 2, same, sameDistance)
+  same, sameDistance = ClosestDelta(extent - high, same, sameDistance)
+  cross, crossDistance = ClosestDelta(mid - low, cross, crossDistance)
+  cross, crossDistance = ClosestDelta(mid - high, cross, crossDistance)
+  return same, sameDistance, cross, crossDistance
+end
+
 -- The other anchor's line that one of the anchor's own three lines sits
 -- exactly on, or nil. sameOnly checks only the same-line pairs, so the guide
 -- shows the match the snap preferred. Drives the red alignment guide.
@@ -463,8 +508,15 @@ end
 -- UnrealUIUnitTarget; after PinToUIParent its BOTTOMLEFT point read back with
 -- the negated Y (-244 for a bottom at 244), the screen clamp lifted that to 0,
 -- and every drop saved y = 0 -- the frame fell to the bottom of the screen.
--- Only a differently scaled or non-UIParent-anchored frame still falls back to
--- the point read.
+--
+-- That fix first covered only a frame at UIParent's scale, but target-of-target
+-- is scale-immune and scalable (ratio 1.19 in /uui movesnap), so it still took
+-- the negated read and stayed stuck to the bottom edge (user report
+-- 2026-11-26). Edges and offsets are both in the frame's own units at any
+-- scale (frames.ui_scale_frame_anchor_space_ratio), so UIParent's origin and
+-- span are brought into those units through the ratio, as PinToUIParent and
+-- MoverBounds already do. Only a non-UIParent-anchored frame still falls back
+-- to the point read.
 local function ReadPlacement(frame)
   local placement = U.GetFramePlacement(frame)
   if placement then
@@ -480,14 +532,15 @@ local function ReadPlacement(frame)
   local left, bottom = Edge(frame, "GetLeft"), Edge(frame, "GetBottom")
   local width, height = Edge(frame, "GetWidth"), Edge(frame, "GetHeight")
   if (not relative or relative == UIParent) and frameScale and uiScale and
-     math.abs(frameScale - uiScale) < 0.001 and left and bottom and
+     frameScale > 0 and uiScale > 0 and left and bottom and
      width and height then
-    left = left - (Edge(UIParent, "GetLeft") or 0)
-    bottom = bottom - (Edge(UIParent, "GetBottom") or 0)
+    local ratio = frameScale / uiScale
+    left = left - (Edge(UIParent, "GetLeft") or 0) / ratio
+    bottom = bottom - (Edge(UIParent, "GetBottom") or 0) / ratio
     x = left + width * PointFactor(point, "LEFT", "RIGHT") -
-        U.UILayoutWidth() * PointFactor(relativePoint, "LEFT", "RIGHT")
+        U.UILayoutWidth() / ratio * PointFactor(relativePoint, "LEFT", "RIGHT")
     y = bottom + height * PointFactor(point, "BOTTOM", "TOP") -
-        U.UILayoutHeight() * PointFactor(relativePoint, "BOTTOM", "TOP")
+        U.UILayoutHeight() / ratio * PointFactor(relativePoint, "BOTTOM", "TOP")
   end
   return { point = point, relative = relative,
            relativePoint = relativePoint, x = x, y = y }
@@ -1025,64 +1078,47 @@ local function IsFollower(entry, other)
   return entry.followerSet[other.id] and true or false
 end
 
--- Magnet contact wins over the grid on the axis where two anchors touch.
+-- Forever's magnetism (Blizzard_EditMode/Shared/EditModeUtil.lua,
+-- EditModeMagnetismManager): the anchor follows the cursor freely and is
+-- pulled, within MAGNET_DISTANCE on each axis, onto the nearest of:
 --
--- With the grid on, this used to skip the proximity pull and round the
--- collision escape up to whole cells, so the grid kept every edge on a drawn
--- line. Against a neighbour whose size is not a whole number of cells that
--- always left a visible gap between the two anchors, which is exactly what
--- enabling the magnet asks not to have. Now:
+--   * edge contact with another anchor beside it (magnet on only); contact
+--     wins over everything else on its axis;
+--   * smart alignment -- the screen's edges and centre line (ScreenAlignDelta)
+--     and any of the anchor's left/centre/right (bottom/centre/top) lines onto
+--     any of another anchor's, touching or not, same-line pairs before cross
+--     pairs (AlignDelta);
+--   * with the grid shown, the nearest grid line to its left, centre or right
+--     (bottom, centre or top) -- Forever's FindClosestGridLine. The grid no
+--     longer steps the anchor; it is a magnet, and the weakest one, so a
+--     neighbour or the screen centre within reach always wins over a line.
 --
---   * the edge-to-edge pull runs with the grid on too, measured from the
---     cursor's unsnapped position (rawX/rawY) so the grid cell the anchor
---     happens to sit in cannot hold it out of magnet range; a hit on an axis
---     replaces the grid value on that axis only, and the other axis stays on
---     the grid;
---   * smart alignment -- the screen centre, and any of the anchor's left/
---     centre/right (bottom/centre/top) lines onto any of another anchor's,
---     touching or not -- runs in both modes. With the grid on it is measured
---     from the grid position, within half a cell (at most MAGNET_DISTANCE):
---     the grid keeps stepping, and the one step nearest a line lands on it
---     exactly. Measured from the cursor instead (the first phase-1 build),
---     a step a unit or two off the centre never reached it (pandaUI user
---     report 2026-10-25, grid 20);
---   * contact wins over alignment on an axis where both hit;
---   * the collision escape is exact, leaving the anchor flush against the
---     edge it approached.
---
--- Alignment runs whatever the magnet toggle says; magnetOn gates only the
--- edge contact pull and the collision barrier, which is what the option
--- names ("Magnet elements (prevent overlap)"): a grid step cannot close a
--- fraction of a unit, so with the magnet off two centres a quarter unit
--- apart never aligned (pandaUI movesnap trace, 2026-10-26).
+-- magnetOn gates everything between anchors -- contact, alignment and the
+-- collision barrier -- so with "Magnet elements" off an anchor is pulled only
+-- by the screen and the grid (user report, 2026-11-26).
 local function SnapToMovers(entry, point, relativePoint, x, y, gridOn,
-                            rawX, rawY, magnetOn)
-  local fromX, fromY = x, y
-  if gridOn then fromX, fromY = rawX or x, rawY or y end
+                            magnetOn)
   local left, right, bottom, top = MoverBounds(entry, {
-    point = point, relativePoint = relativePoint, x = fromX, y = fromY,
-  })
-  -- Where the grid put it (the same rectangle with the grid off).
-  local gLeft, gRight, gBottom, gTop = MoverBounds(entry, {
     point = point, relativePoint = relativePoint, x = x, y = y,
   })
-  if not left or not gLeft then return x, y, false, false end
+  if not left then return x, y, false, false end
+  local gLeft, gRight, gBottom, gTop = left, right, bottom, top
 
-  local reach = MAGNET_DISTANCE
-  if gridOn and GridSize() / 2 < reach then reach = GridSize() / 2 end
-  reach = reach + ALIGNMENT_EPSILON
+  local reach = MAGNET_DISTANCE + ALIGNMENT_EPSILON
   local bestX, bestY, bestXDistance, bestYDistance = nil, nil,
     MAGNET_DISTANCE + 1, MAGNET_DISTANCE + 1
-  -- Same-line tier (screen centre included) and cross tier, per axis.
+  -- Same-line tier (screen included) and cross tier, per axis.
   local alignX, alignY, alignXDistance, alignYDistance = nil, nil,
     reach, reach
   local crossX, crossY, crossXDistance, crossYDistance = nil, nil,
     reach, reach
   local i
-  alignX, alignXDistance = ClosestDelta(
-    U.UILayoutWidth() / 2 - (gLeft + gRight) / 2, alignX, alignXDistance)
-  alignY, alignYDistance = ClosestDelta(
-    U.UILayoutHeight() / 2 - (gBottom + gTop) / 2, alignY, alignYDistance)
+  alignX, alignXDistance, crossX, crossXDistance = ScreenAlignDelta(
+    gLeft, gRight, U.UILayoutWidth(),
+    alignX, alignXDistance, crossX, crossXDistance)
+  alignY, alignYDistance, crossY, crossYDistance = ScreenAlignDelta(
+    gBottom, gTop, U.UILayoutHeight(),
+    alignY, alignYDistance, crossY, crossYDistance)
   for i = 1, table.getn(moverOrder) do
     local other = movers[moverOrder[i]]
     if other ~= entry and IsEntryVisible(other) and
@@ -1090,7 +1126,7 @@ local function SnapToMovers(entry, point, relativePoint, x, y, gridOn,
       local position = EntryPosition(other)
       local otherLeft, otherRight, otherBottom, otherTop =
         MoverBounds(other, position)
-      if otherLeft then
+      if otherLeft and magnetOn then
         alignX, alignXDistance, crossX, crossXDistance = AlignDelta(
           gLeft, gRight, otherLeft, otherRight,
           alignX, alignXDistance, crossX, crossXDistance)
@@ -1098,9 +1134,7 @@ local function SnapToMovers(entry, point, relativePoint, x, y, gridOn,
           gBottom, gTop, otherBottom, otherTop,
           alignY, alignYDistance, crossY, crossYDistance)
       end
-      -- Grid on: edge contact from the cursor position, as before. Grid off
-      -- the alignment pass above already holds these pairs.
-      if otherLeft and gridOn and magnetOn then
+      if otherLeft and magnetOn then
         if IntervalsNear(bottom, top, otherBottom, otherTop) then
           bestX, bestXDistance = ClosestDelta(
             otherLeft - right, bestX, bestXDistance)
@@ -1116,21 +1150,27 @@ local function SnapToMovers(entry, point, relativePoint, x, y, gridOn,
       end
     end
   end
+  if gridOn then
+    if not alignX and not crossX then
+      crossX = GridLineDelta(left, right, U.UILayoutWidth() / 2)
+    end
+    if not alignY and not crossY then
+      crossY = GridLineDelta(bottom, top, U.UILayoutHeight() / 2)
+    end
+  end
 
   -- Every delta above is in UIParent units (MoverBounds); the offsets are in
   -- the frame's own, so each correction is divided by the ratio on the way in.
-  -- Contact deltas are from the cursor position, alignment deltas from the
-  -- grid position (x, y).
   local ratio = EntryScale(entry)
   if not alignX then alignX = crossX end
   if not alignY then alignY = crossY end
   if bestX then
-    x = fromX + bestX / ratio
+    x = x + bestX / ratio
   elseif alignX then
     x, bestX = x + alignX / ratio, alignX
   end
   if bestY then
-    y = fromY + bestY / ratio
+    y = y + bestY / ratio
   elseif alignY then
     y, bestY = y + alignY / ratio, alignY
   end
@@ -1250,66 +1290,19 @@ local function SnapToMovers(entry, point, relativePoint, x, y, gridOn,
   return x, y, bestX ~= nil, bestY ~= nil
 end
 
--- Grid snapping moves the anchor's TOP-LEFT edge onto a grid line, not the
--- stored offsets.
---
--- Snapping the offsets themselves cannot align anything: they are measured
--- from whatever the stored point pair names -- after a drag, PinToUIParent
--- makes that BOTTOMLEFT, so the screen's left/bottom edge -- while LayoutGrid
--- draws the lines from UIParent's centre outwards. The two origins only agree
--- when half the screen is a whole number of grid cells, and the edge that
--- landed on a line was the bottom one, not the top.
---
--- knowledge.json / mover.gridalign_top_left_edge_snap (FOCUSED_RUNTIME_PROBE,
--- gridalign.v3) measured all 46 slider sizes against unrealUI's own drawn
--- lines: the shipped offset snap missed by up to 23.17 units, while snapping
--- the top-left edge to the centre-origin grid landed on the measured line
--- centre exactly, 92 placements out of 92, for odd and even grid sizes and odd
--- and even frame dimensions alike. Grid-size parity turned out to be
--- irrelevant, so no even/odd grid variant is needed.
---
--- The correction is applied as a delta to the offsets the caller already has,
--- so it holds for any point/relativePoint pair without repeating the
--- point-factor maths.
-local function SnapPosition(entry, point, relativePoint, x, y)
-  x = tonumber(x) or 0
-  y = tonumber(y) or 0
-
-  local left, _, _, top = MoverBounds(entry, {
-    point = point, relativePoint = relativePoint, x = x, y = y,
-  })
-  if not left or not top then
-    -- No readable dimensions: snapping the raw offsets at least keeps movement
-    -- stepped rather than continuous.
-    return SnapValue(x), SnapValue(y)
-  end
-
-  local centerX, centerY = U.UILayoutWidth() / 2, U.UILayoutHeight() / 2
-  local snappedLeft = centerX + SnapValue(left - centerX)
-  local snappedTop = centerY + SnapValue(top - centerY)
-  local ratio = EntryScale(entry)
-  return x + (snappedLeft - left) / ratio,
-         y + (snappedTop - top) / ratio
-end
-
 local function ResolveSnap(entry, point, relative, relativePoint, x, y)
   local config = MoverConfig()
   local snapped = false
   local sample = trace.Begin(entry, point, relativePoint, x, y, config)
-  local rawX, rawY = x, y
-  if config.gridShown then
-    local sx, sy = SnapPosition(entry, point, relativePoint, x, y)
-    snapped = sx ~= x or sy ~= y
-    x, y = sx, sy
-  end
   local gridX, gridY = x, y
 
-  -- Alignment always; contact and overlap only with the magnet on.
+  -- Alignment and grid lines always; contact and overlap only with the magnet
+  -- on.
   if not relative or relative == UIParent then
     local magneticX, magneticY
     x, y, magneticX, magneticY =
       SnapToMovers(entry, point, relativePoint, x, y, config.gridShown,
-                   rawX, rawY, config.magnet and true or false)
+                   config.magnet and true or false)
     snapped = snapped or magneticX or magneticY
   end
   trace.Commit(sample, gridX, gridY, x, y)
@@ -2004,8 +1997,16 @@ local function ApplyHandleState(entry)
     art.fill:SetAlpha(token.fillAlpha[state])
   end
 
+  -- Shown on hover too, as Forever's selection label is
+  -- (EditModeSystemSelectionBaseMixin:ShowEditInstructions). Forever names the
+  -- hovered system in a cursor tooltip instead; the shared GameTooltip is not
+  -- ours to use here (rules/unreal-ui-design.md), so the label carries it.
   if entry.handle.label then
-    if highlighted then entry.handle.label:Show() else entry.handle.label:Hide() end
+    if highlighted or entry.hovered then
+      entry.handle.label:Show()
+    else
+      entry.handle.label:Hide()
+    end
   end
 end
 
@@ -2486,7 +2487,7 @@ local function LayoutGrid(previewSize)
   local offset, index = nil, 0
   local size = tonumber(previewSize)
   if size then
-    size = math.floor(size + 0.5)
+    size = math.floor(size / GRID_SIZE_STEP + 0.5) * GRID_SIZE_STEP
     if size < MIN_GRID_SIZE then size = MIN_GRID_SIZE end
     if size > MAX_GRID_SIZE then size = MAX_GRID_SIZE end
   else
@@ -2576,23 +2577,19 @@ UpdateAlignmentGuides = function(entry, point, relativePoint, x, y)
     return
   end
 
-  local centerX, centerY = (left + right) / 2, (bottom + top) / 2
   local guideX, guideY
-  local screenCenterX, screenCenterY =
-    U.UILayoutWidth() / 2, U.UILayoutHeight() / 2
-  if math.abs(centerX - screenCenterX) <= ALIGNMENT_EPSILON then
-    guideX = screenCenterX
-  end
-  if math.abs(centerY - screenCenterY) <= ALIGNMENT_EPSILON then
-    guideY = screenCenterY
-  end
+  local width, height = U.UILayoutWidth(), U.UILayoutHeight()
+  local screenCenterX, screenCenterY = width / 2, height / 2
   local i
   -- Any of the anchor's three lines per axis on any line of another anchor,
-  -- touching or not. Same tiers as the snap (AlignDelta): screen centre, then
-  -- same-line matches across every anchor, then cross matches.
+  -- touching or not, or on a screen edge or the centre line. Same tiers as
+  -- the snap: same-line matches first, then cross matches; the screen leads
+  -- each tier.
   local pass
   for pass = 1, 2 do
-    for i = 1, table.getn(moverOrder) do
+    if not guideX then guideX = AlignedLine(left, right, 0, width, pass == 1) end
+    if not guideY then guideY = AlignedLine(bottom, top, 0, height, pass == 1) end
+    for i = 1, (MoverConfig().magnet and table.getn(moverOrder) or 0) do
       if guideX and guideY then break end
       local other = movers[moverOrder[i]]
       if other ~= entry and IsEntryVisible(other) and
@@ -2613,6 +2610,16 @@ UpdateAlignmentGuides = function(entry, point, relativePoint, x, y)
     end
   end
 
+  -- A grid line the anchor was pulled onto, as Forever previews it.
+  if MoverConfig().gridShown then
+    if not guideX then
+      guideX = GridLineDelta(left, right, screenCenterX, true)
+    end
+    if not guideY then
+      guideY = GridLineDelta(bottom, top, screenCenterY, true)
+    end
+  end
+
   if not guideX and not guideY then
     HideAlignmentGuides()
     return
@@ -2621,6 +2628,10 @@ UpdateAlignmentGuides = function(entry, point, relativePoint, x, y)
   alignmentGuides:Show()
 
   local thickness = U.BorderSize()
+  -- A line on a screen edge is drawn just inside it rather than half off it.
+  local half = thickness / 2
+  if guideX then guideX = math.max(half, math.min(width - half, guideX)) end
+  if guideY then guideY = math.max(half, math.min(height - half, guideY)) end
   if guideX then
     alignmentGuides.vertical:ClearAllPoints()
     alignmentGuides.vertical:SetWidth(thickness)
@@ -2758,7 +2769,7 @@ local function CreateEditPanel()
     width = 220,
     min = MIN_GRID_SIZE,
     max = MAX_GRID_SIZE,
-    step = 1,
+    step = GRID_SIZE_STEP,
     value = GridSize(),
     onInput = function(value)
       if grid then LayoutGrid(value) end

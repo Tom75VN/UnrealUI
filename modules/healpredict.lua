@@ -50,7 +50,9 @@
 -- Where the amount comes from
 -- ---------------------------------------------------------------------------
 --
--- From the player's own heals as they land. The four self-heal templates exist
+-- From the player's own heals as they land: the combat log's SPELL_HEAL when
+-- the client sends it (see combatLog below), else the chat text. The four
+-- self-heal templates exist
 -- on this client with Vanilla's exact wording -- a globals capture from this
 -- runtime (runtime-reports/UnrealRuntimeProbe-2026-08-16-invalid.lua) records
 -- HEALEDSELFOTHER "Your %s heals %s for %d.", HEALEDSELFSELF, and both
@@ -77,15 +79,13 @@
 -- Where the target comes from
 -- ---------------------------------------------------------------------------
 --
--- SPELLCAST_START carries the spell name and the cast time in milliseconds
--- (knowledge.json / castbar.player_events_partial) and nothing else, so the
--- target is resolved the way modules/hots.lua resolves it and the way pfUI
--- does: the current target if it can be assisted, otherwise the player. The
--- rank comes from the action slot that was pressed, through core/init.lua's
--- action-press fan-out and U.ActionSlotSpellName -- this client has no
--- GetActionInfo and no global hooksecurefunc to place on CastSpell, so a cast
--- that does not come from an unrealUI action button has no rank and is keyed on
--- its name alone.
+-- No cast event names its target, so the target is resolved the way
+-- modules/hots.lua and pfUI do: the current target if it can be assisted,
+-- otherwise the player. With the 3.3.5a cast port, UnitCastingInfo("player")
+-- at UNIT_SPELLCAST_START supplies name, rank and length for every cast route
+-- (knowledge.json / castbar.player_cast_query_stale_after_end; see nativeCast).
+-- Without it, SPELLCAST_START gives name and length, and the rank comes only
+-- from an unrealUI action press through U.ActionSlotSpellName.
 --
 -- ---------------------------------------------------------------------------
 -- What is not taken from pfUI, and why
@@ -102,8 +102,8 @@
 --   * The Prayer of Healing fan-out. It needs the spell's localized name to
 --     recognise it; a group heal here predicts on the resolved target only,
 --     which under-reports rather than mispredicting.
---   * Its cast hooks. There is no global hooksecurefunc on this client
---     (knowledge.json / hooks.no_global_hooksecurefunc).
+--   * Its cast hooks. The native UNIT_SPELLCAST_* port (nativeCast) covers
+--     every cast route, so no cast function is hooked.
 --
 -- ---------------------------------------------------------------------------
 
@@ -594,7 +594,112 @@ local function OnCastDelayed(delay)
   end
 end
 
+-- 3.3.5a cast port path. The query returns a cast for a moment after it ends,
+-- so it is read on START/DELAYED only and a stop never re-queries it.
+local nativeCast = {}
+
+function nativeCast.Query()
+  local fn = U.G("UnitCastingInfo")
+  if type(fn) ~= "function" then return nil end
+  local ok, name, rank, _, _, startMs, endMs = pcall(fn, "player")
+  startMs, endMs = tonumber(startMs), tonumber(endMs)
+  if ok and type(name) == "string" and name ~= "" and
+     startMs and endMs and endMs > startMs then
+    return name, rank, startMs, endMs
+  end
+  return nil
+end
+
+function nativeCast.OnStart(event, unit)
+  if unit ~= "player" then return end
+  local name, rank, startMs, endMs = nativeCast.Query()
+  if not name then return end
+  if nativeCast.name == name and nativeCast.startMs == startMs then return end
+  nativeCast.name, nativeCast.startMs, nativeCast.endMs = name, startMs, endMs
+  pressed = { name = name, rank = type(rank) == "string" and rank or "" }
+  OnCastStart(name, endMs - startMs)
+end
+
+function nativeCast.OnDelayed(event, unit)
+  if unit ~= "player" or not nativeCast.endMs then return end
+  local name, _, startMs, endMs = nativeCast.Query()
+  if name ~= nativeCast.name or startMs ~= nativeCast.startMs then return end
+  local shift = endMs - nativeCast.endMs
+  nativeCast.endMs = endMs
+  if shift > 0 then OnCastDelayed(shift) end
+end
+
+-- A stop for another spell is ignored, and so is a FAILED from pressing the
+-- same heal again while the query still returns the running cast.
+function nativeCast.OnStop(event, unit, spell)
+  if unit ~= "player" or active == 0 then return end
+  if type(spell) == "string" and nativeCast.name and spell ~= nativeCast.name then
+    return
+  end
+  if event == "UNIT_SPELLCAST_FAILED" then
+    local _, _, startMs = nativeCast.Query()
+    if startMs and startMs == nativeCast.startMs then return end
+  end
+  OnCastEnd()
+end
+
+function nativeCast.Register()
+  U.RegisterEvent("UNIT_SPELLCAST_START", nativeCast.OnStart)
+  U.RegisterEvent("UNIT_SPELLCAST_DELAYED", nativeCast.OnDelayed)
+  local stops = { "UNIT_SPELLCAST_STOP", "UNIT_SPELLCAST_FAILED",
+                  "UNIT_SPELLCAST_INTERRUPTED" }
+  local i
+  for i = 1, table.getn(stops) do U.RegisterEvent(stops[i], nativeCast.OnStop) end
+  -- The measured interrupt signal; UNIT_SPELLCAST_INTERRUPTED has no player
+  -- capture yet.
+  U.RegisterEvent("SPELLCAST_INTERRUPTED", function() OnCastEnd() end)
+end
+
+-- knowledge.json / events.combat_log_event_unfiltered_combatlog_v1: the 3.3.5a
+-- combat log carries the player's SPELL_HEAL with spell name, amount (overheal
+-- included) and a crit flag, equal to the chat text's number. Once one has
+-- been seen, the chat-text path stops learning so a heal is not counted twice.
+-- Own frame: U.RegisterEvent forwards 8 arguments, the amount is the 12th.
+local combatLog = { seen = false }
+
+-- `a` is the handler's vararg table, `arg` as the combat log probe read it.
+function combatLog.OnEvent(a)
+  -- (self, event, ...) on this client; tolerate (event, ...) too.
+  local f = 2
+  if a[1] == "COMBAT_LOG_EVENT_UNFILTERED" then f = 1 end
+  if a[f] ~= "COMBAT_LOG_EVENT_UNFILTERED" then return end
+  -- Fields after the event name: 1 timestamp, 2 subevent, 3 sourceGUID,
+  -- 4 sourceName, ..., 10 spellName, 12 amount, 15 critical.
+  if a[f + 2] ~= "SPELL_HEAL" then return end
+  local mine = (combatLog.guid ~= nil and a[f + 3] == combatLog.guid) or
+               (combatLog.guid == nil and a[f + 4] == Call("UnitName", "player"))
+  if not mine then return end
+  combatLog.seen = true
+  local spell, amount = a[f + 10], tonumber(a[f + 12])
+  local crit = a[f + 15] and a[f + 15] ~= 0
+  if lastCast and lastCast.name == spell then
+    Learn(lastCast.key, amount, crit)
+  end
+end
+
+function combatLog.Register()
+  local ok, frame = pcall(CreateFrame, "Frame")
+  if not ok or not frame then return end
+  if not pcall(frame.RegisterEvent, frame, "COMBAT_LOG_EVENT_UNFILTERED") then return end
+  local guid = U.G("UnitGUID")
+  if type(guid) == "function" then
+    local okGuid, value = pcall(guid, "player")
+    if okGuid and type(value) == "string" then combatLog.guid = value end
+  end
+  frame:SetScript("OnEvent", function(...)
+    local okEvent, err = pcall(combatLog.OnEvent, arg)
+    if not okEvent then U.Debug("healpredict combat log: " .. tostring(err)) end
+  end)
+  combatLog.frame = frame
+end
+
 local function OnHealMessage(message)
+  if combatLog.seen then return end
   local spell, target, amount, crit = MatchHeal(message)
   if not spell then return end
 
@@ -666,6 +771,9 @@ function U.HealPredictDebugDump()
     U.Print("  preview: running for " ..
             string.format("%.1f", preview - Now()) .. "s")
   end
+
+  U.Print("  learning from: " .. (combatLog.seen and "combat log (SPELL_HEAL)" or
+          (combatLog.frame and "chat text until a SPELL_HEAL is seen" or "chat text")))
 
   if not patterns then BuildPatterns() end
   local i
@@ -775,21 +883,27 @@ end
 function HP:OnEnable()
   BuildPatterns()
 
-  U.RegisterActionUsed(OnActionUsed)
-
-  U.RegisterEvent("SPELLCAST_START", function(event, name, castTime)
-    OnCastStart(name, castTime)
-  end)
-  U.RegisterEvent("SPELLCAST_STOP", function() OnCastEnd() end)
-  U.RegisterEvent("SPELLCAST_DELAYED", function(event, delay)
-    OnCastDelayed(delay)
-  end)
-
-  local cancelled = { "SPELLCAST_FAILED", "SPELLCAST_INTERRUPTED" }
   local i
-  for i = 1, table.getn(cancelled) do
-    U.RegisterEvent(cancelled[i], function() OnCastEnd() end)
+  if type(U.G("UnitCastingInfo")) == "function" then
+    nativeCast.Register()
+  else
+    U.RegisterActionUsed(OnActionUsed)
+
+    U.RegisterEvent("SPELLCAST_START", function(event, name, castTime)
+      OnCastStart(name, castTime)
+    end)
+    U.RegisterEvent("SPELLCAST_STOP", function() OnCastEnd() end)
+    U.RegisterEvent("SPELLCAST_DELAYED", function(event, delay)
+      OnCastDelayed(delay)
+    end)
+
+    local cancelled = { "SPELLCAST_FAILED", "SPELLCAST_INTERRUPTED" }
+    for i = 1, table.getn(cancelled) do
+      U.RegisterEvent(cancelled[i], function() OnCastEnd() end)
+    end
   end
+
+  combatLog.Register()
 
   -- Where "Your X heals Y for N." arrives. Both self channels are registered
   -- because only the direct-heal one is documented for this text in Vanilla and

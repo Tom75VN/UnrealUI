@@ -223,6 +223,11 @@ function L.Detach(page)
     if record.resizedHeight and record.height then
       pcall(object.SetHeight, object, record.height)
     end
+    if record.scale then
+      pcall(object.SetScale, object, record.scale)
+      object.uuiCanvasRow = nil
+      object.uuiCanvasLevel = nil
+    end
     if record.box then
       local list = M.foreverWow.list
       pcall(object.SetBackdropColor, object, M.Unpack(list.boxColor))
@@ -352,6 +357,9 @@ function L.Walk(frame, depth, ctx, model)
     local objectType = gs.Read(kid, "GetObjectType")
     if type(name) ~= "string" or name == "" then
       if objectType == "Frame" then L.Walk(kid, depth + 1, ctx, model) end
+    elseif gs.CANVAS[name] then
+      -- One picture, one row (gs.CANVAS); an overlay rides its canvas's row.
+      if not gs.CANVAS[name].over then L.AddControl(model, ctx, name, "canvas") end
     else
       local kind = L.KindOf(name, objectType)
       if kind then
@@ -463,7 +471,9 @@ function L.SearchWalk(frame, depth, sectionTitle, values)
     local kid = kids[i]
     local name = gs.Read(kid, "GetName")
     local objectType = gs.Read(kid, "GetObjectType")
-    if type(name) == "string" and name ~= "" then
+    if type(name) == "string" and gs.CANVAS[name] then
+      L.AddSearchValue(values, sectionTitle)
+    elseif type(name) == "string" and name ~= "" then
       local kind = L.KindOf(name, objectType)
       if kind then
         L.AddSearchValue(values, sectionTitle)
@@ -952,10 +962,15 @@ function L.Build()
   local ok, scroll = pcall(CreateFrame, "ScrollFrame", "UnrealUIGameSettingsList", gs.host)
   if not ok or not scroll then return false end
   L.scroll = scroll
+  -- One point and an explicit size on the explicitly sized host, for the
+  -- view, its row frame and the bar alike (knowledge.json /
+  -- frames.anchor_chain_layout_cost: a two-point link doubles the walk of
+  -- every row below it on each frame the window moves).
+  local viewWidth = (gs.hostWidth or 1) -
+                    (list.scrollbarWidth + list.scrollbarInset.right + list.scrollbarGap)
   scroll:SetPoint("TOPLEFT", gs.host, "TOPLEFT", 0, 0)
-  scroll:SetPoint("BOTTOMRIGHT", gs.host, "BOTTOMRIGHT",
-                  -(list.scrollbarWidth + list.scrollbarInset.right +
-                    list.scrollbarGap), 0)
+  scroll:SetWidth(math.max(1, viewWidth))
+  scroll:SetHeight(math.max(1, gs.hostHeight or 1))
 
   -- The ScrollFrame is kept for the wheel alone, with the 1x1 scroll child
   -- scripts.scrollframe_receives_mousewheel verified. It never scrolls:
@@ -971,7 +986,9 @@ function L.Build()
   pcall(scroll.SetScrollChild, scroll, dummy)
 
   local child = CreateFrame("Frame", "UnrealUIGameSettingsListChild", gs.host)
-  child:SetAllPoints(scroll)
+  child:SetPoint("TOPLEFT", gs.host, "TOPLEFT", 0, 0)
+  child:SetWidth(math.max(1, viewWidth))
+  child:SetHeight(math.max(1, gs.hostHeight or 1))
   pcall(child.EnableMouse, child, false)
   L.child = child
   L.offset = 0
@@ -983,8 +1000,8 @@ function L.Build()
     bar:SetWidth(list.scrollbarWidth)
     bar:SetPoint("TOPRIGHT", gs.host, "TOPRIGHT", -list.scrollbarInset.right,
                  -list.scrollbarInset.top)
-    bar:SetPoint("BOTTOMRIGHT", gs.host, "BOTTOMRIGHT", -list.scrollbarInset.right,
-                 list.scrollbarInset.bottom)
+    bar:SetHeight(math.max(1, (gs.hostHeight or 1) - list.scrollbarInset.top -
+                              list.scrollbarInset.bottom))
     pcall(bar.SetMinMaxValues, bar, 0, 0)
     pcall(bar.SetValueStep, bar, 1)
     pcall(bar.SetValue, bar, 0)
@@ -993,7 +1010,7 @@ function L.Build()
       L.PaintArrows()
       if value == L.offset then return end
       L.offset = value
-      if L.active and not L.laying then L.Layout(L.active) end
+      if L.active and not L.laying then L.PaintOffset() end
     end)
     -- MinimalScrollBar's steppers. The shared component finds them by the
     -- Slider's name and draws them; each moves the list one wheel step.
@@ -2218,6 +2235,224 @@ function L.PlaceMeter(state, control, object, row, level, width)
 end
 
 -- ---------------------------------------------------------------------------
+-- Canvases (gs.CANVAS): a client picture moved whole onto one row
+--
+-- The Interface > Gamepad diagram is a controller image with leader lines and
+-- buttons placed on it by the client. Its regions scale with the diagram, but
+-- its native child buttons do not inherit that scale on this client. Their
+-- original offsets are captured once, then every child is reparented, scaled
+-- directly and placed at the matching scaled offset. The chooser the client
+-- opens over it rides the same row at native scale, preserving its scroll-list
+-- children, which cannot inherit an addon ancestor's scale either.
+-- ---------------------------------------------------------------------------
+function L.CanvasParts(name)
+  local parts = { { name = name, spec = gs.CANVAS[name] } }
+  local key, spec
+  for key, spec in pairs(gs.CANVAS) do
+    if spec.over == name then table.insert(parts, { name = key, spec = spec }) end
+  end
+  return parts
+end
+
+-- A canvas keeps its row while the client shows the picture or anything it
+-- opens over it.
+function L.ControlShown(control, object)
+  if gs.Read(object, "IsShown") then return true end
+  if control.kind ~= "canvas" then return false end
+  local parts = L.CanvasParts(control.name)
+  local i
+  for i = 2, table.getn(parts) do
+    if gs.Read(U.G(parts[i].name), "IsShown") then return true end
+  end
+  return false
+end
+
+-- A canvas's members leave it for the row, so they no longer hide with it.
+-- The client hides the Gamepad diagram while its binding chooser is open
+-- (reported in game 2026-11-27: labels and spots showed through the chooser
+-- with no controller image under them). They ride an addon host that follows
+-- the canvas's own shown state instead; a hidden addon parent hides a native
+-- child here (L.Vault relies on the same).
+function L.CanvasHost(canvas, row)
+  local host = canvas.uuiCanvasHost
+  if not host then
+    local ok, made = pcall(CreateFrame, "Frame", nil, row)
+    if not ok or not made then return row end
+    host = made
+    pcall(host.EnableMouse, host, false)
+    canvas.uuiCanvasHost = host
+    local function Sync()
+      if gs.Read(canvas, "IsShown") then
+        pcall(host.Show, host)
+      else
+        pcall(host.Hide, host)
+      end
+    end
+    U.PostHookScript(canvas, "OnShow", Sync)
+    U.PostHookScript(canvas, "OnHide", Sync)
+  end
+  if host.uuiRow ~= row then
+    pcall(host.SetParent, host, row)
+    pcall(host.ClearAllPoints, host)
+    pcall(host.SetAllPoints, host, row)
+    host.uuiRow = row
+  end
+  if gs.Read(canvas, "IsShown") then
+    pcall(host.Show, host)
+  else
+    pcall(host.Hide, host)
+  end
+  return host
+end
+
+function L.PlaceCanvas(state, canvas, row, level, width)
+  local name = gs.Read(canvas, "GetName")
+  local parts = L.CanvasParts(name)
+  row.uuiNoHover = true
+
+  local boxW, boxH = 0, 0
+  local i
+  for i = 1, table.getn(parts) do
+    local part = parts[i]
+    part.object = U.G(part.name)
+    local object = part.object
+    if object then
+      if i > 1 then
+        L.Keep(state, object, { reparented = true,
+                                scale = gs.Number(object, "GetScale") or 1 })
+      end
+      local record = state.kept[object]
+      if record and record.canvasLeft == nil then
+        record.canvasLeft = gs.Number(object, "GetLeft")
+        record.canvasTop = gs.Number(object, "GetTop")
+      end
+      part.members = {}
+      local j
+      for j = 1, table.getn(part.spec.members or {}) do
+        local member = U.G(part.spec.members[j])
+        if member then
+          local left = gs.Number(member, "GetLeft")
+          local top = gs.Number(member, "GetTop")
+          L.Keep(state, member, { reparented = true,
+                                  scale = gs.Number(member, "GetScale") or 1 })
+          local memberRecord = state.kept[member]
+          if memberRecord.canvasX == nil and record and
+             record.canvasLeft and record.canvasTop and left and top then
+            memberRecord.canvasX = left - record.canvasLeft
+            memberRecord.canvasY = top - record.canvasTop
+          end
+          table.insert(part.members, { object = member, record = memberRecord })
+        end
+      end
+      -- Parented once per attach, not on every paint: repeated SetParent on a
+      -- client widget is what frames.gamesettings_page_switch_native_parent_
+      -- churn_crash suspects. L.Detach clears the mark.
+      -- A closed overlay (the Gamepad binding chooser and its long list)
+      -- waits on L.Shelf instead of the row: hidden under the row it still
+      -- cost ~10ms a frame of window drag (reported in game 2026-11-27,
+      -- 144 -> 60 fps on the Gamepad tab). Its OnShow/OnHide relayout
+      -- (below) moves it, so it is reparented only when the player opens or
+      -- closes it.
+      local home = row
+      if part.spec.over and not gs.Read(object, "IsShown") then
+        home = L.Shelf() or row
+      end
+      part.shelved = home ~= row
+      if object.uuiCanvasRow ~= home then
+        pcall(object.SetParent, object, home)
+        object.uuiCanvasRow = home
+      end
+      local spec = part.spec
+      if spec.scale ~= false then
+        boxW = math.max(boxW, (spec.x or 0) + (gs.Number(object, "GetWidth") or 0))
+        boxH = math.max(boxH, -(spec.y or 0) + (gs.Number(object, "GetHeight") or 0))
+      end
+      local hookKey = "canvas:" .. part.name
+      if spec.scale == false and not L.hooked[hookKey] then
+        L.hooked[hookKey] = true
+        local function Relayout()
+          if L.active then U.DeferOnce("gamesettings:list", function()
+            if L.active then L.Layout(L.active) end
+          end) end
+        end
+        U.PostHookScript(object, "OnShow", Relayout)
+        U.PostHookScript(object, "OnHide", Relayout)
+      end
+    end
+  end
+
+  -- One client unit of the canvas, in row units, at its own scale 1.
+  local unit = 1
+  local rowScale = gs.Number(row, "GetEffectiveScale")
+  local effective = gs.Number(canvas, "GetEffectiveScale")
+  local own = gs.Number(canvas, "GetScale")
+  if rowScale and effective and own and rowScale > 0 and own > 0 then
+    unit = effective / own / rowScale
+    if unit < 0.25 or unit > 4 then unit = 1 end
+  end
+  local scale = 1
+  if boxW > 0 and width > 0 and boxW * unit > width then
+    scale = width / (boxW * unit)
+  end
+  local drawn = scale * unit
+  local inset = math.max(0, (width - boxW * drawn) / 2)
+  local canvasHeight = boxH * drawn
+
+  for i = 1, table.getn(parts) do
+    local object = parts[i].object
+    if object and parts[i].shelved then
+      -- Anchored to nothing in the window, or it would still move with it.
+      pcall(object.ClearAllPoints, object)
+      pcall(object.SetPoint, object, "TOPLEFT", L.Shelf(), "TOPLEFT", 0, 0)
+    elseif object then
+      local spec = parts[i].spec
+      local partScale = spec.scale == false and 1 or scale
+      local partDrawn = partScale * unit
+      local partWidth = gs.Number(object, "GetWidth") or 0
+      local partInset = spec.scale == false and
+                        (width - partWidth * partDrawn) / 2 or inset
+      pcall(object.SetScale, object, partScale)
+      pcall(object.ClearAllPoints, object)
+      -- Offsets are in the part's own, scaled units.
+      pcall(object.SetPoint, object, "TOPLEFT", row, "TOPLEFT",
+            (spec.x or 0) + partInset / partDrawn, spec.y or 0)
+      -- An overlay draws above the whole picture: buttons, their icons.
+      local partLevel = level + (i - 1) * 4
+      if object.uuiCanvasLevel ~= partLevel then
+        gs.Relevel(object, partLevel, 0)
+        object.uuiCanvasLevel = partLevel
+      end
+      local j
+      for j = 1, table.getn(parts[i].members or {}) do
+        local member = parts[i].members[j].object
+        local record = parts[i].members[j].record
+        if member and record and record.canvasX and record.canvasY then
+          local host = L.CanvasHost(object, row)
+          if member.uuiCanvasRow ~= host then
+            pcall(member.SetParent, member, host)
+            member.uuiCanvasRow = host
+          end
+          pcall(member.SetScale, member, partScale)
+          pcall(member.ClearAllPoints, member)
+          pcall(member.SetPoint, member, "TOPLEFT", row, "TOPLEFT",
+                (spec.x or 0) + record.canvasX + partInset / partDrawn,
+                (spec.y or 0) + record.canvasY)
+          if member.uuiCanvasLevel ~= partLevel + 1 then
+            gs.Relevel(member, partLevel + 1, 0)
+            member.uuiCanvasLevel = partLevel + 1
+          end
+        end
+      end
+      if gs.Read(object, "IsShown") then
+        canvasHeight = math.max(canvasHeight,
+          (-(spec.y or 0) + (gs.Number(object, "GetHeight") or 0)) * partDrawn)
+      end
+    end
+  end
+  row.uuiCanvasHeight = canvasHeight
+end
+
+-- ---------------------------------------------------------------------------
 -- Placement
 -- ---------------------------------------------------------------------------
 function L.PlaceControl(state, control, row, level, width)
@@ -2231,7 +2466,13 @@ function L.PlaceControl(state, control, row, level, width)
     reparented = true,
     resized = control.kind == "slider" or control.kind == "meter",
     resizedHeight = control.kind == "meter",
+    scale = control.kind == "canvas" and (gs.Number(object, "GetScale") or 1) or nil,
   })
+  -- A canvas is placed, scaled and levelled whole; nothing on it is a label.
+  if control.kind == "canvas" then
+    L.PlaceCanvas(state, object, row, level, width)
+    return true
+  end
   -- A checkbox is parked, undrawn, in the vault and replaced on the row by
   -- L.CheckButton; everything else is reparented into the row itself.
   local parent = row
@@ -2245,15 +2486,17 @@ function L.PlaceControl(state, control, row, level, width)
   local size = gs.checkboxSize and gs.checkboxSize[control.name]
   if control.kind == "checkbox" and size and size < 24 then indent = list.indent end
 
+  -- L.ControlOffset and L.ControlLabel are also what a scroll step
+  -- re-anchors with (L.AnchorControl).
+  local x, y = L.ControlOffset(control.kind)
   if control.kind == "checkbox" then
-    pcall(object.SetPoint, object, "LEFT", row, "CENTER", L.Col().checkboxX,
-          list.dropdownY)
+    pcall(object.SetPoint, object, "LEFT", row, "CENTER", x, y)
     L.CheckButton(row, control.name, level, width, indent, control.label)
     L.Watch(control.name)
     return true
   elseif control.kind == "slider" then
     pcall(object.SetWidth, object, list.sliderWidth)
-    pcall(object.SetPoint, object, "LEFT", row, "CENTER", L.Col().sliderX, list.sliderY)
+    pcall(object.SetPoint, object, "LEFT", row, "CENTER", x, y)
     local i
     for i = 1, table.getn(L.SLIDER_EXTRAS) do
       local extra = U.G(control.name .. L.SLIDER_EXTRAS[i])
@@ -2283,14 +2526,13 @@ function L.PlaceControl(state, control, row, level, width)
     if room > 0 and (width < 8 or width > room) then
       pcall(object.SetWidth, object, room)
     end
-    pcall(object.SetPoint, object, "LEFT", row, "CENTER", L.Col().dropdownX,
-          list.dropdownY)
+    pcall(object.SetPoint, object, "LEFT", row, "CENTER", x, y)
     if type(gs.SkinButton) == "function" then gs.SkinButton(control.name) end
     if type(gs.DressButton) == "function" then gs.DressButton(object, height) end
   elseif control.kind == "meter" then
     L.PlaceMeter(state, control, object, row, level, width)
   else
-    pcall(object.SetPoint, object, "LEFT", row, "CENTER", L.Col().dropdownX, list.dropdownY)
+    pcall(object.SetPoint, object, "LEFT", row, "CENTER", x, y)
     L.DropdownSteppers(row, control.name, level)
   end
   gs.Relevel(object, level, 0)
@@ -2298,10 +2540,7 @@ function L.PlaceControl(state, control, row, level, width)
   -- A button carries its own text, and a sidecar bar draws inside its owner's
   -- label column; every other control has a separate label FontString the row
   -- moves into that column.
-  local label
-  if control.kind ~= "button" and not control.sidecar then
-    label = U.G(control.name .. (control.kind == "dropdown" and "Label" or "Text"))
-  end
+  local label = L.ControlLabel(control)
   if label then
     L.Keep(state, label, { text = control.label })
     pcall(label.ClearAllPoints, label)
@@ -2479,6 +2718,83 @@ function L.PlaceChrome(state, page)
       L.Keep(state, tab, { resizedHeight = true })
       L.Watch(base .. "Tab" .. i)
       L.HideKept(state, tab)
+    end
+  end
+end
+
+-- ---------------------------------------------------------------------------
+-- The panel's leftovers, off the window
+--
+-- settingsdrill on Interface (2026-11-27): moving the window cost ~7ms a
+-- frame, all of it the client panel still under the host, ~5ms of that the
+-- hidden Gamepad tab page and its binding chooser list. Every frame under a
+-- moved window is re-resolved on each move, hidden or not (knowledge.json /
+-- frames.anchor_chain_layout_cost). While the page is a list, its tab pages
+-- and section boxes hold only what the list does not draw, so they wait on
+-- L.Shelf: SHOWN, transparent and off screen, not hidden -- hiding a client
+-- page runs its OnHide, and hiding the panel closes the window
+-- (frames.hosted_settings_panel_escape_closes_host). Their controls are
+-- still taken into rows on a relayout when the client shows their tab.
+-- Parented once per attach; L.Detach puts each one back.
+-- ---------------------------------------------------------------------------
+function L.Shelf()
+  if L.shelf then return L.shelf end
+  local ok, shelf = pcall(CreateFrame, "Frame", "UnrealUIGameSettingsShelf", UIParent)
+  if not ok or not shelf then return nil end
+  pcall(shelf.SetWidth, shelf, 1)
+  pcall(shelf.SetHeight, shelf, 1)
+  pcall(shelf.SetPoint, shelf, "TOPLEFT", UIParent, "TOPRIGHT", 4000, 0)
+  pcall(shelf.SetAlpha, shelf, 0)
+  pcall(shelf.EnableMouse, shelf, false)
+  pcall(shelf.Show, shelf)
+  L.shelf = shelf
+  return shelf
+end
+
+function L.ShelveLeftovers(state, frame, model, page)
+  local shelf = L.Shelf()
+  if not shelf or type(page.frame) ~= "string" then return end
+  -- By name: a walked wrapper is not comparable by identity (U.InSettingsWindow).
+  local function OnPanel(object)
+    local parent = gs.Read(object, "GetParent")
+    return parent and gs.Read(parent, "GetName") == page.frame
+  end
+
+  -- Okay, Cancel and Defaults stay in the window: on Interface they sit on
+  -- a tab page's corners (see gs.PAGES), so each is lifted onto the panel.
+  local level = (gs.Number(frame, "GetFrameLevel") or 1) + 1
+  local chrome = { "Defaults", "Okay", "Cancel" }
+  local i
+  for i = 1, table.getn(chrome) do
+    local button = U.G(page.frame .. chrome[i])
+    local record = button and state.kept[button]
+    if record and not OnPanel(button) then
+      record.reparented = true
+      pcall(button.SetParent, button, frame)
+      gs.Relevel(button, level, 0)
+    end
+  end
+
+  local names, seen = {}, {}
+  local function Add(name)
+    if name and not seen[name] then
+      seen[name] = true
+      table.insert(names, name)
+    end
+  end
+  for i = 1, table.getn(model) do
+    local section = model[i]
+    Add(section.container)
+    if not section.container then Add(section.name) end
+  end
+  for i = 1, table.getn(names) do
+    local object = U.G(names[i])
+    if object and OnPanel(object) then
+      L.Keep(state, object, { reparented = true })
+      state.kept[object].reparented = true
+      pcall(object.ClearAllPoints, object)
+      pcall(object.SetParent, object, shelf)
+      pcall(object.SetPoint, object, "TOPLEFT", shelf, "TOPLEFT", 0, 0)
     end
   end
 end
@@ -2668,7 +2984,7 @@ function L.MeasureColumn(model, rowWidth)
         -- A sidecar bar draws inside its owner's label column, not on the
         -- control column, so it never decides where that column sits.
         if object and gs.Read(object, "IsShown") and not control.sidecar and
-           L.Matches(section, control) then
+           control.kind ~= "canvas" and L.Matches(section, control) then
           local text = control.label or ""
           pcall(ruler.SetWidth, ruler, 0)
           pcall(ruler.SetText, ruler, text)
@@ -2741,12 +3057,21 @@ function L.Layout(page)
   -- flag, which decides whether it has a row at all, is not touched.
   local view = gs.Number(L.child, "GetHeight") or 0
   local offset = L.offset or 0
+  -- What L.PaintOffset needs to repaint from a new offset: each placed row or
+  -- header at its list position, and the client regions anchored to it.
+  local plan = { page = page, view = view, items = {}, byRow = {},
+                 state = state, level = base + 3, width = rowWidth }
+  L.plan = plan
   local function Place(object, y, height)
+    local item = { frame = object, y = y, height = height, controls = {} }
+    table.insert(plan.items, item)
+    plan.byRow[object] = item
     local top = y + offset
     object:ClearAllPoints()
     object:SetPoint("TOPLEFT", L.child, "TOPLEFT", list.padLeft, top)
     if top <= 0 and top - height >= -view - 0.5 then
       object:Show()
+      item.shown = true
       return true
     end
     object:Hide()
@@ -2770,7 +3095,7 @@ function L.Layout(page)
         -- The control's own shown flag: it is the row's parent's now, so
         -- IsShown says whether the client wants it, not whether its old
         -- section happens to be visible.
-        if object and gs.Read(object, "IsShown") then
+        if object and L.ControlShown(control, object) then
           if L.Matches(section, control) then
             table.insert(visible, control)
           else
@@ -2806,6 +3131,20 @@ function L.Layout(page)
           local ridden = control.sidecar and L.rows[control.sidecar]
           if ridden then
             L.PlaceControl(state, control, ridden, base + 3, rowWidth)
+            L.PlanAnchors(plan.byRow[ridden], control)
+          elseif control.kind == "canvas" then
+            -- Placed before the row: its height is what the picture measures
+            -- once it is on the row.
+            local row = L.Row(control.name)
+            row:SetWidth(rowWidth)
+            pcall(row.SetFrameLevel, row, base + 2)
+            L.PlaceControl(state, control, row, base + 3, rowWidth)
+            local height = row.uuiCanvasHeight or rowHeight
+            pcall(row.SetHeight, row, height)
+            Place(row, y, height)
+            L.PlanAnchors(plan.byRow[row], control)
+            matched = matched + 1
+            y = y - height - list.spacing
           else
             local row = L.Row(control.name)
             -- Every line is one height (user request, 2026-09-22). It is
@@ -2822,6 +3161,7 @@ function L.Layout(page)
             -- because a client control does not follow its row when the row
             -- alone is moved.
             L.PlaceControl(state, control, row, base + 3, rowWidth)
+            L.PlanAnchors(plan.byRow[row], control)
             matched = matched + 1
             y = y - rowHeight - list.spacing
           end
@@ -2867,6 +3207,109 @@ function L.Layout(page)
   -- Update the active band's endpoint after UpdateRange has shown or hidden
   -- the scrollbar. A relayout can change that state without the cursor leaving
   -- its row, so HoverTick alone would not get a chance to repaint the bounds.
+  if L.hovered and L.hovered.uuiHover then L.HoverTexture(L.hovered) end
+end
+
+-- ---------------------------------------------------------------------------
+-- Scrolling
+--
+-- A scroll step used to run the whole L.Layout: re-skin, relevel, label fit
+-- and the category list for every control (settingscost 2026-11-26: Sound
+-- +32.5ms, Interface +8.3ms a frame while scrolling). Only positions change
+-- with the offset, so the step moves each row and header (one point on
+-- L.child) and, on a row that is drawn, re-anchors the client regions on it
+-- with L.PlaceControl's own points (L.AnchorControl): a client control does
+-- not follow its row when the row alone is moved (see L.Layout). Not read
+-- back with GetPoint: on a client frame it can miss the point that places it
+-- (knowledge.json / frames.extra_anchor_point_survives_addon_setpoint), and
+-- replaying it was a first, wrong guess at the stretched Sound and Video
+-- dropdowns. Rows out of view are hidden and not moved.
+--
+-- A row coming back into view is placed whole (L.PlaceControl), not only
+-- re-anchored: showing it runs the client control's own OnShow, which resets
+-- what the placement set -- a dropdown took back its client width and drew
+-- its bed and text past its next arrow (reported in game 2026-11-27, Sound
+-- and Video). Only a row that stays drawn takes the cheap re-anchor.
+-- ---------------------------------------------------------------------------
+
+-- The control's point on its row: LEFT on the row's CENTER at its column.
+function L.ControlOffset(kind)
+  local list = M.foreverWow.list
+  local col = L.Col()
+  if kind == "checkbox" then return col.checkboxX, list.dropdownY end
+  if kind == "slider" then return col.sliderX, list.sliderY end
+  return col.dropdownX, list.dropdownY
+end
+
+-- The client label L.PlaceControl moves into the row's label column, if any.
+function L.ControlLabel(control)
+  if control.kind == "button" or control.kind == "canvas" or control.sidecar then
+    return nil
+  end
+  return U.G(control.name .. (control.kind == "dropdown" and "Label" or "Text"))
+end
+
+-- Re-anchors what L.PlaceControl anchored, and nothing else. A meter or a
+-- canvas places several parts of its own, so it is placed again whole.
+function L.AnchorControl(plan, control, row)
+  if control.kind == "checkbox" then return end
+  if control.kind == "meter" or control.kind == "canvas" then
+    L.PlaceControl(plan.state, control, row, plan.level, plan.width)
+    return
+  end
+  local object = U.G(control.name)
+  if not object then return end
+  local x, y = L.ControlOffset(control.kind)
+  pcall(object.ClearAllPoints, object)
+  pcall(object.SetPoint, object, "LEFT", row, "CENTER", x, y)
+  -- The width L.DropdownSteppers gives every dropdown; the client resets it.
+  if control.kind == "dropdown" then
+    local width = L.Col().dropdownWidth or 0
+    if width > 0 then pcall(object.SetWidth, object, width) end
+  end
+  local label = L.ControlLabel(control)
+  if label then
+    pcall(label.ClearAllPoints, label)
+    pcall(label.SetPoint, label, "LEFT", row, "LEFT",
+          M.foreverWow.list.labelInset + L.Indent(control), 0)
+  end
+end
+
+function L.PlanAnchors(item, control)
+  if item then table.insert(item.controls, control) end
+end
+
+function L.PaintOffset()
+  local plan = L.plan
+  if not plan or plan.page ~= L.active or not L.child then
+    if L.active then L.Layout(L.active) end
+    return
+  end
+  local list = M.foreverWow.list
+  local view, offset = plan.view, L.offset or 0
+  local i, j
+  for i = 1, table.getn(plan.items) do
+    local item = plan.items[i]
+    local frame = item.frame
+    local top = item.y + offset
+    if top <= 0 and top - item.height >= -view - 0.5 then
+      local entering = not item.shown
+      frame:ClearAllPoints()
+      frame:SetPoint("TOPLEFT", L.child, "TOPLEFT", list.padLeft, top)
+      frame:Show()
+      item.shown = true
+      for j = 1, table.getn(item.controls) do
+        if entering then
+          L.PlaceControl(plan.state, item.controls[j], frame, plan.level, plan.width)
+        else
+          L.AnchorControl(plan, item.controls[j], frame)
+        end
+      end
+    else
+      frame:Hide()
+      item.shown = false
+    end
+  end
   if L.hovered and L.hovered.uuiHover then L.HoverTexture(L.hovered) end
 end
 
@@ -2969,6 +3412,7 @@ function L.Attach(page, frame)
 
   L.ClearSections(state, model)
   L.PlaceChrome(state, page)
+  L.ShelveLeftovers(state, frame, model, page)
 
   pcall(L.scroll.Show, L.scroll)
   L.ShowSearch()
@@ -3066,7 +3510,8 @@ function L.HoverTick()
   local edgeRight = edge and edge + hover.right
   local name, row
   for name, row in pairs(L.rows) do
-    if gs.Read(row, "IsVisible") then
+    -- A canvas row is a picture, not one setting: it takes no hover band.
+    if not row.uuiNoHover and gs.Read(row, "IsVisible") then
       local left, right = gs.Number(row, "GetLeft"), gs.Number(row, "GetRight")
       local top, bottom = gs.Number(row, "GetTop"), gs.Number(row, "GetBottom")
       local hoverLeft = left and left + hover.left

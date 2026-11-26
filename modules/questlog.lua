@@ -626,7 +626,7 @@ local function StyleQuestItems()
           title:SetPoint("TOPLEFT", icon, "TOPRIGHT", 5, 0)
           title:SetPoint("BOTTOMRIGHT", item, "BOTTOMRIGHT", -5, 4)
           title:SetJustifyH("LEFT")
-          title:SetJustifyV("MIDDLE")
+          title:SetJustifyV("CENTER")
         end)
       end
 

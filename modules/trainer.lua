@@ -433,7 +433,7 @@ function rows.BuildHeader(row, state)
     label:SetPoint("RIGHT", row, "RIGHT", -(10 + h.collapseWidth + 6), labelY)
     label:SetHeight(12)
     label:SetJustifyH("LEFT")
-    if label.SetJustifyV then label:SetJustifyV("MIDDLE") end
+    if label.SetJustifyV then label:SetJustifyV("CENTER") end
   end)
 
   state.toggle = toggle

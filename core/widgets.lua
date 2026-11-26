@@ -777,6 +777,37 @@ function U.CreateRadioGroup(parent, options)
 end
 
 -- ---------------------------------------------------------------------------
+-- Parking
+--
+-- knowledge.json / frames.anchor_chain_layout_cost: moving a window
+-- re-resolves every descendant each frame, hidden ones too; only a subtree
+-- reparented out of the window, anchored to nothing inside it, stops costing.
+-- One hidden frame outside every window holds what is built but not on screen.
+-- ---------------------------------------------------------------------------
+function U.ParkingFrame()
+  if not U.parkingFrame then
+    local frame = CreateFrame("Frame", "UnrealUIGameSettingsUIParking", UIParent)
+    frame:SetWidth(1)
+    frame:SetHeight(1)
+    frame:SetPoint("BOTTOMLEFT", UIParent, "BOTTOMLEFT", 0, 0)
+    pcall(frame.EnableMouse, frame, false)
+    frame:Hide()
+    U.parkingFrame = frame
+  end
+  return U.parkingFrame
+end
+
+-- Points are cleared first: a parked frame still anchored to something in
+-- the window would be re-resolved with it on every move.
+function U.ParkFrame(frame)
+  if not frame then return end
+  local parking = U.ParkingFrame()
+  pcall(frame.ClearAllPoints, frame)
+  pcall(frame.SetParent, frame, parking)
+  pcall(frame.SetPoint, frame, "TOPLEFT", parking, "TOPLEFT", 0, 0)
+end
+
+-- ---------------------------------------------------------------------------
 -- Dropdown
 --
 -- An owned dropdown for addon settings. Native dropdowns continue to use the
@@ -803,11 +834,17 @@ function U.CreateDropdown(parent, options)
   local height = options.height or 28
   local rowHeight = options.rowHeight or 22
 
+  -- In a settings window the value and rows take the checkbox labels' font
+  -- object: under the client's own face that object, not M.fontSize, sets the
+  -- drawn size.
+  local textFont = U.InSettingsWindow(parent) and "GameFontNormalSmall" or nil
+
   local button = U.CreateButton(parent, {
     name = options.name,
     text = "",
     width = width,
     height = height,
+    inherits = textFont,
   })
   control.button = button
 
@@ -870,11 +907,39 @@ function U.CreateDropdown(parent, options)
   end
   control.RaisePopup = RaisePopup
 
+  -- Closed, the menu and its rows wait on the parking frame (U.ParkFrame):
+  -- hidden under the page they were re-resolved on every move or scroll of
+  -- the window (settingsdrill, Bags page: the custom category editor's menus
+  -- were ~16ms of a 16ms move). Opening puts the menu back under `parent`.
+  local function UnparkMenu()
+    if not menu.uuiParked then return end
+    menu.uuiParked = nil
+    pcall(menu.SetParent, menu, parent)
+  end
+  local function MountMenu()
+    UnparkMenu()
+    pcall(menu.ClearAllPoints, menu)
+    pcall(menu.SetPoint, menu, "TOPLEFT", button, "BOTTOMLEFT", 0, -1)
+  end
+  local function ParkMenu()
+    if menu.uuiParked then return end
+    U.ParkFrame(menu)
+    menu.uuiParked = true
+  end
+
   local function SetPopupShown(shown)
     control.open = shown and true or false
-    if control.open then RaisePopup() end
+    if control.open then
+      MountMenu()
+      RaisePopup()
+    end
     SetDropdownPartShown(menu, control.open)
-    if control.open then U.SetBackgroundColor(menu, M.Unpack(menuBackground)) end
+    -- uuiRowPaint: a skin draws the menu's bed and rows, so no flat panel.
+    if control.uuiRowPaint then
+      U.SetBackdropShown(menu, false)
+    elseif control.open then
+      U.SetBackgroundColor(menu, M.Unpack(menuBackground))
+    end
     local i
     for i = 1, table.getn(control.rows) do
       SetDropdownPartShown(control.rows[i], control.open)
@@ -882,6 +947,7 @@ function U.CreateDropdown(parent, options)
     if not control.open and activeDropdown == control then
       activeDropdown = nil
     end
+    if not control.open then ParkMenu() end
   end
 
   local function ApplySelection()
@@ -898,13 +964,17 @@ function U.CreateDropdown(parent, options)
       local row = control.rows[i]
       local active = row.item.value == control.value
       local disabled = row.item.disabled and true or false
-      U.SetBackgroundColor(row, M.Unpack(active and M.color.accentFill or
-                                         M.color.background))
-      U.SetBorderColor(row, M.Unpack(active and M.color.accent or M.color.border))
-      if row.label then
-        pcall(row.label.SetTextColor, row.label,
-              M.Unpack(disabled and M.color.textDim or
-                       (active and M.color.accent or M.color.text)))
+      if control.uuiRowPaint then
+        control.uuiRowPaint(row, active, disabled)
+      else
+        U.SetBackgroundColor(row, M.Unpack(active and M.color.accentFill or
+                                           M.color.background))
+        U.SetBorderColor(row, M.Unpack(active and M.color.accent or M.color.border))
+        if row.label then
+          pcall(row.label.SetTextColor, row.label,
+                M.Unpack(disabled and M.color.textDim or
+                         (active and M.color.accent or M.color.text)))
+        end
       end
     end
   end
@@ -1040,11 +1110,16 @@ function U.CreateDropdown(parent, options)
     local rowWidth = width
     local okWidth, menuWidth = pcall(menu.GetWidth, menu)
     if okWidth and tonumber(menuWidth) and menuWidth > 2 then rowWidth = menuWidth end
+    -- Built under the page, not the parking frame: the row's font records
+    -- whether it is in a settings window (U.InSettingsWindow) when styled.
+    local parked = menu.uuiParked
+    UnparkMenu()
     local row = U.CreateButton(menu, {
       name = options.name and (options.name .. "Item" .. i) or nil,
       text = item.text or tostring(item.value or ""),
       width = rowWidth - 2,
       height = rowHeight,
+      inherits = textFont,
     })
     row.item = item
     pcall(row.EnableMouse, row, not item.disabled)
@@ -1061,6 +1136,11 @@ function U.CreateDropdown(parent, options)
       pcall(row.SetFrameLevel, row, level + 41)
     end
     row:SetScript("OnEnter", function()
+      if control.uuiRowPaint then
+        control.uuiRowPaint(row, row.item.value == control.value,
+                            row.item.disabled and true or false, true)
+        return
+      end
       U.SetBorderColor(row, M.Unpack(M.color.accentDim))
       if row.item.value ~= control.value then
         U.SetBackgroundColor(row, 1, 1, 1, 0.07)
@@ -1074,6 +1154,7 @@ function U.CreateDropdown(parent, options)
       control.SetOpen(false)
     end)
     control.pool[i] = row
+    if parked then ParkMenu() end
     return row
   end
 

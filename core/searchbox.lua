@@ -228,7 +228,7 @@ function SB.Paint(box)
   local caret = state.caret
   if caret then
     caret:ClearAllPoints()
-    caret:SetPoint("LEFT", box, "LEFT", (state.caretX or 0) + 1, -3)
+    caret:SetPoint("LEFT", box, "LEFT", (state.caretX or 0) + 1, -1)
     if typing then caret:Show() else caret:Hide() end
   end
 end
@@ -511,7 +511,7 @@ function U.CreateSearchBox(parent, options)
     justify = "LEFT",
   })
   if state.label then
-    state.label:SetPoint("LEFT", box, "LEFT", token.textInset.left, -3)
+    state.label:SetPoint("LEFT", box, "LEFT", token.textInset.left, token.textY)
   end
 
   local caret = face:CreateTexture(nil, "OVERLAY")
@@ -532,8 +532,9 @@ function U.CreateSearchBox(parent, options)
     height = 14,
   })
   if state.placeholder then
-    state.placeholder:SetPoint("LEFT", box, "LEFT", token.textInset.left, -3)
-    state.placeholder:SetPoint("RIGHT", box, "RIGHT", -token.textInset.right, -3)
+    state.placeholder:SetPoint("LEFT", box, "LEFT", token.textInset.left, token.textY)
+    state.placeholder:SetPoint("RIGHT", box, "RIGHT", -token.textInset.right,
+                               token.textY)
     state.placeholder:SetText(options.placeholder or "")
   end
 
@@ -561,7 +562,7 @@ function U.CreateSearchBox(parent, options)
   end
 
   -- The magnifier ends typing and keeps the text; the clear button empties it.
-  box.submit = IconButton("Button", icons.search, 0.6, "LEFT", -2, -1,
+  box.submit = IconButton("Button", icons.search, 0.6, "LEFT", -2, 0,
                           function()
     if SB.active == box then SB.End() end
   end)

@@ -769,7 +769,7 @@ end
 -- relied on any more: the strata is the window's resolved one (gs.HostStrata)
 -- and is written explicitly. A frame already above it (an open dropdown or
 -- popup) is left where it is.
-gs.RELEVEL_DEPTH = 8
+gs.RELEVEL_DEPTH = 9
 gs.STRATA_RANK = {
   BACKGROUND = 1, LOW = 2, MEDIUM = 3, HIGH = 4, DIALOG = 5,
   FULLSCREEN = 6, FULLSCREEN_DIALOG = 7, TOOLTIP = 8,
@@ -1059,7 +1059,7 @@ end
 -- The shared section header used by both "Game Settings" and "Unreal UI".
 -- Options_CategoryHeader_1 is taller than its frame so its gradient continues
 -- behind the rows beneath it, exactly as Forever's category list draws it.
-function gs.SetListHeaderLogo(header, logoPath, labelY)
+function gs.SetListHeaderLogo(header, logoPath)
   if not header or not header.label then return end
   if not header.logo and type(header.CreateTexture) == "function" then
     header.logo = header:CreateTexture(nil, "OVERLAY")
@@ -1072,15 +1072,15 @@ function gs.SetListHeaderLogo(header, logoPath, labelY)
     header.logo:SetTexture(logoPath)
     header.logo:Show()
     header.label:SetPoint("LEFT", header.logo, "RIGHT", gs.LOGO_GAP,
-                          labelY or -1)
+                          M.foreverWow.panel.textY)
   else
     if header.logo then header.logo:Hide() end
     header.label:SetPoint("LEFT", header, "LEFT", gs.ROW_LABEL_INSET,
-                          labelY or -1)
+                          M.foreverWow.panel.textY)
   end
 end
 
-function gs.ListHeaderFrame(name, label, labelY, logoPath)
+function gs.ListHeaderFrame(name, label, logoPath)
   local token = M.foreverWow.options.categoryHeader
   local panel = M.foreverWow.panel
   local header = CreateFrame("Frame", name, gs.sidebar)
@@ -1102,7 +1102,7 @@ function gs.ListHeaderFrame(name, label, labelY, logoPath)
     justify = "LEFT",
   })
   if header.label then
-    gs.SetListHeaderLogo(header, logoPath, labelY)
+    gs.SetListHeaderLogo(header, logoPath)
     header.label:SetText(U.L(label))
   end
   return header
@@ -1259,7 +1259,8 @@ function gs.RowFrame(name, indent)
     justify = "LEFT",
   })
   if row.label then
-    row.label:SetPoint("LEFT", row, "LEFT", row.uuiLabelInset, -1)
+    row.label:SetPoint("LEFT", row, "LEFT", row.uuiLabelInset,
+                       M.foreverWow.panel.textY)
     pcall(row.label.SetWidth, row.label,
           rowWidth - row.uuiLabelInset - 4)
   end
@@ -1380,7 +1381,7 @@ function gs.PlaceRowToggle(row, right, rowHeight)
   local width = tonumber(gs.Read(gs.sidebar, "GetWidth")) or gs.SIDEBAR_WIDTH
   pcall(toggle.ClearAllPoints, toggle)
   pcall(toggle.SetPoint, toggle, "TOPRIGHT", row, "TOPLEFT", width + right,
-        -((rowHeight or gs.ROW_HEIGHT) - gs.TOGGLE_SIZE) / 2 + 1)
+        -((rowHeight or gs.ROW_HEIGHT) - gs.TOGGLE_SIZE) / 2)
 end
 
 -- Clicking a tree row's text has the same meaning as clicking its visible
@@ -1401,7 +1402,6 @@ function gs.CreateRow(index)
   if page.listHeader then
     local header = gs.ListHeaderFrame("UnrealUIGameSettingsRow" .. index,
                                       page.label,
-                                      gs.WORDMARK[page.id] and -3 or nil,
                                       gs.PageLogoPath(page))
     header.uuiListHeader = true
     gs.rows[index] = header
@@ -1719,7 +1719,8 @@ function gs.StyleSubRow(row, page, tab, pageSelected)
                          (tonumber(tab.indent) or 0)
     row.label:SetText(tab.label)
     row.label:ClearAllPoints()
-    row.label:SetPoint("LEFT", row, "LEFT", row.uuiLabelInset, -1)
+    row.label:SetPoint("LEFT", row, "LEFT", row.uuiLabelInset,
+                       M.foreverWow.panel.textY)
     pcall(row.label.SetTextColor, row.label, M.Unpack(color))
   end
 
@@ -1735,7 +1736,7 @@ end
 -- of categories. These four are all client settings, so there is one.
 function gs.BuildListHeader()
   if gs.listHeader then return gs.listHeader end
-  local header = gs.ListHeaderFrame(nil, "GAMESETTINGS_TITLE", -2)
+  local header = gs.ListHeaderFrame(nil, "GAMESETTINGS_TITLE")
 
   gs.listHeader = header
   return header
@@ -1818,8 +1819,7 @@ function gs.RenderList()
     if matches then
       local selected = gs.active ~= nil and gs.active.id == page.id
       if page.listHeader then
-        gs.SetListHeaderLogo(row, gs.PageLogoPath(page),
-                             gs.WORDMARK[page.id] and -3 or nil)
+        gs.SetListHeaderLogo(row, gs.PageLogoPath(page))
         if row.label then row.label:SetText(gs.CategoryTitleText(page)) end
       else
         gs.StyleRow(row, page, selected)
@@ -2132,6 +2132,48 @@ function gs.IsDropdown(name)
          U.G(name .. "Text") ~= nil
 end
 
+-- Client frames drawn as one picture rather than as a column of controls. The
+-- Interface > Gamepad tab's controller diagram (reported in game 2026-11-26)
+-- is a controller image, leader lines and 32 label/spot buttons placed on it;
+-- the list took every button into a row of its own and left the image and its
+-- lines behind on the panel. Measured with /uui gamedump interface the same
+-- day: the diagram is 620x346 at GamepadOptionsBindings TOPLEFT 10,-12, and
+-- the binding chooser the client opens over it is 630x390 at TOPLEFT 5,-5.
+--
+-- gamesettingslist.lua moves each such frame onto one row (`x`/`y` place it
+-- inside that row's box, in client units). `members` are native child frames
+-- that must be scaled directly: this client does not pass an addon ancestor's
+-- scale into a reparented native widget. `over` names an overlay rather than a
+-- second row. gs.Collect dresses only the real actions listed in `skin`.
+gs.CANVAS = {
+  UIOptionsFrameGamepadDiagram = {
+    x = 5, y = -7,
+    skin = { "UIOptionsFrameGamepadReset", "UIOptionsFrameGamepadPress" },
+    members = {
+      "UIOptionsFrameGamepadDiagramLabelLT", "UIOptionsFrameGamepadDiagramLabelRT",
+      "UIOptionsFrameGamepadDiagramLabelLB", "UIOptionsFrameGamepadDiagramLabelRB",
+      "UIOptionsFrameGamepadDiagramLabelLS", "UIOptionsFrameGamepadDiagramLabelRS",
+      "UIOptionsFrameGamepadDiagramLabelY", "UIOptionsFrameGamepadDiagramLabelB",
+      "UIOptionsFrameGamepadDiagramLabelX", "UIOptionsFrameGamepadDiagramLabelA",
+      "UIOptionsFrameGamepadDiagramLabelBACK", "UIOptionsFrameGamepadDiagramLabelSTART",
+      "UIOptionsFrameGamepadDiagramLabelDU", "UIOptionsFrameGamepadDiagramLabelDD",
+      "UIOptionsFrameGamepadDiagramLabelDL", "UIOptionsFrameGamepadDiagramLabelDR",
+      "UIOptionsFrameGamepadDiagramSpotLT", "UIOptionsFrameGamepadDiagramSpotRT",
+      "UIOptionsFrameGamepadDiagramSpotLB", "UIOptionsFrameGamepadDiagramSpotRB",
+      "UIOptionsFrameGamepadDiagramSpotLS", "UIOptionsFrameGamepadDiagramSpotRS",
+      "UIOptionsFrameGamepadDiagramSpotY", "UIOptionsFrameGamepadDiagramSpotB",
+      "UIOptionsFrameGamepadDiagramSpotX", "UIOptionsFrameGamepadDiagramSpotA",
+      "UIOptionsFrameGamepadDiagramSpotBACK", "UIOptionsFrameGamepadDiagramSpotSTART",
+      "UIOptionsFrameGamepadDiagramSpotDU", "UIOptionsFrameGamepadDiagramSpotDD",
+      "UIOptionsFrameGamepadDiagramSpotDL", "UIOptionsFrameGamepadDiagramSpotDR",
+      "UIOptionsFrameGamepadReset", "UIOptionsFrameGamepadPress",
+    },
+  },
+  UIOptionsFrameGamepadChooser = {
+    over = "UIOptionsFrameGamepadDiagram", x = 0, y = 0, scale = false,
+  },
+}
+
 function gs.Collect(frame, depth, found)
   if depth > gs.COLLECT_DEPTH or type(frame.GetChildren) ~= "function" then
     return found
@@ -2144,7 +2186,13 @@ function gs.Collect(frame, depth, found)
     local kid = kids[i]
     local name = gs.Read(kid, "GetName")
     local kind = gs.Read(kid, "GetObjectType")
-    if type(name) == "string" and name ~= "" then
+    local canvas = type(name) == "string" and gs.CANVAS[name]
+    if canvas and not canvas.over then
+      local j
+      for j = 1, table.getn(canvas.skin or {}) do
+        if U.G(canvas.skin[j]) then table.insert(found.buttons, canvas.skin[j]) end
+      end
+    elseif type(name) == "string" and name ~= "" then
       if kind == "CheckButton" then
         table.insert(found.checkboxes, name)
       elseif kind == "Slider" then
@@ -2882,6 +2930,34 @@ function gs.StyleOwnedRadio(control)
   return true
 end
 
+-- One row of an owned dropdown's open menu, drawn as the client pages' menu
+-- rows are (core/dropdown.lua): no box of its own, so the menu bed's border
+-- shows, a faint hover band, and a gold label while selected or hovered.
+function gs.PaintOwnedDropdownRow(row, selected, disabled, hovered)
+  U.SetBackdropShown(row, false)
+  local fill = row.uuiDropdownHoverFill
+  if not fill then
+    local ok, texture = pcall(row.CreateTexture, row, nil, "BACKGROUND")
+    if ok and texture then
+      pcall(texture.SetTexture, texture, M.texture.plain)
+      U.SetColor(texture, M.Unpack(M.foreverWow.list.hover.color))
+      pcall(texture.SetAllPoints, texture, row)
+      row.uuiDropdownHoverFill = texture
+      fill = texture
+    end
+  end
+  if fill then
+    if hovered and not disabled then pcall(fill.Show, fill)
+    else pcall(fill.Hide, fill) end
+  end
+  if row.label then
+    local color = M.color.text
+    if disabled then color = M.color.textDim
+    elseif selected or hovered then color = M.color.accent end
+    pcall(row.label.SetTextColor, row.label, M.Unpack(color))
+  end
+end
+
 -- keepLayout: art only, for a caller laid out around the flat control (the
 -- edit-mode panels): the width and the outside steppers are left out.
 function gs.StyleOwnedDropdown(control, keepLayout)
@@ -2934,10 +3010,10 @@ function gs.StyleOwnedDropdown(control, keepLayout)
   if button.label then
     pcall(button.label.ClearAllPoints, button.label)
     pcall(button.label.SetPoint, button.label, "LEFT", button, "LEFT",
-          token.textInset, U.BUTTON_LABEL_OFFSET_Y)
+          token.textInset, M.editModeChrome.buttonLabelY)
     pcall(button.label.SetPoint, button.label, "RIGHT", button, "RIGHT",
           -(button.uuiDropdownBedRight or token.textInset),
-          U.BUTTON_LABEL_OFFSET_Y)
+          M.editModeChrome.buttonLabelY)
     pcall(button.label.SetJustifyH, button.label, token.textAlign or "LEFT")
     U.SetStockFont(button.label, token.textSize or M.fontSize.normal,
                    token.textColor)
@@ -2945,7 +3021,11 @@ function gs.StyleOwnedDropdown(control, keepLayout)
 
   if control.menu and type(U.Dropdown.BedMenu) == "function" then
     U.SetBackdropShown(control.menu, false)
+    -- As the shared client list does: the bed's menu art is chamfered, so no
+    -- fill may reach its corners.
+    pcall(control.menu.SetBackdrop, control.menu, nil)
     U.Dropdown.BedMenu(control.menu, token)
+    control.uuiRowPaint = gs.PaintOwnedDropdownRow
     local originalOpen = control.SetOpen
     control.SetOpen = function(open)
       originalOpen(open)
@@ -4581,6 +4661,14 @@ function gs.DressButton(button, height)
     face.middle:SetPoint("BOTTOMRIGHT", face.right, "BOTTOMLEFT", 0, 0)
   end)
 
+  -- The red face's visible middle sits above the shared button-label offset.
+  local label = button.label or gs.Read(button, "GetFontString")
+  if label then
+    pcall(label.ClearAllPoints, label)
+    pcall(label.SetPoint, label, "CENTER", button, "CENTER",
+          0, M.editModeChrome.buttonLabelY)
+  end
+
   face.painted = nil
   gs.PaintButton(button)
   return true
@@ -4882,11 +4970,31 @@ function gs.Build()
 
   -- The category list is a plain anchor: its rows carry their own art and the
   -- recessed plate behind them is the window's, so it needs no fill of its own.
+  -- The window's containers -- category list, page box and the host a page
+  -- is moved into -- each take ONE point on the window and an explicit size.
+  -- knowledge.json / frames.anchor_chain_layout_cost: a moved frame
+  -- re-resolves every descendant through each of its anchors with no reuse,
+  -- so a two-point link doubles everything below it. The old chain (content
+  -- on the list and the plate, host on content twice, the page root and its
+  -- scroll frame twice again) cost every page object ~85 resolve steps per
+  -- frame of a drag: settingscost (2026-11-26) measured +70.7ms a frame moving
+  -- the window on the Bags page against +3.3ms with the page taken out. The
+  -- window, plate and these boxes are fixed-size, so the sizes are exact.
+  local box = {}
+  box.top = -(gs.PLATE_TOP + gs.LIST_DROP)
+  box.bottom = -(gs.HEIGHT - gs.PLATE_BOTTOM) + 12
+  box.height = box.top - box.bottom
+  box.listLeft = panel.categoryInset.left
+  box.contentLeft = box.listLeft + gs.SIDEBAR_WIDTH + panel.containerGap
+  box.contentWidth = (gs.WIDTH - gs.PLATE_SIDE - 6) - box.contentLeft
+  box.hostDrop = gs.CONTENT_HEADER + 4
+  gs.hostWidth = box.contentWidth
+  gs.hostHeight = box.height - box.hostDrop
+
   gs.sidebar = CreateFrame("Frame", "UnrealUIGameSettingsSidebar", gs.panel)
   gs.sidebar:SetWidth(gs.SIDEBAR_WIDTH)
-  gs.sidebar:SetPoint("TOPLEFT", gs.panel, "TOPLEFT",
-                      panel.categoryInset.left, -(gs.PLATE_TOP + gs.LIST_DROP))
-  gs.sidebar:SetPoint("BOTTOMLEFT", gs.panel.plate, "BOTTOMLEFT", 1, 12)
+  gs.sidebar:SetHeight(box.height)
+  gs.sidebar:SetPoint("TOPLEFT", gs.panel, "TOPLEFT", box.listLeft, box.top)
   pcall(gs.sidebar.EnableMouse, gs.sidebar, false)
 
   gs.BuildListHeader()
@@ -4904,8 +5012,9 @@ function gs.Build()
   end
 
   gs.content = CreateFrame("Frame", "UnrealUIGameSettingsContent", gs.panel)
-  gs.content:SetPoint("TOPLEFT", gs.sidebar, "TOPRIGHT", panel.containerGap, 0)
-  gs.content:SetPoint("BOTTOMRIGHT", gs.panel.plate, "BOTTOMRIGHT", -6, 12)
+  gs.content:SetWidth(box.contentWidth)
+  gs.content:SetHeight(box.height)
+  gs.content:SetPoint("TOPLEFT", gs.panel, "TOPLEFT", box.contentLeft, box.top)
 
   -- Options_HorizontalDivider under the page title, the rule Forever draws
   -- across the top of its settings list. Stretched, never tiled: the member is
@@ -4945,9 +5054,10 @@ function gs.Build()
   -- the whole window, and mouse-transparent, because the hosted panel owns
   -- every click inside it. It starts below the header rule, as the list does.
   gs.host = CreateFrame("Frame", "UnrealUIGameSettingsCanvas", gs.content)
-  gs.host:SetPoint("TOPLEFT", gs.content, "TOPLEFT", 0,
-                   -(gs.CONTENT_HEADER + 4))
-  gs.host:SetPoint("BOTTOMRIGHT", gs.content, "BOTTOMRIGHT", 0, 0)
+  gs.host:SetWidth(gs.hostWidth)
+  gs.host:SetHeight(gs.hostHeight)
+  gs.host:SetPoint("TOPLEFT", gs.panel, "TOPLEFT", box.contentLeft,
+                   box.top - box.hostDrop)
   pcall(gs.host.EnableMouse, gs.host, false)
 
   gs.message = U.CreateLabel(gs.content, {
@@ -5437,7 +5547,7 @@ end
 -- most gs.DUMP_DEPTH levels below the page and gs.DUMP_KIDS children per frame,
 -- and writes to UnrealUIDiagDB.gameSettingsChrome.
 -- ---------------------------------------------------------------------------
-gs.DUMP_DEPTH = 3
+gs.DUMP_DEPTH = 5
 gs.DUMP_KIDS = 40
 
 function gs.DumpRegions(frame)
@@ -5479,8 +5589,18 @@ function gs.DumpFrame(frame, depth)
     w = gs.Number(frame, "GetWidth"),
     h = gs.Number(frame, "GetHeight"),
     level = gs.Number(frame, "GetFrameLevel"),
+    top = gs.Number(frame, "GetTop"),
+    left = gs.Number(frame, "GetLeft"),
     regions = gs.DumpRegions(frame),
   }
+  -- The first anchor, read only: the Interface > Gamepad tab (2026-11-26) is
+  -- a drawn diagram rather than a list of controls, and its layout is what the
+  -- list has to keep.
+  local point, relative, relativePoint, x, y = U.GetFramePoint(frame, 1)
+  if point then
+    entry.anchor = { point = point, relative = gs.Read(relative, "GetName"),
+                     relativePoint = relativePoint, x = x, y = y }
+  end
 
   -- Presence and the file names only: a backdrop table is the client's, and
   -- copying it whole into SavedVariables is not needed to name its owner.

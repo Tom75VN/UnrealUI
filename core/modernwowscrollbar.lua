@@ -241,6 +241,12 @@ function U.StyleModernWowScrollbar(scrollbar, options)
   end
 
   local function Tick()
+    -- Paused while a window is dragged by its header (FPS report,
+    -- 2026-11-26): Measure's GetHeight made the moving window lay out again
+    -- on every frame of the move. Nothing scrolls while the header is held.
+    if not state.drag and U.IsAnyWindowDragging and U.IsAnyWindowDragging() then
+      return
+    end
     local value, low, high, height = Measure()
     if not value then return end
 

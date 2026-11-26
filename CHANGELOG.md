@@ -4,6 +4,60 @@ Player-visible UnrealUI changes, newest first. Keep every bullet short, clear an
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-11-27
+
+### Added
+
+- Minimap: "Group minimap icons" option tucks the icons behind one button you slide around the edge (off).
+- Minimap: "Minimap shape" option, in settings and edit mode, for a round or square map (Round).
+- Nameplates: a live preview, always in view atop the settings pages, shows your changes as you make them.
+- Chat: type /rl as a shortcut for /reload.
+- Login: a reminder to like UnrealUI in the launcher; "I already liked it" stops it for good.
+- Action bars: "Show Bar Background" option to hide Bar 1's background in Modern WoW (on).
+
+### Changed
+
+- Unit frames: aura countdowns are smaller, white, and easier to read.
+- Login: UnrealUI now loads immediately without its startup loading bar.
+- Minimap: the settings button is now the round UnrealUI logo, sliding around the minimap's edge; a moved button returns there.
+- Edit mode: anchors move freely, snap to nearby grid lines, and only pull each other with "Magnet elements" on; grid size reset to 100.
+- Edit mode: anchors snap to screen edges with a red guide, and show their name on hover.
+- Edit mode: the grid can now be made much finer, down to 5.
+- Nameplates: critters with a hidden health bar no longer show a name or level.
+- Unit frames: outlined names and levels; player text sits higher; target-of-target text is smaller.
+- Game Settings: all text in the settings windows is slightly smaller.
+- Tooltips: Modern WoW and Classic WoW now frame tooltips with the game's own tooltip border.
+- Tooltips: tooltips now fade out instead of vanishing, after the "Tooltip mouse-out delay".
+- Character: the Transmog button now sits at the bottom of the stats panel.
+- Party frames: HoT icons and heal prediction now see heals cast from macros, keybinds or other bars.
+- Unit frames: your own buffs and debuffs on targets and party members now show exact countdowns.
+- Pet cast bar: shows every pet cast and channel with its real timing.
+
+### Fixed
+
+- Nameplates and Unit frames: a fleeing mob could show 0 health while still alive.
+- Game Settings: dragging the window or scrolling a page dropped the framerate sharply.
+- Tooltips: with "World tooltips follow the cursor", hovering a creature sometimes showed no tooltip.
+- Logout: button text now sits vertically centred.
+- Unit frames: the Modern WoW player portrait did not fit its ring.
+- Tooltips: "Tooltip mouse-out delay" now applies to cursor-following tooltips, down to 0.05 seconds.
+- Tooltips: the background sometimes turned dark blue instead of black.
+- Unit frames: hovering a player on the player or target frame made its tooltip blink.
+- Tooltips: pets and some creatures showed a differently styled health bar outside the tooltip.
+- Nameplates: in Modern WoW, a taller health bar stretched and blurred its frame's rounded ends.
+- Edit mode: the target-of-target anchor stuck to the screen's bottom edge and could not be moved.
+- Chat: some messages from other addons and channels showed in black text.
+- Quests and trainer: reward names and list labels sat off-centre in their rows.
+- Game menu: button text sat too low on the buttons in Modern WoW.
+- Edit mode: text on the red buttons sat too low.
+- Game Settings: the Interface > Gamepad controller diagram was broken apart into a list of buttons.
+- Game Settings: text in the category list, buttons and search box sat off-centre.
+- Game Settings: addon page dropdown menus hid their border behind boxed rows.
+- Unit frames: health and mana text sat too low on player and target bars in Modern WoW.
+- Cast bars: the target's cast bar did not show when it cast a spell.
+- Cast bars: your channelled spells showed no name or icon, and pushback was not shown.
+- Social: in Modern WoW, the divider above the bottom buttons stopped short of the window's sides.
+
 ## [0.12.0] - 2026-10-31
 
 ### Added

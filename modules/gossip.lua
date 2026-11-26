@@ -336,12 +336,9 @@ local function BuildFrame()
   -- fold the real update hook into knowledge.json and hook it here.
   U.PostHookScript(frame, "OnShow", Reapply)
 
-  -- Do NOT post-hook GossipFrameUpdate/GossipFrameOptionsUpdate.
-  -- USER_CONFIRMED_INGAME: this client's GossipFrame.lua takes its option list
-  -- through `...`/arg.n, and U.PostHookGlobal's fixed-arity wrapper hands the
-  -- original ten arguments, so arg.n became 10, the update built rows for the
-  -- padding nils, and GossipFrame.lua:123 threw "attempt to concatenate field
-  -- '?' (a nil value)" beneath a column of empty option rows. GOSSIP_SHOW plus
+  -- GossipFrameOptionsUpdate reads `...`/arg.n; the old fixed-arity hook
+  -- wrapper broke it (knowledge.json /
+  -- lua.posthook_global_fixed_arity_breaks_vararg_frameXML). GOSSIP_SHOW plus
   -- OnShow already reapply late enough for the icons.
 
   if frame.IsShown then
