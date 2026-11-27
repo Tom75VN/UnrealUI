@@ -4,6 +4,23 @@ Player-visible UnrealUI changes, newest first. Keep every bullet short, clear an
 
 ## [Unreleased]
 
+## [0.13.1] - 2026-11-27
+
+### Added
+
+- World map: minimize it to a small window you can move and resize while you keep playing.
+- World map: smooth zoom with + and - or the mouse wheel, with a "Zoom" hint; drag and fling to look around the zone, which stays centred.
+
+### Changed
+
+- World map: zone and area names on hover are smaller.
+- World map: with Unreal Map installed, its zoom and minimize are used instead.
+
+### Fixed
+
+- World map: hovering a zone's map showed other zones' names instead of its areas.
+- Game Settings: menu names sat slightly low in their rows.
+
 ## [0.13.0] - 2026-11-27
 
 ### Added

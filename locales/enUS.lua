@@ -857,6 +857,7 @@ STATUS_PAGE_HINT          = "A hidden overlay keeps its anchor in edit mode, so 
 
 WORLDMAP_CURSOR           = "Cursor: --, --",
 WORLDMAP_CURSOR_OFF_MAP   = "Cursor: Off Map",
+WORLDMAP_ZOOM_HINT        = "Zoom",
 SPELLBOOK_HIGHEST_RANK    = "Highest rank",
 SPELLBOOK_HIGHEST_RANK_TOOLTIP = "Shows only the last rank of each spell.",
 SPELLBOOK_BAR_HINT        = "Not on action bars",

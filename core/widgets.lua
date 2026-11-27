@@ -3459,17 +3459,22 @@ function U.HideWindowTooltip()
 end
 
 -- ---------------------------------------------------------------------------
--- Red close X
+-- Red glyph buttons (close X, minimize, maximize)
 --
--- The modern-wow red-button atlas's close cell on an addon-owned Button, for
--- a window that carries it under every theme (the game settings window, the
--- edit-mode windows). Four cells swapped by the addon's own textures, never
--- the button's state slots given a path: resting, pushed while held, and the
--- atlas's glow added on hover. The caller places it and keeps it above any
--- drag handle under it.
--- options: name, size (default 17), onClick.
+-- The modern-wow red-button atlas on an addon-owned Button, for a window that
+-- carries it under every theme (the game settings window, the edit-mode
+-- windows, the world map's minimize toggle). Cells swapped by the addon's own
+-- textures, never the button's state slots given a path: resting, pushed while
+-- held, and the atlas's glow added on hover. The caller places it and keeps it
+-- above any drag handle under it.
+-- options: name, size (default 17), glyph ("close" default, "minimize",
+-- "maximize"), onClick. button.uuiSetGlyph(glyph) swaps the glyph later.
 -- ---------------------------------------------------------------------------
 function U.CreateRedCloseButton(parent, options)
+  return U.CreateRedGlyphButton(parent, options)
+end
+
+function U.CreateRedGlyphButton(parent, options)
   options = options or {}
   local cells = M.modernWow and M.modernWow.redButtonCell
   local path = M.modernWow and M.modernWow.texture and M.modernWow.texture.redButton
@@ -3497,9 +3502,11 @@ function U.CreateRedCloseButton(parent, options)
     pcall(glow.Hide, glow)
   end
 
-  local state = { over = false, down = false }
+  local state = { over = false, down = false, glyph = "close" }
   local function Paint()
-    local cell = state.down and cells.closePushed or cells.closeNormal
+    local glyph = state.glyph
+    local cell = (state.down and cells[glyph .. "Pushed"]) or
+                 cells[glyph .. "Normal"] or cells.closeNormal
     pcall(face.SetTexCoord, face, cell[1], cell[2], cell[3], cell[4])
     if glow then
       if state.over then pcall(glow.Show, glow) else pcall(glow.Hide, glow) end
@@ -3513,7 +3520,12 @@ function U.CreateRedCloseButton(parent, options)
   button:SetScript("OnClick", function()
     if type(onClick) == "function" then onClick() end
   end)
-  Paint()
+  button.uuiSetGlyph = function(glyph)
+    if not cells[tostring(glyph) .. "Normal"] then glyph = "close" end
+    state.glyph = glyph
+    Paint()
+  end
+  button.uuiSetGlyph(options.glyph)
   return button
 end
 

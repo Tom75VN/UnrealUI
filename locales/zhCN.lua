@@ -834,6 +834,7 @@ STATUS_PAGE_HINT          = "隐藏的信息层在编辑模式中保留锚点，
 
 WORLDMAP_CURSOR           = "光标：--, --",
 WORLDMAP_CURSOR_OFF_MAP   = "光标：地图之外",
+WORLDMAP_ZOOM_HINT        = "缩放",
 SPELLBOOK_HIGHEST_RANK    = "仅最高等级",
 SPELLBOOK_HIGHEST_RANK_TOOLTIP = "只显示每个法术的最高等级。",
 SPELLBOOK_BAR_HINT        = "不在动作条上",

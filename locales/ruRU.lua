@@ -853,6 +853,7 @@ STATUS_PAGE_HINT          = "Скрытая панель сохраняет св
 
 WORLDMAP_CURSOR           = "Курсор: --, --",
 WORLDMAP_CURSOR_OFF_MAP   = "Курсор: вне карты",
+WORLDMAP_ZOOM_HINT        = "Масштаб",
 SPELLBOOK_HIGHEST_RANK    = "Высший ранг",
 SPELLBOOK_HIGHEST_RANK_TOOLTIP = "Показывает только последний ранг каждого заклинания.",
 SPELLBOOK_BAR_HINT        = "Нет на панелях",

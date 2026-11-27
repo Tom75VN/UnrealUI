@@ -96,9 +96,18 @@ local function UpdateWorldMapPosition()
     state.worldMapCell = cell
     SetCell(frame.arrow, cell)
   end
-  frame:ClearAllPoints()
-  frame:SetPoint("CENTER", canvas, "TOPLEFT", x * width, -y * height)
-  frame:Show()
+  -- On a zoomed map (modules/worldmapzoom.lua) the arrow keeps its size and
+  -- hides outside the visible part; nil means the zoom is not installed.
+  local placed = U.WorldMapZoomPlace and U.WorldMapZoomPlace(frame, x, y)
+  if placed == nil then
+    frame:ClearAllPoints()
+    frame:SetPoint("CENTER", canvas, "TOPLEFT", x * width, -y * height)
+    frame:Show()
+  elseif placed then
+    frame:Show()
+  else
+    frame:Hide()
+  end
 end
 
 -- UIParent is hidden while the fullscreen world map is open, so the shared

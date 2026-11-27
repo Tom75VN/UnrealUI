@@ -836,6 +836,7 @@ STATUS_PAGE_HINT          = "Une surcouche masquee garde son ancre en mode editi
 
 WORLDMAP_CURSOR           = "Curseur : --, --",
 WORLDMAP_CURSOR_OFF_MAP   = "Curseur : hors carte",
+WORLDMAP_ZOOM_HINT        = "Zoom",
 SPELLBOOK_HIGHEST_RANK    = "Rang maximal",
 SPELLBOOK_HIGHEST_RANK_TOOLTIP = "Affiche seulement le dernier rang de chaque sort.",
 SPELLBOOK_BAR_HINT        = "Absent des barres",

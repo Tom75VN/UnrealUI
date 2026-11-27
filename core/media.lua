@@ -124,6 +124,12 @@ M.texture = {
   -- Available-quest mark drawn on a bag/bank item that begins a quest; the
   -- 32x32 type-2 TGA ported unchanged from pandaUI's core/media.lua.
   questStarter = "Interface\\AddOns\\unrealUI\\media\\Textures\\quest-starter",
+  -- World map "Zoom" hint (modules/worldmapzoom.lua), as in PandaMap (user
+  -- request, 2026-11-27). Copied unchanged from pandaUI's
+  -- media/Textures/mousewheel-zoom.tga: supplied by the pandaUI author
+  -- (2026-10-20), generated with ChatGPT's image model; 64x64 uncompressed
+  -- 32-bit TGA.
+  mapZoomHint = "Interface\\AddOns\\unrealUI\\media\\Textures\\mousewheel-zoom",
   -- The modern unit frame's resting flipbook. This is an addon-owned copy of
   -- the user-supplied 42-cell sheet used by modern-wow, kept outside that
   -- theme's media tree so the two visual families do not depend on each
@@ -3097,9 +3103,9 @@ M.modernWow.button128GoldRed = {
 -- the entries below name what each cell actually is instead of deriving it
 -- from the grid. The last two cells of column five are empty.
 --
--- Only the close column is drawn today (window close buttons). The rest are
--- kept because they describe one imported file, and a partial map of it would
--- make the grid above unreadable.
+-- The close, minimize and maximize columns are drawn (U.CreateRedGlyphButton).
+-- The rest are kept because they describe one imported file, and a partial
+-- map of it would make the grid above unreadable.
 do
   local function cell(column, row)
     local left = 2 + 38 * column
@@ -5844,6 +5850,60 @@ M.zoneLevel = {
   danger  = { 1.00, 0.20, 0.20, 1.00 },   -- zone is above the player
 }
 
+-- The world map's minimize toggle (modules/worldmap.lua, user request,
+-- 2026-11-27). The red glyph button sits just left of the native close X.
+-- The native X is a 32x32 Button at TOPRIGHT -> WorldMapPositioningGuide TOP
+-- (516, 4), so its centre is 500, -12 from the map's top centre; the canvas's
+-- TOPRIGHT is 500, -69 (mapblackout.scan.v1 children). buttonX/buttonY are
+-- the toggle's CENTER from the canvas TOPRIGHT, one button width left of it.
+-- minimizedScale is the WorldMapFrame scale while minimized. The minimized
+-- map drags by a dragHeight strip along its top edge, the band above the
+-- control row at 35 (knowledge.json /
+-- map.worldmap_positioning_guide_owns_layout), stopping dragRightInset short
+-- of the right edge so the close X and the toggle stay clickable.
+M.worldMapWindow = {
+  buttonSize = 20,
+  buttonX = -28,
+  buttonY = 57,
+  minimizedScale = 0.6,
+  dragHeight = 32,
+  dragRightInset = 56,
+  -- Bottom-right resize grip (user request, 2026-11-27). The map cannot be
+  -- sized (the positioning guide is fixed), so the grip sets the minimized
+  -- scale, between minScale and maxScale. The grip is CENTERed gripX/gripY
+  -- from the canvas BOTTOMRIGHT, inside the 31-unit footer and the 11-unit
+  -- side inset (mapwindow probe). The mark fills the grip Button, like the
+  -- minimize toggle's art.
+  minScale = 0.35,
+  maxScale = 0.9,
+  gripSize = 20,
+  gripX = 0,
+  gripY = -15,
+  -- Zone name drawn by the addon on the minimized map, in place of the
+  -- client's label that also shows a second, unscaled copy above the map.
+  -- Measured from the user's minimized screenshot (2026-11-27), the native
+  -- label's centre sits about 46 units below the canvas top, horizontally
+  -- centred; zoneLabelY puts this 40-unit box's centre there. Wide enough for
+  -- the longest zone name with its range at the native label's font.
+  zoneLabelWidth = 700,
+  zoneLabelHeight = 40,
+  -- Raised from the measured -26 (user requests, 2026-11-27: higher, then
+  -- higher again, then 5 lower).
+  zoneLabelY = -3,
+  -- The zone/region name's size against the native label's font (user
+  -- requests, 2026-11-27: 20% smaller, then still too big, then smaller,
+  -- twice).
+  zoneLabelFontScale = 0.4,
+  -- "Zoom" hint box in the header, its RIGHT at the canvas TOPRIGHT plus
+  -- these offsets: on the Zoom Out button's line (user request, 2026-11-27).
+  -- mapblackout.scan.v1: the dropdown row's centre is 51 below the guide top
+  -- and Zoom Out is 3 higher (48), the canvas top 69, so 21 above the canvas.
+  -- PandaMap's 22-unit wheel icon.
+  zoomHintIcon = 22,
+  zoomHintX = -8,
+  zoomHintY = 21,
+}
+
 -- Item-comparison deltas, drawn only in the "Currently Equipped" tooltip's
 -- change summary (modules/tooltip.lua). The hovered item's own lines stay the
 -- colour the client gave them. This is game state rather than UnrealUI chrome,
@@ -6656,7 +6716,9 @@ M.foreverWow.panel = {
   listTitleInset = { x = 7, y = -22 },
   rowHeight = 20,         -- SettingsCategoryListButtonTemplate, 175x20
   -- Centres a row or header label in its box (user request, 2026-11-26).
-  textY = -0.5,
+  -- Raised 1 (user request, 2026-11-27): measured in game, -0.5 left a label's
+  -- glyphs (caps plus descenders) about 1.4 units below the row's middle.
+  textY = 0.5,
   rowWidth = 175,
   -- Label anchors TOPLEFT 36,1 / BOTTOMRIGHT 0,1 and justifies LEFT. The 36
   -- leaves room for the expand toggle, which sits at LEFT 9 and is 22x22 --
